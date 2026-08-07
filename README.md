@@ -11,6 +11,23 @@ cd C:\Users\forev\minimax-h3-video-studio
 npm.cmd run dev
 ```
 
+## 重啟網頁服務
+
+只需要重啟 H3 Studio Web/API 時，使用專案內的固定腳本：
+
+```powershell
+cd C:\Users\forev\minimax-h3-video-studio
+.\scripts\restart-web.ps1
+```
+
+也可以使用 npm 指令：
+
+```powershell
+npm.cmd run restart:web
+```
+
+腳本會辨識 `8787` 的現有 H3 Studio process、停止後重新執行 `npm.cmd run dev`，並等待 `/app/api/health` 回傳 `200`。ComfyUI `8188` 與 Ollama `11434` 會沿用現有服務，不需要一併重啟；啟動紀錄會寫入專案的 `logs` 資料夾。
+
 網頁與本機 API 共用 `8787`：
 
 ```text

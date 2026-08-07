@@ -41,12 +41,13 @@ test("renders the H3 Studio interface without promotional shell copy", async () 
 });
 
 test("uses the same-origin API on the web service", async () => {
-  const [page, vite, packageJson, readme, bridge] = await Promise.all([
+  const [page, vite, packageJson, readme, bridge, restartScript] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/restart-web.ps1", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /const BRIDGE_URL = "\/app"/);
@@ -108,5 +109,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.doesNotMatch(vite, /H3_BRIDGE_HOST|H3_BRIDGE_PORT/);
   assert.doesNotMatch(packageJson, /npm run bridge|local-bridge\.mjs/);
   assert.match(readme, /8787/);
+  assert.match(readme, /restart-web\.ps1/);
+  assert.match(packageJson, /restart:web/);
+  assert.match(restartScript, /Start-Process/);
+  assert.match(restartScript, /healthUrl = "http:\/\/127\.0\.0\.1:8787\/app\/api\/health"/);
+  assert.match(restartScript, /SetEnvironmentVariable\("PATH", \$null, "Process"\)/);
   assert.doesNotMatch(readme, /npm\.cmd run bridge|local bridge/i);
 });
