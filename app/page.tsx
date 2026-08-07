@@ -70,6 +70,7 @@ type PromptModelOption = {
   value: string;
   label: string;
   note: string;
+  vision?: boolean;
 };
 
 const navItems = [
@@ -80,19 +81,19 @@ const navItems = [
 ];
 
 const promptModelCatalog: PromptModelOption[] = [
-  { value: "gemma4:12b", label: "Gemma 4 12B", note: "文字＋圖片" },
-  { value: "qwen3-vl:8b-instruct", label: "Qwen3 VL 8B", note: "文字＋圖片" },
-  { value: "gemma3:1b", label: "Gemma 3 1B", note: "文字" },
-  { value: "gemma3:4b", label: "Gemma 3 4B", note: "文字＋圖片" },
-  { value: "gemma3:12b", label: "Gemma 3 12B", note: "文字＋圖片" },
-  { value: "gemma3:27b", label: "Gemma 3 27B", note: "文字＋圖片" },
-  { value: "gemma3n:e2b", label: "Gemma 3n E2B", note: "低資源" },
-  { value: "gemma3n:e4b", label: "Gemma 3n E4B", note: "低資源" },
-  { value: "gemma2:2b", label: "Gemma 2 2B", note: "文字" },
-  { value: "gemma2:9b", label: "Gemma 2 9B", note: "文字" },
-  { value: "gemma2:27b", label: "Gemma 2 27B", note: "文字" },
-  { value: "gemma:2b", label: "Gemma 1 2B", note: "舊版" },
-  { value: "gemma:7b", label: "Gemma 1 7B", note: "舊版" },
+  { value: "gemma4:12b", label: "Gemma 4 12B", note: "文字＋圖片", vision: true },
+  { value: "qwen3-vl:8b-instruct", label: "Qwen3 VL 8B", note: "文字＋圖片", vision: true },
+  { value: "gemma3:1b", label: "Gemma 3 1B", note: "文字", vision: false },
+  { value: "gemma3:4b", label: "Gemma 3 4B", note: "文字＋圖片", vision: true },
+  { value: "gemma3:12b", label: "Gemma 3 12B", note: "文字＋圖片", vision: true },
+  { value: "gemma3:27b", label: "Gemma 3 27B", note: "文字＋圖片", vision: true },
+  { value: "gemma3n:e2b", label: "Gemma 3n E2B", note: "低資源＋圖片", vision: true },
+  { value: "gemma3n:e4b", label: "Gemma 3n E4B", note: "低資源＋圖片", vision: true },
+  { value: "gemma2:2b", label: "Gemma 2 2B", note: "文字", vision: false },
+  { value: "gemma2:9b", label: "Gemma 2 9B", note: "文字", vision: false },
+  { value: "gemma2:27b", label: "Gemma 2 27B", note: "文字", vision: false },
+  { value: "gemma:2b", label: "Gemma 1 2B", note: "文字", vision: false },
+  { value: "gemma:7b", label: "Gemma 1 7B", note: "文字", vision: false },
 ];
 
 const modelOptions = [
@@ -180,6 +181,58 @@ function isFinishedJob(job: Job) {
 
 function assetUrl(asset: Asset) {
   return BRIDGE_URL + asset.url;
+}
+
+function modelSupportsPromptImages(model: string) {
+  const normalized = model.toLowerCase();
+  if (normalized === "gemma3:1b") return false;
+  return normalized.includes("-vl") ||
+    normalized.includes("gemma3") ||
+    normalized.includes("gemma4") ||
+    normalized.includes("gemma3n");
+}
+
+async function assetToPromptImage(asset: Asset) {
+  const response = await fetch(assetUrl(asset));
+  if (!response.ok) throw new Error("無法讀取參考素材。");
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    const maxDimension = 1024;
+    if (asset.kind === "image") {
+      const image = new Image();
+      image.src = objectUrl;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("無法解碼參考圖片。"));
+      });
+      const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+    } else {
+      const video = document.createElement("video");
+      video.src = objectUrl;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      await new Promise<void>((resolve, reject) => {
+        video.onloadeddata = () => resolve();
+        video.onerror = () => reject(new Error("無法讀取來源影片首幀。"));
+      });
+      const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      video.removeAttribute("src");
+      video.load();
+    }
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
+    return dataUrl.slice(dataUrl.indexOf(",") + 1);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 function assetDownloadUrl(asset: Asset) {
@@ -477,6 +530,21 @@ export default function Home() {
     }
     setOllamaBusy(true);
     try {
+      const promptImages: Array<{ role: string; data: string }> = [];
+      if (modelSupportsPromptImages(ollamaModel)) {
+        if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
+          promptImages.push({
+            role: "reference_image",
+            data: await assetToPromptImage(referenceImage),
+          });
+        }
+        if (mode === "replace" && sourceVideo?.kind === "video") {
+          promptImages.push({
+            role: "source_video_first_frame",
+            data: await assetToPromptImage(sourceVideo),
+          });
+        }
+      }
       const response = await fetch(BRIDGE_URL + "/api/ollama/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -488,6 +556,7 @@ export default function Home() {
           duration,
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
+          images: promptImages,
         }),
       });
       const payload = (await response.json()) as {
@@ -713,7 +782,12 @@ export default function Home() {
   const installedCatalogModels = promptModelCatalog.filter((model) => visibleModels.includes(model.value));
   const installedExtras = visibleModels
     .filter((model) => !catalogValues.has(model))
-    .map((model) => ({ value: model, label: model, note: "已安裝" }));
+    .map((model) => ({
+      value: model,
+      label: model,
+      note: modelSupportsPromptImages(model) ? "已安裝＋圖片" : "已安裝",
+      vision: modelSupportsPromptImages(model),
+    }));
   const promptModels = [...installedCatalogModels, ...installedExtras];
   const completedRenderCount = renderJobs.filter((item) =>
     ["completed", "failed", "cancelled"].includes(item.status),

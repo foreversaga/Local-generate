@@ -85,7 +85,7 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /const warmupProgress = Math\.min\(18/);
   assert.match(bridge, /20 \+ \(current \/ maximum\) \* 72/);
   assert.match(bridge, /entry\.job\.progress = Math\.max\(entry\.job\.progress, 8\)/);
-  assert.match(bridge, /function promptSystem\(mode, durationSeconds\)/);
+  assert.match(bridge, /function promptSystem\(mode, durationSeconds, hasVisualReference\)/);
   assert.match(bridge, /integrated_multimodal_description/);
   assert.match(bridge, /For the target video, at 0\.00 seconds into the target video/);
   assert.match(bridge, /T2VA text-to-video/);

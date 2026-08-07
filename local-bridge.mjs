@@ -355,7 +355,7 @@ function promptMode(value) {
   return ["t2v", "i2v", "replace"].includes(value) ? value : "t2v";
 }
 
-function promptSystem(mode, durationSeconds) {
+function promptSystem(mode, durationSeconds, hasVisualReference) {
   if (mode === "i2v") {
     return (
       "You are a professional MiniMax H3 I2VA video prompt engineer following the h3-prompt-writing guide. " +
@@ -363,7 +363,9 @@ function promptSystem(mode, durationSeconds) {
       "The first line must be exactly: For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced. " +
       "Then add one blank line and exactly these three fields in this order: " +
       "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
-      "Start [Shot 1] from the supplied first-frame reference, preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, " +
+      (hasVisualReference
+        ? "Inspect the attached first-frame reference and start [Shot 1] from it; preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, "
+        : "Start [Shot 1] from the supplied first-frame reference, preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, ") +
       "then describe continuous forward development. Use later shot timestamps only for real cuts, keep all timing within " +
       durationSeconds.toFixed(2) +
       " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
@@ -400,6 +402,14 @@ async function createPrompt(payload) {
   const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
   const referenceImageName = String(payload.referenceImageName || "").trim();
   const sourceVideoName = String(payload.sourceVideoName || "").trim();
+  const visualInputs = Array.isArray(payload.images)
+    ? payload.images
+      .filter((item) => item && typeof item.data === "string" && item.data.trim())
+      .map((item) => ({
+        role: String(item.role || "reference_image"),
+        data: String(item.data).replace(/^data:[^;]+;base64,/, "").trim(),
+      }))
+    : [];
   const negativePrompt = String(payload.negativePrompt || "").trim();
   if (!brief) throw new Error("請先輸入一段畫面想法。");
   const context = [
@@ -411,6 +421,9 @@ async function createPrompt(payload) {
     mode === "replace" && sourceVideoName
       ? `The source video asset is ${sourceVideoName}; preserve its motion and scene continuity.`
       : "",
+    visualInputs.length
+      ? `Attached visual references: ${visualInputs.map((item) => item.role).join(", ")}. Inspect them and keep their visible identities and composition consistent.`
+      : "",
     negativePrompt ? `User-provided negative constraints: ${negativePrompt}` : "",
   ].filter(Boolean).join("\n");
   const result = await fetchJson(
@@ -420,10 +433,11 @@ async function createPrompt(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        system: promptSystem(mode, durationSeconds),
+        system: promptSystem(mode, durationSeconds, visualInputs.length > 0),
         prompt: context + "\n\nUser idea:\n" + brief,
         stream: false,
         options: { temperature: 0.7, top_p: 0.9 },
+        ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
       }),
     },
     120000,
