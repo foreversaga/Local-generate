@@ -67,6 +67,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /function isFinishedJob\(job: Job\)/);
   assert.match(page, /const trackedRenderJobIds = renderJobIds/);
   assert.match(page, /tracked\.every\(isFinishedJob\)/);
+  assert.match(page, /referenceImageName: referenceImage\?\.kind === "image"/);
+  assert.match(page, /sourceVideoName: sourceVideo\?\.kind === "video"/);
+  assert.match(page, /promptFormatLabel/);
   assert.match(bridge, /const generationQueue = \[\]/);
   assert.match(bridge, /const COMFY_ROOT = path\.resolve\(/);
   assert.match(bridge, /const INPUT_ROOT = path\.join\(COMFY_ROOT, "input"\)/);
@@ -82,6 +85,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /const warmupProgress = Math\.min\(18/);
   assert.match(bridge, /20 \+ \(current \/ maximum\) \* 72/);
   assert.match(bridge, /entry\.job\.progress = Math\.max\(entry\.job\.progress, 8\)/);
+  assert.match(bridge, /function promptSystem\(mode, durationSeconds\)/);
+  assert.match(bridge, /integrated_multimodal_description/);
+  assert.match(bridge, /For the target video, at 0\.00 seconds into the target video/);
+  assert.match(bridge, /T2VA text-to-video/);
   assert.doesNotMatch(page, /127\.0\.0\.1:8787|NEXT_PUBLIC_BRIDGE_URL/);
   assert.doesNotMatch(vite, /H3_BRIDGE_HOST|H3_BRIDGE_PORT/);
   assert.doesNotMatch(packageJson, /npm run bridge|local-bridge\.mjs/);

@@ -346,20 +346,73 @@ async function health() {
 function cleanOllamaPrompt(value) {
   return String(value || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^```(?:text|markdown)?\s*/i, "")
+    .replace(/\s*```$/i, "")
     .trim();
+}
+
+function promptMode(value) {
+  return ["t2v", "i2v", "replace"].includes(value) ? value : "t2v";
+}
+
+function promptSystem(mode, durationSeconds) {
+  if (mode === "i2v") {
+    return (
+      "You are a professional MiniMax H3 I2VA video prompt engineer following the h3-prompt-writing guide. " +
+      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
+      "The first line must be exactly: For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced. " +
+      "Then add one blank line and exactly these three fields in this order: " +
+      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
+      "Start [Shot 1] from the supplied first-frame reference, preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, " +
+      "then describe continuous forward development. Use later shot timestamps only for real cuts, keep all timing within " +
+      durationSeconds.toFixed(2) +
+      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
+      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
+      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
+    );
+  }
+
+  if (mode === "replace") {
+    return (
+      "You are a professional Wan2.2 Animate video replacement prompt engineer. " +
+      "Write one production-ready English positive prompt for replacing the selected subject while preserving the source video's motion, camera, environment, timing, and scene continuity. " +
+      "Describe the final subject appearance, actions, expression, composition, lighting, material details, and motion continuity. " +
+      "Return only the prompt, with no headings, explanations, markdown, or invented readable text."
+    );
+  }
+
+  return (
+    "You are a professional MiniMax H3 T2VA video prompt engineer following the h3-prompt-writing guide. " +
+    "Turn the user's idea into a complete audiovisual timeline in English while preserving dialogue, lyrics, and visible scene text in their original language. " +
+    "Return exactly these three fields in this order: integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
+    "The integrated_multimodal_description must begin with [Shot 1], describe composition, subjects, environment, actions, camera, dialogue, and diegetic sound, " +
+    "and use strictly increasing timestamps only for later cuts. Keep all timing within " +
+    durationSeconds.toFixed(2) +
+    " seconds. Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
+    "Do not add explanations, markdown, plot summaries, or invented readable text."
+  );
 }
 
 async function createPrompt(payload) {
   const brief = String(payload.brief || "").trim();
   const model = String(payload.model || "gemma4:12b");
+  const mode = promptMode(payload.mode);
+  const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
+  const referenceImageName = String(payload.referenceImageName || "").trim();
+  const sourceVideoName = String(payload.sourceVideoName || "").trim();
   const negativePrompt = String(payload.negativePrompt || "").trim();
   if (!brief) throw new Error("請先輸入一段畫面想法。");
-  const system =
-    "You are a professional MiniMax H3 local video prompt engineer. " +
-    "Turn the user's idea into one production-ready English prompt. " +
-    "Include subject, action, camera movement, framing, environment, lighting, " +
-    "texture, pacing, and natural audio when useful. Preserve the intended story. " +
-    "Use clear cinematic language, no headings, no explanations, no markdown, and do not invent readable text.";
+  const context = [
+    `Input mode: ${mode === "t2v" ? "T2VA text-to-video" : mode === "i2v" ? "I2VA image-to-video" : "Wan2.2 Animate video replacement"}.`,
+    `Target duration: ${durationSeconds.toFixed(2)} seconds.`,
+    mode === "i2v"
+      ? `A reference image is supplied and must be treated as <Picture 1> at the first frame${referenceImageName ? ` (asset: ${referenceImageName})` : ""}.`
+      : "",
+    mode === "replace" && sourceVideoName
+      ? `The source video asset is ${sourceVideoName}; preserve its motion and scene continuity.`
+      : "",
+    negativePrompt ? `User-provided negative constraints: ${negativePrompt}` : "",
+  ].filter(Boolean).join("\n");
   const result = await fetchJson(
     OLLAMA_URL + "/api/generate",
     {
@@ -367,8 +420,8 @@ async function createPrompt(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        system,
-        prompt: "User idea:\n" + brief,
+        system: promptSystem(mode, durationSeconds),
+        prompt: context + "\n\nUser idea:\n" + brief,
         stream: false,
         options: { temperature: 0.7, top_p: 0.9 },
       }),

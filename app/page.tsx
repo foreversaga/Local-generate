@@ -484,6 +484,10 @@ export default function Home() {
           model: ollamaModel,
           brief: promptBrief,
           negativePrompt,
+          mode,
+          duration,
+          referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
         }),
       });
       const payload = (await response.json()) as {
@@ -700,6 +704,8 @@ export default function Home() {
 
   const modeLabel =
     mode === "t2v" ? "文字生片" : mode === "i2v" ? "參考圖生片" : "影片替換";
+  const promptFormatLabel =
+    mode === "t2v" ? "T2VA" : mode === "i2v" ? "I2VA" : "Wan Animate";
   const ollamaOnline = Boolean(health?.ollama.online);
   const comfyOnline = Boolean(health?.comfy.online);
   const visibleModels = health?.ollama.models || [];
@@ -894,7 +900,7 @@ export default function Home() {
                   disabled={ollamaBusy}
                 >
                   <Icon name="spark" />
-                  {ollamaBusy ? "整理中…" : "產生 H3 提示詞"}
+                  {ollamaBusy ? "整理中…" : `產生 ${promptFormatLabel} 提示詞`}
                 </button>
               </div>
 
