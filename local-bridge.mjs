@@ -35,6 +35,7 @@ let activeGenerationId = null;
 const timingSampleWindow = 5;
 let timingSamples = [];
 let timingHistoryWrite = Promise.resolve();
+let generatorSupportsLastImage;
 const timingHistoryReady = fs
   .readFile(TIMING_HISTORY_FILE, "utf8")
   .then((text) => {
@@ -50,6 +51,13 @@ const timingHistoryReady = fs
     }
   })
   .catch(() => {});
+
+async function hasLastImageGeneratorFlag() {
+  if (typeof generatorSupportsLastImage === "boolean") return generatorSupportsLastImage;
+  const source = await fs.readFile(GENERATOR, "utf8").catch(() => "");
+  generatorSupportsLastImage = /--last-image\b/.test(source);
+  return generatorSupportsLastImage;
+}
 
 function now() {
   return new Date().toISOString();
@@ -427,8 +435,11 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
   if (mode === "replace") {
     return (
       "You are a professional Wan2.2 Animate video replacement prompt engineer. " +
-      "Write one production-ready English positive prompt for replacing the selected subject while preserving the source video's motion, camera, environment, timing, and scene continuity. " +
-      "Describe the final subject appearance, actions, expression, composition, lighting, material details, and motion continuity. " +
+      "Write one production-ready English positive prompt for replacing the selected subject while preserving the source video's motion, camera path, framing, environment, lighting, timing, and scene continuity. " +
+      (hasVisualReference
+        ? "Inspect the attached reference image and source-video preview frame. Transfer the reference subject's identity, face, hair, clothing, colors, body proportions, and material details into the source video's moving subject while keeping the source motion and pose timing. "
+        : "Use the named reference media as the source of subject identity and motion context. ") +
+      "Describe the final subject appearance, actions, expression, composition, lighting, material details, occlusion, and motion continuity in one cohesive prompt. Do not redesign the background, camera, or choreography unless the user explicitly requests it. " +
       "Return only the prompt, with no headings, explanations, markdown, or invented readable text."
     );
   }
@@ -484,6 +495,9 @@ async function createPrompt(payload) {
     mode === "ref2v" && sourceVideoName
       ? `<Video 1> is the supplied reference video (asset: ${sourceVideoName}); define its structural or visual reference role and do not invent an audio track unless one is actually supplied.`
       : "",
+    mode === "replace" && referenceImageName
+      ? `The replacement subject reference image is ${referenceImageName}; preserve its identity and visible attributes in the source video.`
+      : "",
     mode === "fl2v"
       ? `Picture 1 is the first frame${firstFrameName ? ` (asset: ${firstFrameName})` : ""}; Picture 2 is the last frame${lastFrameName ? ` (asset: ${lastFrameName})` : ""}. The generated path must connect them continuously.`
       : "",
@@ -516,11 +530,12 @@ async function createPrompt(payload) {
   );
   const prompt = cleanOllamaPrompt(result.response || result.message?.content);
   if (!prompt) throw new Error("Ollama 回傳了空的提示詞。");
+  const defaultNegativePrompt = mode === "replace"
+    ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, text, logo, watermark"
+    : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, text, logo, watermark";
   return {
     prompt,
-    negativePrompt:
-      negativePrompt ||
-      "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, text, logo, watermark",
+    negativePrompt: negativePrompt || defaultNegativePrompt,
   };
 }
 
@@ -702,6 +717,9 @@ async function startGeneration(payload) {
   }
   if (!(await fs.stat(PYTHON).catch(() => null))) {
     throw new Error("找不到 ComfyUI 虛擬環境的 Python。");
+  }
+  if ((mode === "fl2v" || mode === "l2v") && !(await hasLastImageGeneratorFlag())) {
+    throw new Error("目前本機 generate.py 尚未公開 --last-image；FL2VA/L2VA 提示詞已可產出，但影片生成需先更新本機 CLI。");
   }
   const requestedOutputName = outputFileName(payload.outputName);
   await fs.mkdir(INPUT_ROOT, { recursive: true });

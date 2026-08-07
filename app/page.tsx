@@ -522,6 +522,14 @@ export default function Home() {
       showToast("請先輸入提示詞。", "error");
       return;
     }
+    if (mode === "replace" && (!referenceImage || !sourceVideo)) {
+      showToast("影片替換提示詞需要參考圖片與來源影片。", "error");
+      return;
+    }
+    if (mode === "ref2v" && !referenceImage && !sourceVideo) {
+      showToast("Ref2VA 至少需要一個參考圖片或參考影片。", "error");
+      return;
+    }
     if (!ollamaOnline) {
       showToast("Ollama 尚未連線。", "error");
       return;

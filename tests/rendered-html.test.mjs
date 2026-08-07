@@ -71,6 +71,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /sourceVideoName: sourceVideo\?\.kind === "video"/);
   assert.match(page, /lastFrameImage/);
   assert.match(page, /lastImageName: mode === "fl2v" \|\| mode === "l2v"/);
+  assert.match(page, /mode === "replace" && \(!referenceImage \|\| !sourceVideo\)/);
+  assert.match(page, /完整參考生片/);
   assert.match(page, /promptFormatLabel/);
   assert.match(bridge, /const generationQueue = \[\]/);
   assert.match(bridge, /const COMFY_ROOT = path\.resolve\(/);
@@ -97,6 +99,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music/);
   assert.match(bridge, /<Subject N>, <Picture N>, <Video N>, and <Audio N>/);
   assert.match(bridge, /目前本機生成器尚未接入原生 Ref2VA/);
+  assert.match(bridge, /identity drift, face drift, costume drift/);
+  assert.match(bridge, /source-video preview frame/);
+  assert.match(bridge, /hasLastImageGeneratorFlag/);
   assert.match(bridge, /--last-image/);
   assert.match(bridge, /T2VA text-to-video/);
   assert.doesNotMatch(page, /127\.0\.0\.1:8787|NEXT_PUBLIC_BRIDGE_URL/);
