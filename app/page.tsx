@@ -4,7 +4,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const BRIDGE_URL = "/app";
 
-type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "replace";
+type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type AssetKind = "image" | "video";
 type Asset = {
   name: string;
@@ -540,6 +540,12 @@ export default function Home() {
             data: await assetToPromptImage(referenceImage),
           });
         }
+        if (mode === "ref2v" && referenceImage?.kind === "image") {
+          promptImages.push({
+            role: "picture_1",
+            data: await assetToPromptImage(referenceImage),
+          });
+        }
         if (mode === "fl2v" && referenceImage?.kind === "image") {
           promptImages.push({
             role: "first_frame",
@@ -555,6 +561,12 @@ export default function Home() {
         if (mode === "replace" && sourceVideo?.kind === "video") {
           promptImages.push({
             role: "source_video_first_frame",
+            data: await assetToPromptImage(sourceVideo),
+          });
+        }
+        if (mode === "ref2v" && sourceVideo?.kind === "video") {
+          promptImages.push({
+            role: "video_1_preview_frame",
             data: await assetToPromptImage(sourceVideo),
           });
         }
@@ -659,6 +671,10 @@ export default function Home() {
   async function startRender() {
     if (!prompt.trim()) {
       showToast("請先填入提示詞。", "error");
+      return;
+    }
+    if (mode === "ref2v") {
+      showToast("Ref2VA 提示詞已可產出；目前本機生成器尚未接入原生 Ref2VA。", "error");
       return;
     }
     if (mode === "i2v" && !referenceImage) {
@@ -803,14 +819,16 @@ export default function Home() {
 
   const modeLabel =
     mode === "t2v" ? "文字生片" :
-      mode === "i2v" ? "參考圖生片" :
-        mode === "fl2v" ? "首尾幀生片" :
-          mode === "l2v" ? "尾幀生片" : "影片替換";
+        mode === "i2v" ? "參考圖生片" :
+          mode === "fl2v" ? "首尾幀生片" :
+          mode === "l2v" ? "尾幀生片" :
+            mode === "ref2v" ? "完整參考生片" : "影片替換";
   const promptFormatLabel =
     mode === "t2v" ? "T2VA" :
       mode === "i2v" ? "I2VA" :
         mode === "fl2v" ? "FL2VA" :
-          mode === "l2v" ? "L2VA" : "Wan Animate";
+          mode === "l2v" ? "L2VA" :
+            mode === "ref2v" ? "Ref2VA" : "Wan Animate";
   const ollamaOnline = Boolean(health?.ollama.online);
   const comfyOnline = Boolean(health?.comfy.online);
   const visibleModels = health?.ollama.models || [];
@@ -848,11 +866,13 @@ export default function Home() {
   const primaryFrameInputRef = mode === "l2v" ? lastFrameInputRef : imageInputRef;
   const primaryFrameTarget = mode === "l2v" ? "lastFrame" : "image";
   const primaryFrameLabel = mode === "l2v"
-    ? "尾幀圖片"
-    : mode === "fl2v"
-      ? "首幀圖片"
-      : mode === "replace"
-        ? "替換人物參考圖"
+      ? "尾幀圖片"
+      : mode === "fl2v"
+        ? "首幀圖片"
+        : mode === "ref2v"
+          ? "參考圖片（Picture 1）"
+        : mode === "replace"
+          ? "替換人物參考圖"
         : "參考圖片（可選）";
 
   return (
@@ -1094,6 +1114,14 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
+                  className={"mode-button " + (mode === "ref2v" ? "is-selected" : "")}
+                  onClick={() => updateMode("ref2v")}
+                >
+                  <span className="mode-icon"><Icon name="folder" /></span>
+                  <span><strong>完整參考生片</strong><small>Ref2VA · References</small></span>
+                </button>
+                <button
+                  type="button"
                   className={"mode-button " + (mode === "replace" ? "is-selected" : "")}
                   onClick={() => updateMode("replace")}
                 >
@@ -1277,7 +1305,7 @@ export default function Home() {
                 </div>
                 <span className="media-mode-label">{modeLabel}</span>
               </div>
-              <div className={"reference-grid " + (mode === "replace" || mode === "fl2v" ? "is-replace" : "")}>
+              <div className={"reference-grid " + (mode === "replace" || mode === "ref2v" || mode === "fl2v" ? "is-replace" : "")}>
                 <div className="reference-slot">
                   <div className="slot-topline">
                     <span className="field-label">{primaryFrameLabel}</span>
@@ -1313,10 +1341,10 @@ export default function Home() {
                     onChange={(event) => onFileChange(event, primaryFrameTarget)}
                   />
                 </div>
-                {mode === "replace" && (
+                {(mode === "replace" || mode === "ref2v") && (
                   <div className="reference-slot">
                     <div className="slot-topline">
-                      <span className="field-label">來源動作影片</span>
+                      <span className="field-label">{mode === "ref2v" ? "參考影片（Video 1）" : "來源動作影片"}</span>
                       <span className="slot-hint">VIDEO</span>
                     </div>
                     {sourceVideo ? (

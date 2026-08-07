@@ -352,7 +352,7 @@ function cleanOllamaPrompt(value) {
 }
 
 function promptMode(value) {
-  return ["t2v", "i2v", "fl2v", "l2v", "replace"].includes(value) ? value : "t2v";
+  return ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(value) ? value : "t2v";
 }
 
 function promptSystem(mode, durationSeconds, hasVisualReference) {
@@ -410,6 +410,20 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
     );
   }
 
+  if (mode === "ref2v") {
+    return (
+      "You are a professional MiniMax H3 Ref2VA full-reference prompt engineer following the h3-prompt-writing guide. " +
+      "Write all six sections in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
+      "Return exactly these sections in this order, each as a field with a colon: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. " +
+      "Use stable labels <Subject N>, <Picture N>, <Video N>, and <Audio N> for referenced content. Define every label before using it later. " +
+      "The summary must begin with a square-bracketed task-type prefix such as [reference generation], [keyframe completion], or [video editing + reference generation]. " +
+      "In retention_analysis use the fixed visible relationship markers fully_preserved, partially_preserved, attribute_transfer, weak_reference and the fixed audio markers fully_copy, partially_copy, reference, weak_reference. " +
+      "The detailed_description must be a playback-order shot timeline with composition, subject appearance and position, environment, lighting, actions, state changes, camera, sound, and reference labels at the points where they apply. " +
+      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
+      "Do not add markdown fences, explanations, extra headings, or labels that are not part of the six required sections."
+    );
+  }
+
   if (mode === "replace") {
     return (
       "You are a professional Wan2.2 Animate video replacement prompt engineer. " +
@@ -455,6 +469,7 @@ async function createPrompt(payload) {
     i2v: "I2VA image-to-video",
     fl2v: "FL2VA first-and-last-frame video",
     l2v: "L2VA last-frame video",
+    ref2v: "Ref2VA full-reference video",
     replace: "Wan2.2 Animate video replacement",
   }[mode];
   const context = [
@@ -462,6 +477,12 @@ async function createPrompt(payload) {
     `Target duration: ${durationSeconds.toFixed(2)} seconds.`,
     mode === "i2v"
       ? `A reference image is supplied and must be treated as <Picture 1> at the first frame${referenceImageName ? ` (asset: ${referenceImageName})` : ""}.`
+      : "",
+    mode === "ref2v" && referenceImageName
+      ? `<Picture 1> is the supplied reference image (asset: ${referenceImageName}); define its visual subjects and concrete frame role before reusing the label.`
+      : "",
+    mode === "ref2v" && sourceVideoName
+      ? `<Video 1> is the supplied reference video (asset: ${sourceVideoName}); define its structural or visual reference role and do not invent an audio track unless one is actually supplied.`
       : "",
     mode === "fl2v"
       ? `Picture 1 is the first frame${firstFrameName ? ` (asset: ${firstFrameName})` : ""}; Picture 2 is the last frame${lastFrameName ? ` (asset: ${lastFrameName})` : ""}. The generated path must connect them continuously.`
@@ -670,6 +691,9 @@ function pumpGenerationQueue() {
 
 async function startGeneration(payload) {
   await timingHistoryReady;
+  if (payload.mode === "ref2v") {
+    throw new Error("目前本機生成器尚未接入原生 Ref2VA；請先使用 Ref2VA 提示詞，或切換到可生成的 H3 模式。");
+  }
   const mode = ["t2v", "i2v", "fl2v", "l2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
   const prompt = String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");

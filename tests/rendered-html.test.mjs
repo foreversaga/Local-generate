@@ -93,6 +93,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /FL2VA first-and-last-frame video/);
   assert.match(bridge, /Picture 2 \(from Shot 1\) aligns with the/);
   assert.match(bridge, /L2VA last-frame video/);
+  assert.match(bridge, /Ref2VA full-reference prompt engineer/);
+  assert.match(bridge, /subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music/);
+  assert.match(bridge, /<Subject N>, <Picture N>, <Video N>, and <Audio N>/);
+  assert.match(bridge, /目前本機生成器尚未接入原生 Ref2VA/);
   assert.match(bridge, /--last-image/);
   assert.match(bridge, /T2VA text-to-video/);
   assert.doesNotMatch(page, /127\.0\.0\.1:8787|NEXT_PUBLIC_BRIDGE_URL/);
