@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+async function render() {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  return worker.fetch(
+    new Request("http://localhost/", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: {
+        fetch: async () => new Response("Not found", { status: 404 }),
+      },
+    },
+    {
+      waitUntil() {},
+      passThroughOnException() {},
+    },
+  );
+}
+
+test("renders the H3 Studio interface without promotional shell copy", async () => {
+  const response = await render();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<title>H3 Studio/);
+  assert.match(html, /id="prompt"/);
+  assert.match(html, /開始生成影片/);
+  assert.match(html, /影片寬度（px）/);
+  assert.match(html, /影片高度（px）/);
+  assert.doesNotMatch(html, /Gemma 3 4B/);
+  assert.doesNotMatch(html, /黃色雨衣|Cinematic night street|h3-rainy-neon/);
+  assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
+  assert.doesNotMatch(html, /LOCAL RENDER CONSOLE|LOCAL VIDEO LAB|8787|local bridge/i);
+});
+
+test("uses the same-origin API on the web service", async () => {
+  const [page, vite, packageJson, readme, bridge] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8"),
+    readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /const BRIDGE_URL = "\/app"/);
+  assert.match(vite, /name:\s*["']h3-local-api["']/);
+  assert.match(vite, /port:\s*webPort/);
+  assert.match(vite, /const listenHost = "0\.0\.0\.0"/);
+  assert.match(vite, /const webPort = 8787/);
+  assert.match(vite, /hmr:\s*false/);
+  assert.match(vite, /ws:\s*false/);
+  assert.match(vite, /forwardConsole:\s*false/);
+  assert.match(vite, /disableRemoteDevHmr/);
+  assert.match(page, /promptModelCatalog\.filter\(\(model\) => visibleModels\.includes\(model\.value\)\)/);
+  assert.match(page, /影片數量/);
+  assert.match(page, /batchSeed\(seed, index\)/);
+  assert.match(page, /const activeJobs = jobs\.filter\(isActiveJob\)/);
+  assert.match(page, /setRenderJobs\(trackedJobs\)/);
+  assert.match(bridge, /const generationQueue = \[\]/);
+  assert.match(bridge, /job\.status = child\.started \? "running" : "queued"/);
+  assert.match(bridge, /async function allocateOutputPath\(requestedName\)/);
+  assert.match(bridge, /reservedOutputPaths\.has\(candidatePath\)/);
+  assert.match(bridge, /render-timing-history\.json/);
+  assert.match(bridge, /const timingSampleWindow = 5/);
+  assert.match(bridge, /withinTenPercent/);
+  assert.doesNotMatch(page, /127\.0\.0\.1:8787|NEXT_PUBLIC_BRIDGE_URL/);
+  assert.doesNotMatch(vite, /H3_BRIDGE_HOST|H3_BRIDGE_PORT/);
+  assert.doesNotMatch(packageJson, /npm run bridge|local-bridge\.mjs/);
+  assert.match(readme, /8787/);
+  assert.doesNotMatch(readme, /npm\.cmd run bridge|local bridge/i);
+});
