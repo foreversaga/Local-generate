@@ -119,6 +119,7 @@ function Icon({ name }: { name: string }) {
     refresh: "↻",
     plus: "+",
     play: "▶",
+    download: "⇩",
     close: "×",
   };
   return (
@@ -176,6 +177,14 @@ function assetUrl(asset: Asset) {
   return BRIDGE_URL + asset.url;
 }
 
+function assetDownloadUrl(asset: Asset) {
+  return assetUrl(asset) + "&download=1";
+}
+
+function assetFileName(asset: Asset) {
+  return asset.name.split("/").pop() || asset.name;
+}
+
 function AssetThumb({
   asset,
   className = "",
@@ -213,6 +222,7 @@ export default function Home() {
   const [history, setHistory] = useState<Job[]>([]);
   const [assetFilter, setAssetFilter] = useState<"all" | AssetKind>("all");
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [assetPreview, setAssetPreview] = useState<Asset | null>(null);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
   const [sourceVideo, setSourceVideo] = useState<Asset | null>(null);
   const [mode, setMode] = useState<Mode>("t2v");
@@ -253,8 +263,28 @@ export default function Home() {
     .filter(isActiveJob)
     .map((item) => item.id);
   const activeRenderJobKey = activeRenderJobIds.join(",");
-  const imageAssets = assets.filter((asset) => asset.kind === "image");
-  const videoAssets = assets.filter((asset) => asset.kind === "video");
+  const inputAssets = assets.filter((asset) => asset.root === "input");
+  const outputAssets = assets.filter((asset) => asset.root === "output");
+  const filteredInputAssets = filteredAssets.filter((asset) => asset.root === "input");
+  const filteredOutputAssets = filteredAssets.filter((asset) => asset.root === "output");
+  const assetGroups = [
+    {
+      root: "input" as const,
+      label: "INPUT",
+      title: "輸入資源",
+      description: "參考圖片與來源影片，可作為生成素材。",
+      assets: filteredInputAssets,
+      total: inputAssets.length,
+    },
+    {
+      root: "output" as const,
+      label: "OUTPUT",
+      title: "輸出成果",
+      description: "H3 生成的影片與其他媒體成果。",
+      assets: filteredOutputAssets,
+      total: outputAssets.length,
+    },
+  ];
 
   useEffect(() => {
     void refreshAll();
@@ -304,6 +334,20 @@ export default function Home() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [activeRenderJobKey, renderBatchSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!assetPreview) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAssetPreview(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [assetPreview]);
 
   async function refreshAll() {
     await Promise.all([refreshStatus(), refreshAssets(), refreshHistory()]);
@@ -484,7 +528,7 @@ export default function Home() {
     event.target.value = "";
   }
 
-  function chooseAsset(asset: Asset) {
+  function applyAssetToWorkspace(asset: Asset) {
     setSelectedAsset(asset);
     if (asset.kind === "image") {
       setReferenceImage(asset);
@@ -493,6 +537,11 @@ export default function Home() {
       setSourceVideo(asset);
       showToast("已選取來源影片：" + asset.name);
     }
+  }
+
+  function openAssetPreview(asset: Asset) {
+    setSelectedAsset(asset);
+    setAssetPreview(asset);
   }
 
   async function startRender() {
@@ -1160,11 +1209,11 @@ export default function Home() {
               <div>
                 <span className="section-code">04 / ASSET LIBRARY</span>
                 <h2>本機資源庫</h2>
-                <p>輸入檔案和輸出影片會顯示在這裡。點選檔案可回到工作台使用。</p>
+                <p>輸入與輸出資源會分區顯示。點選資源可預覽、下載或套用到工作台。</p>
               </div>
               <div className="library-stats">
-                <span><strong>{imageAssets.length}</strong> images</span>
-                <span><strong>{videoAssets.length}</strong> videos</span>
+                <span><strong>{inputAssets.length}</strong> input</span>
+                <span><strong>{outputAssets.length}</strong> output</span>
               </div>
             </div>
             <div className="library-toolbar">
@@ -1185,21 +1234,61 @@ export default function Home() {
               </button>
             </div>
             {filteredAssets.length ? (
-              <div className="asset-grid">
-                {filteredAssets.slice(0, 12).map((asset) => (
-                  <button
-                    type="button"
-                    className={"asset-card " + (selectedAsset?.name === asset.name ? "is-selected" : "")}
-                    key={asset.root + ":" + asset.name}
-                    onClick={() => chooseAsset(asset)}
-                  >
-                    <AssetThumb asset={asset} />
-                    <span className="asset-card-info">
-                      <strong title={asset.name}>{asset.name}</strong>
-                      <small>{asset.root} · {formatBytes(asset.size)}</small>
-                    </span>
-                    <span className="asset-kind">{asset.kind === "video" ? "VIDEO" : "IMAGE"}</span>
-                  </button>
+              <div className="asset-source-groups">
+                {assetGroups.map((group) => (
+                  <section className="asset-source-group" key={group.root} aria-labelledby={group.root + "-assets-title"}>
+                    <div className="asset-source-heading">
+                      <div>
+                        <div className="asset-source-title-line">
+                          <span className={"asset-source-badge " + group.root}>{group.label}</span>
+                          <h3 id={group.root + "-assets-title"}>{group.title}</h3>
+                        </div>
+                        <p>{group.description}</p>
+                      </div>
+                      <span className="asset-source-count">{group.assets.length} / {group.total}</span>
+                    </div>
+                    {group.assets.length ? (
+                      <div className="asset-grid">
+                        {group.assets.slice(0, 12).map((asset) => (
+                          <article
+                            className={"asset-card " + (selectedAsset?.root === asset.root && selectedAsset.name === asset.name ? "is-selected" : "")}
+                            key={asset.root + ":" + asset.name}
+                          >
+                            <button
+                              type="button"
+                              className="asset-card-main"
+                              onClick={() => openAssetPreview(asset)}
+                              aria-label={`預覽資源 ${asset.name}`}
+                            >
+                              <AssetThumb asset={asset} />
+                              <span className="asset-card-info">
+                                <strong title={asset.name}>{asset.name}</strong>
+                                <small>{formatBytes(asset.size)} · {formatTime(asset.modified)}</small>
+                              </span>
+                            </button>
+                            <div className="asset-card-footer">
+                              <span className="asset-kind">{asset.kind === "video" ? "VIDEO" : "IMAGE"}</span>
+                              <a
+                                className="asset-download-button"
+                                href={assetDownloadUrl(asset)}
+                                download={assetFileName(asset)}
+                                aria-label={`下載資源 ${asset.name}`}
+                                title="下載資源"
+                              >
+                                <Icon name="download" />
+                                <span>下載</span>
+                              </a>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="asset-group-empty">
+                        <span className="asset-group-empty-icon"><Icon name="folder" /></span>
+                        <span>目前沒有符合篩選條件的資源。</span>
+                      </div>
+                    )}
+                  </section>
                 ))}
               </div>
             ) : (
@@ -1234,6 +1323,77 @@ export default function Home() {
           </section>
         </div>
       </section>
+
+      {assetPreview && (
+        <div className="asset-preview-backdrop">
+          <section
+            className="asset-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="asset-preview-title"
+          >
+            <div className="asset-preview-header">
+              <div>
+                <div className="asset-preview-kicker">
+                  <span className={"asset-source-badge " + assetPreview.root}>{assetPreview.root.toUpperCase()}</span>
+                  <span>{assetPreview.kind === "video" ? "VIDEO" : "IMAGE"} PREVIEW</span>
+                </div>
+                <h2 id="asset-preview-title" title={assetPreview.name}>{assetPreview.name}</h2>
+              </div>
+              <button
+                type="button"
+                className="asset-preview-close"
+                onClick={() => setAssetPreview(null)}
+                aria-label="關閉資源預覽"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+            <div className="asset-preview-stage">
+              {assetPreview.kind === "video" ? (
+                <video src={assetUrl(assetPreview)} controls playsInline preload="metadata">
+                  <track kind="captions" />
+                </video>
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={assetUrl(assetPreview)} alt={assetPreview.name} />
+              )}
+            </div>
+            <div className="asset-preview-footer">
+              <div className="asset-preview-meta">
+                <div>
+                  <span className="asset-preview-meta-label">資料夾</span>
+                  <strong>minimax-h3-local/{assetPreview.root}</strong>
+                </div>
+                <div>
+                  <span className="asset-preview-meta-label">檔案資訊</span>
+                  <strong>{formatBytes(assetPreview.size)} · {formatTime(assetPreview.modified)}</strong>
+                </div>
+              </div>
+              <div className="asset-preview-actions">
+                <a
+                  className="outline-button preview-download-button"
+                  href={assetDownloadUrl(assetPreview)}
+                  download={assetFileName(assetPreview)}
+                >
+                  <Icon name="download" /> 下載資源
+                </a>
+                <button
+                  type="button"
+                  className="preview-use-button"
+                  onClick={() => {
+                    applyAssetToWorkspace(assetPreview);
+                    setAssetPreview(null);
+                  }}
+                >
+                  <Icon name="check" /> 套用到工作台
+                </button>
+              </div>
+            </div>
+            <p className="asset-preview-hint">按 Esc 或右上角的關閉按鈕即可關閉預覽。</p>
+          </section>
+        </div>
+      )}
 
       {toast && (
         <div className={"toast toast-" + toast.tone} role="status">

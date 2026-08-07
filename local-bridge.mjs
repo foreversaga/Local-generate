@@ -818,7 +818,7 @@ async function route(req, res) {
       ...jsonHeaders(),
       "Content-Type": mimeFor(relativeName),
       "Content-Length": stat.size,
-      "Content-Disposition": "inline; filename=\"" + path.basename(relativeName).replace(/"/g, "") + "\"",
+      "Content-Disposition": (requestUrl.searchParams.get("download") === "1" ? "attachment" : "inline") + "; filename=\"" + path.basename(relativeName).replace(/"/g, "") + "\"",
     });
     createReadStream(fullPath).pipe(res);
     return;
