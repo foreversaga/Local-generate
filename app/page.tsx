@@ -30,6 +30,7 @@ type Health = {
   };
   paths: {
     h3Root: string;
+    comfyRoot: string;
     input: string;
     output: string;
   };
@@ -173,6 +174,10 @@ function isActiveJob(job: Job) {
   return ["queued", "running", "cancelling"].includes(job.status);
 }
 
+function isFinishedJob(job: Job) {
+  return ["completed", "failed", "cancelled"].includes(job.status);
+}
+
 function assetUrl(asset: Asset) {
   return BRIDGE_URL + asset.url;
 }
@@ -245,6 +250,7 @@ export default function Home() {
   const [renderBatchSize, setRenderBatchSize] = useState(0);
   const [renderSubmitting, setRenderSubmitting] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const renderJobsRef = useRef<Job[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
 
@@ -254,7 +260,10 @@ export default function Home() {
     [assets, assetFilter],
   );
 
-  const activeJob = renderJobs.find(isActiveJob) || null;
+  const activeJob =
+    renderJobs.find((item) => item.status === "running") ||
+    renderJobs.find(isActiveJob) ||
+    null;
   const outputAsset = [...renderJobs]
     .filter((item) => item.output)
     .sort((left, right) => String(right.finishedAt || "").localeCompare(String(left.finishedAt || "")))[0]
@@ -263,6 +272,8 @@ export default function Home() {
     .filter(isActiveJob)
     .map((item) => item.id);
   const activeRenderJobKey = activeRenderJobIds.join(",");
+  const renderJobIds = renderJobs.map((item) => item.id);
+  const renderJobKey = renderJobIds.join(",");
   const inputAssets = assets.filter((asset) => asset.root === "input");
   const outputAssets = assets.filter((asset) => asset.root === "output");
   const filteredInputAssets = filteredAssets.filter((asset) => asset.root === "input");
@@ -291,15 +302,23 @@ export default function Home() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!activeRenderJobKey) return;
+    renderJobsRef.current = renderJobs;
+  }, [renderJobs]);
+
+  useEffect(() => {
+    if (!activeRenderJobKey || !renderJobKey) return;
+    const trackedRenderJobIds = renderJobIds;
     const timer = window.setInterval(async () => {
       try {
         const response = await fetch(BRIDGE_URL + "/api/jobs");
         if (!response.ok) return;
         const payload = (await response.json()) as { jobs?: Job[] };
-        const tracked = (payload.jobs || []).filter((item) => activeRenderJobIds.includes(item.id));
+        // Keep polling every submitted job, including completed ones. The
+        // active-only list used to drop finished jobs and under-count batches.
+        const tracked = (payload.jobs || []).filter((item) => trackedRenderJobIds.includes(item.id));
         if (!tracked.length) return;
 
+        const previousJobs = renderJobsRef.current;
         const updates = new Map(tracked.map((item) => [item.id, item]));
         setRenderJobs((current) => current.map((item) => updates.get(item.id) || item));
         setHistory((current) => {
@@ -309,23 +328,21 @@ export default function Home() {
         });
 
         const newlyCompleted = tracked.some(
-          (item) => item.status === "completed" && !renderJobs.some((current) => current.id === item.id && current.status === "completed"),
+          (item) => item.status === "completed" && !previousJobs.some((current) => current.id === item.id && current.status === "completed"),
         );
         if (newlyCompleted) void refreshAssets();
 
-        const allSubmitted = !renderSubmitting && renderBatchSize > 0 && renderJobs.length >= renderBatchSize;
-        const allFinished = allSubmitted && activeRenderJobIds.every((id) => {
-          const item = tracked.find((candidate) => candidate.id === id);
-          return item && ["completed", "failed", "cancelled"].includes(item.status);
-        });
+        const allSubmitted = !renderSubmitting && renderBatchSize > 0 && trackedRenderJobIds.length >= renderBatchSize;
+        const allFinished = allSubmitted && tracked.length >= renderBatchSize && tracked.every(isFinishedJob);
         if (allFinished) {
+          const total = renderBatchSize;
+          const completedCount = tracked.filter((item) => item.status === "completed").length;
           setRenderBusy(false);
           setRenderSubmitting(false);
           setRenderBatchSize(0);
-          const completedCount = tracked.filter((item) => item.status === "completed").length;
           showToast(
-            `批次完成：${completedCount}/${renderBatchSize} 部影片已完成。`,
-            completedCount === renderBatchSize ? "success" : "info",
+            `批次完成：${completedCount}/${total} 部影片已完成。`,
+            completedCount === total ? "success" : "info",
           );
         }
       } catch {
@@ -333,7 +350,7 @@ export default function Home() {
       }
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [activeRenderJobKey, renderBatchSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeRenderJobKey, renderJobKey, renderBatchSize, renderSubmitting]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!assetPreview) return;
@@ -394,8 +411,12 @@ export default function Home() {
       if (activeJobs.length) {
         const activeBatchKeys = new Set(activeJobs.map((item) => item.batchId || item.id));
         const trackedJobs = jobs.filter((item) => activeBatchKeys.has(item.batchId || item.id));
+        const restoredBatchSize = Math.max(
+          trackedJobs.length,
+          ...trackedJobs.map((item) => item.batchTotal || 1),
+        );
         setRenderJobs(trackedJobs);
-        setRenderBatchSize(trackedJobs.length || activeJobs.length);
+        setRenderBatchSize(restoredBatchSize || activeJobs.length);
         setRenderSubmitting(false);
         setRenderBusy(true);
         return;
@@ -822,7 +843,7 @@ export default function Home() {
               </div>
               <div className="system-path">
                 <span className="status-dot is-on" />
-                <span>{health?.paths.h3Root || "minimax-h3-local"}</span>
+                <span>{health?.paths.comfyRoot || "ComfyUI"}</span>
               </div>
             </div>
           </section>
@@ -1166,7 +1187,7 @@ export default function Home() {
               </div>
               <div className="media-footnote">
                 <Icon name="folder" />
-                <span>可從資源庫選取檔案。輸入檔會放在 <code>minimax-h3-local/input</code>。</span>
+                <span>可從資源庫選取檔案。輸入檔會直接放在 <code>ComfyUI/input</code>。</span>
               </div>
             </div>
 
@@ -1302,7 +1323,7 @@ export default function Home() {
           <section className="bottom-row">
             <div className="local-path-card">
               <span className="section-code">LOCAL STORAGE</span>
-              <div className="path-row"><span className="path-dot" /><span>{health?.paths.output || "minimax-h3-local/output"}</span><Icon name="folder" /></div>
+              <div className="path-row"><span className="path-dot" /><span>{health?.paths.output || "ComfyUI/output"}</span><Icon name="folder" /></div>
             </div>
             <div className="history-card">
               <span className="section-code">RECENT JOBS</span>
@@ -1363,7 +1384,7 @@ export default function Home() {
               <div className="asset-preview-meta">
                 <div>
                   <span className="asset-preview-meta-label">資料夾</span>
-                  <strong>minimax-h3-local/{assetPreview.root}</strong>
+                  <strong>ComfyUI/{assetPreview.root}</strong>
                 </div>
                 <div>
                   <span className="asset-preview-meta-label">檔案資訊</span>

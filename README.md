@@ -37,4 +37,4 @@ Ollama：127.0.0.1:11434
 - 上傳與預覽圖片、影片、輸出 MP4
 - 生成進度、取消工作與歷史紀錄
 
-資料位置：`minimax-h3-local/input` 與 `minimax-h3-local/output`。
+網頁資源位置：ComfyUI 的 `input` 與 `output` 資料夾；上傳、預覽與生成結果都直接使用這兩個資料夾，不再在 `minimax-h3-local` 內建立副本。

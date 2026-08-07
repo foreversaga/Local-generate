@@ -10,15 +10,18 @@ const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
   process.env.MINIMAX_H3_ROOT || path.join(PROJECT_ROOT, "..", "minimax-h3-local"),
 );
-const INPUT_ROOT = path.join(H3_ROOT, "input");
-const OUTPUT_ROOT = path.join(H3_ROOT, "output");
+const COMFY_ROOT = path.resolve(
+  process.env.COMFYUI_ROOT || path.join(H3_ROOT, "..", "ComfyUI"),
+);
+const INPUT_ROOT = path.join(COMFY_ROOT, "input");
+const OUTPUT_ROOT = path.join(COMFY_ROOT, "output");
 const LOG_ROOT = path.resolve(
   process.env.MINIMAX_H3_LOGS_ROOT || path.join(PROJECT_ROOT, "logs"),
 );
 const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
-const PYTHON = path.join(H3_ROOT, "..", "ComfyUI", "venv", "Scripts", "python.exe");
+const PYTHON = path.join(COMFY_ROOT, "venv", "Scripts", "python.exe");
 const COMFY_URL = (process.env.COMFY_URL || "http://127.0.0.1:8188").replace(/\/$/, "");
 const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
 const MAX_BODY_BYTES = 260 * 1024 * 1024;
@@ -98,8 +101,23 @@ function updateJobTiming(job) {
   job.etaMs = estimate.durationMs === null
     ? null
     : Math.max(0, estimate.durationMs - elapsedMs);
-  if (job.status === "running" && estimate.durationMs) {
-    job.progress = Math.min(95, Math.max(2, (elapsedMs / estimate.durationMs) * 100));
+  if (job.status !== "running") return;
+
+  if (estimate.durationMs) {
+    // Keep a real ComfyUI progress event from moving backwards when the
+    // timing estimate is refreshed between two websocket updates.
+    job.progress = Math.min(95, Math.max(job.progress, 2, (elapsedMs / estimate.durationMs) * 100));
+    return;
+  }
+
+  // The generator does not emit a progress event while it is starting,
+  // loading the workflow, or waiting for ComfyUI's first execution event.
+  // Advance through a clearly-labeled warm-up band so a live job does not
+  // look frozen at the initial placeholder value of 2%.
+  const warmupProgress = Math.min(18, 8 + Math.max(0, elapsedMs - 1000) / 1000);
+  job.progress = Math.max(job.progress, warmupProgress);
+  if (job.progress < 20 && ["正在啟動生成…", "等待 ComfyUI 回報進度…"].includes(job.stage)) {
+    job.stage = "等待 ComfyUI 回報進度…";
   }
 }
 
@@ -254,7 +272,9 @@ async function listAssets(rootName) {
 }
 
 async function resolveInputMedia(name, expectedKind) {
-  const cleanName = path.basename(String(name || ""));
+  const cleanName = String(name || "")
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "");
   if (!cleanName) throw new Error("缺少參考媒體檔名。");
   const candidates = [
     { root: INPUT_ROOT, name: cleanName },
@@ -316,6 +336,7 @@ async function health() {
     comfy: { online: Boolean(comfy), url: COMFY_URL, devices },
     paths: {
       h3Root: H3_ROOT,
+      comfyRoot: COMFY_ROOT,
       input: INPUT_ROOT,
       output: OUTPUT_ROOT,
     },
@@ -424,18 +445,29 @@ function updateJobFromLine(job, line) {
   if (progress) {
     const current = Number(progress[1]);
     const maximum = Math.max(1, Number(progress[2]));
-    job.progress = Math.min(94, 5 + (current / maximum) * 86);
+    // Reserve the first 20% for input preparation and ComfyUI queueing;
+    // map the actual node progress into the remaining generation band.
+    job.progress = Math.min(94, Math.max(job.progress, 20 + (current / maximum) * 72));
     job.stage = job.mode === "replace" ? "逐段生成影片…" : "生成影格…";
   }
   const node = line.match(/node=([^\s]+)/i);
-  if (node) job.stage = "ComfyUI / " + node[1];
+  if (node) {
+    job.stage = "ComfyUI / " + node[1];
+    job.progress = Math.min(94, Math.max(job.progress, 20));
+  }
   const chunk = line.match(/chunk=(\d+)/i);
   if (chunk) {
     job.stage = "處理影片段落 " + chunk[1] + "…";
-    job.progress = Math.min(94, Math.max(job.progress, 12 + Number(chunk[1]) * 7));
+    job.progress = Math.min(94, Math.max(job.progress, 20 + Number(chunk[1]) * 7));
   }
-  if (/upload/i.test(line)) job.stage = "上傳參考媒體…";
-  if (/queued|prompt_id/i.test(line)) job.stage = "已送入 ComfyUI 佇列";
+  if (/upload/i.test(line)) {
+    job.stage = "上傳參考媒體…";
+    job.progress = Math.max(job.progress, 12);
+  }
+  if (/queued|prompt_id/i.test(line)) {
+    job.stage = "已送入 ComfyUI 佇列";
+    job.progress = Math.max(job.progress, 19);
+  }
 }
 
 function attachProcessOutput(job, stream, isError = false) {
@@ -497,10 +529,13 @@ function pumpGenerationQueue() {
   entry.job.status = "running";
   entry.job.executionStartedAt = now();
   entry.job.executionStartedMs = Date.now();
+  entry.job.progress = Math.max(entry.job.progress, 8);
   entry.job.stage = "正在啟動生成…";
   try {
     const actualChild = spawn(entry.command, entry.args, entry.options);
     entry.child.actualChild = actualChild;
+    entry.job.progress = Math.max(entry.job.progress, 9);
+    entry.job.stage = "等待 ComfyUI 回報進度…";
     actualChild.stdout.pipe(entry.child.stdout);
     actualChild.stderr.pipe(entry.child.stderr);
     actualChild.on("error", (error) => entry.child.emit("error", error));
@@ -657,7 +692,7 @@ async function startGeneration(payload) {
     } else if (code === 0 && outputExists) {
       job.status = "completed";
       job.progress = 100;
-      job.stage = "完成，影片已寫入 output";
+      job.stage = "完成，影片已寫入 ComfyUI output";
       try {
         job.output = await toAsset("output", outputName);
       } catch {
