@@ -104,6 +104,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /source-video preview frame/);
   assert.match(bridge, /hasLastImageGeneratorFlag/);
   assert.match(bridge, /--last-image/);
+  assert.match(bridge, /const STUDIO_OUTPUT_ROOT = path\.join\(PROJECT_ROOT, "output"\)/);
+  assert.match(bridge, /job\.status === "running" && Number\.isFinite\(job\.executionStartedMs\)/);
+  assert.match(bridge, /job\.elapsedMs = Number\.isFinite\(job\.executionStartedMs\)/);
   assert.match(bridge, /T2VA text-to-video/);
   assert.doesNotMatch(page, /127\.0\.0\.1:8787|NEXT_PUBLIC_BRIDGE_URL/);
   assert.doesNotMatch(vite, /H3_BRIDGE_HOST|H3_BRIDGE_PORT/);

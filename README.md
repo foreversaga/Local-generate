@@ -54,4 +54,4 @@ Ollama：127.0.0.1:11434
 - 上傳與預覽圖片、影片、輸出 MP4
 - 生成進度、取消工作與歷史紀錄
 
-網頁資源位置：ComfyUI 的 `input` 與 `output` 資料夾；上傳、預覽與生成結果都直接使用這兩個資料夾，不再在 `minimax-h3-local` 內建立副本。
+網頁資源位置：上傳仍使用 ComfyUI 的 `input`；資源庫會同時讀取 ComfyUI 的 `output` 與專案 `output`。Web/API 下載的生成副本會寫入專案 `output`，避免 Windows 受限環境無法寫入 ComfyUI `output` 根目錄；不會在 `minimax-h3-local` 內建立副本。

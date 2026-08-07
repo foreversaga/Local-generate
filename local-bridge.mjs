@@ -15,6 +15,7 @@ const COMFY_ROOT = path.resolve(
 );
 const INPUT_ROOT = path.join(COMFY_ROOT, "input");
 const OUTPUT_ROOT = path.join(COMFY_ROOT, "output");
+const STUDIO_OUTPUT_ROOT = path.join(PROJECT_ROOT, "output");
 const LOG_ROOT = path.resolve(
   process.env.MINIMAX_H3_LOGS_ROOT || path.join(PROJECT_ROOT, "logs"),
 );
@@ -95,6 +96,9 @@ function timingEstimate(job) {
 }
 
 function elapsedMilliseconds(job) {
+  if (job.status === "running" && Number.isFinite(job.executionStartedMs)) {
+    return Math.max(0, Date.now() - job.executionStartedMs);
+  }
   if (Number.isFinite(job.elapsedMs)) return Math.max(0, job.elapsedMs);
   if (!Number.isFinite(job.executionStartedMs)) return 0;
   return Math.max(0, Date.now() - job.executionStartedMs);
@@ -246,8 +250,7 @@ async function walkMedia(root, prefix = "") {
 }
 
 async function toAsset(rootName, relativeName) {
-  const root = rootName === "input" ? INPUT_ROOT : OUTPUT_ROOT;
-  const fullPath = safePath(root, relativeName);
+  const fullPath = await resolveMediaPath(rootName, relativeName);
   const stat = await fs.stat(fullPath);
   const kind = classifyFile(relativeName);
   if (!kind) throw new Error("這不是支援的圖片或影片檔案。");
@@ -265,18 +268,44 @@ async function toAsset(rootName, relativeName) {
 async function listAssets(rootName) {
   const roots = rootName === "all" ? ["input", "output"] : [rootName];
   const all = [];
+  const seen = new Set();
   for (const currentRoot of roots) {
-    const root = currentRoot === "input" ? INPUT_ROOT : OUTPUT_ROOT;
-    const files = await walkMedia(root);
-    for (const file of files) {
-      try {
-        all.push(await toAsset(currentRoot, file.relativeName));
-      } catch {
-        // A file can disappear while the directory is being scanned.
+    for (const root of mediaRoots(currentRoot)) {
+      const files = await walkMedia(root);
+      for (const file of files) {
+        const key = currentRoot + ":" + file.relativeName;
+        if (seen.has(key)) continue;
+        try {
+          all.push(await toAsset(currentRoot, file.relativeName));
+          seen.add(key);
+        } catch {
+          // A file can disappear while the directory is being scanned.
+        }
       }
     }
   }
   return all.sort((left, right) => right.modified.localeCompare(left.modified)).slice(0, 100);
+}
+
+function mediaRoots(rootName) {
+  return rootName === "input"
+    ? [INPUT_ROOT]
+    : [STUDIO_OUTPUT_ROOT, OUTPUT_ROOT];
+}
+
+async function resolveMediaPath(rootName, relativeName) {
+  const cleanName = String(relativeName || "").replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!cleanName) throw new Error("缺少媒體檔名。");
+  for (const root of mediaRoots(rootName)) {
+    const fullPath = safePath(root, cleanName);
+    try {
+      const stat = await fs.stat(fullPath);
+      if (stat.isFile()) return fullPath;
+    } catch {
+      // Try the next media root.
+    }
+  }
+  throw new Error("找不到媒體檔案：" + cleanName);
 }
 
 async function resolveInputMedia(name, expectedKind) {
@@ -286,7 +315,7 @@ async function resolveInputMedia(name, expectedKind) {
   if (!cleanName) throw new Error("缺少參考媒體檔名。");
   const candidates = [
     { root: INPUT_ROOT, name: cleanName },
-    { root: OUTPUT_ROOT, name: cleanName },
+    ...mediaRoots("output").map((root) => ({ root, name: cleanName })),
   ];
   for (const candidate of candidates) {
     const fullPath = safePath(candidate.root, candidate.name);
@@ -557,7 +586,9 @@ async function allocateOutputPath(requestedName) {
   for (let index = 0; index < 1000; index += 1) {
     const suffix = index === 0 ? "" : "-" + index;
     const candidateName = parsed.name + suffix + parsed.ext;
-    const candidatePath = safePath(OUTPUT_ROOT, candidateName);
+    // Keep the downloaded copy in the web project's writable output folder.
+    // ComfyUI's native artifact remains under its own output directory.
+    const candidatePath = safePath(STUDIO_OUTPUT_ROOT, candidateName);
     if (reservedOutputPaths.has(candidatePath)) continue;
     if (await fs.stat(candidatePath).catch(() => null)) continue;
     reservedOutputPaths.add(candidatePath);
@@ -723,7 +754,7 @@ async function startGeneration(payload) {
   }
   const requestedOutputName = outputFileName(payload.outputName);
   await fs.mkdir(INPUT_ROOT, { recursive: true });
-  await fs.mkdir(OUTPUT_ROOT, { recursive: true });
+  await fs.mkdir(STUDIO_OUTPUT_ROOT, { recursive: true });
   await fs.mkdir(LOG_ROOT, { recursive: true });
 
   let inputImagePath = null;
@@ -871,10 +902,10 @@ async function startGeneration(payload) {
       job.stage = "生成失敗";
       if (!job.error) job.error = "生成程序結束，代碼：" + String(code);
     }
+    job.elapsedMs = Number.isFinite(job.executionStartedMs)
+      ? Math.max(0, Date.now() - job.executionStartedMs)
+      : elapsedMilliseconds(job);
     if (job.status === "completed") {
-      job.elapsedMs = Number.isFinite(job.executionStartedMs)
-        ? Math.max(0, Date.now() - job.executionStartedMs)
-        : elapsedMilliseconds(job);
       recordTimingSample(job, job.elapsedMs);
       job.etaMs = 0;
     }
@@ -1004,8 +1035,7 @@ async function route(req, res) {
       sendError(res, 400, "缺少媒體路徑。");
       return;
     }
-    const root = rootName === "input" ? INPUT_ROOT : OUTPUT_ROOT;
-    const fullPath = safePath(root, relativeName);
+    const fullPath = await resolveMediaPath(rootName, relativeName);
     const kind = classifyFile(relativeName);
     if (!kind) {
       sendError(res, 415, "不支援的媒體格式。");
