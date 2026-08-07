@@ -352,7 +352,7 @@ function cleanOllamaPrompt(value) {
 }
 
 function promptMode(value) {
-  return ["t2v", "i2v", "replace"].includes(value) ? value : "t2v";
+  return ["t2v", "i2v", "fl2v", "l2v", "replace"].includes(value) ? value : "t2v";
 }
 
 function promptSystem(mode, durationSeconds, hasVisualReference) {
@@ -367,6 +367,42 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
         ? "Inspect the attached first-frame reference and start [Shot 1] from it; preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, "
         : "Start [Shot 1] from the supplied first-frame reference, preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, ") +
       "then describe continuous forward development. Use later shot timestamps only for real cuts, keep all timing within " +
+      durationSeconds.toFixed(2) +
+      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
+      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
+      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
+    );
+  }
+
+  if (mode === "fl2v") {
+    return (
+      "You are a professional MiniMax H3 FL2VA video prompt engineer following the h3-prompt-writing guide. " +
+      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
+      "The first line must be exactly: How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) aligns with the " +
+      durationSeconds.toFixed(2) +
+      "-second mark of the target video. " +
+      "Then add one blank line and exactly these three fields in this order: " +
+      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
+      "Treat Picture 1 as the opening frame and Picture 2 as the ending frame. Describe a continuous path between them, preserve identity and scene anchors, and make the final [Shot N] reach Picture 2. " +
+      "Prefer one shot unless the user explicitly requests cuts. Keep all timing within " +
+      durationSeconds.toFixed(2) +
+      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
+      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
+      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
+    );
+  }
+
+  if (mode === "l2v") {
+    return (
+      "You are a professional MiniMax H3 L2VA video prompt engineer following the h3-prompt-writing guide. " +
+      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
+      "The first line must be exactly: How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the " +
+      durationSeconds.toFixed(2) +
+      "-second mark of the target video. " +
+      "Then add one blank line and exactly these three fields in this order: " +
+      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
+      "Treat Picture 1 as the final frame only. Infer a plausible preceding state, describe the transition and gradual convergence, and land on Picture 1 in the final [Shot N]. " +
+      "Keep all timing within " +
       durationSeconds.toFixed(2) +
       " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
       "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
@@ -401,6 +437,8 @@ async function createPrompt(payload) {
   const mode = promptMode(payload.mode);
   const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
   const referenceImageName = String(payload.referenceImageName || "").trim();
+  const firstFrameName = String(payload.firstFrameName || "").trim();
+  const lastFrameName = String(payload.lastFrameName || "").trim();
   const sourceVideoName = String(payload.sourceVideoName || "").trim();
   const visualInputs = Array.isArray(payload.images)
     ? payload.images
@@ -412,11 +450,24 @@ async function createPrompt(payload) {
     : [];
   const negativePrompt = String(payload.negativePrompt || "").trim();
   if (!brief) throw new Error("請先輸入一段畫面想法。");
+  const modeLabel = {
+    t2v: "T2VA text-to-video",
+    i2v: "I2VA image-to-video",
+    fl2v: "FL2VA first-and-last-frame video",
+    l2v: "L2VA last-frame video",
+    replace: "Wan2.2 Animate video replacement",
+  }[mode];
   const context = [
-    `Input mode: ${mode === "t2v" ? "T2VA text-to-video" : mode === "i2v" ? "I2VA image-to-video" : "Wan2.2 Animate video replacement"}.`,
+    `Input mode: ${modeLabel}.`,
     `Target duration: ${durationSeconds.toFixed(2)} seconds.`,
     mode === "i2v"
       ? `A reference image is supplied and must be treated as <Picture 1> at the first frame${referenceImageName ? ` (asset: ${referenceImageName})` : ""}.`
+      : "",
+    mode === "fl2v"
+      ? `Picture 1 is the first frame${firstFrameName ? ` (asset: ${firstFrameName})` : ""}; Picture 2 is the last frame${lastFrameName ? ` (asset: ${lastFrameName})` : ""}. The generated path must connect them continuously.`
+      : "",
+    mode === "l2v"
+      ? `Picture 1 is the final frame${lastFrameName ? ` (asset: ${lastFrameName})` : ""}; infer the preceding state and land on it at the end.`
       : "",
     mode === "replace" && sourceVideoName
       ? `The source video asset is ${sourceVideoName}; preserve its motion and scene continuity.`
@@ -619,7 +670,7 @@ function pumpGenerationQueue() {
 
 async function startGeneration(payload) {
   await timingHistoryReady;
-  const mode = ["t2v", "i2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
+  const mode = ["t2v", "i2v", "fl2v", "l2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
   const prompt = String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
@@ -634,8 +685,14 @@ async function startGeneration(payload) {
   await fs.mkdir(LOG_ROOT, { recursive: true });
 
   let inputImagePath = null;
+  let lastImagePath = null;
   let inputVideoPath = null;
-  if (mode === "i2v") inputImagePath = await resolveInputMedia(payload.inputImageName, "image");
+  if (mode === "i2v" || mode === "fl2v") {
+    inputImagePath = await resolveInputMedia(payload.inputImageName, "image");
+  }
+  if (mode === "fl2v" || mode === "l2v") {
+    lastImagePath = await resolveInputMedia(payload.lastImageName, "image");
+  }
   if (mode === "replace") {
     inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
     inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
@@ -729,6 +786,7 @@ async function startGeneration(payload) {
       COMFY_URL,
     ];
     if (inputImagePath) args.push("--input-image", inputImagePath);
+    if (lastImagePath) args.push("--last-image", lastImagePath);
   }
 
   const childEnv = {

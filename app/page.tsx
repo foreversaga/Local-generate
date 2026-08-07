@@ -4,7 +4,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const BRIDGE_URL = "/app";
 
-type Mode = "t2v" | "i2v" | "replace";
+type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "replace";
 type AssetKind = "image" | "video";
 type Asset = {
   name: string;
@@ -282,6 +282,7 @@ export default function Home() {
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
+  const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
   const [sourceVideo, setSourceVideo] = useState<Asset | null>(null);
   const [mode, setMode] = useState<Mode>("t2v");
   const [promptBrief, setPromptBrief] = useState("");
@@ -305,6 +306,7 @@ export default function Home() {
   const [toast, setToast] = useState<Toast | null>(null);
   const renderJobsRef = useRef<Job[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
 
   const filteredAssets = useMemo(
@@ -538,6 +540,18 @@ export default function Home() {
             data: await assetToPromptImage(referenceImage),
           });
         }
+        if (mode === "fl2v" && referenceImage?.kind === "image") {
+          promptImages.push({
+            role: "first_frame",
+            data: await assetToPromptImage(referenceImage),
+          });
+        }
+        if ((mode === "fl2v" || mode === "l2v") && lastFrameImage?.kind === "image") {
+          promptImages.push({
+            role: "last_frame",
+            data: await assetToPromptImage(lastFrameImage),
+          });
+        }
         if (mode === "replace" && sourceVideo?.kind === "video") {
           promptImages.push({
             role: "source_video_first_frame",
@@ -555,6 +569,8 @@ export default function Home() {
           mode,
           duration,
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          firstFrameName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           images: promptImages,
         }),
@@ -587,7 +603,7 @@ export default function Home() {
     });
   }
 
-  async function uploadFile(file: File, target: "image" | "video") {
+  async function uploadFile(file: File, target: "image" | "lastFrame" | "video") {
     try {
         showToast("正在上傳 " + file.name + "…");
       const response = await fetch(BRIDGE_URL + "/api/assets/upload", {
@@ -604,6 +620,7 @@ export default function Home() {
         throw new Error(payload.error || "上傳失敗");
       }
       if (target === "image") setReferenceImage(payload.asset);
+      if (target === "lastFrame") setLastFrameImage(payload.asset);
       if (target === "video") setSourceVideo(payload.asset);
       setSelectedAsset(payload.asset);
       await refreshAssets();
@@ -615,7 +632,7 @@ export default function Home() {
 
   function onFileChange(
     event: ChangeEvent<HTMLInputElement>,
-    target: "image" | "video",
+    target: "image" | "lastFrame" | "video",
   ) {
     const file = event.target.files?.[0];
     if (file) void uploadFile(file, target);
@@ -625,7 +642,8 @@ export default function Home() {
   function applyAssetToWorkspace(asset: Asset) {
     setSelectedAsset(asset);
     if (asset.kind === "image") {
-      setReferenceImage(asset);
+      if (mode === "l2v") setLastFrameImage(asset);
+      else setReferenceImage(asset);
       showToast("已選取參考圖片：" + asset.name);
     } else {
       setSourceVideo(asset);
@@ -644,7 +662,15 @@ export default function Home() {
       return;
     }
     if (mode === "i2v" && !referenceImage) {
-      showToast("參考圖生片需要一張圖片。", "error");
+      showToast("I2VA 需要參考圖片。", "error");
+      return;
+    }
+    if (mode === "fl2v" && (!referenceImage || !lastFrameImage)) {
+      showToast("FL2VA 需要首幀與尾幀圖片。", "error");
+      return;
+    }
+    if (mode === "l2v" && !lastFrameImage) {
+      showToast("L2VA 需要尾幀圖片。", "error");
       return;
     }
     if (mode === "replace" && (!referenceImage || !sourceVideo)) {
@@ -663,6 +689,8 @@ export default function Home() {
       return;
     }
     const count = Math.min(20, Math.max(1, Math.round(renderCount || 1)));
+    const firstFrameName = referenceImage?.kind === "image" ? referenceImage.name : "";
+    const lastFrameName = lastFrameImage?.kind === "image" ? lastFrameImage.name : "";
     const batchId = count > 1
       ? `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
       : "";
@@ -682,7 +710,8 @@ export default function Home() {
                 mode,
                 prompt,
                 negativePrompt,
-                inputImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+                inputImageName: mode === "i2v" || mode === "fl2v" ? firstFrameName : "",
+                lastImageName: mode === "fl2v" || mode === "l2v" ? lastFrameName : "",
                 inputVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
                 referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
                 modelProfile,
@@ -731,7 +760,8 @@ export default function Home() {
           mode,
           prompt,
           negativePrompt,
-          inputImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          inputImageName: mode === "i2v" || mode === "fl2v" ? firstFrameName : "",
+          lastImageName: mode === "fl2v" || mode === "l2v" ? lastFrameName : "",
           inputVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
           modelProfile,
@@ -772,9 +802,15 @@ export default function Home() {
   }
 
   const modeLabel =
-    mode === "t2v" ? "文字生片" : mode === "i2v" ? "參考圖生片" : "影片替換";
+    mode === "t2v" ? "文字生片" :
+      mode === "i2v" ? "參考圖生片" :
+        mode === "fl2v" ? "首尾幀生片" :
+          mode === "l2v" ? "尾幀生片" : "影片替換";
   const promptFormatLabel =
-    mode === "t2v" ? "T2VA" : mode === "i2v" ? "I2VA" : "Wan Animate";
+    mode === "t2v" ? "T2VA" :
+      mode === "i2v" ? "I2VA" :
+        mode === "fl2v" ? "FL2VA" :
+          mode === "l2v" ? "L2VA" : "Wan Animate";
   const ollamaOnline = Boolean(health?.ollama.online);
   const comfyOnline = Boolean(health?.comfy.online);
   const visibleModels = health?.ollama.models || [];
@@ -808,6 +844,16 @@ export default function Home() {
     { label: mode === "replace" ? "逐段生成與接續" : "生成影格", done: Boolean(activeJob && activeJob.progress > 48) },
     { label: "封裝 MP4", done: Boolean(activeJob && activeJob.progress > 88) },
   ];
+  const primaryFrameAsset = mode === "l2v" ? lastFrameImage : referenceImage;
+  const primaryFrameInputRef = mode === "l2v" ? lastFrameInputRef : imageInputRef;
+  const primaryFrameTarget = mode === "l2v" ? "lastFrame" : "image";
+  const primaryFrameLabel = mode === "l2v"
+    ? "尾幀圖片"
+    : mode === "fl2v"
+      ? "首幀圖片"
+      : mode === "replace"
+        ? "替換人物參考圖"
+        : "參考圖片（可選）";
 
   return (
     <main className="studio-shell">
@@ -1032,6 +1078,22 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
+                  className={"mode-button " + (mode === "fl2v" ? "is-selected" : "")}
+                  onClick={() => updateMode("fl2v")}
+                >
+                  <span className="mode-icon"><Icon name="image" /></span>
+                  <span><strong>首尾幀生片</strong><small>First + Last Frame</small></span>
+                </button>
+                <button
+                  type="button"
+                  className={"mode-button " + (mode === "l2v" ? "is-selected" : "")}
+                  onClick={() => updateMode("l2v")}
+                >
+                  <span className="mode-icon"><Icon name="image" /></span>
+                  <span><strong>尾幀生片</strong><small>Last Frame → Video</small></span>
+                </button>
+                <button
+                  type="button"
                   className={"mode-button " + (mode === "replace" ? "is-selected" : "")}
                   onClick={() => updateMode("replace")}
                 >
@@ -1215,29 +1277,41 @@ export default function Home() {
                 </div>
                 <span className="media-mode-label">{modeLabel}</span>
               </div>
-              <div className={"reference-grid " + (mode === "replace" ? "is-replace" : "")}>
+              <div className={"reference-grid " + (mode === "replace" || mode === "fl2v" ? "is-replace" : "")}>
                 <div className="reference-slot">
                   <div className="slot-topline">
-                    <span className="field-label">{mode === "replace" ? "替換人物參考圖" : "參考圖片（可選）"}</span>
+                    <span className="field-label">{primaryFrameLabel}</span>
                     <span className="slot-hint">IMAGE</span>
                   </div>
-                  {referenceImage ? (
+                  {primaryFrameAsset ? (
                     <div className="selected-media">
-                      <AssetThumb asset={referenceImage} />
+                      <AssetThumb asset={primaryFrameAsset} />
                       <div className="selected-media-info">
-                        <strong>{referenceImage.name}</strong>
-                        <span>{formatBytes(referenceImage.size)} · input</span>
+                        <strong>{primaryFrameAsset.name}</strong>
+                        <span>{formatBytes(primaryFrameAsset.size)} · input</span>
                       </div>
-                      <button type="button" onClick={() => setReferenceImage(null)} aria-label="移除參考圖片"><Icon name="close" /></button>
+                      <button
+                        type="button"
+                        onClick={() => mode === "l2v" ? setLastFrameImage(null) : setReferenceImage(null)}
+                        aria-label="移除參考圖片"
+                      >
+                        <Icon name="close" />
+                      </button>
                     </div>
                   ) : (
-                    <button type="button" className="drop-zone" onClick={() => imageInputRef.current?.click()}>
+                    <button type="button" className="drop-zone" onClick={() => primaryFrameInputRef.current?.click()}>
                       <span className="drop-icon"><Icon name="image" /></span>
                       <span><strong>拖曳或選擇圖片</strong><small>PNG, JPG, WEBP</small></span>
                       <span className="drop-plus"><Icon name="plus" /></span>
                     </button>
                   )}
-                  <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => onFileChange(event, "image")} />
+                  <input
+                    ref={primaryFrameInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    hidden
+                    onChange={(event) => onFileChange(event, primaryFrameTarget)}
+                  />
                 </div>
                 {mode === "replace" && (
                   <div className="reference-slot">
@@ -1262,6 +1336,31 @@ export default function Home() {
                       </button>
                     )}
                     <input ref={videoInputRef} type="file" accept="video/mp4,video/quicktime,video/webm" hidden onChange={(event) => onFileChange(event, "video")} />
+                  </div>
+                )}
+                {mode === "fl2v" && (
+                  <div className="reference-slot">
+                    <div className="slot-topline">
+                      <span className="field-label">尾幀圖片</span>
+                      <span className="slot-hint">IMAGE</span>
+                    </div>
+                    {lastFrameImage ? (
+                      <div className="selected-media">
+                        <AssetThumb asset={lastFrameImage} />
+                        <div className="selected-media-info">
+                          <strong>{lastFrameImage.name}</strong>
+                          <span>{formatBytes(lastFrameImage.size)} · input</span>
+                        </div>
+                        <button type="button" onClick={() => setLastFrameImage(null)} aria-label="移除尾幀圖片"><Icon name="close" /></button>
+                      </div>
+                    ) : (
+                      <button type="button" className="drop-zone" onClick={() => lastFrameInputRef.current?.click()}>
+                        <span className="drop-icon"><Icon name="image" /></span>
+                        <span><strong>選擇尾幀圖片</strong><small>PNG, JPG, WEBP</small></span>
+                        <span className="drop-plus"><Icon name="plus" /></span>
+                      </button>
+                    )}
+                    <input ref={lastFrameInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => onFileChange(event, "lastFrame")} />
                   </div>
                 )}
               </div>
