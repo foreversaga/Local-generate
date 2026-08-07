@@ -60,6 +60,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(vite, /forwardConsole:\s*false/);
   assert.match(vite, /disableRemoteDevHmr/);
   assert.match(page, /promptModelCatalog\.filter\(\(model\) => visibleModels\.includes\(model\.value\)\)/);
+  assert.match(page, /const VIDEO_PAGE_SIZE = 10/);
+  assert.match(page, /async function deleteCompletedVideo\(asset: Asset\)/);
+  assert.match(page, /method: "DELETE"/);
+  assert.match(page, /影片分頁/);
   assert.match(page, /影片數量/);
   assert.match(page, /batchSeed\(seed, index\)/);
   assert.match(page, /const activeJobs = jobs\.filter\(isActiveJob\)/);
@@ -79,6 +83,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /const COMFY_ROOT = path\.resolve\(/);
   assert.match(bridge, /const INPUT_ROOT = path\.join\(COMFY_ROOT, "input"\)/);
   assert.match(bridge, /const OUTPUT_ROOT = path\.join\(COMFY_ROOT, "output"\)/);
+  assert.match(bridge, /function mediaRoots\(rootName\)/);
+  assert.match(bridge, /: \[OUTPUT_ROOT\]/);
   assert.doesNotMatch(bridge, /const INPUT_ROOT = path\.join\(H3_ROOT, "input"\)/);
   assert.doesNotMatch(bridge, /const OUTPUT_ROOT = path\.join\(H3_ROOT, "output"\)/);
   assert.match(bridge, /job\.status = child\.started \? "running" : "queued"/);
@@ -104,7 +110,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /source-video preview frame/);
   assert.match(bridge, /hasLastImageGeneratorFlag/);
   assert.match(bridge, /--last-image/);
-  assert.match(bridge, /const STUDIO_OUTPUT_ROOT = path\.join\(PROJECT_ROOT, "output"\)/);
+  assert.match(bridge, /async function deleteOutputVideo\(relativeName\)/);
+  assert.match(bridge, /req\.method === "DELETE" && pathname === "\/api\/assets"/);
+  assert.doesNotMatch(bridge, /STUDIO_OUTPUT_ROOT/);
   assert.match(bridge, /job\.status === "running" && Number\.isFinite\(job\.executionStartedMs\)/);
   assert.match(bridge, /job\.elapsedMs = Number\.isFinite\(job\.executionStartedMs\)/);
   assert.match(bridge, /T2VA text-to-video/);
@@ -112,6 +120,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.doesNotMatch(vite, /H3_BRIDGE_HOST|H3_BRIDGE_PORT/);
   assert.doesNotMatch(packageJson, /npm run bridge|local-bridge\.mjs/);
   assert.match(readme, /8787/);
+  assert.match(readme, /ComfyUI\\input/);
+  assert.match(readme, /ComfyUI\\output/);
   assert.match(readme, /restart-web\.ps1/);
   assert.match(packageJson, /restart:web/);
   assert.match(restartScript, /Start-Process/);

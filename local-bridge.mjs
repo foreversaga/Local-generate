@@ -15,7 +15,6 @@ const COMFY_ROOT = path.resolve(
 );
 const INPUT_ROOT = path.join(COMFY_ROOT, "input");
 const OUTPUT_ROOT = path.join(COMFY_ROOT, "output");
-const STUDIO_OUTPUT_ROOT = path.join(PROJECT_ROOT, "output");
 const LOG_ROOT = path.resolve(
   process.env.MINIMAX_H3_LOGS_ROOT || path.join(PROJECT_ROOT, "logs"),
 );
@@ -290,7 +289,7 @@ async function listAssets(rootName) {
 function mediaRoots(rootName) {
   return rootName === "input"
     ? [INPUT_ROOT]
-    : [STUDIO_OUTPUT_ROOT, OUTPUT_ROOT];
+    : [OUTPUT_ROOT];
 }
 
 async function resolveMediaPath(rootName, relativeName) {
@@ -586,9 +585,7 @@ async function allocateOutputPath(requestedName) {
   for (let index = 0; index < 1000; index += 1) {
     const suffix = index === 0 ? "" : "-" + index;
     const candidateName = parsed.name + suffix + parsed.ext;
-    // Keep the downloaded copy in the web project's writable output folder.
-    // ComfyUI's native artifact remains under its own output directory.
-    const candidatePath = safePath(STUDIO_OUTPUT_ROOT, candidateName);
+    const candidatePath = safePath(OUTPUT_ROOT, candidateName);
     if (reservedOutputPaths.has(candidatePath)) continue;
     if (await fs.stat(candidatePath).catch(() => null)) continue;
     reservedOutputPaths.add(candidatePath);
@@ -754,7 +751,7 @@ async function startGeneration(payload) {
   }
   const requestedOutputName = outputFileName(payload.outputName);
   await fs.mkdir(INPUT_ROOT, { recursive: true });
-  await fs.mkdir(STUDIO_OUTPUT_ROOT, { recursive: true });
+  await fs.mkdir(OUTPUT_ROOT, { recursive: true });
   await fs.mkdir(LOG_ROOT, { recursive: true });
 
   let inputImagePath = null;
@@ -961,6 +958,35 @@ async function uploadAsset(payload) {
   return await toAsset("input", outputName);
 }
 
+async function deleteOutputVideo(relativeName) {
+  const cleanName = String(relativeName || "")
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "");
+  if (!cleanName || classifyFile(cleanName) !== "video") {
+    throw new Error("只能刪除 output 內的影片。");
+  }
+
+  const candidates = mediaRoots("output").map((root) => safePath(root, cleanName));
+  const existingPaths = [];
+  for (const candidate of candidates) {
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (stat?.isFile()) existingPaths.push(candidate);
+  }
+  if (!existingPaths.length) {
+    throw new Error("找不到要刪除的影片：" + cleanName);
+  }
+
+  for (const candidate of existingPaths) {
+    await fs.unlink(candidate);
+  }
+  return {
+    name: cleanName,
+    root: "output",
+    kind: "video",
+    deletedCount: existingPaths.length,
+  };
+}
+
 async function route(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, jsonHeaders());
@@ -981,6 +1007,16 @@ async function route(req, res) {
       return;
     }
     sendJson(res, 200, { assets: await listAssets(root) });
+    return;
+  }
+  if (req.method === "DELETE" && pathname === "/api/assets") {
+    const root = requestUrl.searchParams.get("root");
+    const relativeName = requestUrl.searchParams.get("name");
+    if (root !== "output" || !relativeName) {
+      sendError(res, 400, "只能刪除 output 內的影片。");
+      return;
+    }
+    sendJson(res, 200, { asset: await deleteOutputVideo(relativeName) });
     return;
   }
   if (req.method === "GET" && pathname === "/api/jobs") {

@@ -3,6 +3,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const BRIDGE_URL = "/app";
+const VIDEO_PAGE_SIZE = 10;
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type AssetKind = "image" | "video";
@@ -183,6 +184,10 @@ function assetUrl(asset: Asset) {
   return BRIDGE_URL + asset.url;
 }
 
+function isDeletableAsset(asset: Asset) {
+  return asset.root === "output" && asset.kind === "video";
+}
+
 function modelSupportsPromptImages(model: string) {
   const normalized = model.toLowerCase();
   if (normalized === "gemma3:1b") return false;
@@ -279,6 +284,8 @@ export default function Home() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [history, setHistory] = useState<Job[]>([]);
   const [assetFilter, setAssetFilter] = useState<"all" | AssetKind>("all");
+  const [videoPage, setVideoPage] = useState(1);
+  const [deletingAssetKey, setDeletingAssetKey] = useState<string | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
@@ -333,6 +340,14 @@ export default function Home() {
   const outputAssets = assets.filter((asset) => asset.root === "output");
   const filteredInputAssets = filteredAssets.filter((asset) => asset.root === "input");
   const filteredOutputAssets = filteredAssets.filter((asset) => asset.root === "output");
+  const videoPageCount = Math.max(1, Math.ceil(filteredOutputAssets.length / VIDEO_PAGE_SIZE));
+  const currentVideoPage = Math.min(videoPage, videoPageCount);
+  const paginatedOutputAssets = assetFilter === "video"
+    ? filteredOutputAssets.slice(
+      (currentVideoPage - 1) * VIDEO_PAGE_SIZE,
+      currentVideoPage * VIDEO_PAGE_SIZE,
+    )
+    : filteredOutputAssets;
   const assetGroups = [
     {
       root: "input" as const,
@@ -340,15 +355,15 @@ export default function Home() {
       title: "輸入資源",
       description: "參考圖片與來源影片，可作為生成素材。",
       assets: filteredInputAssets,
-      total: inputAssets.length,
+      total: filteredInputAssets.length,
     },
     {
       root: "output" as const,
       label: "OUTPUT",
       title: "輸出成果",
       description: "H3 生成的影片與其他媒體成果。",
-      assets: filteredOutputAssets,
-      total: outputAssets.length,
+      assets: paginatedOutputAssets,
+      total: filteredOutputAssets.length,
     },
   ];
 
@@ -674,6 +689,47 @@ export default function Home() {
   function openAssetPreview(asset: Asset) {
     setSelectedAsset(asset);
     setAssetPreview(asset);
+  }
+
+  async function deleteCompletedVideo(asset: Asset) {
+    if (!isDeletableAsset(asset)) return;
+    const assetKey = asset.root + ":" + asset.name;
+    if (deletingAssetKey) return;
+    if (!window.confirm(`確定要刪除已完成影片「${asset.name}」嗎？`)) return;
+
+    setDeletingAssetKey(assetKey);
+    try {
+      const response = await fetch(
+        BRIDGE_URL + "/api/assets?root=output&name=" + encodeURIComponent(asset.name),
+        { method: "DELETE" },
+      );
+      const payload = (await response.json()) as { asset?: { deletedCount?: number }; error?: string };
+      if (!response.ok || !payload.asset) {
+        throw new Error(payload.error || "刪除影片失敗。");
+      }
+
+      setAssets((current) => current.filter(
+        (item) => !(item.root === asset.root && item.name === asset.name),
+      ));
+      setRenderJobs((current) => current.map((job) => (
+        job.output?.root === asset.root && job.output.name === asset.name
+          ? { ...job, output: undefined }
+          : job
+      )));
+      if (selectedAsset?.root === asset.root && selectedAsset.name === asset.name) {
+        setSelectedAsset(null);
+      }
+      if (assetPreview?.root === asset.root && assetPreview.name === asset.name) {
+        setAssetPreview(null);
+      }
+      await refreshAssets();
+      const deletedCount = payload.asset.deletedCount || 1;
+      showToast(`已刪除影片（清除 ${deletedCount} 個輸出檔）。`, "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "刪除影片失敗。", "error");
+    } finally {
+      setDeletingAssetKey(null);
+    }
   }
 
   async function startRender() {
@@ -1459,7 +1515,10 @@ export default function Home() {
                     type="button"
                     className={assetFilter === filter ? "is-active" : ""}
                     key={filter}
-                    onClick={() => setAssetFilter(filter)}
+                    onClick={() => {
+                      setAssetFilter(filter);
+                      setVideoPage(1);
+                    }}
                   >
                     {filter === "all" ? "全部" : filter === "image" ? "圖片" : "影片"}
                   </button>
@@ -1484,7 +1543,8 @@ export default function Home() {
                       <span className="asset-source-count">{group.assets.length} / {group.total}</span>
                     </div>
                     {group.assets.length ? (
-                      <div className="asset-grid">
+                      <>
+                        <div className="asset-grid">
                         {group.assets.slice(0, 12).map((asset) => (
                           <article
                             className={"asset-card " + (selectedAsset?.root === asset.root && selectedAsset.name === asset.name ? "is-selected" : "")}
@@ -1504,20 +1564,60 @@ export default function Home() {
                             </button>
                             <div className="asset-card-footer">
                               <span className="asset-kind">{asset.kind === "video" ? "VIDEO" : "IMAGE"}</span>
-                              <a
-                                className="asset-download-button"
-                                href={assetDownloadUrl(asset)}
-                                download={assetFileName(asset)}
-                                aria-label={`下載資源 ${asset.name}`}
-                                title="下載資源"
-                              >
-                                <Icon name="download" />
-                                <span>下載</span>
-                              </a>
+                              <div className="asset-card-actions">
+                                <a
+                                  className="asset-download-button"
+                                  href={assetDownloadUrl(asset)}
+                                  download={assetFileName(asset)}
+                                  aria-label={`下載資源 ${asset.name}`}
+                                  title="下載資源"
+                                >
+                                  <Icon name="download" />
+                                  <span>下載</span>
+                                </a>
+                                {isDeletableAsset(asset) && (
+                                  <button
+                                    type="button"
+                                    className="asset-delete-button"
+                                    disabled={deletingAssetKey === asset.root + ":" + asset.name}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void deleteCompletedVideo(asset);
+                                    }}
+                                    aria-label={`刪除已完成影片 ${asset.name}`}
+                                    title="刪除已完成影片"
+                                  >
+                                    <Icon name="close" />
+                                    <span>{deletingAssetKey === asset.root + ":" + asset.name ? "刪除中" : "刪除"}</span>
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </article>
                         ))}
-                      </div>
+                        </div>
+                        {group.root === "output" && assetFilter === "video" && (
+                          <div className="asset-pagination" aria-label="影片分頁">
+                            <button
+                              type="button"
+                              className="asset-pagination-button"
+                              disabled={currentVideoPage <= 1}
+                              onClick={() => setVideoPage((page) => Math.max(1, page - 1))}
+                            >
+                              上一頁
+                            </button>
+                            <span>第 {currentVideoPage} / {videoPageCount} 頁 · 共 {filteredOutputAssets.length} 部影片</span>
+                            <button
+                              type="button"
+                              className="asset-pagination-button"
+                              disabled={currentVideoPage >= videoPageCount}
+                              onClick={() => setVideoPage((page) => Math.min(videoPageCount, page + 1))}
+                            >
+                              下一頁
+                            </button>
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="asset-group-empty">
                         <span className="asset-group-empty-icon"><Icon name="folder" /></span>
@@ -1614,6 +1714,17 @@ export default function Home() {
                 >
                   <Icon name="download" /> 下載資源
                 </a>
+                {isDeletableAsset(assetPreview) && (
+                  <button
+                    type="button"
+                    className="preview-delete-button"
+                    disabled={deletingAssetKey === assetPreview.root + ":" + assetPreview.name}
+                    onClick={() => void deleteCompletedVideo(assetPreview)}
+                  >
+                    <Icon name="close" />
+                    {deletingAssetKey === assetPreview.root + ":" + assetPreview.name ? "刪除中" : "刪除影片"}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="preview-use-button"

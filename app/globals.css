@@ -1524,6 +1524,12 @@ code {
   padding: 0 9px 9px;
 }
 
+.asset-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .asset-kind {
   display: inline-block;
   margin: 0;
@@ -1550,6 +1556,53 @@ code {
 }
 
 .asset-download-button:hover {
+  border-color: #6f9a8b;
+  color: var(--cyan);
+  background: rgba(141, 226, 221, 0.1);
+}
+
+.asset-delete-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 1px solid #59453b;
+  border-radius: 6px;
+  color: #d2a78e;
+  background: rgba(241, 170, 112, 0.05);
+  font-size: 9px;
+  transition: border-color 180ms ease, color 180ms ease, background 180ms ease;
+}
+
+.asset-delete-button:hover {
+  border-color: #c47c64;
+  color: #ffc0a5;
+  background: rgba(241, 170, 112, 0.12);
+}
+
+.asset-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: #71847e;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.asset-pagination-button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #30454a;
+  border-radius: 6px;
+  color: #9ec6b8;
+  background: rgba(141, 226, 221, 0.04);
+  font-size: 9px;
+}
+
+.asset-pagination-button:hover:not(:disabled) {
   border-color: #6f9a8b;
   color: var(--cyan);
   background: rgba(141, 226, 221, 0.1);
@@ -1842,6 +1895,7 @@ code {
 }
 
 .preview-download-button,
+.preview-delete-button,
 .preview-use-button {
   min-height: 35px;
   white-space: nowrap;
@@ -1863,6 +1917,25 @@ code {
   background: var(--lime);
   font-size: 10px;
   font-weight: 750;
+}
+
+.preview-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #59453b;
+  border-radius: 8px;
+  color: #d2a78e;
+  background: rgba(241, 170, 112, 0.05);
+  font-size: 10px;
+}
+
+.preview-delete-button:hover {
+  border-color: #c47c64;
+  color: #ffc0a5;
+  background: rgba(241, 170, 112, 0.12);
 }
 
 .preview-use-button:hover {
@@ -2276,6 +2349,7 @@ input[type="range"] {
   }
 
   .preview-download-button,
+  .preview-delete-button,
   .preview-use-button {
     width: 100%;
   }
