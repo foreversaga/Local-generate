@@ -87,6 +87,11 @@ export function validateSegment(value, index = 0) {
   if (duration < 0.5 || duration > 60) fail("SEGMENT_DURATION_INVALID", `Segment ${index + 1} duration must be between 0.5 and 60 seconds.`);
   const description = text(value.description || value.scene || value.text || value.brief);
   if (!description) fail("SEGMENT_DESCRIPTION_REQUIRED", `Segment ${index + 1} requires a description.`);
+  const integratedMultimodalDescription = text(value.integratedMultimodalDescription || value.integrated_multimodal_description);
+  const overallSoundscape = text(value.overallSoundscape || value.overall_soundscape);
+  const nonDiegeticMusic = text(value.nonDiegeticMusic || value.non_diegetic_music);
+  const continuityNote = text(value.continuityNote || value.continuity_note);
+  const endingState = text(value.endingState || value.ending_state);
   return {
     id: text(value.id, `segment-${String(index + 1).padStart(3, "0")}`),
     index,
@@ -96,6 +101,12 @@ export function validateSegment(value, index = 0) {
     description,
     prompt: text(value.prompt),
     negativePrompt: text(value.negativePrompt),
+    ...(integratedMultimodalDescription ? { integratedMultimodalDescription } : {}),
+    ...(overallSoundscape ? { overallSoundscape } : {}),
+    ...(nonDiegeticMusic ? { nonDiegeticMusic } : {}),
+    ...(continuityNote ? { continuityNote } : {}),
+    ...(endingState ? { endingState } : {}),
+    ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
     mode: value.mode === "i2v" ? "i2v" : value.mode === "ref2v" ? "ref2v" : "t2v",
     status: SEGMENT_STATES.includes(value.status) ? value.status : "pending",
     attempt: Math.max(0, Math.floor(finite(value.attempt, 0))),
@@ -181,6 +192,10 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     status: "pending",
     prompt: segment.prompt || "",
   }));
+  const rawSegmentDurationHint = finite(payload.planningSettings?.segmentDurationHint ?? payload.planMeta?.segmentDurationHint, 5);
+  const normalizedSegmentDurationHint = Number(Math.min(60, Math.max(0.5, rawSegmentDurationHint)).toFixed(3));
+  const timelineMode = payload.planMeta?.timelineSource === "ollama" || payload.planningSettings?.timelineMode === "auto" ? "auto" : "manual";
+  const duration = payload.duration ?? timeline[timeline.length - 1].end;
   return {
     schemaVersion: 1,
     id,
@@ -194,9 +209,15 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     ...(payload.inputText ? { inputText: payload.inputText } : {}),
     ...(payload.inputAsset ? { inputAsset: sanitizeAssetRef(payload.inputAsset) } : {}),
     continuityBible: validateContinuityBible(payload.continuityBible),
-    duration: payload.duration ?? timeline[timeline.length - 1].end,
+    duration,
     timeline,
     segments: timeline,
+    planningSettings: {
+      timelineMode,
+      targetDuration: duration,
+      segmentDurationHint: normalizedSegmentDurationHint,
+      segmentCount: timeline.length,
+    },
     outputFolder: payload.outputFolder,
     // Output allocation is a server-side start transition.  Never trust a
     // client supplied `outputAllocated` flag while creating a draft.

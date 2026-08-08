@@ -11,9 +11,10 @@ let recoveryReady;
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
-  if (res.headersSent) return;
+  if (res.headersSent) return true;
   res.writeHead(status, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
+  return true;
 }
 
 async function body(req) {
@@ -42,8 +43,8 @@ function segmentFromPath(pathname) {
   return { id: decodeURIComponent(match[1]), index: Number(match[2]), suffix: pathname.endsWith("/prompt") ? "prompt" : pathname.endsWith("/retry") ? "retry" : "" };
 }
 
-const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "error"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "ollamaModel", "seam", "planMeta"]);
+const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "ollamaModel", "seam", "planMeta", "planningSettings"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -72,6 +73,17 @@ function invalidateFromSegment(segments, changedIndex, targetStatus = "pending")
   });
 }
 
+function normalizedPlanningSettings(source, segments, duration) {
+  const rawHint = Number(source?.planningSettings?.segmentDurationHint ?? source?.planMeta?.segmentDurationHint ?? 5);
+  const segmentDurationHint = Number(Math.min(60, Math.max(0.5, Number.isFinite(rawHint) ? rawHint : 5)).toFixed(3));
+  return {
+    timelineMode: source?.planMeta?.timelineSource === "ollama" || source?.planningSettings?.timelineMode === "auto" ? "auto" : "manual",
+    targetDuration: duration,
+    segmentDurationHint,
+    segmentCount: segments.length,
+  };
+}
+
 function mergeCanonicalTimeline(current, canonicalTimeline, incomingSegments) {
   const merged = canonicalTimeline.map((canonical, index) => {
     const previous = current.segments?.[index] || {};
@@ -98,7 +110,23 @@ export async function handleLongVideoRoute(req, res, context = {}) {
   try {
     if (req.method === "POST" && pathname === "/api/sequences/plan") {
       const input = await body(req);
+      console.info("[long-video] plan.request", JSON.stringify({
+        inputType: input.inputType || "text",
+        timelineMode: input.timelineMode || (input.timelineText || input.storyboard ? "manual" : "auto"),
+        duration: input.duration,
+        segmentDurationHint: input.segmentDurationHint,
+        model: input.ollamaModel || input.model || "gemma4:12b",
+        hasNegativeConstraints: Boolean(String(input.negativePrompt || "").trim()),
+      }));
       const plan = await (context.plan || defaultPlan)(input, context.planOptions || {});
+      console.info("[long-video] plan.success", JSON.stringify({
+        model: plan.planMeta?.model,
+        timelineSource: plan.planMeta?.timelineSource,
+        promptSource: plan.planMeta?.promptSource,
+        repairAttempts: plan.planMeta?.repairAttempts || 0,
+        duration: plan.duration,
+        segments: plan.segments?.length || 0,
+      }));
       return json(res, 200, { plan, continuityBible: plan.continuityBible, segments: plan.segments, timeline: plan.timeline });
     }
     if (req.method === "POST" && pathname === "/api/sequences") {
@@ -163,6 +191,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       if (generationCriticalChanged) mergedSegments = invalidateFromSegment(mergedSegments, 0);
       patch.segments = mergedSegments;
       patch.timeline = mergedSegments;
+      patch.planningSettings = normalizedPlanningSettings({ ...current, ...patch }, mergedSegments, normalized.duration ?? mergedSegments[mergedSegments.length - 1].end);
       const next = await saveJob({ ...current, ...patch }, { expectedRevision });
       await appendEvent(id, { event: "sequence.updated", from: current.status, to: next.status, revision: next.revision });
       return json(res, 200, { job: next });
@@ -303,6 +332,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
     return json(res, 404, { error: { code: "SEQUENCE_ROUTE_NOT_FOUND", message: "Long-video endpoint not found." } });
   } catch (error) {
     const status = error instanceof LongVideoError ? error.status : 500;
+    console.error("[long-video] api.error", JSON.stringify({ method: req.method, pathname, status, code: error?.code || "LONG_VIDEO_INTERNAL", message: error?.message || String(error) }));
     return json(res, status, errorPayload(error));
   }
 }

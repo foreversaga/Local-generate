@@ -136,7 +136,10 @@ export async function normalizeVideo({ inputPath, outputPath, duration, fps = 24
 
 export async function extractTailFrame({ inputPath, outputPath, tools = {}, run = runCommand, logger = null }) {
   const executables = tools.executables || mediaExecutables();
-  const args = ["-y", "-sseof", "-0.05", "-i", inputPath, "-frames:v", "1", "-vf", "format=png", outputPath];
+  // `format=png` is not a pixel format and is rejected by FFmpeg 9.  Select
+  // the PNG encoder explicitly and let swscale convert the decoded frame to
+  // RGB24 before writing the single image.
+  const args = ["-y", "-sseof", "-0.05", "-i", inputPath, "-map", "0:v:0", "-frames:v", "1", "-c:v", "png", "-pix_fmt", "rgb24", outputPath];
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await logger?.({ event: "media.tail.start", executable: executables.ffmpeg, args, inputPath, outputPath });
   let response;

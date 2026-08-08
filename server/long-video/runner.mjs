@@ -18,6 +18,14 @@ function fileFor(folder, name) {
   return sequenceOutputFile(folder, name);
 }
 
+function combinedNegativePrompt(globalValue, segmentValue) {
+  const globalPrompt = String(globalValue || "").trim();
+  const segmentPrompt = String(segmentValue || "").trim();
+  if (!globalPrompt) return segmentPrompt;
+  if (!segmentPrompt || globalPrompt.toLocaleLowerCase().includes(segmentPrompt.toLocaleLowerCase())) return globalPrompt;
+  return `${globalPrompt}, ${segmentPrompt}`;
+}
+
 function outputAssetRef(filePath) {
   return { root: "output", name: path.relative(outputRoot(), filePath).replaceAll("\\", "/"), kind: path.extname(filePath).toLowerCase() === ".png" ? "image" : "video" };
 }
@@ -51,6 +59,13 @@ async function setSegment(job, index, patch, deps) {
 function generationResultPath(result, fallback) {
   if (typeof result === "string") return result;
   return result?.rawPath || result?.outputPath || result?.path || fallback;
+}
+
+export function sequenceProgressForSegment(segmentIndex, segmentCount, generationProgress) {
+  const count = Math.max(1, Number(segmentCount) || 1);
+  const index = Math.min(count - 1, Math.max(0, Number(segmentIndex) || 0));
+  const percent = Math.min(100, Math.max(0, Number(generationProgress) || 0));
+  return Math.min(85, Math.max(1, Math.round(((index + percent / 100) / count) * 85)));
 }
 
 async function defaultVerifyCompletedSegment(segment) {
@@ -95,6 +110,13 @@ export async function runSequence(sequenceOrId, deps = {}) {
           normalizedPaths.push(normalizedPath);
           previousTail = tailPath;
           await logEvent(id, { event: "runner.resume.skip_completed", segmentIndex: index, segmentId: segment.id, stage: "completed", outputRelative: segment.outputRelative || segment.normalizedAsset?.name }, deps);
+          await setJob(job, {
+            progress: sequenceProgressForSegment(index, job.segments.length, 100),
+            stage: "segment.completed",
+            activeSegmentIndex: index,
+            segmentProgress: 100,
+            segmentStage: "已驗證既有片段，繼續下一段",
+          }, deps);
           continue;
         }
         await logEvent(id, { level: "warn", event: "runner.resume.artifact_missing", segmentIndex: index, segmentId: segment.id, stage: "rerender" }, deps);
@@ -118,6 +140,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
       } catch {
         prompt = buildSegmentPrompt({ ...segment, continuityNote: continuation }, job.continuityBible, { mode, firstFrame: index === 0, pictureLabel: "Picture 1", shotId: "Shot 1" });
       }
+      const negativePrompt = combinedNegativePrompt(job.negativePrompt, segment.negativePrompt);
       const startedAt = new Date().toISOString();
       activeAttemptRecord = {
         attempt,
@@ -132,12 +155,22 @@ export async function runSequence(sequenceOrId, deps = {}) {
         steps: job.steps,
         seed: Number(job.seed || 0) + index,
         modelProfile: job.modelProfile,
-        negativePrompt: segment.negativePrompt || job.negativePrompt,
+        negativePrompt,
       };
       await setSegment(job, index, { status: "queued", attempt, prompt, error: null }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
       await logEvent(id, { event: "generation.start", segmentIndex: index, segmentId: segment.id, attempt, mode, stage: "queued", outputRelative: path.relative(folder, rawPath) }, deps);
       await setSegment(job, index, { status: "rendering" }, deps);
+      await setJob(job, {
+        stage: "segment.rendering",
+        activeSegmentIndex: index,
+        segmentProgress: 0,
+        segmentStage: "準備本機輸入…",
+        generationJobId: null,
+      }, deps);
+      let lastReportedProgress = -1;
+      let lastReportedStage = "";
+      let lastLoggedProgressBucket = -1;
       const generated = await generate({
         sequenceId: id,
         segment,
@@ -145,7 +178,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         attempt,
         mode,
         prompt,
-        negativePrompt: segment.negativePrompt || job.negativePrompt,
+        negativePrompt,
         width: job.width,
         height: job.height,
         steps: job.steps,
@@ -157,6 +190,54 @@ export async function runSequence(sequenceOrId, deps = {}) {
         tailImagePath: previousTail,
         outputPath: rawPath,
         outputRelative: path.relative(outputRoot(), rawPath).replaceAll("\\", "/"),
+        onInputStage: async (inputStage = {}) => {
+          await logEvent(id, {
+            event: inputStage.event || "generation.input.stage",
+            segmentIndex: index,
+            segmentId: segment.id,
+            attempt,
+            stage: inputStage.stage || "input",
+            source: inputStage.source,
+            stagedName: inputStage.stagedName,
+          }, deps);
+        },
+        onProgress: async (generationJob = {}) => {
+          const segmentProgress = Math.min(100, Math.max(0, Math.round(Number(generationJob.progress) || 0)));
+          const segmentStage = String(generationJob.stage || "生成片段中…");
+          if (segmentProgress === lastReportedProgress && segmentStage === lastReportedStage) return;
+          lastReportedProgress = segmentProgress;
+          lastReportedStage = segmentStage;
+          Object.assign(job.segments[index], { status: "rendering", progress: segmentProgress, stage: segmentStage });
+          await setJob(job, {
+            progress: sequenceProgressForSegment(index, job.segments.length, segmentProgress),
+            stage: "segment.rendering",
+            activeSegmentIndex: index,
+            segmentProgress,
+            segmentStage,
+            generationJobId: generationJob.id || null,
+            progressSource: generationJob.progressSource || "estimated",
+            nativeCurrent: generationJob.nativeCurrent,
+            nativeMaximum: generationJob.nativeMaximum,
+            segments: job.segments,
+            timeline: job.segments,
+          }, deps);
+          const progressBucket = Math.min(100, Math.floor(segmentProgress / 10) * 10);
+          if (progressBucket > lastLoggedProgressBucket) {
+            lastLoggedProgressBucket = progressBucket;
+            await logEvent(id, {
+              event: "generation.progress",
+              segmentIndex: index,
+              segmentId: segment.id,
+              attempt,
+              generationJobId: generationJob.id,
+              progress: segmentProgress,
+              stage: segmentStage,
+              progressSource: generationJob.progressSource,
+              nativeCurrent: generationJob.nativeCurrent,
+              nativeMaximum: generationJob.nativeMaximum,
+            }, deps);
+          }
+        },
       });
       const producedRawPath = generationResultPath(generated, rawPath);
       const generationJobId = generated?.id || generated?.job?.id;
@@ -169,27 +250,47 @@ export async function runSequence(sequenceOrId, deps = {}) {
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
       await logEvent(id, { event: "generation.success", segmentIndex: index, segmentId: segment.id, attempt, generationJobId, stage: "rendering", outputRelative: path.relative(outputRoot(), producedRawPath).replaceAll("\\", "/") }, deps);
       await setSegment(job, index, { status: "normalizing", rawAsset: outputAssetRef(producedRawPath) }, deps);
+      await setJob(job, {
+        progress: sequenceProgressForSegment(index, job.segments.length, 100),
+        stage: "segment.normalizing",
+        activeSegmentIndex: index,
+        segmentProgress: 100,
+        segmentStage: "標準化影片格式與音訊…",
+        generationJobId: generationJobId || job.generationJobId || null,
+      }, deps);
       await logEvent(id, { event: "media.normalize.start", segmentIndex: index, segmentId: segment.id, attempt, stage: "normalizing", duration: segment.duration }, deps);
       await normalize({ inputPath: producedRawPath, outputPath: normalizedPath, duration: segment.duration, fps: 24, width: job.width, height: job.height, seam: job.seam, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
       await setSegment(job, index, { status: "extracting_tail", normalizedAsset: outputAssetRef(normalizedPath) }, deps);
+      await setJob(job, {
+        stage: "segment.extracting_tail",
+        activeSegmentIndex: index,
+        segmentProgress: 100,
+        segmentStage: "擷取段尾銜接影格…",
+      }, deps);
       await extractTail({ inputPath: normalizedPath, outputPath: tailPath, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
       previousTail = tailPath;
       normalizedPaths.push(normalizedPath);
       await setSegment(job, index, { status: "completed", normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), outputRelative: path.relative(outputRoot(), normalizedPath).replaceAll("\\", "/") }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, producedRawPath, normalizedPath, tailPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), generationJobId, finishedAt: new Date().toISOString() }).catch(() => {});
       activeAttemptRecord = null;
-      await setJob(job, { progress: Math.round(((index + 1) / job.segments.length) * 85), stage: "segment.completed" }, deps);
+      await setJob(job, {
+        progress: sequenceProgressForSegment(index, job.segments.length, 100),
+        stage: "segment.completed",
+        activeSegmentIndex: index,
+        segmentProgress: 100,
+        segmentStage: `第 ${index + 1} 段完成`,
+      }, deps);
       await logEvent(id, { event: "segment.completed", segmentIndex: index, segmentId: segment.id, attempt, stage: "completed", duration: segment.duration, outputRelative: path.relative(outputRoot(), normalizedPath).replaceAll("\\", "/") }, deps);
     }
     if (deps.shouldCancel?.(job)) throw new LongVideoError("SEQUENCE_CANCELLED", "Sequence was cancelled.", 409);
     activeSegmentIndex = -1;
-    await setJob(job, { status: "assembling", progress: 90, stage: "assembly.start" }, deps);
+    await setJob(job, { status: "assembling", progress: 90, stage: "assembly.start", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "合併所有片段…" }, deps);
     const assemblyRevision = Number(job.assembly?.revision || 0) + 1;
     const assemblyDirectory = deps.assemblyDir || (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || "")) ? sequenceAssemblyDir(id) : path.join(folder, "assembly"));
     const assembly = await assemble({ segmentPaths: normalizedPaths, outputFolder: folder, assemblyDir: assemblyDirectory, revision: assemblyRevision, duration: job.segments.reduce((sum, segment) => sum + Number(segment.duration || (segment.end - segment.start)), 0), width: job.width, height: job.height, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, event, deps) });
     const finalAsset = outputAssetRef(assembly.outputPath);
     if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt: new Date().toISOString() });
-    await setJob(job, { status: "completed", progress: 100, stage: "assembly.completed", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe } }, deps);
+    await setJob(job, { status: "completed", progress: 100, stage: "assembly.completed", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "長影片已完成", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe } }, deps);
     await writeManifest(folder, job);
     await logEvent(id, { event: "runner.success", from: "assembling", to: "completed", stage: "assembly.completed", outputRelative: finalAsset.name }, deps);
     return { ...job, finalAsset, finalPath: assembly.outputPath, status: "completed" };

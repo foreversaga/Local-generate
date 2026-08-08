@@ -75,6 +75,13 @@ type Toast = {
   tone: "info" | "success" | "error";
 };
 
+type LongErrorDialog = {
+  title: string;
+  code: string;
+  message: string;
+  hint: string;
+};
+
 type LongSegment = {
   id?: string;
   start: number;
@@ -82,7 +89,13 @@ type LongSegment = {
   duration?: number;
   description: string;
   prompt?: string;
+  negativePrompt?: string;
+  mode?: "t2v" | "i2v" | "ref2v";
+  promptSource?: "ollama" | "ollama_structured" | "manual";
+  endingState?: string;
   status?: string;
+  progress?: number;
+  stage?: string;
   error?: string | { code?: string; message?: string };
 };
 
@@ -94,7 +107,22 @@ type LongPlan = {
   inputAsset?: Asset;
   duration?: number;
   ollamaModel?: string;
-  planMeta?: { model?: string; [key: string]: unknown };
+  negativePrompt?: string;
+  planningSettings?: {
+    timelineMode?: "auto" | "manual";
+    targetDuration?: number;
+    segmentDurationHint?: number;
+    segmentCount?: number;
+  };
+  planMeta?: {
+    model?: string;
+    generatedAt?: string;
+    timelineSource?: "ollama" | "author";
+    promptSource?: "ollama" | "ollama_structured";
+    segmentDurationHint?: number;
+    repairAttempts?: number;
+    [key: string]: unknown;
+  };
   continuityBible?: Record<string, unknown>;
   segments: LongSegment[];
   timeline?: LongSegment[];
@@ -114,8 +142,16 @@ type LongJob = LongPlan & {
   seed?: number;
   modelProfile?: string;
   ollamaModel?: string;
-  negativePrompt?: string;
   seam?: "keep_duplicate_frame" | "drop_next_first_frame";
+  progress?: number;
+  stage?: string;
+  activeSegmentIndex?: number | null;
+  segmentProgress?: number;
+  segmentStage?: string;
+  generationJobId?: string | null;
+  progressSource?: "estimated" | "native";
+  nativeCurrent?: number;
+  nativeMaximum?: number;
   error?: { code?: string; message?: string } | string;
   updatedAt?: string;
 };
@@ -208,10 +244,107 @@ function formatTime(value: string) {
   }
 }
 
-function batchSeed(baseSeed: number, index: number) {
-  const normalized = Number.isFinite(baseSeed)
-    ? Math.min(2147483647, Math.max(0, Math.round(baseSeed)))
-    : 12345;
+type NumberDraft = number | "";
+
+function numberInputDraft(value: string): NumberDraft {
+  if (value.trim() === "") return "";
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : "";
+}
+
+function normalizedSteps(value: NumberDraft, fallback = 20) {
+  const parsed = value === "" ? fallback : value;
+  return Math.min(80, Math.max(1, Math.round(parsed)));
+}
+
+function normalizedSeed(value: NumberDraft) {
+  const parsed = value === "" ? 12345 : value;
+  return Math.min(2147483647, Math.max(0, Math.round(parsed)));
+}
+
+function normalizedLongDuration(value: NumberDraft) {
+  const parsed = value === "" ? 10 : value;
+  return Math.min(3600, Math.max(1, Number(parsed.toFixed(3))));
+}
+
+function normalizedSegmentDurationHint(value: NumberDraft) {
+  const parsed = value === "" ? 5 : value;
+  return Math.min(60, Math.max(0.5, Number(parsed.toFixed(3))));
+}
+
+function parseLongTimeValue(value: string) {
+  const parts = value.trim().replace(",", ".").split(":").map(Number);
+  if (!parts.length || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) return NaN;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function randomSeedValue() {
+  const values = new Uint32Array(1);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(values);
+    return values[0] % 2147483648;
+  }
+  return Math.floor(Math.random() * 2147483648);
+}
+
+function longErrorDialogFrom(error: LongJob["error"] | Error | string, title = "長影片生成失敗"): LongErrorDialog {
+  const value = error instanceof Error ? error.message : error;
+  const code = typeof value === "string"
+    ? (value.match(/^([A-Z][A-Z0-9_]+):/)?.[1] || "LONG_VIDEO_FAILED")
+    : value?.code || "LONG_VIDEO_FAILED";
+  const message = typeof value === "string"
+    ? value.replace(/^[A-Z][A-Z0-9_]+:\s*/, "")
+    : value?.message || "長影片工作失敗。";
+  const hints: Record<string, string> = {
+    FFMPEG_TAIL_FAILED: "第 1 段影片已保留，但 FFmpeg 無法擷取銜接尾幀。關閉視窗後可重新開始，系統會重試該片段。",
+    MEDIA_TOOLS_UNAVAILABLE: "請確認最新版 ffmpeg 與 ffprobe 可由 Web 服務找到，再重新開始。",
+    GENERATION_FAILED: "MiniMax H3／ComfyUI 生成程序失敗。詳細 stderr 與 exit code 已寫入該片段的 attempt 紀錄。",
+    GENERATION_TIMEOUT: "等待本機生成超過時限。請檢查 ComfyUI 佇列與顯存狀態後再重試。",
+    OLLAMA_TIMELINE_INVALID: "請增加故事細節、調整影片總長或更換 Ollama 模型後重新規劃。",
+    OLLAMA_INVALID_JSON: "請重新執行規劃或更換 Ollama 模型。",
+  };
+  return {
+    title,
+    code,
+    message,
+    hint: hints[code] || "工作狀態與診斷紀錄已保留。請依錯誤內容調整後重試。",
+  };
+}
+
+function longStageLabel(job: LongJob) {
+  if (job.segmentStage) return job.segmentStage;
+  const labels: Record<string, string> = {
+    "sequence.start": "準備長影片工作…",
+    "segment.rendering": "產生目前片段…",
+    "segment.normalizing": "標準化影片格式與音訊…",
+    "segment.extracting_tail": "擷取段尾銜接影格…",
+    "segment.completed": "片段完成，準備下一段…",
+    "assembly.start": "合併所有片段…",
+    "assembly.completed": "長影片已完成",
+    "sequence.failed": "長影片生成失敗",
+    "sequence.cancelled": "長影片生成已取消",
+  };
+  return labels[job.stage || ""] || job.stage || job.status;
+}
+
+function longSegmentStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    pending: "等待中",
+    stale: "需要重產",
+    queued: "排隊中",
+    rendering: "生成中",
+    normalizing: "標準化",
+    extracting_tail: "擷取尾幀",
+    completed: "已完成",
+    failed: "失敗",
+  };
+  return labels[status || ""] || status || "等待中";
+}
+
+function batchSeed(baseSeed: NumberDraft, index: number) {
+  const normalized = normalizedSeed(baseSeed);
   return (normalized + index) % 2147483648;
 }
 
@@ -248,7 +381,7 @@ function assetUrl(asset: Asset) {
 }
 
 function isDeletableAsset(asset: Asset) {
-  return asset.root === "output" && asset.kind === "video";
+  return asset.root === "output" && (asset.kind === "image" || asset.kind === "video");
 }
 
 function modelSupportsPromptImages(model: string) {
@@ -364,8 +497,8 @@ export default function Home() {
   const [width, setWidth] = useState<number | "">(736);
   const [height, setHeight] = useState<number | "">(416);
   const [duration, setDuration] = useState(5);
-  const [steps, setSteps] = useState(20);
-  const [seed, setSeed] = useState(12345);
+  const [steps, setSteps] = useState<NumberDraft>(20);
+  const [seed, setSeed] = useState<NumberDraft>(12345);
   const [renderCount, setRenderCount] = useState(1);
   const [outputName, setOutputName] = useState("");
   const [ollamaBusy, setOllamaBusy] = useState(false);
@@ -376,16 +509,24 @@ export default function Home() {
   const [studioMode, setStudioMode] = useState<"single" | "long">("single");
   const [longTitle, setLongTitle] = useState("");
   const [longInputType, setLongInputType] = useState<"text" | "image">("text");
-  const [longDuration, setLongDuration] = useState(10);
+  const [longTimelineMode, setLongTimelineMode] = useState<"auto" | "manual">("auto");
+  const [longDuration, setLongDuration] = useState<NumberDraft>(10);
+  const [longSegmentDurationHint, setLongSegmentDurationHint] = useState<NumberDraft>(5);
   const [longBrief, setLongBrief] = useState("");
-  const [longTimeline, setLongTimeline] = useState("[00:00.000 - 00:05.000] opening\n[00:05.000 - 00:10.000] continuation");
+  const [longNegativePrompt, setLongNegativePrompt] = useState("");
+  const [longTimeline, setLongTimeline] = useState("");
   const [longFolder, setLongFolder] = useState("");
   const [longSeam, setLongSeam] = useState<"keep_duplicate_frame" | "drop_next_first_frame">("keep_duplicate_frame");
   const [longPlan, setLongPlan] = useState<LongPlan | null>(null);
   const [longJob, setLongJob] = useState<LongJob | null>(null);
   const [longBusy, setLongBusy] = useState(false);
+  const [longPlanning, setLongPlanning] = useState(false);
+  const [longPlannerNotice, setLongPlannerNotice] = useState("");
+  const [longPlanDirty, setLongPlanDirty] = useState(false);
   const [longError, setLongError] = useState("");
+  const [longErrorDialog, setLongErrorDialog] = useState<LongErrorDialog | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const longErrorDialogKeyRef = useRef("");
   const renderJobsRef = useRef<Job[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
@@ -514,6 +655,15 @@ export default function Home() {
           // stops after this response, so terminal state cannot overwrite a
           // later unsaved draft repeatedly.
           if (LONG_VIDEO_POLL_STATUSES.has(nextJob.status) || terminalTransition) setLongPlan(nextJob);
+          if (terminalTransition && nextJob.status === "failed" && nextJob.error) {
+            const code = typeof nextJob.error === "string" ? nextJob.error : nextJob.error.code || nextJob.error.message || "LONG_VIDEO_FAILED";
+            const key = `${nextJob.id}:${nextJob.revision}:${code}`;
+            if (longErrorDialogKeyRef.current !== key) {
+              longErrorDialogKeyRef.current = key;
+              setLongError(typeof nextJob.error === "string" ? nextJob.error : `${nextJob.error.code || "LONG_VIDEO_FAILED"}: ${nextJob.error.message || "長影片工作失敗。"}`);
+              setLongErrorDialog(longErrorDialogFrom(nextJob.error));
+            }
+          }
           if (terminalTransition) void refreshAssets();
         }
       } catch {
@@ -522,6 +672,20 @@ export default function Home() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [longJob?.id, longJob?.status]);
+
+  useEffect(() => {
+    if (!longErrorDialog) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLongErrorDialog(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [longErrorDialog]);
 
   useEffect(() => {
     if (!assetPreview) return;
@@ -623,13 +787,16 @@ export default function Home() {
         setLongFolder(latest.outputFolder || "");
         setLongDuration(latest.duration || 10);
         setLongTimeline((latest.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
+        setLongTimelineMode(latest.planMeta?.timelineSource === "ollama" ? "auto" : "manual");
+        setLongSegmentDurationHint(latest.planningSettings?.segmentDurationHint || latest.planMeta?.segmentDurationHint || 5);
+        setLongPlanDirty(false);
         if (latest.width) setWidth(latest.width);
         if (latest.height) setHeight(latest.height);
         if (latest.steps) setSteps(latest.steps);
         if (latest.seed !== undefined) setSeed(latest.seed);
         if (latest.modelProfile) setModelProfile(latest.modelProfile);
         if (latest.ollamaModel || latest.planMeta?.model) setOllamaModel(latest.ollamaModel || latest.planMeta?.model || ollamaModel);
-        if (latest.negativePrompt) setNegativePrompt(latest.negativePrompt);
+        setLongNegativePrompt(latest.negativePrompt || "");
         if (latest.seam) setLongSeam(latest.seam);
         if (latest.status === "completed") void refreshAssets();
       }
@@ -664,7 +831,7 @@ export default function Home() {
   }
 
   function randomizeSeed() {
-    setSeed(Math.floor(Math.random() * 900000000) + 100000000);
+    setSeed(randomSeedValue());
   }
 
   function navigateToSection(target: string) {
@@ -794,7 +961,10 @@ export default function Home() {
       if (!response.ok || !payload.asset) {
         throw new Error(payload.error || "上傳失敗");
       }
-      if (target === "image") setReferenceImage(payload.asset);
+      if (target === "image") {
+        setReferenceImage(payload.asset);
+        if (studioMode === "long" && longPlan) setLongPlanDirty(true);
+      }
       if (target === "lastFrame") setLastFrameImage(payload.asset);
       if (target === "video") setSourceVideo(payload.asset);
       setSelectedAsset(payload.asset);
@@ -817,7 +987,10 @@ export default function Home() {
   function applyAssetToWorkspace(asset: Asset) {
     setSelectedAsset(asset);
     if (asset.kind === "image") {
-      if (studioMode === "long") setReferenceImage(asset);
+      if (studioMode === "long") {
+        setReferenceImage(asset);
+        if (longPlan) setLongPlanDirty(true);
+      }
       else if (mode === "l2v") setLastFrameImage(asset);
       else setReferenceImage(asset);
       showToast("已選取參考圖片：" + asset.name);
@@ -832,11 +1005,12 @@ export default function Home() {
     setAssetPreview(asset);
   }
 
-  async function deleteCompletedVideo(asset: Asset) {
+  async function deleteOutputAsset(asset: Asset) {
     if (!isDeletableAsset(asset)) return;
     const assetKey = asset.root + ":" + asset.name;
     if (deletingAssetKey) return;
-    if (!window.confirm(`確定要刪除已完成影片「${asset.name}」嗎？`)) return;
+    const kindLabel = asset.kind === "image" ? "圖片" : "影片";
+    if (!window.confirm(`確定要刪除輸出${kindLabel}「${asset.name}」嗎？`)) return;
 
     setDeletingAssetKey(assetKey);
     try {
@@ -846,7 +1020,7 @@ export default function Home() {
       );
       const payload = (await response.json()) as { asset?: { deletedCount?: number }; error?: string };
       if (!response.ok || !payload.asset) {
-        throw new Error(payload.error || "刪除影片失敗。");
+        throw new Error(payload.error || "刪除輸出資源失敗。");
       }
 
       setAssets((current) => current.filter(
@@ -865,9 +1039,9 @@ export default function Home() {
       }
       await refreshAssets();
       const deletedCount = payload.asset.deletedCount || 1;
-      showToast(`已刪除影片（清除 ${deletedCount} 個輸出檔）。`, "success");
+      showToast(`已刪除輸出${kindLabel}（清除 ${deletedCount} 個輸出檔）。`, "success");
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "刪除影片失敗。", "error");
+      showToast(error instanceof Error ? error.message : "刪除輸出資源失敗。", "error");
     } finally {
       setDeletingAssetKey(null);
     }
@@ -909,6 +1083,10 @@ export default function Home() {
       showToast(`影片寬度與高度必須是 ${dimensionGrid} 的倍數，範圍為 32–2048 px。`, "error");
       return;
     }
+    const submittedSteps = normalizedSteps(steps, mode === "replace" ? 6 : 20);
+    const submittedSeed = normalizedSeed(seed);
+    if (steps !== submittedSteps) setSteps(submittedSteps);
+    if (seed !== submittedSeed) setSeed(submittedSeed);
     const count = Math.min(20, Math.max(1, Math.round(renderCount || 1)));
     const firstFrameName = referenceImage?.kind === "image" ? referenceImage.name : "";
     const lastFrameName = lastFrameImage?.kind === "image" ? lastFrameImage.name : "";
@@ -939,7 +1117,7 @@ export default function Home() {
                 width,
                 height,
                 duration,
-                steps,
+                steps: submittedSteps,
                 seed: batchSeed(seed, index),
                 outputName: batchOutputName(outputName, index, count),
                 batchId,
@@ -989,8 +1167,8 @@ export default function Home() {
           width,
           height,
           duration,
-          steps,
-          seed,
+          steps: submittedSteps,
+          seed: submittedSeed,
           outputName,
           batchId,
           batchIndex: 1,
@@ -1028,10 +1206,13 @@ export default function Home() {
     let cursor = 0;
     const parsed: LongSegment[] = [];
     for (const line of lines) {
-      const range = line.match(/^\[?\s*(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*\]?\s*(?::|：)?\s*(.*)$/i);
+      const range = line.match(/^\[?\s*([0-9:.]+)\s*(?:-|–|—|to)\s*([0-9:.]+)\s*\]?\s*(?::|：)?\s*(.*)$/i);
       if (range) {
-        parsed.push({ start: Number(range[1]), end: Number(range[2]), duration: Number(range[2]) - Number(range[1]), description: range[3].trim() });
-        cursor = Number(range[2]);
+        const start = parseLongTimeValue(range[1]);
+        const end = parseLongTimeValue(range[2]);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+        parsed.push({ start, end, duration: end - start, description: range[3].trim() });
+        cursor = end;
         continue;
       }
       const durationLine = line.match(/^(\d+(?:\.\d+)?)\s*(?:秒|s|sec(?:ond)?s?)\s*(?:-|:|：)?\s*(.*)$/i);
@@ -1044,38 +1225,98 @@ export default function Home() {
     return parsed.length >= 2 ? parsed : fallback;
   }
 
+  function updateLongTimelineDraft(value: string) {
+    setLongTimeline(value);
+    if (!longPlan) return;
+    setLongTimelineMode("manual");
+    setLongPlanDirty(true);
+    const parsed = parseLongTimelineDraft(value, []);
+    if (parsed.length < 2) return;
+    setLongDuration(parsed[parsed.length - 1].end);
+    setLongPlan((current) => current ? {
+      ...current,
+      duration: parsed[parsed.length - 1].end,
+      segments: parsed.map((segment, index) => ({
+        ...(current.segments[index] || {}),
+        ...segment,
+        description: segment.description || current.segments[index]?.description || `Segment ${index + 1}`,
+      })),
+    } : current);
+  }
+
   async function requestLongPlan() {
     setLongError("");
-    const response = await fetch(BRIDGE_URL + "/api/sequences/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: longTitle || "Untitled long video",
-        inputType: longInputType,
-        inputText: longBrief,
-        inputAsset: longInputType === "image" && referenceImage ? referenceImage : undefined,
-        imagePurpose: longInputType === "image" ? "first_frame" : undefined,
-        duration: longTimeline.trim() ? undefined : longDuration,
-        timelineText: longTimeline,
-        ollamaModel,
-      }),
-    });
-    const payload = (await response.json()) as { plan?: LongPlan; error?: { code?: string; message?: string } | string };
-    if (!response.ok || !payload.plan) throw new Error(typeof payload.error === "string" ? payload.error : `${payload.error?.code || "PLAN_FAILED"}: ${payload.error?.message || "Long-video plan failed."}`);
-    const plan = payload.plan;
-    setLongPlan(plan);
-    setLongTimeline(plan.segments.map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
-    return plan;
+    setLongPlannerNotice("");
+    if (!longBrief.trim()) throw new Error("請先輸入長影片的整體提示詞／故事描述。");
+    if (longInputType === "image" && (!referenceImage || referenceImage.kind !== "image")) throw new Error("圖片起點需要 first_frame 參考圖。");
+    if (!ollamaOnline) throw new Error("Ollama 尚未連線。");
+    if (!visibleModels.includes(ollamaModel)) throw new Error(`模型 ${ollamaModel} 尚未安裝。`);
+    if (longTimelineMode === "manual" && !longTimeline.trim()) throw new Error("手動時間軸模式需要至少兩段分鏡。");
+    const submittedDuration = normalizedLongDuration(longDuration);
+    const submittedSegmentDurationHint = normalizedSegmentDurationHint(longSegmentDurationHint);
+    if (longDuration !== submittedDuration) setLongDuration(submittedDuration);
+    if (longSegmentDurationHint !== submittedSegmentDurationHint) setLongSegmentDurationHint(submittedSegmentDurationHint);
+    setLongPlanning(true);
+    setLongPlannerNotice("已送出規劃要求，正在等待本機 Ollama 回應…");
+    try {
+      const response = await fetch(BRIDGE_URL + "/api/sequences/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: longTitle || "Untitled long video",
+          inputType: longInputType,
+          inputText: longBrief,
+          inputAsset: longInputType === "image" && referenceImage ? referenceImage : undefined,
+          imagePurpose: longInputType === "image" ? "first_frame" : undefined,
+          timelineMode: longTimelineMode,
+          duration: longTimelineMode === "auto" ? submittedDuration : undefined,
+          segmentDurationHint: submittedSegmentDurationHint,
+          timelineText: longTimelineMode === "manual" ? longTimeline : undefined,
+          ollamaModel,
+          negativePrompt: longNegativePrompt,
+        }),
+      });
+      let payload: { plan?: LongPlan; error?: { code?: string; message?: string } | string };
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch {
+        throw new Error(`PLAN_RESPONSE_INVALID: 規劃 API 回傳了無法解析的內容（HTTP ${response.status}）。`);
+      }
+      if (!response.ok || !payload.plan) {
+        const code = typeof payload.error === "string" ? "PLAN_FAILED" : payload.error?.code || "PLAN_FAILED";
+        const detail = typeof payload.error === "string" ? payload.error : payload.error?.message || "Long-video plan failed.";
+        if (code === "OLLAMA_TIMELINE_INVALID") throw new Error(`${code}: Ollama 連續兩次都未產生有效的分鏡時間；請增加故事細節、調整總長或更換模型。`);
+        if (code === "OLLAMA_INVALID_JSON") throw new Error(`${code}: Ollama 連續兩次都未回傳有效 JSON；請重試或更換模型。`);
+        throw new Error(`${code}: ${detail}`);
+      }
+      const plan = payload.plan;
+      setLongPlan(plan);
+      setLongTimeline(plan.segments.map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
+      setLongDuration(plan.duration || submittedDuration);
+      setLongSegmentDurationHint(plan.planningSettings?.segmentDurationHint || submittedSegmentDurationHint);
+      setLongNegativePrompt(plan.negativePrompt || longNegativePrompt);
+      setLongPlanDirty(false);
+      setLongPlannerNotice(plan.planMeta?.repairAttempts
+        ? "Ollama 第一次回覆格式不完整，系統已自動修正並完成規劃。"
+        : "Ollama 已完成分鏡時間與逐段 H3 提示詞規劃。");
+      return plan;
+    } catch (error) {
+      setLongPlannerNotice("");
+      throw error;
+    } finally {
+      setLongPlanning(false);
+    }
   }
 
   async function planLongVideo() {
     setLongBusy(true);
     try {
       await requestLongPlan();
-      showToast("Long-video continuity bible and timeline ready.", "success");
+      showToast("Ollama 已產生分鏡時間、逐段 H3 提示詞與連續性設定。", "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Long-video planning failed.";
       setLongError(message);
+      setLongErrorDialog(longErrorDialogFrom(error instanceof Error ? error : message, "長影片規劃失敗"));
       showToast(message, "error");
     } finally {
       setLongBusy(false);
@@ -1085,6 +1326,7 @@ export default function Home() {
   async function saveLongVideo(planOverride?: LongPlan) {
     const plan = planOverride || longPlan;
     if (!plan) throw new Error("Plan the sequence before saving.");
+    if (longPlanDirty && !planOverride) throw new Error("規劃輸入已變更，請先重新執行 Ollama 規劃。");
     if (!longFolder.trim()) throw new Error("Output folder is required.");
     const parsedTimes = parseLongTimelineDraft(longTimeline, plan.segments);
     const segments = parsedTimes.map((item, index) => ({
@@ -1093,8 +1335,12 @@ export default function Home() {
       start: item.start,
       end: item.end,
       duration: item.end - item.start,
-      description: plan.segments[index]?.description || item.description,
+      description: item.description || plan.segments[index]?.description,
     }));
+    const submittedSteps = normalizedSteps(steps);
+    const submittedSeed = normalizedSeed(seed);
+    if (steps !== submittedSteps) setSteps(submittedSteps);
+    if (seed !== submittedSeed) setSeed(submittedSeed);
     const existing = longJob && ["draft", "ready", "interrupted", "failed"].includes(longJob.status) ? longJob : null;
     const response = await fetch(existing ? `${BRIDGE_URL}/api/sequences/${encodeURIComponent(existing.id)}` : BRIDGE_URL + "/api/sequences", {
       method: existing ? "PATCH" : "POST",
@@ -1107,16 +1353,17 @@ export default function Home() {
         imagePurpose: longInputType === "image" ? "first_frame" : undefined,
         continuityBible: plan.continuityBible,
         planMeta: plan.planMeta,
+        planningSettings: plan.planningSettings,
         segments,
         duration: segments[segments.length - 1].end,
         outputFolder: longFolder.trim(),
         modelProfile,
         width: width === "" ? 736 : width,
         height: height === "" ? 416 : height,
-        steps,
-        seed,
+        steps: submittedSteps,
+        seed: submittedSeed,
         ollamaModel,
-        negativePrompt,
+        negativePrompt: longNegativePrompt,
         seam: longSeam,
         ...(existing ? { revision: existing.revision } : {}),
       }),
@@ -1130,8 +1377,9 @@ export default function Home() {
   async function startLongVideo() {
     setLongBusy(true);
     setLongError("");
+    setLongErrorDialog(null);
     try {
-      const plan = longPlan || await requestLongPlan();
+      const plan = !longPlan || longPlanDirty ? await requestLongPlan() : longPlan;
       const saved = await saveLongVideo(plan);
       const response = await fetch(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(saved.id)}/start`, { method: "POST" });
       const payload = (await response.json()) as { job?: LongJob; error?: { code?: string; message?: string } | string };
@@ -1141,6 +1389,7 @@ export default function Home() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Long-video start failed.";
       setLongError(message);
+      setLongErrorDialog(longErrorDialogFrom(error instanceof Error ? error : message, "無法開始長影片生成"));
       showToast(message, "error");
     } finally {
       setLongBusy(false);
@@ -1156,6 +1405,7 @@ export default function Home() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save long-video draft.";
       setLongError(message);
+      setLongErrorDialog(longErrorDialogFrom(error instanceof Error ? error : message, "無法保存長影片草稿"));
       showToast(message, "error");
     } finally {
       setLongBusy(false);
@@ -1216,6 +1466,25 @@ export default function Home() {
     { label: mode === "replace" ? "逐段生成與接續" : "生成影格", done: Boolean(activeJob && activeJob.progress > 48) },
     { label: "封裝 MP4", done: Boolean(activeJob && activeJob.progress > 88) },
   ];
+  const longOverallProgress = Math.min(100, Math.max(0, Math.round(Number(longJob?.progress) || 0)));
+  const longJobActive = Boolean(longJob && LONG_VIDEO_POLL_STATUSES.has(longJob.status));
+  const inferredLongSegmentIndex = longJob?.segments.findIndex((segment) => ["queued", "rendering", "normalizing", "extracting_tail", "failed"].includes(segment.status || "")) ?? -1;
+  const longActiveSegmentIndex = typeof longJob?.activeSegmentIndex === "number" ? longJob.activeSegmentIndex : inferredLongSegmentIndex;
+  const longStatusLabels: Record<string, string> = {
+    ready: "準備完成",
+    queued: "等待執行",
+    running: "生成中",
+    paused: "已暫停",
+    assembling: "合併片段中",
+    completed: "已完成",
+    failed: "生成失敗",
+    cancelled: "已取消",
+    interrupted: "已中斷",
+  };
+  const longStatusLabel = longJob ? longStatusLabels[longJob.status] || longJob.status : "尚未開始";
+  const longNativeProgressLabel = longJob?.progressSource === "native" && longJob.nativeMaximum
+    ? `原生步數 ${longJob.nativeCurrent ?? 0}/${longJob.nativeMaximum}`
+    : "等待原生步數";
   const primaryFrameAsset = mode === "l2v" ? lastFrameImage : referenceImage;
   const primaryFrameInputRef = mode === "l2v" ? lastFrameInputRef : imageInputRef;
   const primaryFrameTarget = mode === "l2v" ? "lastFrame" : "image";
@@ -1355,49 +1624,177 @@ export default function Home() {
           <section className={"panel long-video-panel " + (studioMode === "long" ? "is-visible" : "is-hidden")} id="long-video" aria-labelledby="long-video-title">
             <div className="panel-heading">
               <div>
-                <span className="section-code">長影片 / 分鏡編輯</span>
-                <h2 id="long-video-title">連續性時間軸</h2>
+                <span className="section-code">LONG / OLLAMA STORYBOARD LAB</span>
+                <h2 id="long-video-title">長片提示詞與分鏡規劃</h2>
               </div>
               <span className="panel-mark panel-mark-number">SEQ</span>
             </div>
+            <p className="long-intro">輸入完整故事方向後，Ollama 會一次產生全片負面提示詞、連續性設定、分鏡時間，以及首段 T2VA／續段 I2VA 的 H3 提示詞。所有輸出都能在生成前修改。</p>
             <div className="long-video-grid">
               <label className="setting-field"><span className="field-label">標題</span><input className="text-input long-title-input" value={longTitle} onChange={(event) => setLongTitle(event.target.value)} placeholder="兩段式故事" /></label>
               <label className="setting-field"><span className="field-label">輸出資料夾</span><input className="text-input long-title-input" value={longFolder} onChange={(event) => setLongFolder(event.target.value)} placeholder="my-sequence-001" /></label>
             </div>
             <div className="long-input-switch" role="group" aria-label="Long-video input type">
-              <button type="button" className={longInputType === "text" ? "is-active" : ""} onClick={() => setLongInputType("text")}>文字起點</button>
-              <button type="button" className={longInputType === "image" ? "is-active" : ""} onClick={() => setLongInputType("image")}>圖片起點 / first_frame</button>
+              <button type="button" className={longInputType === "text" ? "is-active" : ""} onClick={() => { if (longInputType !== "text" && longPlan) setLongPlanDirty(true); setLongInputType("text"); }}>文字起點</button>
+              <button type="button" className={longInputType === "image" ? "is-active" : ""} onClick={() => { if (longInputType !== "image" && longPlan) setLongPlanDirty(true); setLongInputType("image"); }}>圖片起點 / first_frame</button>
             </div>
-            {longInputType === "text" ? (
-              <textarea className="text-input long-brief-input" value={longBrief} onChange={(event) => setLongBrief(event.target.value)} placeholder="描述完整的長影片故事弧線。" aria-label="長影片文字概要" />
-            ) : (
+            {longInputType === "image" && (
               <div className="long-first-frame-row">
                 <span className="field-label">first_frame 參考圖</span>
-                {referenceImage?.kind === "image" ? <span className="long-reference-name">{referenceImage.name}</span> : <button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>選擇圖片資產</button>}
-                <small>圖片輸入會明確標記 imagePurpose=first_frame。</small>
+                {referenceImage?.kind === "image" ? <><span className="long-reference-name">{referenceImage.name}</span><button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>更換圖片</button></> : <button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>選擇圖片資產</button>}
+                <small>圖片是第 0.00 秒首幀；下方文字仍會送給 Ollama 作為故事與動作方向。</small>
+              </div>
+            )}
+            <div className="long-prompt-grid">
+              <label className="setting-field long-prompt-field" htmlFor="long-video-prompt">
+                <span className="field-label">整體提示詞／故事描述 <span>輸入給 Ollama</span></span>
+                <textarea id="long-video-prompt" className="text-input long-brief-input" value={longBrief} onChange={(event) => { setLongBrief(event.target.value); if (longPlan) setLongPlanDirty(true); }} placeholder="例如：一名紅衣女子在雨夜追逐最後一班列車；描述角色、場景、情節、鏡頭、對話與聲音方向。" />
+              </label>
+              <label className="setting-field long-prompt-field" htmlFor="long-video-negative-prompt">
+                <span className="field-label">負面提示詞／限制 <span>空白時由 Ollama 補齊</span></span>
+                <textarea id="long-video-negative-prompt" className="text-input long-negative-input" value={longNegativePrompt} onChange={(event) => setLongNegativePrompt(event.target.value)} placeholder="例如：角色漂移、服裝改變、閃爍、文字、浮水印…" />
+              </label>
+            </div>
+            <div className="long-planner-toolbar">
+              <div className="ollama-select long-ollama-select">
+                <span className="ollama-badge">O</span>
+                <select value={ollamaModel} onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Ollama 模型">
+                  {promptModels.map((model) => {
+                    const isInstalled = visibleModels.includes(model.value);
+                    const status = ollamaOnline ? (isInstalled ? "已安裝" : "未安裝") : "待檢查";
+                    return <option key={model.value} value={model.value}>{model.label} · {model.note} · {status}</option>;
+                  })}
+                </select>
+              </div>
+              <button type="button" className="outline-button long-plan-button" onClick={() => void planLongVideo()} disabled={longBusy}>
+                <Icon name="spark" />
+                {longPlanning ? "Ollama 規劃中…" : longBusy ? "處理中…" : "用 Ollama 產生分鏡時間與 H3 提示詞"}
+              </button>
+            </div>
+            <div
+              className={`long-planner-feedback ${longPlanning ? "is-working" : longError ? "is-error" : longPlanDirty && longPlan ? "is-stale" : longPlannerNotice ? "is-ready" : "is-idle"}`}
+              role={longError ? "alert" : "status"}
+              aria-live="polite"
+            >
+              <span className="long-planner-feedback-dot" aria-hidden="true" />
+              <span>{longPlanning
+                ? "正在等待本機 Ollama；首次載入模型可能需要 1–2 分鐘，完成前請不要重複點擊。若第一次格式不合規，系統會自動修正一次。"
+                : longError
+                  ? longError
+                  : longPlanDirty && longPlan
+                    ? "規劃輸入已變更，請重新執行 Ollama 規劃。"
+                    : longPlannerNotice || "填寫整體提示詞後按下規劃；進度、成功或錯誤會持續顯示在這裡。"}</span>
+            </div>
+
+            <div className="long-subsection-heading">
+              <div><span className="section-code">01 / STORYBOARD TIMING</span><h3>分鏡時間產生方式</h3></div>
+              <div className="long-input-switch" role="group" aria-label="分鏡時間產生方式">
+                <button type="button" className={longTimelineMode === "auto" ? "is-active" : ""} onClick={() => { if (longTimelineMode !== "auto" && longPlan) setLongPlanDirty(true); setLongTimelineMode("auto"); }}>Ollama 自動分鏡</button>
+                <button type="button" className={longTimelineMode === "manual" ? "is-active" : ""} onClick={() => { if (longTimelineMode !== "manual" && longPlan) setLongPlanDirty(true); setLongTimelineMode("manual"); }}>手動鎖定時間</button>
+              </div>
+            </div>
+            <p className="long-source-note">{longTimelineMode === "auto" ? "Ollama 會決定敘事切點；後端仍會驗證從 0 秒開始、無空白、無重疊，且結束時間等於總長。" : "你提供的時間軸是權威資料；Ollama 只補足每段語意與 H3 提示詞，不會改寫時間。"}</p>
+            {longTimelineMode === "auto" && (
+              <div className="long-planning-settings">
+                <label className="setting-field"><span className="field-label">目標總長（秒）</span><input className="number-input" type="number" min="1" max="3600" step="0.5" value={longDuration} onChange={(event) => { setLongDuration(numberInputDraft(event.target.value)); if (longPlan) setLongPlanDirty(true); }} /></label>
+                <label className="setting-field"><span className="field-label">目標單段長度（秒） <span>模型可依劇情微調</span></span><input className="number-input" type="number" min="0.5" max="60" step="0.5" value={longSegmentDurationHint} onChange={(event) => { setLongSegmentDurationHint(numberInputDraft(event.target.value)); if (longPlan) setLongPlanDirty(true); }} /></label>
               </div>
             )}
             <div className="long-timeline-grid">
-              <label className="setting-field"><span className="field-label">可編輯分鏡（時間戳或 N 秒）</span><textarea className="text-input long-timeline-input" value={longTimeline} onChange={(event) => setLongTimeline(event.target.value)} placeholder={'[00:00.000 - 00:05.000] 開場\n[00:05.000 - 00:10.000] 延續'} /></label>
-              <div className="long-bible-card"><span className="field-label">Continuity bible 連續性聖經</span>{longPlan?.continuityBible ? <pre>{JSON.stringify(longPlan.continuityBible, null, 2)}</pre> : <p>先規劃以產生 continuity bible。</p>}</div>
+              <label className="setting-field" htmlFor="long-video-timeline"><span className="field-label">{longTimelineMode === "auto" ? "Ollama 分鏡時間輸出" : "手動分鏡時間"} <span>產出後可編輯</span></span><textarea id="long-video-timeline" className="text-input long-timeline-input" value={longTimeline} onChange={(event) => updateLongTimelineDraft(event.target.value)} placeholder={longTimelineMode === "auto" ? "按上方按鈕後，Ollama 產出的全片分鏡時間會顯示在這裡。" : '[00:00.000 - 00:05.000] 開場\n[00:05.000 - 00:10.000] 延續'} /></label>
+              <div className="long-bible-card"><span className="field-label">Continuity bible <span>Ollama 輸出</span></span>{longPlan?.continuityBible ? <pre>{JSON.stringify(longPlan.continuityBible, null, 2)}</pre> : <p>尚未規劃。產出後會列出風格、角色、環境、燈光、鏡頭、聲音與必須維持／避免的項目。</p>}</div>
+            </div>
+            <div className={"long-plan-status " + (longPlanDirty ? "is-stale" : longPlan ? "is-ready" : "is-empty")}>
+              {longPlan ? (
+                <>
+                  <strong>{longPlanDirty ? "規劃輸入已變更，請重新產生" : "Ollama 規劃已完成"}</strong>
+                  <span>時間來源：{longPlan.planMeta?.timelineSource === "author" ? "手動鎖定" : "Ollama"}</span>
+                  <span>{longPlan.segments.length} 段 · {(longPlan.duration || 0).toFixed(2)} 秒</span>
+                  <span>提示詞：{longPlan.planMeta?.promptSource === "ollama" ? "Ollama 完整格式" : "Ollama 內容＋伺服器格式化"}</span>
+                  {longPlan.planMeta?.generatedAt && <span>{formatTime(longPlan.planMeta.generatedAt)}</span>}
+                </>
+              ) : <span>尚未呼叫 Ollama；下方不會用預設文字假裝成模型輸出。</span>}
+            </div>
+
+            <div className="long-subsection-heading long-render-heading">
+              <div><span className="section-code">02 / H3 RENDER SETUP</span><h3>本機生成設定</h3></div>
+              <p>Profile、解析度、Steps、Seed 與接縫是執行參數，不由 Ollama 擅自覆寫。</p>
             </div>
             <div className="long-settings-row">
-              <label className="setting-field"><span className="field-label">Ollama model</span><select className="select-input" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)}>{promptModels.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
               <label className="setting-field"><span className="field-label">H3 profile</span><select className="select-input" value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{modelOptions.filter((item) => item.value !== "wan22_animate_fp8").map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-              <label className="setting-field"><span className="field-label">Total duration (s)</span><input className="number-input" type="number" min="1" max="3600" value={longDuration} onChange={(event) => setLongDuration(Number(event.target.value) || 10)} /></label>
-              <label className="setting-field"><span className="field-label">Width</span><input className="number-input" type="number" min="32" max="2048" step="32" value={width} onChange={(event) => setWidth(event.target.value === "" ? "" : Number(event.target.value))} /></label>
-              <label className="setting-field"><span className="field-label">Height</span><input className="number-input" type="number" min="32" max="2048" step="32" value={height} onChange={(event) => setHeight(event.target.value === "" ? "" : Number(event.target.value))} /></label>
-              <label className="setting-field"><span className="field-label">Steps</span><input className="number-input" type="number" min="1" max="80" value={steps} onChange={(event) => setSteps(Number(event.target.value))} /></label>
-              <label className="setting-field"><span className="field-label">Seed</span><input className="number-input" type="number" min="0" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label>
-            </div>
-            <label className="setting-field"><span className="field-label">Negative prompt</span><input className="text-input long-title-input" value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} /></label>
-            <div className="long-settings-row">
+              <label className="setting-field"><span className="field-label">寬度</span><input className="number-input" type="number" min="32" max="2048" step="32" value={width} onChange={(event) => setWidth(event.target.value === "" ? "" : Number(event.target.value))} /></label>
+              <label className="setting-field"><span className="field-label">高度</span><input className="number-input" type="number" min="32" max="2048" step="32" value={height} onChange={(event) => setHeight(event.target.value === "" ? "" : Number(event.target.value))} /></label>
+              <label className="setting-field"><span className="field-label">Steps</span><input className="number-input" type="number" min="1" max="80" value={steps} onChange={(event) => setSteps(numberInputDraft(event.target.value))} /></label>
+              <label className="setting-field seed-field"><span className="field-label">Seed</span><div className="seed-input"><input className="number-input" type="number" min="0" max="2147483647" value={seed} onChange={(event) => setSeed(numberInputDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機產生 Seed" title="隨機產生 Seed">隨機</button></div></label>
               <label className="setting-field"><span className="field-label">Seam</span><select className="select-input" value={longSeam} onChange={(event) => setLongSeam(event.target.value as typeof longSeam)}><option value="keep_duplicate_frame">Keep duplicate frame</option><option value="drop_next_first_frame" disabled>Drop next first frame (unsupported)</option></select></label>
-              <div className="long-segment-summary"><span className="field-label">可編輯分鏡段落</span><strong>{longPlan?.segments.length || 0}</strong>{longPlan?.segments.map((segment, index) => <div className="long-segment-card" key={segment.id || index}><div className="long-segment-card-heading"><span>第 {index + 1} 段 · {segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</span><small>{segment.status || "pending"}{segment.error ? ` · ${typeof segment.error === "string" ? segment.error : segment.error.message || segment.error.code || "error"}` : ""}</small></div><textarea className="text-input long-segment-description" value={segment.description} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段描述`} /><textarea className="text-input long-segment-prompt" value={segment.prompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value } : item) } : current)} placeholder="T2VA/I2VA prompt 草稿" aria-label={`第 ${index + 1} 段 prompt`} /></div>)}</div>
             </div>
-            {longError && <div className="long-validation-error" role="alert">{longError}</div>}
+
+            {longJob && (
+              <section className={`long-render-progress is-${longJob.status}`} aria-label="長影片生成進度">
+                <div className="long-render-progress-heading">
+                  <div>
+                    <span className="section-code">LONG RENDER PROGRESS</span>
+                    <h3>{longStatusLabel}</h3>
+                  </div>
+                  <strong>{longOverallProgress}%</strong>
+                </div>
+                <div
+                  className="long-progress-track"
+                  role="progressbar"
+                  aria-label="長影片整體生成進度"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={longOverallProgress}
+                >
+                  <span style={{ width: `${longOverallProgress}%` }} />
+                </div>
+                <div className="long-progress-current" aria-live="polite">
+                  <span>{longActiveSegmentIndex >= 0 ? `第 ${longActiveSegmentIndex + 1} / ${longJob.segments.length} 段` : "全片處理"}</span>
+                  <strong>{longStageLabel(longJob)}</strong>
+                  <small>{longNativeProgressLabel} · {progressUpdateAge(longJob.updatedAt)}</small>
+                </div>
+                <div className="long-progress-segments">
+                  {longJob.segments.map((segment, index) => {
+                    const segmentProgress = segment.status === "completed"
+                      ? 100
+                      : index === longActiveSegmentIndex
+                        ? Math.min(100, Math.max(0, Math.round(Number(segment.progress ?? longJob.segmentProgress) || 0)))
+                        : 0;
+                    return (
+                      <div className={`long-progress-segment is-${segment.status || "pending"}`} key={segment.id || index}>
+                        <div className="long-progress-segment-label">
+                          <span>第 {index + 1} 段</span>
+                          <strong>{longSegmentStatusLabel(segment.status)}</strong>
+                          <small>{segmentProgress}%</small>
+                        </div>
+                        <div className="long-progress-segment-track"><span style={{ width: `${segmentProgress}%` }} /></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            <div className="long-segment-summary">
+              <div className="long-segment-summary-heading"><span className="field-label">Ollama 逐段規劃輸出 <span>可直接編輯</span></span><strong>{longPlan?.segments.length || 0} 段</strong></div>
+              {!longPlan && <div className="long-empty-output">尚無分段提示詞。請先輸入故事描述並按「用 Ollama 產生分鏡時間與 H3 提示詞」。</div>}
+              {longPlan?.segments.map((segment, index) => (
+                <div className="long-segment-card" key={segment.id || index}>
+                  <div className="long-segment-card-heading">
+                    <span>第 {index + 1} 段 · {segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒 <b>{(segment.mode || (index === 0 && longInputType === "text" ? "t2v" : "i2v")).toUpperCase()}</b></span>
+                    <small>{segment.promptSource === "manual" ? "手動提示詞" : "Ollama 產出"}{segment.error ? ` · ${typeof segment.error === "string" ? segment.error : segment.error.message || segment.error.code || "error"}` : ""}</small>
+                  </div>
+                  <div className="long-segment-meta-grid">
+                    <label className="setting-field"><span className="field-label">分鏡描述</span><textarea className="text-input long-segment-description" value={segment.description} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段描述`} /></label>
+                    <label className="setting-field"><span className="field-label">段尾狀態 <span>供下一段延續</span></span><textarea className="text-input long-segment-ending" value={segment.endingState || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, endingState: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段段尾狀態`} /></label>
+                  </div>
+                  <label className="setting-field"><span className="field-label">{segment.mode === "t2v" ? "T2VA" : "I2VA"} H3 prompt <span>Ollama 內容，可直接編輯</span></span><textarea className="text-input long-segment-prompt" value={segment.prompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value, promptSource: "manual" } : item) } : current)} placeholder="Ollama 產出的 H3 prompt 會顯示在這裡" aria-label={`第 ${index + 1} 段 prompt`} /></label>
+                  <label className="setting-field"><span className="field-label">此段負面提示詞 <span>空白則使用全片設定</span></span><textarea className="text-input long-segment-negative" value={segment.negativePrompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, negativePrompt: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段負面提示詞`} /></label>
+                </div>
+              ))}
+            </div>
             {longJob?.error && <div className="long-validation-error" role="alert">{typeof longJob.error === "string" ? longJob.error : `${longJob.error.code || "error"}: ${longJob.error.message || ""}`}</div>}
-            <div className="long-actions"><button type="button" className="outline-button" onClick={() => void planLongVideo()} disabled={longBusy}>使用 Ollama 規劃</button><button type="button" className="outline-button" onClick={() => void saveLongVideoDraft()} disabled={longBusy || !longPlan}>保存草稿</button><button type="button" className="generate-button long-start-button" onClick={() => void startLongVideo()} disabled={longBusy}><span>{longBusy ? "處理中…" : "開始長影片生成"}</span><span className="generate-arrow"><Icon name="arrow" /></span></button></div>
+            <div className="long-actions"><button type="button" className="outline-button" onClick={() => void saveLongVideoDraft()} disabled={longBusy || longJobActive || !longPlan || longPlanDirty}>保存草稿</button><button type="button" className="generate-button long-start-button" onClick={() => void startLongVideo()} disabled={longBusy || longJobActive}><span>{longJobActive ? `長影片生成中 ${longOverallProgress}%` : longBusy ? "處理中…" : longPlanDirty || !longPlan ? "先規劃並開始生成" : "開始長影片生成"}</span><span className="generate-arrow"><Icon name="arrow" /></span></button></div>
             {longJob && <div className="long-job-status">工作 {longJob.id} · {longJob.status} · revision {longJob.revision}{longJob.updatedAt ? ` · ${formatTime(longJob.updatedAt)}` : ""}{longJob.status === "completed" && longJob.finalAsset ? <a className="open-output-button long-open-output" href={`${BRIDGE_URL}/media?root=output&name=${encodeURIComponent(longJob.finalAsset.name)}`} target="_blank" rel="noreferrer">開啟最終 MP4</a> : null}</div>}
           </section>
 
@@ -1645,9 +2042,9 @@ export default function Home() {
                     className="number-input"
                     type="number"
                     min="1"
-                    max="60"
+                    max="80"
                     value={steps}
-                    onChange={(event) => setSteps(Number(event.target.value))}
+                    onChange={(event) => setSteps(numberInputDraft(event.target.value))}
                   />
                 </label>
                 <label className="setting-field seed-field">
@@ -1657,10 +2054,11 @@ export default function Home() {
                       className="number-input"
                       type="number"
                       min="0"
+                      max="2147483647"
                       value={seed}
-                      onChange={(event) => setSeed(Number(event.target.value))}
+                      onChange={(event) => setSeed(numberInputDraft(event.target.value))}
                     />
-                    <button type="button" onClick={randomizeSeed} aria-label="隨機 seed">↻</button>
+                    <button type="button" onClick={randomizeSeed} aria-label="隨機產生 Seed" title="隨機產生 Seed">隨機</button>
                   </div>
                 </label>
                 <label className="setting-field">
@@ -1927,10 +2325,10 @@ export default function Home() {
                                     disabled={deletingAssetKey === asset.root + ":" + asset.name}
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      void deleteCompletedVideo(asset);
+                                      void deleteOutputAsset(asset);
                                     }}
-                                    aria-label={`刪除已完成影片 ${asset.name}`}
-                                    title="刪除已完成影片"
+                                    aria-label={`刪除輸出${asset.kind === "image" ? "圖片" : "影片"} ${asset.name}`}
+                                    title="刪除輸出資源"
                                   >
                                     <Icon name="close" />
                                     <span>{deletingAssetKey === asset.root + ":" + asset.name ? "刪除中" : "刪除"}</span>
@@ -2064,10 +2462,12 @@ export default function Home() {
                     type="button"
                     className="preview-delete-button"
                     disabled={deletingAssetKey === assetPreview.root + ":" + assetPreview.name}
-                    onClick={() => void deleteCompletedVideo(assetPreview)}
+                    onClick={() => void deleteOutputAsset(assetPreview)}
                   >
                     <Icon name="close" />
-                    {deletingAssetKey === assetPreview.root + ":" + assetPreview.name ? "刪除中" : "刪除影片"}
+                    {deletingAssetKey === assetPreview.root + ":" + assetPreview.name
+                      ? "刪除中"
+                      : `刪除${assetPreview.kind === "image" ? "圖片" : "影片"}`}
                   </button>
                 )}
                 <button
@@ -2083,6 +2483,28 @@ export default function Home() {
               </div>
             </div>
             <p className="asset-preview-hint">按 Esc 或右上角的關閉按鈕即可關閉預覽。</p>
+          </section>
+        </div>
+      )}
+
+      {longErrorDialog && (
+        <div className="long-error-dialog-backdrop">
+          <section
+            className="long-error-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="long-error-dialog-title"
+            aria-describedby="long-error-dialog-message"
+          >
+            <div className="long-error-dialog-mark" aria-hidden="true">!</div>
+            <div className="long-error-dialog-copy">
+              <span className="section-code">LONG VIDEO ERROR</span>
+              <h2 id="long-error-dialog-title">{longErrorDialog.title}</h2>
+              <code>{longErrorDialog.code}</code>
+              <p id="long-error-dialog-message">{longErrorDialog.message}</p>
+              <small>{longErrorDialog.hint}</small>
+            </div>
+            <button type="button" className="long-error-dialog-close" onClick={() => setLongErrorDialog(null)}>我知道了</button>
           </section>
         </div>
       )}

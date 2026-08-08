@@ -870,7 +870,7 @@ function pumpGenerationQueue() {
   }
 }
 
-async function startGeneration(payload) {
+async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
   const mode = ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
   const prompt = String(payload.prompt || "").trim();
@@ -893,7 +893,20 @@ async function startGeneration(payload) {
   let lastImagePath = null;
   let inputVideoPath = null;
   if (mode === "i2v" || mode === "fl2v") {
-    inputImagePath = await resolveInputMedia(payload.inputImageName, "image");
+    if (internal.inputImagePath) {
+      const candidate = path.resolve(String(internal.inputImagePath));
+      const inputRoot = path.resolve(INPUT_ROOT);
+      if (candidate !== inputRoot && !candidate.startsWith(inputRoot + path.sep)) {
+        throw new Error("內部銜接影格不在 ComfyUI/input 內。");
+      }
+      const stat = await fs.stat(candidate).catch(() => null);
+      if (!stat?.isFile() || classifyFile(candidate) !== "image") {
+        throw new Error("找不到內部銜接影格：" + path.basename(candidate));
+      }
+      inputImagePath = candidate;
+    } else {
+      inputImagePath = await resolveInputMedia(payload.inputImageName, "image");
+    }
   }
   if (mode === "fl2v" || mode === "l2v") {
     lastImagePath = await resolveInputMedia(payload.lastImageName, "image");
@@ -1100,18 +1113,88 @@ function sequenceMediaName(value, fallbackRoot = OUTPUT_ROOT) {
   return raw.replaceAll("\\", "/").replace(/^\/+/, "");
 }
 
-async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000) {
+function sequenceStageName(payload, extension = ".png") {
+  const sequenceId = String(payload.sequenceId || "sequence")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "sequence";
+  const segmentIndex = Math.max(0, Math.floor(Number(payload.segmentIndex) || 0));
+  const attempt = Math.max(1, Math.floor(Number(payload.attempt) || 1));
+  const suffix = String(extension || ".png").toLowerCase();
+  return `.h3-sequence-tail-${sequenceId}-${segmentIndex + 1}-${attempt}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}${suffix}`;
+}
+
+async function stageSequenceInputImage(payload) {
+  const inputAsset = payload.inputAsset && typeof payload.inputAsset === "object"
+    ? payload.inputAsset
+    : null;
+  const rawPath = String(payload.inputImagePath || inputAsset?.name || "").trim();
+  if (!rawPath) return null;
+
+  const segmentIndex = Math.max(0, Math.floor(Number(payload.segmentIndex) || 0));
+  const rootName = segmentIndex > 0 || inputAsset?.root === "output" ? "output" : "input";
+  const rootPath = rootName === "output" ? OUTPUT_ROOT : INPUT_ROOT;
+  const relativeName = sequenceMediaName(rawPath, rootPath);
+  const sourcePath = await resolveMediaPath(rootName, relativeName);
+  if (classifyFile(relativeName) !== "image") {
+    throw new Error("長影片銜接影格必須是圖片檔案：" + relativeName);
+  }
+
+  await fs.mkdir(INPUT_ROOT, { recursive: true });
+  const stagedName = sequenceStageName(payload, path.extname(relativeName));
+  const stagedPath = safePath(INPUT_ROOT, stagedName);
+  await fs.copyFile(sourcePath, stagedPath);
+  return { name: stagedName, path: stagedPath, source: relativeName };
+}
+
+async function removeStagedSequenceInput(staged) {
+  if (!staged?.path) return;
+  await fs.unlink(staged.path).catch(() => {});
+}
+
+async function reportSequenceInputStage(payload, event) {
+  try {
+    await payload.onInputStage?.(event);
+  } catch (error) {
+    console.warn("[long-video] input stage log warning", payload.sequenceId, error?.message || error);
+  }
+}
+
+async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000, onProgress = null) {
   const started = Date.now();
+  let lastProgressSignature = "";
+  const publishProgress = async (job, force = false) => {
+    if (typeof onProgress !== "function") return;
+    const snapshot = publicJob(job);
+    const signature = JSON.stringify([
+      snapshot.status,
+      Math.round(Number(snapshot.progress) || 0),
+      snapshot.stage,
+      snapshot.progressSource,
+      snapshot.nativeCurrent,
+      snapshot.nativeMaximum,
+      snapshot.connectionState,
+    ]);
+    if (!force && signature === lastProgressSignature) return;
+    lastProgressSignature = signature;
+    try {
+      await onProgress(snapshot);
+    } catch (error) {
+      console.warn("[long-video] progress persistence warning", id, error?.message || error);
+    }
+  };
   while (Date.now() - started < timeoutMs) {
     const job = jobs.get(id);
     if (!job) throw new Error("Legacy generation job disappeared.");
+    await publishProgress(job);
     if (job.status === "completed") {
+      await publishProgress(job, true);
       const relative = job.outputRelativeName || job.outputName;
       const actual = relative ? safePath(OUTPUT_ROOT, relative) : null;
       const actualExists = actual && await fs.stat(actual).then((item) => item.isFile()).catch(() => false);
       return { id, outputPath: actualExists ? actual : (job.outputPath || actual), job };
     }
     if (["failed", "cancelled"].includes(job.status)) {
+      await publishProgress(job, true);
       const error = new Error(job.error || `Legacy generation ended with ${job.status}.`);
       error.code = "GENERATION_FAILED";
       error.details = { stderrTail: job.stderrTail || job.error || "", exitCode: job.exitCode };
@@ -1125,25 +1208,43 @@ async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000) {
 }
 
 async function startSequenceGeneration(payload) {
-  const inputAsset = payload.inputAsset;
-  const inputImageName = payload.inputImagePath
-    ? sequenceMediaName(payload.inputImagePath, payload.segmentIndex === 0 ? INPUT_ROOT : OUTPUT_ROOT)
-    : inputAsset?.name || (typeof inputAsset === "string" ? inputAsset : "");
-  const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
-  const legacy = await startGeneration({
-    mode: payload.mode,
-    prompt: payload.prompt,
-    negativePrompt: payload.negativePrompt,
-    inputImageName,
-    duration: payload.duration,
-    width: payload.width,
-    height: payload.height,
-    steps: payload.steps,
-    seed: payload.seed,
-    modelProfile: payload.modelProfile || "nvfp4_blackwell",
-    sequenceOutputPath,
-  });
-  return await waitForLegacyGeneration(legacy.id);
+  const stagedInput = payload.mode === "i2v"
+    ? await stageSequenceInputImage(payload)
+    : null;
+  try {
+    if (stagedInput) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.stage",
+        stage: "input",
+        source: stagedInput.source,
+        stagedName: stagedInput.name,
+      });
+    }
+    const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
+    const legacy = await startGeneration({
+      mode: payload.mode,
+      prompt: payload.prompt,
+      negativePrompt: payload.negativePrompt,
+      inputImageName: stagedInput?.name || "",
+      duration: payload.duration,
+      width: payload.width,
+      height: payload.height,
+      steps: payload.steps,
+      seed: payload.seed,
+      modelProfile: payload.modelProfile || "nvfp4_blackwell",
+      sequenceOutputPath,
+    }, { inputImagePath: stagedInput?.path });
+    return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
+  } finally {
+    if (stagedInput) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.cleanup",
+        stage: "cleanup",
+        stagedName: stagedInput.name,
+      });
+    }
+    await removeStagedSequenceInput(stagedInput);
+  }
 }
 
 function trimJobs() {
@@ -1190,12 +1291,13 @@ async function uploadAsset(payload) {
   return await toAsset("input", outputName);
 }
 
-async function deleteOutputVideo(relativeName) {
+async function deleteOutputAsset(relativeName) {
   const cleanName = String(relativeName || "")
     .replaceAll("\\", "/")
     .replace(/^\/+/, "");
-  if (!cleanName || classifyFile(cleanName) !== "video") {
-    throw new Error("只能刪除 output 內的影片。");
+  const kind = cleanName ? classifyFile(cleanName) : null;
+  if (!cleanName || !kind) {
+    throw new Error("只能刪除 output 內受支援的圖片或影片。");
   }
 
   const candidates = mediaRoots("output").map((root) => safePath(root, cleanName));
@@ -1205,7 +1307,7 @@ async function deleteOutputVideo(relativeName) {
     if (stat?.isFile()) existingPaths.push(candidate);
   }
   if (!existingPaths.length) {
-    throw new Error("找不到要刪除的影片：" + cleanName);
+    throw new Error("找不到要刪除的輸出資源：" + cleanName);
   }
 
   for (const candidate of existingPaths) {
@@ -1214,7 +1316,7 @@ async function deleteOutputVideo(relativeName) {
   return {
     name: cleanName,
     root: "output",
-    kind: "video",
+    kind,
     deletedCount: existingPaths.length,
   };
 }
@@ -1238,7 +1340,7 @@ async function route(req, res) {
         generate: startSequenceGeneration,
       }),
     });
-    if (handled) return;
+    if (handled || res.headersSent) return;
   }
 
   if (req.method === "GET" && pathname === "/api/health") {
@@ -1258,10 +1360,10 @@ async function route(req, res) {
     const root = requestUrl.searchParams.get("root");
     const relativeName = requestUrl.searchParams.get("name");
     if (root !== "output" || !relativeName) {
-      sendError(res, 400, "只能刪除 output 內的影片。");
+      sendError(res, 400, "只能刪除 output 內受支援的圖片或影片。");
       return;
     }
-    sendJson(res, 200, { asset: await deleteOutputVideo(relativeName) });
+    sendJson(res, 200, { asset: await deleteOutputAsset(relativeName) });
     return;
   }
   if (req.method === "GET" && pathname === "/api/jobs") {

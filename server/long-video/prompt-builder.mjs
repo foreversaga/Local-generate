@@ -35,11 +35,38 @@ function description(segment, bible) {
   ].filter(Boolean).join("\n");
 }
 
+function stripFieldPrefix(value, field) {
+  return clean(value).replace(new RegExp(`^${field}\\s*:\\s*`, "i"), "").trim();
+}
+
+function integratedDescription(segment, bible) {
+  const generated = stripFieldPrefix(
+    segment.integratedMultimodalDescription || segment.integrated_multimodal_description,
+    "integrated_multimodal_description",
+  );
+  const value = generated || description(segment, bible);
+  return /^\[Shot\s+1\]/i.test(value) ? value : `[Shot 1] ${value}`;
+}
+
+function soundscape(segment, bible) {
+  return stripFieldPrefix(
+    segment.overallSoundscape || segment.overall_soundscape || bible.sound,
+    "overall_soundscape",
+  ) || "Natural diegetic sound";
+}
+
+function music(segment, bible) {
+  return stripFieldPrefix(
+    segment.nonDiegeticMusic || segment.non_diegetic_music || bible.nonDiegeticMusic,
+    "non_diegetic_music",
+  ) || "N/A";
+}
+
 export function buildT2VAPrompt(segment, bible = {}) {
   return [
-    `integrated_multimodal_description: ${description(segment, bible)}`,
-    `overall_soundscape: ${clean(segment.overallSoundscape || bible.sound, "Natural diegetic sound")}`,
-    `non_diegetic_music: ${clean(segment.nonDiegeticMusic || bible.nonDiegeticMusic, "N/A")}`,
+    `integrated_multimodal_description: ${integratedDescription(segment, bible)}`,
+    `overall_soundscape: ${soundscape(segment, bible)}`,
+    `non_diegetic_music: ${music(segment, bible)}`,
   ].join("\n\n");
 }
 
@@ -50,11 +77,11 @@ export function buildI2VAPrompt(segment, bible = {}, options = {}) {
   return [
     firstLine,
     "",
-    `integrated_multimodal_description: ${description(segment, bible)}`,
+    `integrated_multimodal_description: ${integratedDescription(segment, bible)}`,
     "",
-    `overall_soundscape: ${clean(segment.overallSoundscape || bible.sound, "Natural diegetic sound")}`,
+    `overall_soundscape: ${soundscape(segment, bible)}`,
     "",
-    `non_diegetic_music: ${clean(segment.nonDiegeticMusic || bible.nonDiegeticMusic, "N/A")}`,
+    `non_diegetic_music: ${music(segment, bible)}`,
   ].join("\n");
 }
 

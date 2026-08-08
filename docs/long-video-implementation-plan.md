@@ -120,22 +120,27 @@ non_diegetic_music
 1. 工作標題。
 2. 輸入類型：文字、圖片或影片。
 3. 圖片／影片用途。
-4. 分鏡腳本。
-5. output 資料夾名稱。
-6. 提示詞模型。
-7. H3 模型 profile、解析度、步數、FPS 與 seed 策略。
-8. 預設負面提示詞。
-9. 接縫策略。
+4. 整體提示詞／故事描述（輸入給 Ollama）。
+5. 負面提示詞／限制；空白時由 Ollama 產生基準值。
+6. 分鏡時間模式：`auto` 由 Ollama 產生，或 `manual` 由作者鎖定。
+7. 自動模式的目標總長與目標單段長度，或手動模式的時間軸腳本。
+8. output 資料夾名稱與提示詞模型。
+9. H3 模型 profile、解析度、步數、FPS 與 seed 策略。
+10. 接縫策略。
+
+創作設定與執行設定必須分離：Ollama 可產生 continuity bible、分鏡切點、逐段 H3 內容、聲音、音樂及負面提示詞；H3 profile、解析度、Steps、Seed、FPS 與接縫由使用者或伺服器控制，模型不得自行覆寫本機運算參數。
 
 ### 4.2 規劃
 
-使用者按下「解析分鏡」後：
+使用者按下「用 Ollama 產生分鏡時間與 H3 提示詞」後：
 
-1. 驗證時間碼。
-2. Ollama 產生結構化分段計畫與 continuity bible。
-3. 後端驗證模型輸出的 JSON。
-4. 產生各段提示詞草稿。
-5. 頁面顯示可編輯時間軸。
+1. 驗證故事描述、Ollama 狀態與所選模型。
+2. `manual` 模式先以確定性解析器驗證作者時間碼；`auto` 模式把總長與單段長度提示送給 Ollama。
+3. Ollama 一次產生全片負面提示詞、continuity bible、分鏡時間及逐段 H3 結構化內容。
+4. 後端驗證 JSON、全片時間算術與每段長度；時間有 gap、overlap 或總長不符時整次規劃失敗，不靜默修補。
+5. 後端把模型內容包裝為正確的 T2VA／I2VA 欄位順序並再次驗證。
+6. 頁面顯示模型、產出時間、時間來源、段數、全片秒數、continuity bible、分鏡時間、逐段描述、段尾狀態、提示詞及分段負面提示詞。
+7. 使用者可修改輸出；若修改規劃輸入，UI 標記舊結果失效並要求重新規劃。
 
 此階段不建立 output 資料夾，也不啟動 ComfyUI 生成。
 
@@ -153,11 +158,17 @@ non_diegetic_music
 
 資料夾已存在時回傳 `OUTPUT_FOLDER_EXISTS`，不覆寫、不混用，也不自動開始生成。
 
-## 5. 分鏡輸入格式
+## 5. 分鏡時間模式與輸入格式
 
-第一版支援兩種格式。
+### 5.1 Ollama 自動分鏡
 
-### 5.1 起訖時間
+預設模式只要求整體故事描述、目標總長與目標單段長度。Ollama 必須產生至少兩段全域時間範圍，並依情節與動作選擇切點。模型負責提出時間，伺服器負責算術驗證；驗證失敗時回傳 `OLLAMA_TIMELINE_INVALID`，不得退回固定兩段或用假資料填入 UI。
+
+### 5.2 手動鎖定時間
+
+手動模式的作者時間是權威資料。Ollama 只能補充語意與提示詞，伺服器忽略模型嘗試變更的 `start`／`end`。支援下列兩種文字格式。
+
+#### 起訖時間
 
 ```text
 [00:00.000 - 00:05.000]
@@ -167,19 +178,19 @@ non_diegetic_music
 女子跳過積水並繼續向前。
 ```
 
-### 5.2 每段秒數
+#### 每段秒數
 
 ```text
 5秒：紅衣女子在雨夜街道奔跑。
 5秒：女子跳過積水並繼續向前。
 ```
 
-解析器先以確定性規則處理時間，Ollama 只負責補充語意，不負責決定基礎算術。後端必須驗證：
+無論時間來自 Ollama 或作者，後端都必須驗證：
 
 - 段落編號連續。
 - 起訖時間嚴格遞增。
 - 不重疊。
-- 未明示的空白時間不被模型自行填補。
+- 未明示的空白時間不被自行填補。
 - `end - start = duration`。
 - 每段時間落在生成器允許範圍。
 - 全片秒數等於最後一段結束時間。
@@ -190,7 +201,41 @@ non_diegetic_music
 
 ### 6.1 規劃草稿
 
-解析分鏡時一次產生全部草稿，讓使用者在模型運算前檢查故事、動作與鏡頭安排。
+規劃時一次產生全部草稿，讓使用者在影片模型運算前檢查故事、動作與鏡頭安排。Ollama JSON 契約如下；`start`／`end` 是全片時間，而 `integratedMultimodalDescription` 內的 Shot 時間以該 Segment 的 0 秒重新起算。
+
+```json
+{
+  "negativePrompt": "...",
+  "continuityBible": {
+    "visualStyle": "...",
+    "characters": [],
+    "environment": "...",
+    "lighting": "...",
+    "camera": "...",
+    "motionDirection": "...",
+    "keyObjects": [],
+    "sound": "...",
+    "nonDiegeticMusic": "...",
+    "mustPreserve": [],
+    "mustAvoid": []
+  },
+  "segments": [
+    {
+      "start": 0,
+      "end": 5,
+      "description": "...",
+      "integratedMultimodalDescription": "[Shot 1] ...",
+      "overallSoundscape": "...",
+      "nonDiegeticMusic": "...",
+      "continuityNote": "...",
+      "endingState": "...",
+      "negativePrompt": ""
+    }
+  ]
+}
+```
+
+第一個純文字 Segment 組成 T2VA；圖片首幀或第二段以後組成 I2VA。若模型直接回傳的完整 prompt 不符合 H3 欄位順序，伺服器使用同一份模型結構化內容重新包裝，不使用與故事無關的預設 prompt。
 
 ### 6.2 執行時最終版本
 

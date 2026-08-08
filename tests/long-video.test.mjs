@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,7 +8,8 @@ import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
 import { buildI2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
-import { runSequence } from "../server/long-video/runner.mjs";
+import { extractTailFrame } from "../server/long-video/media.mjs";
+import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { createSequenceRecord, sanitizeAssetRef, validateSequenceInput } from "../server/long-video/schema.mjs";
@@ -20,6 +21,25 @@ function apiRequest(method, url, value = {}) {
 function apiResponse() {
   return { headersSent: false, writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } };
 }
+
+test("long-video routes report that the response was handled", async () => {
+  const response = apiResponse();
+  const handled = await handleLongVideoRoute(apiRequest("POST", "/api/sequences/plan", { inputType: "text", inputText: "brief" }), response, {
+    plan: async () => ({
+      inputType: "text",
+      duration: 10,
+      continuityBible: {},
+      segments: [{ start: 0, end: 5, description: "first" }, { start: 5, end: 10, description: "second" }],
+      timeline: [{ start: 0, end: 5, description: "first" }, { start: 5, end: 10, description: "second" }],
+      planMeta: { model: "test", timelineSource: "ollama", promptSource: "ollama_structured" },
+    }),
+  });
+  assert.equal(handled, true);
+  assert.equal(response.status, 200);
+  assert.equal(await handleLongVideoRoute(apiRequest("GET", "/api/health"), apiResponse(), {}), false);
+  const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
+  assert.match(bridge, /if \(handled \|\| res\.headersSent\) return/);
+});
 
 test("rejects Windows reserved names and traversal", async () => {
   assert.throws(() => validateOutputFolderName("CON"), { code: "OUTPUT_FOLDER_INVALID" });
@@ -62,9 +82,64 @@ test("prompt field order and I2VA first line are stable", () => {
   const i2v = buildI2VAPrompt({ description: "continue" });
   assert.match(i2v, /^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot 1\]\) is fully referenced\./);
   validatePrompt(i2v, { mode: "i2v" });
+  assert.throws(() => validatePrompt("integrated_multimodal_description: walk\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A", { mode: "t2v" }), { code: "PROMPT_SHOT1_REQUIRED" });
 });
 
-test("planner parses author timeline before Ollama and ignores model timing", async () => {
+test("tail extraction selects the PNG encoder on FFmpeg 9", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-tail-"));
+  const inputPath = path.join(root, "segment.mp4");
+  const outputPath = path.join(root, "segment-tail.png");
+  let receivedArgs = [];
+  await extractTailFrame({
+    inputPath,
+    outputPath,
+    tools: { executables: { ffmpeg: "ffmpeg-test", ffprobe: "ffprobe-test" } },
+    run: async (_executable, args) => {
+      receivedArgs = args;
+      await writeFile(outputPath, "fake-png");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(receivedArgs.includes("format=png"), false);
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf("-c:v"), receivedArgs.indexOf("-c:v") + 4), ["-c:v", "png", "-pix_fmt", "rgb24"]);
+});
+
+test("runner maps native segment progress into overall long-video progress", async () => {
+  const updates = [];
+  const folder = path.join(os.tmpdir(), "h3-progress-output");
+  const job = {
+    id: "x",
+    inputType: "text",
+    outputPath: folder,
+    outputFolder: "progress",
+    status: "ready",
+    revision: 1,
+    width: 736,
+    height: 416,
+    steps: 2,
+    seed: 1,
+    continuityBible: {},
+    segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "a" }, { id: "s2", start: 5, end: 10, duration: 5, description: "b" }],
+  };
+  const result = await runSequence(job, {
+    generate: async (payload) => {
+      await payload.onProgress({ id: `legacy-${payload.segmentIndex}`, progress: 20, stage: "已送入 ComfyUI 佇列", progressSource: "estimated" });
+      await payload.onProgress({ id: `legacy-${payload.segmentIndex}`, progress: 60, stage: "採樣生成影格…", progressSource: "native", nativeCurrent: 6, nativeMaximum: 10 });
+      return { rawPath: payload.outputPath, id: `legacy-${payload.segmentIndex}` };
+    },
+    normalize: async () => {},
+    extractTail: async () => {},
+    assemble: async () => ({ outputPath: path.join(folder, "final-r001.mp4"), revision: 1, probe: {} }),
+    writeManifest: async () => {},
+    updateJob: async (target, patch) => { updates.push({ ...patch }); return Object.assign(target, patch); },
+    updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+  });
+  assert.equal(sequenceProgressForSegment(0, 2, 20), 9);
+  assert.ok(updates.some((patch) => patch.segmentProgress === 60 && patch.progress === 26 && patch.progressSource === "native"));
+  assert.equal(result.progress, 100);
+});
+
+test("manual planner parses author timeline before Ollama and ignores model timing", async () => {
   let called = 0;
   const plan = await planSequence({ inputType: "text", inputText: "brief", timelineText: "5s: first\n5s: second" }, {
     request: async () => { called += 1; return { continuityBible: {}, segments: [{ start: 100, end: 200, description: "model first" }, { start: 200, end: 300, description: "model second" }] }; },
@@ -72,6 +147,112 @@ test("planner parses author timeline before Ollama and ignores model timing", as
   assert.equal(called, 1);
   assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
   await assert.rejects(() => planSequence({ inputType: "text", inputText: "brief", timelineText: "[00:00 - 00:05] first\n[00:06 - 00:10] second" }, { request: async () => { throw new Error("must not call"); } }), { code: "TIMELINE_GAP" });
+});
+
+test("automatic planner uses Ollama storyboard timing and structured H3 content", async () => {
+  let receivedPrompt = "";
+  const plan = await planSequence({
+    inputType: "text",
+    inputText: "A courier races through a rainy station and boards the last train.",
+    timelineMode: "auto",
+    duration: 12,
+    segmentDurationHint: 5,
+    negativePrompt: "no readable signs",
+  }, {
+    request: async ({ prompt }) => {
+      receivedPrompt = prompt;
+      return {
+        negativePrompt: "flicker, watermark",
+        continuityBible: { visualStyle: "live-action cinematic", sound: "rain and footsteps", nonDiegeticMusic: "low strings" },
+        segments: [
+          {
+            start: 0,
+            end: 4.5,
+            description: "The courier spots the train.",
+            integratedMultimodalDescription: "[Shot 1] Live-action, cinematic, a wide shot follows the courier through rain as the train doors begin to close.",
+            overallSoundscape: "Rain strikes the platform while shoes splash through puddles.",
+            nonDiegeticMusic: "Low strings pulse at a moderate tempo.",
+            endingState: "The courier reaches the final carriage door.",
+            negativePrompt: "",
+          },
+          {
+            start: 4.5,
+            end: 8,
+            description: "The courier catches the door.",
+            integratedMultimodalDescription: "[Shot 1] The first frame continues as the courier grips the closing door and pulls forward.",
+            overallSoundscape: "The warning chime sounds over the rain.",
+            nonDiegeticMusic: "Low strings accelerate.",
+            endingState: "The courier steps into the carriage.",
+            negativePrompt: "hand distortion",
+          },
+          {
+            start: 8,
+            end: 12,
+            description: "The train departs.",
+            integratedMultimodalDescription: "[Shot 1] The courier steadies inside the carriage while the wet platform begins sliding past the window.",
+            overallSoundscape: "The doors seal and rail noise rises.",
+            nonDiegeticMusic: "Sustained low strings fade at the end.",
+            endingState: "The courier watches the platform recede.",
+            negativePrompt: "",
+          },
+        ],
+      };
+    },
+  });
+  assert.match(receivedPrompt, /Create the global storyboard timing yourself for exactly 12\.000 seconds/);
+  assert.match(receivedPrompt, /integratedMultimodalDescription/);
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 4.5], [4.5, 8], [8, 12]]);
+  assert.equal(plan.planMeta.timelineSource, "ollama");
+  assert.equal(plan.planningSettings.segmentCount, 3);
+  assert.match(plan.negativePrompt, /no readable signs/);
+  assert.match(plan.negativePrompt, /flicker, watermark/);
+  assert.match(plan.segments[0].prompt, /a wide shot follows the courier/);
+  assert.match(plan.segments[1].prompt, /^For the target video, at 0\.00 seconds into the target video/);
+  assert.equal(plan.segments[1].negativePrompt, "hand distortion");
+});
+
+test("automatic planner rejects invalid Ollama storyboard arithmetic", async () => {
+  let attempts = 0;
+  await assert.rejects(() => planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
+    request: async () => {
+      attempts += 1;
+      return { continuityBible: {}, segments: [{ start: 0, end: 5, description: "first" }, { start: 6, end: 10, description: "second" }] };
+    },
+  }), { code: "OLLAMA_TIMELINE_INVALID" });
+  assert.equal(attempts, 2);
+});
+
+test("automatic planner repairs one invalid Ollama timeline response", async () => {
+  const requests = [];
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
+    request: async (request) => {
+      requests.push(request);
+      if (request.attempt === 1) return { continuityBible: {}, segments: [] };
+      return {
+        continuityBible: { visualStyle: "cinematic" },
+        segments: [{ start: 0, end: 4, description: "first" }, { start: 4, end: 10, description: "second" }],
+      };
+    },
+  });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].repair, true);
+  assert.match(requests[1].prompt, /Failure code: OLLAMA_TIMELINE_INVALID/);
+  assert.equal(plan.planMeta.repairAttempts, 1);
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 4], [4, 10]]);
+});
+
+test("automatic planner repairs one invalid JSON response", async () => {
+  let attempts = 0;
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
+    request: async ({ prompt }) => {
+      attempts += 1;
+      if (attempts === 1) return "this is not JSON";
+      assert.match(prompt, /Failure code: OLLAMA_INVALID_JSON/);
+      return { continuityBible: {}, segments: [{ start: 0, end: 5, description: "first" }, { start: 5, end: 10, description: "second" }] };
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(plan.planMeta.repairAttempts, 1);
 });
 
 test("planner accepts timeline-only text briefs", async () => {
@@ -109,6 +290,7 @@ test("sequence draft ignores allocation injection and locks an allocated folder"
   assert.equal(created.status, 201);
   assert.equal(created.body.job.outputAllocated, undefined);
   assert.equal(created.body.job.status, "ready");
+  assert.deepEqual(created.body.job.planningSettings, { timelineMode: "manual", targetDuration: 10, segmentDurationHint: 5, segmentCount: 2 });
   const renamed = apiResponse();
   await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: created.body.job.revision, outputFolder: "renamed-folder" }), renamed, {});
   assert.equal(renamed.status, 200);
@@ -211,8 +393,9 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
     height: 416,
     steps: 2,
     seed: 1,
+    negativePrompt: "global blur constraint",
     continuityBible: { sound: "wind", nonDiegeticMusic: "N/A" },
-    segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "a" }, { id: "s2", start: 5, end: 10, duration: 5, description: "b" }],
+    segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "a" }, { id: "s2", start: 5, end: 10, duration: 5, description: "b", negativePrompt: "hand distortion" }],
   };
   const result = await runSequence(job, {
     generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath, id: `g${payload.segmentIndex}` }; },
@@ -226,6 +409,8 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
   assert.equal(calls.length, 2);
   assert.equal(calls[0].mode, "t2v");
   assert.equal(calls[1].mode, "i2v");
+  assert.equal(calls[0].negativePrompt, "global blur constraint");
+  assert.equal(calls[1].negativePrompt, "global blur constraint, hand distortion");
   assert.ok(calls[1].tailImagePath);
 });
 

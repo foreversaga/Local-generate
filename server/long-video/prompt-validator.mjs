@@ -17,6 +17,9 @@ export function validatePrompt(prompt, { mode = "t2v" } = {}) {
   if (positions.some((position) => position < 0) || positions.some((position, index) => index > 0 && position <= positions[index - 1])) {
     throw new LongVideoError("PROMPT_FIELDS_INVALID", `Prompt fields must appear in order: ${required.join(", ")}.`, 400, { required });
   }
+  if (mode !== "ref2v" && !/integrated_multimodal_description\s*:\s*\[Shot\s+1\]/i.test(value)) {
+    throw new LongVideoError("PROMPT_SHOT1_REQUIRED", "integrated_multimodal_description must begin with [Shot 1].", 400);
+  }
   return { valid: true, mode, fields: required, prompt: value };
 }
 
