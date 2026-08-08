@@ -1,0 +1,332 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { allocateSequenceOutputPath, sequenceAttemptFile, validateOutputFolderName } from "../server/long-video/paths.mjs";
+import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
+import { buildI2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
+import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
+import { appendEvent, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
+import { runSequence } from "../server/long-video/runner.mjs";
+import { planSequence } from "../server/long-video/planner.mjs";
+import { handleLongVideoRoute } from "../server/long-video/api.mjs";
+import { createSequenceRecord, sanitizeAssetRef, validateSequenceInput } from "../server/long-video/schema.mjs";
+
+function apiRequest(method, url, value = {}) {
+  return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
+}
+
+function apiResponse() {
+  return { headersSent: false, writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } };
+}
+
+test("rejects Windows reserved names and traversal", async () => {
+  assert.throws(() => validateOutputFolderName("CON"), { code: "OUTPUT_FOLDER_INVALID" });
+  assert.throws(() => validateOutputFolderName("trail."), { code: "OUTPUT_FOLDER_INVALID" });
+  assert.throws(() => validateOutputFolderName(" trail"), { code: "OUTPUT_FOLDER_INVALID" });
+  assert.throws(() => validateOutputFolderName("x".repeat(81)), { code: "OUTPUT_FOLDER_INVALID" });
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-output-"));
+  const allocated = await allocateSequenceOutputPath("safe-folder", { root });
+  assert.equal(path.basename(allocated.path), "safe-folder");
+  await assert.rejects(() => allocateSequenceOutputPath("safe-folder", { root }), { code: "OUTPUT_FOLDER_EXISTS" });
+});
+
+test("sanitizes asset refs and normalizes image first-frame inputs", () => {
+  for (const value of [
+    { name: "" },
+    { name: "/tmp/frame.png" },
+    { name: "C:\\tmp\\frame.png" },
+    { name: "\\\\server\\share\\frame.png" },
+    { name: "nested/../frame.png" },
+  ]) {
+    assert.throws(() => sanitizeAssetRef(value), { code: "ASSET_REF_INVALID" });
+  }
+  assert.deepEqual(sanitizeAssetRef({ root: "input", name: "nested\\frame.png", kind: "image" }), { root: "input", name: "nested/frame.png", kind: "image" });
+  const normalized = validateSequenceInput({ inputType: "image", imagePurpose: "first_frame", inputAsset: { root: "input", name: "frame.png" }, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] });
+  assert.equal(normalized.inputAsset.kind, "image");
+  assert.throws(() => validateSequenceInput({ inputType: "image", imagePurpose: "first_frame", timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }), { code: "INPUT_ASSET_REQUIRED" });
+  assert.throws(() => validateSequenceInput({ inputType: "image", imagePurpose: "first_frame", inputAsset: { name: "clip.mp4", kind: "video" }, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }), { code: "INPUT_ASSET_KIND_INVALID" });
+  assert.equal(createSequenceRecord({ outputFolder: "unallocated", outputAllocated: true, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }).outputAllocated, undefined);
+});
+
+test("parses timestamp and N-second timelines deterministically", () => {
+  assert.deepEqual(parseTimeline("[00:00.000 - 00:05.000] opening\n[00:05.000 - 00:10.000] ending").map((item) => item.duration), [5, 5]);
+  assert.deepEqual(parseTimeline("5秒：opening\n5s: ending").map((item) => [item.start, item.end]), [[0, 5], [5, 10]]);
+  assert.throws(() => parseTimeline("[00:00 - 00:05] a\n[00:06 - 00:10] b"), { code: "TIMELINE_GAP" });
+});
+
+test("prompt field order and I2VA first line are stable", () => {
+  const t2v = buildT2VAPrompt({ description: "walk" }, { sound: "wind", nonDiegeticMusic: "N/A" });
+  validatePrompt(t2v, { mode: "t2v" });
+  const i2v = buildI2VAPrompt({ description: "continue" });
+  assert.match(i2v, /^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot 1\]\) is fully referenced\./);
+  validatePrompt(i2v, { mode: "i2v" });
+});
+
+test("planner parses author timeline before Ollama and ignores model timing", async () => {
+  let called = 0;
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineText: "5s: first\n5s: second" }, {
+    request: async () => { called += 1; return { continuityBible: {}, segments: [{ start: 100, end: 200, description: "model first" }, { start: 200, end: 300, description: "model second" }] }; },
+  });
+  assert.equal(called, 1);
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
+  await assert.rejects(() => planSequence({ inputType: "text", inputText: "brief", timelineText: "[00:00 - 00:05] first\n[00:06 - 00:10] second" }, { request: async () => { throw new Error("must not call"); } }), { code: "TIMELINE_GAP" });
+});
+
+test("planner accepts timeline-only text briefs", async () => {
+  const plan = await planSequence({ inputType: "text", timelineText: "5s: first\n5s: second" }, { request: async () => ({ continuityBible: {}, segments: [] }) });
+  assert.equal(plan.segments.length, 2);
+});
+
+test("segment PATCH persists canonical duration and invalidates downstream", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-segment-api-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const job = await createJob({ title: "segment-api", inputType: "text", inputText: "brief", outputFolder: "segment-api", duration: 9, timeline: [{ start: 0, end: 4, description: "a" }, { start: 4, end: 7, description: "b" }, { start: 7, end: 9, description: "c" }] });
+  const seeded = await updateJob(job.id, { segments: job.segments.map((segment, index) => ({ ...segment, status: index === 0 ? "completed" : "completed", normalizedAsset: { root: "output", name: `segment-api/${index + 1}.mp4`, kind: "video" } })), timeline: job.segments });
+  const response = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${job.id}/segments/1`, { start: 4, end: 7, description: "changed" }), response, {});
+  assert.equal(response.status, 200);
+  assert.equal(response.body.job.segments[1].duration, 3);
+  assert.equal(response.body.job.segments[1].status, "pending");
+  assert.equal(response.body.job.segments[2].status, "stale");
+  assert.equal(response.body.job.segments[2].normalizedAsset.name, "segment-api/3.mp4");
+  const invalid = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${job.id}/segments/1`, { duration: 99 }), invalid, {});
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error.code, "SEGMENT_PATCH_INVALID");
+  assert.equal(seeded.revision, 2);
+});
+
+test("sequence draft ignores allocation injection and locks an allocated folder", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-sequence-patch-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const payload = { title: "draft", inputType: "text", inputText: "brief", outputFolder: "draft-folder", outputAllocated: true, status: "running", duration: 10, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] };
+  const created = apiResponse();
+  await handleLongVideoRoute(apiRequest("POST", "/api/sequences", payload), created, {});
+  assert.equal(created.status, 201);
+  assert.equal(created.body.job.outputAllocated, undefined);
+  assert.equal(created.body.job.status, "ready");
+  const renamed = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: created.body.job.revision, outputFolder: "renamed-folder" }), renamed, {});
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.job.outputFolder, "renamed-folder");
+  const badWidth = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: renamed.body.job.revision, width: 735 }), badWidth, {});
+  assert.equal(badWidth.status, 400);
+  assert.equal(badWidth.body.error.code, "WIDTH_INVALID");
+  const injected = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: renamed.body.job.revision, status: "completed", outputAllocated: true, unknownField: "must-not-persist", title: "safe" }), injected, {});
+  assert.equal(injected.status, 200);
+  assert.equal(injected.body.job.status, "ready");
+  assert.equal(injected.body.job.outputAllocated, false);
+  assert.equal(injected.body.job.unknownField, undefined);
+  const completedSegments = injected.body.job.segments.map((segment) => ({ ...segment, status: "completed", normalizedAsset: { root: "output", name: `renamed-folder/${segment.index + 1}.mp4`, kind: "video" } }));
+  const completed = await updateJob(created.body.job.id, { segments: completedSegments, timeline: completedSegments });
+  const changedSeed = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: completed.revision, seed: 9876 }), changedSeed, {});
+  assert.equal(changedSeed.status, 200);
+  assert.equal(changedSeed.body.job.segments[0].status, "pending");
+  assert.equal(changedSeed.body.job.segments.slice(1).every((segment) => segment.status === "stale"), true);
+  const allocated = await updateJob(created.body.job.id, { outputAllocated: true });
+  const locked = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, { revision: allocated.revision, outputFolder: "another-folder" }), locked, {});
+  assert.equal(locked.status, 409);
+  assert.equal(locked.body.error.code, "OUTPUT_FOLDER_LOCKED");
+  const paused = await updateJob(created.body.job.id, { status: "paused" });
+  const startPaused = apiResponse();
+  await handleLongVideoRoute(apiRequest("POST", `/api/sequences/${created.body.job.id}/start`), startPaused, {});
+  assert.equal(startPaused.status, 409);
+  assert.equal(startPaused.body.error.code, "SEQUENCE_ALREADY_RUNNING");
+  assert.equal(paused.status, "paused");
+});
+
+test("retry and prompt edits stale dependent segments", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-retry-api-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const job = await createJob({ title: "retry", inputType: "text", inputText: "brief", outputFolder: "retry-job", duration: 15, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }, { start: 10, end: 15, description: "c" }] });
+  const segments = job.segments.map((segment, index) => ({ ...segment, status: "completed", prompt: index === 0 ? buildT2VAPrompt(segment) : buildI2VAPrompt(segment), normalizedAsset: { root: "output", name: `retry-job/${index + 1}.mp4`, kind: "video" } }));
+  await updateJob(job.id, { segments, timeline: segments });
+  const response = apiResponse();
+  await handleLongVideoRoute(apiRequest("POST", `/api/sequences/${job.id}/segments/0/retry`), response, {});
+  assert.equal(response.status, 200);
+  assert.equal(response.body.job.segments[0].status, "pending");
+  assert.equal(response.body.job.segments[1].status, "stale");
+  assert.equal(response.body.job.segments[2].status, "stale");
+  const promptResponse = apiResponse();
+  await handleLongVideoRoute(apiRequest("POST", `/api/sequences/${job.id}/segments/0/prompt`, { revision: response.body.job.revision, prompt: buildT2VAPrompt({ description: "new opening" }) }), promptResponse, {});
+  assert.equal(promptResponse.status, 200);
+  assert.equal(promptResponse.body.job.segments[0].status, "ready");
+  assert.equal(promptResponse.body.job.segments[1].status, "stale");
+});
+
+test("long-video polling is source-limited to active statuses", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const LONG_VIDEO_POLL_STATUSES = new Set\(\["queued", "running", "paused", "assembling", "planning"\]\)/);
+  assert.match(page, /if \(!trackedJobId \|\| !LONG_VIDEO_POLL_STATUSES\.has\(trackedStatus \|\| ""\)\) return/);
+  assert.match(page, /const terminalTransition = LONG_VIDEO_TERMINAL_STATUSES\.has\(nextJob\.status\)/);
+});
+
+test("legacy generation retains bounded stderr and exit code diagnostics", async () => {
+  const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
+  assert.match(bridge, /job\.stderrTail = `\$\{job\.stderrTail \|\| ""\}\$\{text\}`\.slice\(-stderrLimit\)/);
+  assert.match(bridge, /entry\.job\.exitCode = Number\.isInteger\(code\) \? code : null/);
+  assert.match(bridge, /job\.exitCode = Number\.isInteger\(code\) \? code : \(job\.exitCode \?\? null\)/);
+});
+
+test("store increments revision atomically and records events", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-store-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const job = await createJob({ title: "store", inputType: "text", inputText: "brief", outputFolder: "store-job", duration: 10, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] });
+  const changed = await updateJob(job.id, { title: "changed" }, { expectedRevision: 1 });
+  assert.equal(changed.revision, 2);
+  assert.equal((await getJob(job.id)).title, "changed");
+  await appendEvent(job.id, { event: "test.event", level: "info", segmentIndex: 0 });
+  await appendEvent(job.id, { event: "test.redaction", nested: { token: "secret", base64: "blob", safe: "ok" } });
+  const events = await readFile(path.join(root, "data", "jobs", job.id, "events.jsonl"), "utf8");
+  assert.match(events, /test\.event/);
+  assert.doesNotMatch(events, /secret|blob/);
+  const tmpFiles = (await readdir(path.join(root, "data", "jobs", job.id))).filter((item) => item.endsWith(".tmp"));
+  assert.equal(tmpFiles.length, 0);
+});
+
+test("runner strictly sequences fake generation and uses prior tail", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-runner-"));
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "job");
+  const calls = [];
+  const job = {
+    id: "memory-job",
+    inputType: "text",
+    outputPath: output,
+    outputFolder: "job",
+    status: "ready",
+    revision: 1,
+    duration: 10,
+    width: 736,
+    height: 416,
+    steps: 2,
+    seed: 1,
+    continuityBible: { sound: "wind", nonDiegeticMusic: "N/A" },
+    segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "a" }, { id: "s2", start: 5, end: 10, duration: 5, description: "b" }],
+  };
+  const result = await runSequence(job, {
+    generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath, id: `g${payload.segmentIndex}` }; },
+    normalize: async ({ outputPath }) => ({ outputPath }),
+    extractTail: async ({ outputPath }) => ({ outputPath }),
+    assemble: async ({ segmentPaths }) => ({ outputPath: path.join(output, "final-r001.mp4"), segmentPaths }),
+    updateJob: async (target, patch) => Object.assign(target, patch),
+    updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].mode, "t2v");
+  assert.equal(calls[1].mode, "i2v");
+  assert.ok(calls[1].tailImagePath);
+});
+
+test("start media preflight fails before allocating output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-api-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const request = (method, url, value) => ({ method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value || {})); } });
+  const response = () => ({ headersSent: false, writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } });
+  const plan = { title: "preflight", inputType: "text", inputText: "brief", outputFolder: "preflight-job", duration: 10, continuityBible: {}, segments: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] };
+  const createdResponse = response();
+  await handleLongVideoRoute(request("POST", "/api/sequences", plan), createdResponse, {});
+  const startResponse = response();
+  let runCalled = false;
+  await handleLongVideoRoute(request("POST", `/api/sequences/${createdResponse.body.job.id}/start`), startResponse, {
+    preflight: async () => { throw Object.assign(new Error("missing ffmpeg"), { code: "MEDIA_TOOLS_UNAVAILABLE" }); },
+    runJob: async () => { runCalled = true; },
+  });
+  assert.equal(startResponse.status, 503);
+  assert.equal(startResponse.body.error.code, "MEDIA_TOOLS_UNAVAILABLE");
+  assert.equal(runCalled, false);
+  assert.deepEqual(await readdir(path.join(root, "output")).catch(() => []), []);
+});
+
+test("runner resumes after a completed segment without regenerating it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-resume-"));
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "resume");
+  const calls = [];
+  const job = {
+    id: "resume-memory", inputType: "text", outputPath: output, outputFolder: "resume", status: "interrupted", revision: 1,
+    width: 736, height: 416, steps: 2, seed: 1, continuityBible: {},
+    segments: [
+      { id: "s1", start: 0, end: 5, duration: 5, description: "a", status: "completed", normalizedAsset: { root: "output", name: "resume/s1.mp4", kind: "video" }, tailAsset: { root: "output", name: "resume/s1-tail.png", kind: "image" } },
+      { id: "s2", start: 5, end: 10, duration: 5, description: "b", status: "rendering" },
+    ],
+  };
+  const result = await runSequence(job, {
+    verifyCompletedSegment: async () => ({ normalizedPath: path.join(output, "s1.mp4"), tailPath: path.join(output, "s1-tail.png") }),
+    generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath }; },
+    normalize: async () => {}, extractTail: async () => {},
+    assemble: async () => ({ outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }),
+    updateJob: async (target, patch) => Object.assign(target, patch), updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].segmentIndex, 1);
+  assert.equal(calls[0].mode, "i2v");
+  assert.match(calls[0].tailImagePath, /s1-tail\.png$/);
+});
+
+test("runner regenerates stale downstream segments after retry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-stale-runner-"));
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "stale-runner");
+  const calls = [];
+  const job = {
+    id: "stale-runner", inputType: "text", outputPath: output, outputFolder: "stale-runner", status: "ready", revision: 1,
+    width: 736, height: 416, steps: 2, seed: 1, continuityBible: {},
+    segments: [
+      { id: "s1", start: 0, end: 5, duration: 5, description: "a", status: "completed", normalizedAsset: { root: "output", name: "stale-runner/s1.mp4", kind: "video" }, tailAsset: { root: "output", name: "stale-runner/s1-tail.png", kind: "image" } },
+      { id: "s2", start: 5, end: 10, duration: 5, description: "b", status: "stale", normalizedAsset: { root: "output", name: "stale-runner/old-s2.mp4", kind: "video" } },
+    ],
+  };
+  const result = await runSequence(job, {
+    verifyCompletedSegment: async () => ({ normalizedPath: path.join(output, "s1.mp4"), tailPath: path.join(output, "s1-tail.png") }),
+    generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath }; },
+    normalize: async () => {}, extractTail: async () => {},
+    assemble: async () => ({ outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }),
+    updateJob: async (target, patch) => Object.assign(target, patch), updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].segmentIndex, 1);
+  assert.match(calls[0].tailImagePath, /s1-tail\.png$/);
+});
+
+test("runner failure preserves attempt prompt, settings, generation id and media diagnostics", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-attempt-failure-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "attempt-failure");
+  const job = {
+    id: "attempt-failure", inputType: "text", outputPath: output, outputFolder: "attempt-failure", status: "ready", revision: 1,
+    width: 736, height: 416, steps: 12, seed: 42, modelProfile: "profile-x", negativePrompt: "no blur", continuityBible: {},
+    segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "opening" }, { id: "s2", start: 5, end: 10, duration: 5, description: "ending" }],
+  };
+  await assert.rejects(() => runSequence(job, {
+    generate: async (payload) => ({ rawPath: payload.outputPath, id: "generation-123" }),
+    normalize: async () => { throw Object.assign(new Error("fake ffmpeg failed"), { code: "FFMPEG_FAILED", details: { stderrTail: "stderr tail", exitCode: 7 } }); },
+    updateJob: async (target, patch) => Object.assign(target, patch),
+    updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+  }), { message: "fake ffmpeg failed" });
+  const attempt = JSON.parse(await readFile(sequenceAttemptFile(job.id, 0, 1), "utf8"));
+  assert.equal(attempt.status, "failed");
+  assert.equal(attempt.mode, "t2v");
+  assert.equal(attempt.generationJobId, "generation-123");
+  assert.equal(attempt.exitCode, 7);
+  assert.equal(attempt.stderrTail, "stderr tail");
+  assert.equal(attempt.seed, 42);
+  assert.equal(attempt.modelProfile, "profile-x");
+  assert.match(attempt.prompt, /integrated_multimodal_description/);
+  assert.doesNotMatch(JSON.stringify(attempt), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});

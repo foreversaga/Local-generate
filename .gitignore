@@ -41,3 +41,4 @@ dev.*.log
 /outputs/
 /work/
 /logs/
+/data/jobs/

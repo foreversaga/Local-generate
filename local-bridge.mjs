@@ -5,6 +5,9 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { handleLongVideoRoute } from "./server/long-video/api.mjs";
+import { runSequence } from "./server/long-video/runner.mjs";
+import { checkMediaTools } from "./server/long-video/media.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -22,6 +25,8 @@ const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
 const PYTHON = path.join(COMFY_ROOT, "venv", "Scripts", "python.exe");
+const REF2VA_MODEL_NAME = "minimax_h3_ref2va_pruned_nvfp4.safetensors";
+const REF2VA_MODEL = path.join(COMFY_ROOT, "models", "diffusion_models", REF2VA_MODEL_NAME);
 const COMFY_URL = (process.env.COMFY_URL || "http://127.0.0.1:8188").replace(/\/$/, "");
 const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
 const MAX_BODY_BYTES = 260 * 1024 * 1024;
@@ -597,6 +602,24 @@ async function allocateOutputPath(requestedName) {
   throw new Error("找不到可用的輸出檔名，請清理或關閉已存在的同名影片。");
 }
 
+// Sequence output paths are intentionally separate from the single-render
+// allocator above.  The latter always strips directories; this adapter allows
+// only a validated path beneath ComfyUI/output and never changes single-shot
+// behavior.
+async function allocateSequenceOutputMediaPath(relativeName) {
+  const clean = String(relativeName || "").replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!clean || clean.split("/").some((part) => !part || part === "." || part === ".." || /[<>:"|?*]/.test(part) || Array.from(part).some((character) => character.charCodeAt(0) < 32))) {
+    throw new Error("Invalid sequence output path.");
+  }
+  const candidatePath = safePath(OUTPUT_ROOT, clean);
+  if (reservedOutputPaths.has(candidatePath) || await fs.stat(candidatePath).catch(() => null)) {
+    throw new Error("Sequence output file already exists.");
+  }
+  await fs.mkdir(path.dirname(candidatePath), { recursive: true });
+  reservedOutputPaths.add(candidatePath);
+  return { name: clean, path: candidatePath };
+}
+
 function publicJob(job) {
   updateJobTiming(job);
   return {
@@ -643,6 +666,9 @@ function stageProgress(classType) {
     UNETLoader: 24,
     VAELoader: 27,
     MiniMaxH3ImageToVideo: 30,
+    MiniMaxH3ReferenceToVideo: 30,
+    LoadVideo: 24,
+    GetVideoComponents: 27,
     SamplerCustomAdvanced: 32,
     VAEDecode: 93,
     VAEDecodeAudio: 95,
@@ -759,8 +785,11 @@ function updateJobFromLine(job, line) {
 
 function attachProcessOutput(job, stream, isError = false) {
   let buffer = "";
+  const stderrLimit = 4096;
   stream.on("data", (chunk) => {
-    buffer += chunk.toString();
+    const text = chunk.toString();
+    if (isError) job.stderrTail = `${job.stderrTail || ""}${text}`.slice(-stderrLimit);
+    buffer += text;
     const lines = buffer.split(/\r\n|\n|\r/);
     buffer = lines.pop() || "";
     for (const line of lines) {
@@ -830,6 +859,7 @@ function pumpGenerationQueue() {
     actualChild.stderr.pipe(entry.child.stderr);
     actualChild.on("error", (error) => entry.child.emit("error", error));
     actualChild.on("close", (code) => {
+      entry.job.exitCode = Number.isInteger(code) ? code : null;
       activeGenerationId = null;
       entry.child.emit("close", code);
     });
@@ -842,10 +872,7 @@ function pumpGenerationQueue() {
 
 async function startGeneration(payload) {
   await timingHistoryReady;
-  if (payload.mode === "ref2v") {
-    throw new Error("目前本機生成器尚未接入原生 Ref2VA；請先使用 Ref2VA 提示詞，或切換到可生成的 H3 模式。");
-  }
-  const mode = ["t2v", "i2v", "fl2v", "l2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
+  const mode = ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
   const prompt = String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
@@ -875,8 +902,26 @@ async function startGeneration(payload) {
     inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
     inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
   }
+  if (mode === "ref2v") {
+    if (payload.referenceImageName) {
+      inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
+    }
+    if (payload.inputVideoName) {
+      inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
+    }
+    if (!inputImagePath && !inputVideoPath) {
+      throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
+    }
+    if (!(await fs.stat(REF2VA_MODEL).catch(() => null))) {
+      throw new Error(
+        `尚未安裝 Ref2VA diffusion model：${REF2VA_MODEL_NAME}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
+      );
+    }
+  }
 
-  const output = await allocateOutputPath(requestedOutputName);
+  const output = payload.sequenceOutputPath
+    ? await allocateSequenceOutputMediaPath(payload.sequenceOutputPath)
+    : await allocateOutputPath(requestedOutputName);
   const outputName = output.name;
   const outputPath = output.path;
 
@@ -885,7 +930,11 @@ async function startGeneration(payload) {
   const duration = clampNumber(payload.duration, 5, 0.5, 60);
   const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
-  const modelProfile = mode === "replace" ? "wan22_animate_fp8" : String(payload.modelProfile || "nvfp4_blackwell");
+  const modelProfile = mode === "replace"
+    ? "wan22_animate_fp8"
+    : mode === "ref2v"
+      ? "ref2va_pruned_nvfp4"
+      : String(payload.modelProfile || "nvfp4_blackwell");
   const negativePrompt = String(payload.negativePrompt || "").trim();
   const batchId = String(payload.batchId || "");
   const batchIndex = Math.round(clampNumber(payload.batchIndex, 1, 1, 20));
@@ -911,6 +960,7 @@ async function startGeneration(payload) {
     updatedAt: now(),
     connectionState: "starting",
     outputName,
+    outputRelativeName: output.name,
     outputPath,
     cancelRequested: false,
   };
@@ -969,6 +1019,11 @@ async function startGeneration(payload) {
     ];
     if (inputImagePath) args.push("--input-image", inputImagePath);
     if (lastImagePath) args.push("--last-image", lastImagePath);
+    if (mode === "ref2v") {
+      args.push("--task", "ref2v");
+      if (inputImagePath) args.push("--reference-image", inputImagePath);
+      if (inputVideoPath) args.push("--reference-video", inputVideoPath);
+    }
   }
 
   const childEnv = {
@@ -991,8 +1046,10 @@ async function startGeneration(payload) {
   attachProcessOutput(job, child.stderr, true);
   child.on("error", (error) => {
     job.error = error.message;
+    job.exitCode = -1;
   });
   child.on("close", async (code) => {
+    job.exitCode = Number.isInteger(code) ? code : (job.exitCode ?? null);
     jobProcesses.delete(job.id);
     const outputRelativeName = job.outputRelativeName || outputName;
     const nativeOutputPath = await resolveMediaPath("output", outputRelativeName).catch(() => null);
@@ -1029,6 +1086,64 @@ async function startGeneration(payload) {
     queueMicrotask(pumpGenerationQueue);
   });
   return publicJob(job);
+}
+
+function sequenceMediaName(value, fallbackRoot = OUTPUT_ROOT) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  if (path.isAbsolute(raw)) {
+    const absolute = path.resolve(raw);
+    const root = path.resolve(fallbackRoot);
+    if (absolute === root || !absolute.startsWith(root + path.sep)) throw new Error("Sequence media path is outside ComfyUI/output.");
+    return path.relative(root, absolute).replaceAll("\\", "/");
+  }
+  return raw.replaceAll("\\", "/").replace(/^\/+/, "");
+}
+
+async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const job = jobs.get(id);
+    if (!job) throw new Error("Legacy generation job disappeared.");
+    if (job.status === "completed") {
+      const relative = job.outputRelativeName || job.outputName;
+      const actual = relative ? safePath(OUTPUT_ROOT, relative) : null;
+      const actualExists = actual && await fs.stat(actual).then((item) => item.isFile()).catch(() => false);
+      return { id, outputPath: actualExists ? actual : (job.outputPath || actual), job };
+    }
+    if (["failed", "cancelled"].includes(job.status)) {
+      const error = new Error(job.error || `Legacy generation ended with ${job.status}.`);
+      error.code = "GENERATION_FAILED";
+      error.details = { stderrTail: job.stderrTail || job.error || "", exitCode: job.exitCode };
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const error = new Error("Legacy generation timed out.");
+  error.code = "GENERATION_TIMEOUT";
+  throw error;
+}
+
+async function startSequenceGeneration(payload) {
+  const inputAsset = payload.inputAsset;
+  const inputImageName = payload.inputImagePath
+    ? sequenceMediaName(payload.inputImagePath, payload.segmentIndex === 0 ? INPUT_ROOT : OUTPUT_ROOT)
+    : inputAsset?.name || (typeof inputAsset === "string" ? inputAsset : "");
+  const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
+  const legacy = await startGeneration({
+    mode: payload.mode,
+    prompt: payload.prompt,
+    negativePrompt: payload.negativePrompt,
+    inputImageName,
+    duration: payload.duration,
+    width: payload.width,
+    height: payload.height,
+    steps: payload.steps,
+    seed: payload.seed,
+    modelProfile: payload.modelProfile || "nvfp4_blackwell",
+    sequenceOutputPath,
+  });
+  return await waitForLegacyGeneration(legacy.id);
 }
 
 function trimJobs() {
@@ -1112,6 +1227,19 @@ async function route(req, res) {
   }
   const requestUrl = new URL(req.url || "/", "http://localhost");
   const pathname = requestUrl.pathname;
+
+  if (pathname === "/api/sequences" || pathname.startsWith("/api/sequences/")) {
+    const handled = await handleLongVideoRoute(req, res, {
+      planOptions: { ollamaUrl: OLLAMA_URL },
+      outputOptions: { root: OUTPUT_ROOT },
+      preflight: () => checkMediaTools(),
+      runJob: (job, deps) => runSequence(job, {
+        ...deps,
+        generate: startSequenceGeneration,
+      }),
+    });
+    if (handled) return;
+  }
 
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, await health());

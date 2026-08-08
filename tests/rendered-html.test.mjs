@@ -116,7 +116,11 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /Ref2VA full-reference prompt engineer/);
   assert.match(bridge, /subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music/);
   assert.match(bridge, /<Subject N>, <Picture N>, <Video N>, and <Audio N>/);
-  assert.match(bridge, /目前本機生成器尚未接入原生 Ref2VA/);
+  assert.match(bridge, /"ref2v"/);
+  assert.match(bridge, /--task", "ref2v"/);
+  assert.match(bridge, /--reference-image/);
+  assert.match(bridge, /--reference-video/);
+  assert.doesNotMatch(bridge, /目前本機生成器尚未接入原生 Ref2VA/);
   assert.match(bridge, /identity drift, face drift, costume drift/);
   assert.match(bridge, /source-video preview frame/);
   assert.match(bridge, /hasLastImageGeneratorFlag/);

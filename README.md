@@ -1,5 +1,11 @@
 # H3 Studio
 
+## Long-video jobs and diagnostics
+
+Long-video drafts and jobs are persisted under `data/jobs/<sequence-id>/`. Each job has an atomic `job.json`, segment files, and an append-only `events.jsonl` with generation, ffprobe/ffmpeg, assembly, API start, and restart-recovery events. A daily summary is written to `logs/long-video-YYYYMMDD.jsonl`; logs include command exit codes and the last stderr bytes but never tokens, base64 media, or repeated full prompts. Set `FFMPEG_PATH` and `FFPROBE_PATH` when the executables are not on `PATH`. Sequence output folders are allocated exclusively below `ComfyUI/output`; an existing folder returns `OUTPUT_FOLDER_EXISTS`.
+
+Continuation prompt finalization has an injectable `finalizePrompt` seam in the runner; wiring it to an actual-tail Ollama image request is intentionally deferred until a vision model/image transport is selected.
+
 本機 MiniMax H3 影片控制介面。網頁服務同時處理 Ollama、ComfyUI、檔案資源與影片生成，直接使用已開放的 `8787` port。
 
 ## 啟動
