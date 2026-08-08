@@ -68,6 +68,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /ultra/);
   assert.match(page, /BRIDGE_URL \+ "\/api\/prompt"/);
   assert.match(page, /const VIDEO_PAGE_SIZE = 10/);
+  assert.match(page, /const videoPageNumbers = Array\.from\(\{ length: videoPageCount \}/);
+  assert.match(page, /asset-pagination-number/);
+  assert.match(page, /aria-current=\{currentVideoPage === page \? "page" : undefined\}/);
   assert.match(page, /async function deleteOutputAsset\(asset: Asset\)/);
   assert.match(page, /asset\.kind === "image" \|\| asset\.kind === "video"/);
   assert.match(page, /method: "DELETE"/);

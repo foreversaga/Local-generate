@@ -1769,11 +1769,26 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
   color: #71847e;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
+}
+
+.asset-pagination-label {
+  color: #a8b9b2;
+  font-family: "DM Sans", "Segoe UI", Arial, sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.asset-page-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
 }
 
 .asset-pagination-button {
@@ -1786,10 +1801,33 @@ code {
   font-size: 9px;
 }
 
+.asset-pagination-number {
+  min-width: 28px;
+  padding: 0 6px;
+}
+
+.asset-pagination-button.is-current {
+  border-color: #6e8c56;
+  color: #172019;
+  background: var(--lime);
+  box-shadow: 0 0 14px rgba(200, 241, 105, 0.16);
+}
+
 .asset-pagination-button:hover:not(:disabled) {
   border-color: #6f9a8b;
   color: var(--cyan);
   background: rgba(141, 226, 221, 0.1);
+}
+
+.asset-pagination-button.is-current:hover:not(:disabled) {
+  border-color: var(--lime);
+  color: #172019;
+  background: #dcff8f;
+}
+
+.asset-pagination-summary {
+  color: #71847e;
+  white-space: nowrap;
 }
 
 .empty-library {

@@ -611,6 +611,7 @@ export default function Home() {
   const filteredOutputAssets = filteredAssets.filter((asset) => asset.root === "output");
   const videoPageCount = Math.max(1, Math.ceil(filteredOutputAssets.length / VIDEO_PAGE_SIZE));
   const currentVideoPage = Math.min(videoPage, videoPageCount);
+  const videoPageNumbers = Array.from({ length: videoPageCount }, (_, index) => index + 1);
   const paginatedOutputAssets = assetFilter === "video"
     ? filteredOutputAssets.slice(
       (currentVideoPage - 1) * VIDEO_PAGE_SIZE,
@@ -2681,25 +2682,42 @@ export default function Home() {
                         ))}
                         </div>
                         {group.root === "output" && assetFilter === "video" && (
-                          <div className="asset-pagination" aria-label="影片分頁">
+                          <nav className="asset-pagination" aria-label="影片分頁">
                             <button
                               type="button"
                               className="asset-pagination-button"
                               disabled={currentVideoPage <= 1}
                               onClick={() => setVideoPage((page) => Math.max(1, page - 1))}
+                              aria-label="上一頁影片"
                             >
                               上一頁
                             </button>
-                            <span>第 {currentVideoPage} / {videoPageCount} 頁 · 共 {filteredOutputAssets.length} 部影片</span>
+                            <span className="asset-pagination-label">切換頁面</span>
+                            <div className="asset-page-buttons" role="group" aria-label="選擇影片頁面">
+                              {videoPageNumbers.map((page) => (
+                                <button
+                                  type="button"
+                                  className={"asset-pagination-button asset-pagination-number " + (currentVideoPage === page ? "is-current" : "")}
+                                  key={page}
+                                  onClick={() => setVideoPage(page)}
+                                  aria-current={currentVideoPage === page ? "page" : undefined}
+                                  aria-label={`前往影片第 ${page} 頁`}
+                                >
+                                  {page}
+                                </button>
+                              ))}
+                            </div>
                             <button
                               type="button"
                               className="asset-pagination-button"
                               disabled={currentVideoPage >= videoPageCount}
                               onClick={() => setVideoPage((page) => Math.min(videoPageCount, page + 1))}
+                              aria-label="下一頁影片"
                             >
                               下一頁
                             </button>
-                          </div>
+                            <span className="asset-pagination-summary">第 {currentVideoPage} / {videoPageCount} 頁 · 共 {filteredOutputAssets.length} 部影片</span>
+                          </nav>
                         )}
                       </>
                     ) : (
