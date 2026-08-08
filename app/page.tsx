@@ -24,6 +24,17 @@ type Health = {
     online: boolean;
     models: string[];
   };
+  codex: {
+    online: boolean;
+    version?: string;
+    skill: boolean;
+    models?: Array<{
+      value: string;
+      label: string;
+      note?: string;
+      reasoningEfforts?: string[];
+    }>;
+  };
   comfy: {
     online: boolean;
     url: string;
@@ -91,7 +102,7 @@ type LongSegment = {
   prompt?: string;
   negativePrompt?: string;
   mode?: "t2v" | "i2v" | "ref2v";
-  promptSource?: "ollama" | "ollama_structured" | "manual";
+  promptSource?: "ollama" | "ollama_structured" | "codex" | "codex_structured" | "manual";
   endingState?: string;
   status?: string;
   progress?: number;
@@ -106,7 +117,10 @@ type LongPlan = {
   inputText?: string;
   inputAsset?: Asset;
   duration?: number;
+  promptProvider?: PromptProvider;
   ollamaModel?: string;
+  codexModel?: string;
+  codexReasoningEffort?: string;
   negativePrompt?: string;
   planningSettings?: {
     timelineMode?: "auto" | "manual";
@@ -117,8 +131,8 @@ type LongPlan = {
   planMeta?: {
     model?: string;
     generatedAt?: string;
-    timelineSource?: "ollama" | "author";
-    promptSource?: "ollama" | "ollama_structured";
+    timelineSource?: "ollama" | "codex" | "author";
+    promptSource?: "ollama" | "ollama_structured" | "codex" | "codex_structured";
     segmentDurationHint?: number;
     repairAttempts?: number;
     [key: string]: unknown;
@@ -166,6 +180,15 @@ type PromptModelOption = {
   vision?: boolean;
 };
 
+type PromptProvider = "ollama" | "codex";
+
+type CodexModelOption = {
+  value: string;
+  label: string;
+  note: string;
+  reasoningEfforts?: readonly string[];
+};
+
 const navItems = [
   { label: "工作台", icon: "grid", target: "workspace" },
   { label: "生成紀錄", icon: "clock", target: "render-queue" },
@@ -188,6 +211,24 @@ const promptModelCatalog: PromptModelOption[] = [
   { value: "gemma:2b", label: "Gemma 1 2B", note: "文字", vision: false },
   { value: "gemma:7b", label: "Gemma 1 7B", note: "文字", vision: false },
 ];
+
+const codexModelCatalog: CodexModelOption[] = [
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", note: "最高品質", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", note: "品質／速度平衡", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", note: "較快、低成本", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "gpt-5.5", label: "GPT-5.5", note: "通用 Codex", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+  { value: "gpt-5.4", label: "GPT-5.4", note: "日常 Codex", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", note: "較快、低成本", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+];
+
+const codexReasoningOptions = [
+  { value: "low", label: "Low", note: "最快" },
+  { value: "medium", label: "Medium", note: "平衡" },
+  { value: "high", label: "High", note: "更完整" },
+  { value: "xhigh", label: "XHigh", note: "深度" },
+  { value: "max", label: "Max", note: "最高" },
+  { value: "ultra", label: "Ultra", note: "自動分工" },
+] as const;
 
 const modelOptions = [
   { value: "nvfp4_blackwell", label: "NVFP4 Blackwell", note: "推薦 · 16GB VRAM" },
@@ -384,6 +425,12 @@ function isDeletableAsset(asset: Asset) {
   return asset.root === "output" && (asset.kind === "image" || asset.kind === "video");
 }
 
+function assetKey(asset: Asset) {
+  return asset.root + ":" + asset.name;
+}
+
+const BULK_DELETE_ASSET_KEY = "__bulk_delete__";
+
 function modelSupportsPromptImages(model: string) {
   const normalized = model.toLowerCase();
   if (normalized === "gemma3:1b") return false;
@@ -482,16 +529,21 @@ export default function Home() {
   const [assetFilter, setAssetFilter] = useState<"all" | AssetKind>("all");
   const [videoPage, setVideoPage] = useState(1);
   const [deletingAssetKey, setDeletingAssetKey] = useState<string | null>(null);
+  const [selectedAssetKeys, setSelectedAssetKeys] = useState<string[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
+  const [longReferenceImage, setLongReferenceImage] = useState<Asset | null>(null);
   const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
   const [sourceVideo, setSourceVideo] = useState<Asset | null>(null);
   const [mode, setMode] = useState<Mode>("t2v");
   const [promptBrief, setPromptBrief] = useState("");
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [promptProvider, setPromptProvider] = useState<PromptProvider>("ollama");
   const [ollamaModel, setOllamaModel] = useState("gemma4:12b");
+  const [codexModel, setCodexModel] = useState("gpt-5.6-luna");
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState("medium");
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
   const [activeNav, setActiveNav] = useState("workspace");
   const [width, setWidth] = useState<number | "">(736);
@@ -501,7 +553,7 @@ export default function Home() {
   const [seed, setSeed] = useState<NumberDraft>(12345);
   const [renderCount, setRenderCount] = useState(1);
   const [outputName, setOutputName] = useState("");
-  const [ollamaBusy, setOllamaBusy] = useState(false);
+  const [promptBusy, setPromptBusy] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [renderJobs, setRenderJobs] = useState<Job[]>([]);
   const [renderBatchSize, setRenderBatchSize] = useState(0);
@@ -521,6 +573,7 @@ export default function Home() {
   const [longJob, setLongJob] = useState<LongJob | null>(null);
   const [longBusy, setLongBusy] = useState(false);
   const [longPlanning, setLongPlanning] = useState(false);
+  const [longPlanningElapsedMs, setLongPlanningElapsedMs] = useState(0);
   const [longPlannerNotice, setLongPlannerNotice] = useState("");
   const [longPlanDirty, setLongPlanDirty] = useState(false);
   const [longError, setLongError] = useState("");
@@ -564,6 +617,11 @@ export default function Home() {
       currentVideoPage * VIDEO_PAGE_SIZE,
     )
     : filteredOutputAssets;
+  const selectedAssetKeySet = new Set(selectedAssetKeys);
+  const deletableOutputAssets = outputAssets.filter(isDeletableAsset);
+  const selectedDeletableAssets = assets.filter((asset) => isDeletableAsset(asset) && selectedAssetKeySet.has(assetKey(asset)));
+  const visibleDeletableAssets = filteredAssets.filter(isDeletableAsset);
+  const allVisibleDeletableAssetsSelected = visibleDeletableAssets.length > 0 && visibleDeletableAssets.every((asset) => selectedAssetKeySet.has(assetKey(asset)));
   const assetGroups = [
     {
       root: "input" as const,
@@ -768,12 +826,44 @@ export default function Home() {
     }
   }
 
+  function resetLongEditorState() {
+    setLongTitle("");
+    setLongFolder("");
+    setLongInputType("text");
+    setLongReferenceImage(null);
+    setLongTimelineMode("auto");
+    setLongDuration(10);
+    setLongSegmentDurationHint(5);
+    setLongBrief("");
+    setLongNegativePrompt("");
+    setLongTimeline("");
+    setLongSeam("keep_duplicate_frame");
+    setLongPlan(null);
+    setLongJob(null);
+    setLongPlanning(false);
+    setLongPlanningElapsedMs(0);
+    setLongPlannerNotice("");
+    setLongPlanDirty(false);
+    setLongError("");
+    setLongErrorDialog(null);
+    longErrorDialogKeyRef.current = "";
+  }
+
   async function refreshLongSequences() {
     try {
       const response = await fetch(BRIDGE_URL + "/api/sequences");
       if (!response.ok) return;
       const payload = (await response.json()) as { jobs?: LongJob[] };
-      const latest = payload.jobs?.[0];
+      // Completed sequences belong to history, not to the editable long-video
+      // form. Only restore a draft, an in-progress job, or another
+      // non-terminal sequence into the form.
+      const latest = payload.jobs?.find((item) => item.status !== "completed");
+      if (!latest) {
+        // If the previous UI state came from a completed sequence, remove it
+        // when the user refreshes. Preserve a locally edited draft.
+        if (longJob?.status === "completed" && !longPlanDirty) resetLongEditorState();
+        return;
+      }
       if (latest) {
         setLongJob(latest);
         setLongPlan(latest);
@@ -782,12 +872,14 @@ export default function Home() {
         setLongBrief(latest.inputText || "");
         if (latest.inputAsset && typeof latest.inputAsset === "object" && latest.inputAsset.kind === "image") {
           const hydratedAsset = assets.find((asset) => asset.root === latest.inputAsset?.root && asset.name === latest.inputAsset?.name);
-          setReferenceImage(hydratedAsset || latest.inputAsset);
+          setLongReferenceImage(hydratedAsset || latest.inputAsset);
+        } else {
+          setLongReferenceImage(null);
         }
         setLongFolder(latest.outputFolder || "");
         setLongDuration(latest.duration || 10);
         setLongTimeline((latest.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
-        setLongTimelineMode(latest.planMeta?.timelineSource === "ollama" ? "auto" : "manual");
+        setLongTimelineMode(["ollama", "codex"].includes(latest.planMeta?.timelineSource || "") ? "auto" : "manual");
         setLongSegmentDurationHint(latest.planningSettings?.segmentDurationHint || latest.planMeta?.segmentDurationHint || 5);
         setLongPlanDirty(false);
         if (latest.width) setWidth(latest.width);
@@ -795,7 +887,10 @@ export default function Home() {
         if (latest.steps) setSteps(latest.steps);
         if (latest.seed !== undefined) setSeed(latest.seed);
         if (latest.modelProfile) setModelProfile(latest.modelProfile);
-        if (latest.ollamaModel || latest.planMeta?.model) setOllamaModel(latest.ollamaModel || latest.planMeta?.model || ollamaModel);
+        if (latest.promptProvider) setPromptProvider(latest.promptProvider);
+        if (latest.ollamaModel) setOllamaModel(latest.ollamaModel);
+        if (latest.codexModel) setCodexModel(latest.codexModel);
+        if (latest.codexReasoningEffort) setCodexReasoningEffort(latest.codexReasoningEffort);
         setLongNegativePrompt(latest.negativePrompt || "");
         if (latest.seam) setLongSeam(latest.seam);
         if (latest.status === "completed") void refreshAssets();
@@ -852,18 +947,26 @@ export default function Home() {
       showToast("Ref2VA 至少需要一個參考圖片或參考影片。", "error");
       return;
     }
-    if (!ollamaOnline) {
+    if (promptProvider === "ollama" && !ollamaOnline) {
       showToast("Ollama 尚未連線。", "error");
       return;
     }
-    if (!visibleModels.includes(ollamaModel)) {
+    if (promptProvider === "codex" && !codexOnline) {
+      showToast("Codex CLI 尚未安裝或無法執行。", "error");
+      return;
+    }
+    if (promptProvider === "codex" && !codexSkillAvailable) {
+      showToast("找不到 h3-prompt-writing skill。", "error");
+      return;
+    }
+    if (promptProvider === "ollama" && !visibleModels.includes(ollamaModel)) {
       showToast(`模型 ${ollamaModel} 尚未安裝。`, "error");
       return;
     }
-    setOllamaBusy(true);
+    setPromptBusy(true);
     try {
       const promptImages: Array<{ role: string; data: string }> = [];
-      if (modelSupportsPromptImages(ollamaModel)) {
+      if (promptProvider === "codex" || modelSupportsPromptImages(ollamaModel)) {
         if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
           promptImages.push({
             role: "reference_image",
@@ -901,11 +1004,14 @@ export default function Home() {
           });
         }
       }
-      const response = await fetch(BRIDGE_URL + "/api/ollama/prompt", {
+      const response = await fetch(BRIDGE_URL + "/api/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: ollamaModel,
+          provider: promptProvider,
+          model: promptProvider === "codex" ? effectiveCodexModel : ollamaModel,
+          codexModel: effectiveCodexModel,
+          reasoningEffort: effectiveCodexReasoningEffort,
           brief: promptBrief,
           negativePrompt,
           mode,
@@ -922,14 +1028,14 @@ export default function Home() {
         negativePrompt?: string;
         error?: string;
       };
-      if (!response.ok) throw new Error(payload.error || "Ollama 沒有回應");
+      if (!response.ok) throw new Error(payload.error || `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 沒有回應`);
       if (payload.prompt) setPrompt(payload.prompt);
       if (payload.negativePrompt) setNegativePrompt(payload.negativePrompt);
-      showToast("H3 提示詞已更新。", "success");
+      showToast(`${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 已產生 H3 提示詞。`, "success");
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "Ollama 連線失敗。", "error");
+      showToast(error instanceof Error ? error.message : `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 連線失敗。`, "error");
     } finally {
-      setOllamaBusy(false);
+      setPromptBusy(false);
     }
   }
 
@@ -962,8 +1068,12 @@ export default function Home() {
         throw new Error(payload.error || "上傳失敗");
       }
       if (target === "image") {
-        setReferenceImage(payload.asset);
-        if (studioMode === "long" && longPlan) setLongPlanDirty(true);
+        if (studioMode === "long") {
+          setLongReferenceImage(payload.asset);
+          if (longPlan) setLongPlanDirty(true);
+        } else {
+          setReferenceImage(payload.asset);
+        }
       }
       if (target === "lastFrame") setLastFrameImage(payload.asset);
       if (target === "video") setSourceVideo(payload.asset);
@@ -988,7 +1098,7 @@ export default function Home() {
     setSelectedAsset(asset);
     if (asset.kind === "image") {
       if (studioMode === "long") {
-        setReferenceImage(asset);
+        setLongReferenceImage(asset);
         if (longPlan) setLongPlanDirty(true);
       }
       else if (mode === "l2v") setLastFrameImage(asset);
@@ -1005,46 +1115,94 @@ export default function Home() {
     setAssetPreview(asset);
   }
 
-  async function deleteOutputAsset(asset: Asset) {
-    if (!isDeletableAsset(asset)) return;
-    const assetKey = asset.root + ":" + asset.name;
-    if (deletingAssetKey) return;
-    const kindLabel = asset.kind === "image" ? "圖片" : "影片";
-    if (!window.confirm(`確定要刪除輸出${kindLabel}「${asset.name}」嗎？`)) return;
+  function toggleAssetSelection(asset: Asset) {
+    if (!isDeletableAsset(asset) || deletingAssetKey) return;
+    const key = assetKey(asset);
+    setSelectedAssetKeys((current) => current.includes(key)
+      ? current.filter((item) => item !== key)
+      : [...current, key]);
+  }
 
-    setDeletingAssetKey(assetKey);
+  function toggleVisibleAssetSelection() {
+    if (deletingAssetKey || !visibleDeletableAssets.length) return;
+    const visibleKeys = visibleDeletableAssets.map(assetKey);
+    const visibleKeySet = new Set(visibleKeys);
+    setSelectedAssetKeys((current) => {
+      const allSelected = visibleKeys.every((key) => current.includes(key));
+      return allSelected
+        ? current.filter((key) => !visibleKeySet.has(key))
+        : Array.from(new Set([...current, ...visibleKeys]));
+    });
+  }
+
+  async function deleteOutputAssets(requestedAssets: Asset[], confirmation: string) {
+    const candidates = Array.from(new Map(
+      requestedAssets
+        .filter(isDeletableAsset)
+        .map((asset) => [assetKey(asset), asset]),
+    ).values());
+    if (!candidates.length || deletingAssetKey) return;
+    if (!window.confirm(confirmation)) return;
+
+    setDeletingAssetKey(candidates.length > 1 ? BULK_DELETE_ASSET_KEY : assetKey(candidates[0]));
     try {
-      const response = await fetch(
-        BRIDGE_URL + "/api/assets?root=output&name=" + encodeURIComponent(asset.name),
-        { method: "DELETE" },
-      );
-      const payload = (await response.json()) as { asset?: { deletedCount?: number }; error?: string };
-      if (!response.ok || !payload.asset) {
-        throw new Error(payload.error || "刪除輸出資源失敗。");
+      const outcomes = await Promise.all(candidates.map(async (asset) => {
+        try {
+          const response = await fetch(
+            BRIDGE_URL + "/api/assets?root=output&name=" + encodeURIComponent(asset.name),
+            { method: "DELETE" },
+          );
+          const payload = (await response.json().catch(() => ({}))) as { asset?: { deletedCount?: number }; error?: string };
+          if (!response.ok || !payload.asset) {
+            throw new Error(payload.error || "刪除輸出資源失敗。");
+          }
+          return { asset, deletedCount: Number(payload.asset.deletedCount) || 1 };
+        } catch (error) {
+          return { asset, error: error instanceof Error ? error.message : "刪除輸出資源失敗。" };
+        }
+      }));
+      const succeeded = outcomes.filter((item) => !item.error);
+      const failed = outcomes.filter((item) => item.error);
+      const deletedKeys = new Set(succeeded.map((item) => assetKey(item.asset)));
+
+      if (succeeded.length) {
+        setAssets((current) => current.filter((item) => !deletedKeys.has(assetKey(item))));
+        setRenderJobs((current) => current.map((job) => (
+          job.output && deletedKeys.has(assetKey(job.output))
+            ? { ...job, output: undefined }
+            : job
+        )));
+        setSelectedAssetKeys((current) => current.filter((key) => !deletedKeys.has(key)));
+        if (selectedAsset && deletedKeys.has(assetKey(selectedAsset))) setSelectedAsset(null);
+        if (assetPreview && deletedKeys.has(assetKey(assetPreview))) setAssetPreview(null);
+        await refreshAssets();
       }
 
-      setAssets((current) => current.filter(
-        (item) => !(item.root === asset.root && item.name === asset.name),
-      ));
-      setRenderJobs((current) => current.map((job) => (
-        job.output?.root === asset.root && job.output.name === asset.name
-          ? { ...job, output: undefined }
-          : job
-      )));
-      if (selectedAsset?.root === asset.root && selectedAsset.name === asset.name) {
-        setSelectedAsset(null);
+      const deletedFileCount = succeeded.reduce((total, item) => total + (item.deletedCount || 1), 0);
+      if (failed.length) {
+        showToast(`已刪除 ${succeeded.length} 個資源，${failed.length} 個刪除失敗：${failed[0].error}`, "error");
+      } else {
+        showToast(`已刪除 ${succeeded.length} 個輸出資源（清除 ${deletedFileCount} 個輸出檔）。`, "success");
       }
-      if (assetPreview?.root === asset.root && assetPreview.name === asset.name) {
-        setAssetPreview(null);
-      }
-      await refreshAssets();
-      const deletedCount = payload.asset.deletedCount || 1;
-      showToast(`已刪除輸出${kindLabel}（清除 ${deletedCount} 個輸出檔）。`, "success");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "刪除輸出資源失敗。", "error");
     } finally {
       setDeletingAssetKey(null);
     }
+  }
+
+  async function deleteOutputAsset(asset: Asset) {
+    if (!isDeletableAsset(asset)) return;
+    const kindLabel = asset.kind === "image" ? "圖片" : "影片";
+    await deleteOutputAssets([asset], `確定要刪除輸出${kindLabel}「${asset.name}」嗎？`);
+  }
+
+  async function deleteSelectedOutputAssets() {
+    if (!selectedDeletableAssets.length) return;
+    await deleteOutputAssets(
+      selectedDeletableAssets,
+      `確定要刪除選取的 ${selectedDeletableAssets.length} 個輸出資源嗎？此操作無法復原。`,
+    );
   }
 
   async function startRender() {
@@ -1248,16 +1406,23 @@ export default function Home() {
     setLongError("");
     setLongPlannerNotice("");
     if (!longBrief.trim()) throw new Error("請先輸入長影片的整體提示詞／故事描述。");
-    if (longInputType === "image" && (!referenceImage || referenceImage.kind !== "image")) throw new Error("圖片起點需要 first_frame 參考圖。");
-    if (!ollamaOnline) throw new Error("Ollama 尚未連線。");
-    if (!visibleModels.includes(ollamaModel)) throw new Error(`模型 ${ollamaModel} 尚未安裝。`);
+    if (longInputType === "image" && (!longReferenceImage || longReferenceImage.kind !== "image")) throw new Error("圖片起點需要 first_frame 參考圖。");
+    const plannerLabel = promptProvider === "codex" ? "Codex CLI" : "Ollama";
+    if (promptProvider === "codex") {
+      if (!codexOnline) throw new Error("Codex CLI 尚未可用。");
+      if (!codexSkillAvailable) throw new Error("找不到 h3-prompt-writing skill。");
+    } else {
+      if (!ollamaOnline) throw new Error("Ollama 尚未連線。");
+      if (!visibleModels.includes(ollamaModel)) throw new Error(`模型 ${ollamaModel} 尚未安裝。`);
+    }
     if (longTimelineMode === "manual" && !longTimeline.trim()) throw new Error("手動時間軸模式需要至少兩段分鏡。");
     const submittedDuration = normalizedLongDuration(longDuration);
     const submittedSegmentDurationHint = normalizedSegmentDurationHint(longSegmentDurationHint);
     if (longDuration !== submittedDuration) setLongDuration(submittedDuration);
     if (longSegmentDurationHint !== submittedSegmentDurationHint) setLongSegmentDurationHint(submittedSegmentDurationHint);
+    setLongPlanningElapsedMs(0);
     setLongPlanning(true);
-    setLongPlannerNotice("已送出規劃要求，正在等待本機 Ollama 回應…");
+    setLongPlannerNotice(`已送出規劃要求，正在等待本機 ${plannerLabel} 回應…`);
     try {
       const response = await fetch(BRIDGE_URL + "/api/sequences/plan", {
         method: "POST",
@@ -1266,13 +1431,16 @@ export default function Home() {
           title: longTitle || "Untitled long video",
           inputType: longInputType,
           inputText: longBrief,
-          inputAsset: longInputType === "image" && referenceImage ? referenceImage : undefined,
+          inputAsset: longInputType === "image" && longReferenceImage ? longReferenceImage : undefined,
           imagePurpose: longInputType === "image" ? "first_frame" : undefined,
           timelineMode: longTimelineMode,
           duration: longTimelineMode === "auto" ? submittedDuration : undefined,
           segmentDurationHint: submittedSegmentDurationHint,
           timelineText: longTimelineMode === "manual" ? longTimeline : undefined,
+          promptProvider,
           ollamaModel,
+          codexModel: effectiveCodexModel,
+          reasoningEffort: effectiveCodexReasoningEffort,
           negativePrompt: longNegativePrompt,
         }),
       });
@@ -1285,8 +1453,8 @@ export default function Home() {
       if (!response.ok || !payload.plan) {
         const code = typeof payload.error === "string" ? "PLAN_FAILED" : payload.error?.code || "PLAN_FAILED";
         const detail = typeof payload.error === "string" ? payload.error : payload.error?.message || "Long-video plan failed.";
-        if (code === "OLLAMA_TIMELINE_INVALID") throw new Error(`${code}: Ollama 連續兩次都未產生有效的分鏡時間；請增加故事細節、調整總長或更換模型。`);
-        if (code === "OLLAMA_INVALID_JSON") throw new Error(`${code}: Ollama 連續兩次都未回傳有效 JSON；請重試或更換模型。`);
+        if (code === "OLLAMA_TIMELINE_INVALID" || code === "CODEX_TIMELINE_INVALID") throw new Error(`${code}: ${plannerLabel} 連續兩次都未產生有效的分鏡時間；請增加故事細節、調整總長或更換模型。`);
+        if (code === "OLLAMA_INVALID_JSON" || code === "CODEX_INVALID_JSON") throw new Error(`${code}: ${plannerLabel} 連續兩次都未回傳有效 JSON；請重試或更換模型。`);
         throw new Error(`${code}: ${detail}`);
       }
       const plan = payload.plan;
@@ -1297,8 +1465,8 @@ export default function Home() {
       setLongNegativePrompt(plan.negativePrompt || longNegativePrompt);
       setLongPlanDirty(false);
       setLongPlannerNotice(plan.planMeta?.repairAttempts
-        ? "Ollama 第一次回覆格式不完整，系統已自動修正並完成規劃。"
-        : "Ollama 已完成分鏡時間與逐段 H3 提示詞規劃。");
+        ? `${plannerLabel} 第一次回覆格式不完整，系統已自動修正並完成規劃。`
+        : `${plannerLabel} 已完成分鏡時間與逐段 H3 提示詞規劃。`);
       return plan;
     } catch (error) {
       setLongPlannerNotice("");
@@ -1312,7 +1480,7 @@ export default function Home() {
     setLongBusy(true);
     try {
       await requestLongPlan();
-      showToast("Ollama 已產生分鏡時間、逐段 H3 提示詞與連續性設定。", "success");
+      showToast(`${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 已產生分鏡時間、逐段 H3 提示詞與連續性設定。`, "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Long-video planning failed.";
       setLongError(message);
@@ -1326,7 +1494,7 @@ export default function Home() {
   async function saveLongVideo(planOverride?: LongPlan) {
     const plan = planOverride || longPlan;
     if (!plan) throw new Error("Plan the sequence before saving.");
-    if (longPlanDirty && !planOverride) throw new Error("規劃輸入已變更，請先重新執行 Ollama 規劃。");
+    if (longPlanDirty && !planOverride) throw new Error(`規劃輸入已變更，請先重新執行 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 規劃。`);
     if (!longFolder.trim()) throw new Error("Output folder is required.");
     const parsedTimes = parseLongTimelineDraft(longTimeline, plan.segments);
     const segments = parsedTimes.map((item, index) => ({
@@ -1349,7 +1517,7 @@ export default function Home() {
         title: longTitle || plan.title || "Untitled long video",
         inputType: longInputType,
         inputText: longBrief,
-        inputAsset: longInputType === "image" && referenceImage ? referenceImage : undefined,
+        inputAsset: longInputType === "image" && longReferenceImage ? longReferenceImage : undefined,
         imagePurpose: longInputType === "image" ? "first_frame" : undefined,
         continuityBible: plan.continuityBible,
         planMeta: plan.planMeta,
@@ -1363,6 +1531,9 @@ export default function Home() {
         steps: submittedSteps,
         seed: submittedSeed,
         ollamaModel,
+        promptProvider,
+        codexModel: effectiveCodexModel,
+        codexReasoningEffort: effectiveCodexReasoningEffort,
         negativePrompt: longNegativePrompt,
         seam: longSeam,
         ...(existing ? { revision: existing.revision } : {}),
@@ -1412,6 +1583,12 @@ export default function Home() {
     }
   }
 
+  function clearLongSettings() {
+    if (longBusy || longJobActive) return;
+    resetLongEditorState();
+    showToast("已清除目前長影片設定。已生成的檔案與歷史工作未被刪除。", "success");
+  }
+
   const modeLabel =
     mode === "t2v" ? "文字生片" :
         mode === "i2v" ? "參考圖生片" :
@@ -1425,6 +1602,8 @@ export default function Home() {
           mode === "l2v" ? "L2VA" :
             mode === "ref2v" ? "Ref2VA" : "Wan Animate";
   const ollamaOnline = Boolean(health?.ollama.online);
+  const codexOnline = Boolean(health?.codex?.online);
+  const codexSkillAvailable = Boolean(health?.codex?.skill);
   const comfyOnline = Boolean(health?.comfy.online);
   const visibleModels = health?.ollama.models || [];
   const catalogValues = new Set(promptModelCatalog.map((model) => model.value));
@@ -1438,6 +1617,50 @@ export default function Home() {
       vision: modelSupportsPromptImages(model),
     }));
   const promptModels = [...installedCatalogModels, ...installedExtras];
+  const codexModelsFromHealth = health?.codex?.models || [];
+  const availableCodexModels: CodexModelOption[] = codexModelsFromHealth.length
+    ? codexModelsFromHealth.map((model) => ({
+      value: model.value,
+      label: model.label || model.value,
+      note: model.note || "Codex model",
+      reasoningEfforts: model.reasoningEfforts,
+    }))
+    : codexModelCatalog;
+  const selectedCodexModel = availableCodexModels.find((model) => model.value === codexModel) || availableCodexModels[0];
+  const selectedCodexReasoningEfforts = selectedCodexModel?.reasoningEfforts?.length
+    ? selectedCodexModel.reasoningEfforts
+    : codexReasoningOptions.map((option) => option.value);
+  const availableCodexReasoningOptions = codexReasoningOptions.filter((option) => selectedCodexReasoningEfforts.includes(option.value));
+  const effectiveCodexModel = selectedCodexModel?.value || codexModel;
+  const effectiveCodexReasoningEffort = selectedCodexReasoningEfforts.includes(codexReasoningEffort)
+    ? codexReasoningEffort
+    : selectedCodexReasoningEfforts.includes("medium")
+      ? "medium"
+      : selectedCodexReasoningEfforts[0] || "medium";
+  const longPlanningWaitHint = promptProvider === "codex" && ["max", "ultra"].includes(effectiveCodexReasoningEffort)
+    ? "高推理模式可能需要數分鐘"
+    : "首次載入模型可能需要 1–2 分鐘";
+
+  useEffect(() => {
+    if (!longPlanning) return undefined;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setLongPlanningElapsedMs(Date.now() - startedAt);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [longPlanning]);
+
+  function selectCodexModel(value: string) {
+    const nextModel = availableCodexModels.find((model) => model.value === value);
+    setCodexModel(value);
+    const supportedEfforts = nextModel?.reasoningEfforts?.length
+      ? nextModel.reasoningEfforts
+      : codexReasoningOptions.map((option) => option.value);
+    if (!supportedEfforts.includes(effectiveCodexReasoningEffort)) {
+      setCodexReasoningEffort(supportedEfforts.includes("medium") ? "medium" : supportedEfforts[0] || "medium");
+    }
+    if (longPlan) setLongPlanDirty(true);
+  }
   const completedRenderCount = renderJobs.filter((item) =>
     ["completed", "failed", "cancelled"].includes(item.status),
   ).length;
@@ -1574,6 +1797,11 @@ export default function Home() {
               <span className="connection-state">{ollamaOnline ? "online" : "offline"}</span>
             </div>
             <div className="connection-pill">
+              <span className={"status-dot " + (codexOnline && codexSkillAvailable ? "is-on" : "is-off")} />
+              <span>Codex CLI</span>
+              <span className="connection-state">{codexOnline && codexSkillAvailable ? "ready" : "offline"}</span>
+            </div>
+            <div className="connection-pill">
               <span className={"status-dot " + (comfyOnline ? "is-on" : "is-off")} />
               <span>ComfyUI</span>
               <span className="connection-state">{comfyOnline ? "online" : "offline"}</span>
@@ -1607,7 +1835,9 @@ export default function Home() {
               <div className="system-stat-row">
                 <div>
                   <span className="stat-label">PROMPT ENGINE</span>
-                  <strong>{ollamaOnline ? "Ollama ready" : "等待 Ollama"}</strong>
+                  <strong>{promptProvider === "codex"
+                    ? (codexOnline && codexSkillAvailable ? "Codex CLI ready" : "等待 Codex CLI")
+                    : (ollamaOnline ? "Ollama ready" : "等待 Ollama")}</strong>
                 </div>
                 <div>
                   <span className="stat-label">VIDEO ENGINE</span>
@@ -1624,12 +1854,15 @@ export default function Home() {
           <section className={"panel long-video-panel " + (studioMode === "long" ? "is-visible" : "is-hidden")} id="long-video" aria-labelledby="long-video-title">
             <div className="panel-heading">
               <div>
-                <span className="section-code">LONG / OLLAMA STORYBOARD LAB</span>
+                <span className="section-code">LONG / PROMPT STORYBOARD LAB</span>
                 <h2 id="long-video-title">長片提示詞與分鏡規劃</h2>
               </div>
-              <span className="panel-mark panel-mark-number">SEQ</span>
+              <div className="long-heading-actions">
+                <button type="button" className="outline-button small-button long-clear-button" onClick={clearLongSettings} disabled={longBusy || longJobActive} aria-label="清除目前長影片設定">清除目前設定</button>
+                <span className="panel-mark panel-mark-number">SEQ</span>
+              </div>
             </div>
-            <p className="long-intro">輸入完整故事方向後，Ollama 會一次產生全片負面提示詞、連續性設定、分鏡時間，以及首段 T2VA／續段 I2VA 的 H3 提示詞。所有輸出都能在生成前修改。</p>
+            <p className="long-intro">輸入完整故事方向後，{promptProvider === "codex" ? "Codex CLI" : "Ollama"} 會一次產生全片負面提示詞、連續性設定、分鏡時間，以及首段 T2VA／續段 I2VA 的 H3 提示詞。所有輸出都能在生成前修改。</p>
             <div className="long-video-grid">
               <label className="setting-field"><span className="field-label">標題</span><input className="text-input long-title-input" value={longTitle} onChange={(event) => setLongTitle(event.target.value)} placeholder="兩段式故事" /></label>
               <label className="setting-field"><span className="field-label">輸出資料夾</span><input className="text-input long-title-input" value={longFolder} onChange={(event) => setLongFolder(event.target.value)} placeholder="my-sequence-001" /></label>
@@ -1641,34 +1874,50 @@ export default function Home() {
             {longInputType === "image" && (
               <div className="long-first-frame-row">
                 <span className="field-label">first_frame 參考圖</span>
-                {referenceImage?.kind === "image" ? <><span className="long-reference-name">{referenceImage.name}</span><button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>更換圖片</button></> : <button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>選擇圖片資產</button>}
-                <small>圖片是第 0.00 秒首幀；下方文字仍會送給 Ollama 作為故事與動作方向。</small>
+                {longReferenceImage?.kind === "image" ? <><span className="long-reference-name">{longReferenceImage.name}</span><button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>更換圖片</button></> : <button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>選擇圖片資產</button>}
+                <small>圖片是第 0.00 秒首幀；下方文字會送給目前選擇的 {promptProvider === "codex" ? "Codex CLI" : "Ollama"} 作為故事與動作方向。</small>
               </div>
             )}
             <div className="long-prompt-grid">
               <label className="setting-field long-prompt-field" htmlFor="long-video-prompt">
-                <span className="field-label">整體提示詞／故事描述 <span>輸入給 Ollama</span></span>
+                <span className="field-label">整體提示詞／故事描述 <span>輸入給 {promptProvider === "codex" ? "Codex CLI" : "Ollama"}</span></span>
                 <textarea id="long-video-prompt" className="text-input long-brief-input" value={longBrief} onChange={(event) => { setLongBrief(event.target.value); if (longPlan) setLongPlanDirty(true); }} placeholder="例如：一名紅衣女子在雨夜追逐最後一班列車；描述角色、場景、情節、鏡頭、對話與聲音方向。" />
               </label>
               <label className="setting-field long-prompt-field" htmlFor="long-video-negative-prompt">
-                <span className="field-label">負面提示詞／限制 <span>空白時由 Ollama 補齊</span></span>
+                <span className="field-label">負面提示詞／限制 <span>空白時由 {promptProvider === "codex" ? "Codex CLI" : "Ollama"} 補齊</span></span>
                 <textarea id="long-video-negative-prompt" className="text-input long-negative-input" value={longNegativePrompt} onChange={(event) => setLongNegativePrompt(event.target.value)} placeholder="例如：角色漂移、服裝改變、閃爍、文字、浮水印…" />
               </label>
             </div>
             <div className="long-planner-toolbar">
-              <div className="ollama-select long-ollama-select">
-                <span className="ollama-badge">O</span>
-                <select value={ollamaModel} onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Ollama 模型">
-                  {promptModels.map((model) => {
-                    const isInstalled = visibleModels.includes(model.value);
-                    const status = ollamaOnline ? (isInstalled ? "已安裝" : "未安裝") : "待檢查";
-                    return <option key={model.value} value={model.value}>{model.label} · {model.note} · {status}</option>;
-                  })}
-                </select>
+              <div className="prompt-provider-switch long-provider-switch" role="group" aria-label="長影片規劃生成來源">
+                <button type="button" className={promptProvider === "ollama" ? "is-active" : ""} onClick={() => { setPromptProvider("ollama"); if (longPlan) setLongPlanDirty(true); }}><span className="ollama-badge">O</span> Ollama</button>
+                <button type="button" className={promptProvider === "codex" ? "is-active" : ""} onClick={() => { setPromptProvider("codex"); if (longPlan) setLongPlanDirty(true); }}><span className="codex-badge">C</span> Codex CLI</button>
               </div>
+              {promptProvider === "codex" ? (
+                <div className="prompt-provider-fields long-codex-fields">
+                  <span className="codex-badge">C</span>
+                  <select className="select-input codex-model-select" value={effectiveCodexModel} onChange={(event) => selectCodexModel(event.target.value)} aria-label="長影片 Codex CLI 模型">
+                    {availableCodexModels.map((model) => <option key={model.value} value={model.value}>{model.label} · {model.note}</option>)}
+                  </select>
+                  <label className="codex-reasoning-select"><span>Reasoning</span><select className="select-input" value={effectiveCodexReasoningEffort} onChange={(event) => { setCodexReasoningEffort(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Codex CLI 推理程度">
+                    {availableCodexReasoningOptions.map((option) => <option key={option.value} value={option.value}>{option.label} · {option.note}</option>)}
+                  </select></label>
+                </div>
+              ) : (
+                <div className="ollama-select long-ollama-select">
+                  <span className="ollama-badge">O</span>
+                  <select value={ollamaModel} onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Ollama 模型">
+                    {promptModels.map((model) => {
+                      const isInstalled = visibleModels.includes(model.value);
+                      const status = ollamaOnline ? (isInstalled ? "已安裝" : "未安裝") : "待檢查";
+                      return <option key={model.value} value={model.value}>{model.label} · {model.note} · {status}</option>;
+                    })}
+                  </select>
+                </div>
+              )}
               <button type="button" className="outline-button long-plan-button" onClick={() => void planLongVideo()} disabled={longBusy}>
                 <Icon name="spark" />
-                {longPlanning ? "Ollama 規劃中…" : longBusy ? "處理中…" : "用 Ollama 產生分鏡時間與 H3 提示詞"}
+                {longPlanning ? `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 規劃中…` : longBusy ? "處理中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡時間與 H3 提示詞`}
               </button>
             </div>
             <div
@@ -1678,22 +1927,22 @@ export default function Home() {
             >
               <span className="long-planner-feedback-dot" aria-hidden="true" />
               <span>{longPlanning
-                ? "正在等待本機 Ollama；首次載入模型可能需要 1–2 分鐘，完成前請不要重複點擊。若第一次格式不合規，系統會自動修正一次。"
+                ? `正在等待本機 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"}；${longPlanningWaitHint}（已等待 ${Math.floor(longPlanningElapsedMs / 1000)} 秒），完成前請不要重複點擊。若第一次格式不合規，系統會自動修正一次。`
                 : longError
                   ? longError
                   : longPlanDirty && longPlan
-                    ? "規劃輸入已變更，請重新執行 Ollama 規劃。"
+                    ? `規劃輸入已變更，請重新執行 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 規劃。`
                     : longPlannerNotice || "填寫整體提示詞後按下規劃；進度、成功或錯誤會持續顯示在這裡。"}</span>
             </div>
 
             <div className="long-subsection-heading">
               <div><span className="section-code">01 / STORYBOARD TIMING</span><h3>分鏡時間產生方式</h3></div>
               <div className="long-input-switch" role="group" aria-label="分鏡時間產生方式">
-                <button type="button" className={longTimelineMode === "auto" ? "is-active" : ""} onClick={() => { if (longTimelineMode !== "auto" && longPlan) setLongPlanDirty(true); setLongTimelineMode("auto"); }}>Ollama 自動分鏡</button>
+                <button type="button" className={longTimelineMode === "auto" ? "is-active" : ""} onClick={() => { if (longTimelineMode !== "auto" && longPlan) setLongPlanDirty(true); setLongTimelineMode("auto"); }}>{promptProvider === "codex" ? "Codex CLI" : "Ollama"} 自動分鏡</button>
                 <button type="button" className={longTimelineMode === "manual" ? "is-active" : ""} onClick={() => { if (longTimelineMode !== "manual" && longPlan) setLongPlanDirty(true); setLongTimelineMode("manual"); }}>手動鎖定時間</button>
               </div>
             </div>
-            <p className="long-source-note">{longTimelineMode === "auto" ? "Ollama 會決定敘事切點；後端仍會驗證從 0 秒開始、無空白、無重疊，且結束時間等於總長。" : "你提供的時間軸是權威資料；Ollama 只補足每段語意與 H3 提示詞，不會改寫時間。"}</p>
+            <p className="long-source-note">{longTimelineMode === "auto" ? `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 會決定敘事切點；後端仍會驗證從 0 秒開始、無空白、無重疊，且結束時間等於總長。` : `你提供的時間軸是權威資料；${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 只補足每段語意與 H3 提示詞，不會改寫時間。`}</p>
             {longTimelineMode === "auto" && (
               <div className="long-planning-settings">
                 <label className="setting-field"><span className="field-label">目標總長（秒）</span><input className="number-input" type="number" min="1" max="3600" step="0.5" value={longDuration} onChange={(event) => { setLongDuration(numberInputDraft(event.target.value)); if (longPlan) setLongPlanDirty(true); }} /></label>
@@ -1701,19 +1950,19 @@ export default function Home() {
               </div>
             )}
             <div className="long-timeline-grid">
-              <label className="setting-field" htmlFor="long-video-timeline"><span className="field-label">{longTimelineMode === "auto" ? "Ollama 分鏡時間輸出" : "手動分鏡時間"} <span>產出後可編輯</span></span><textarea id="long-video-timeline" className="text-input long-timeline-input" value={longTimeline} onChange={(event) => updateLongTimelineDraft(event.target.value)} placeholder={longTimelineMode === "auto" ? "按上方按鈕後，Ollama 產出的全片分鏡時間會顯示在這裡。" : '[00:00.000 - 00:05.000] 開場\n[00:05.000 - 00:10.000] 延續'} /></label>
-              <div className="long-bible-card"><span className="field-label">Continuity bible <span>Ollama 輸出</span></span>{longPlan?.continuityBible ? <pre>{JSON.stringify(longPlan.continuityBible, null, 2)}</pre> : <p>尚未規劃。產出後會列出風格、角色、環境、燈光、鏡頭、聲音與必須維持／避免的項目。</p>}</div>
+              <label className="setting-field" htmlFor="long-video-timeline"><span className="field-label">{longTimelineMode === "auto" ? `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 分鏡時間輸出` : "手動分鏡時間"} <span>產出後可編輯</span></span><textarea id="long-video-timeline" className="text-input long-timeline-input" value={longTimeline} onChange={(event) => updateLongTimelineDraft(event.target.value)} placeholder={longTimelineMode === "auto" ? `按上方按鈕後，${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產出的全片分鏡時間會顯示在這裡。` : '[00:00.000 - 00:05.000] 開場\n[00:05.000 - 00:10.000] 延續'} /></label>
+              <div className="long-bible-card"><span className="field-label">Continuity bible <span>{promptProvider === "codex" ? "Codex CLI" : "Ollama"} 輸出</span></span>{longPlan?.continuityBible ? <pre>{JSON.stringify(longPlan.continuityBible, null, 2)}</pre> : <p>尚未規劃。產出後會列出風格、角色、環境、燈光、鏡頭、聲音與必須維持／避免的項目。</p>}</div>
             </div>
             <div className={"long-plan-status " + (longPlanDirty ? "is-stale" : longPlan ? "is-ready" : "is-empty")}>
               {longPlan ? (
                 <>
-                  <strong>{longPlanDirty ? "規劃輸入已變更，請重新產生" : "Ollama 規劃已完成"}</strong>
-                  <span>時間來源：{longPlan.planMeta?.timelineSource === "author" ? "手動鎖定" : "Ollama"}</span>
+                  <strong>{longPlanDirty ? "規劃輸入已變更，請重新產生" : `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 規劃已完成`}</strong>
+                  <span>時間來源：{longPlan.planMeta?.timelineSource === "author" ? "手動鎖定" : longPlan.planMeta?.timelineSource === "codex" ? "Codex CLI" : "Ollama"}</span>
                   <span>{longPlan.segments.length} 段 · {(longPlan.duration || 0).toFixed(2)} 秒</span>
-                  <span>提示詞：{longPlan.planMeta?.promptSource === "ollama" ? "Ollama 完整格式" : "Ollama 內容＋伺服器格式化"}</span>
+                  <span>提示詞：{longPlan.planMeta?.promptSource === "ollama" || longPlan.planMeta?.promptSource === "codex" ? `${longPlan.planMeta?.promptSource === "codex" ? "Codex CLI" : "Ollama"} 完整格式` : `${longPlan.planMeta?.promptSource?.startsWith("codex") ? "Codex CLI" : "Ollama"} 內容＋伺服器格式化`}</span>
                   {longPlan.planMeta?.generatedAt && <span>{formatTime(longPlan.planMeta.generatedAt)}</span>}
                 </>
-              ) : <span>尚未呼叫 Ollama；下方不會用預設文字假裝成模型輸出。</span>}
+              ) : <span>尚未呼叫 {promptProvider === "codex" ? "Codex CLI" : "Ollama"}；下方不會用預設文字假裝成模型輸出。</span>}
             </div>
 
             <div className="long-subsection-heading long-render-heading">
@@ -1776,19 +2025,19 @@ export default function Home() {
             )}
 
             <div className="long-segment-summary">
-              <div className="long-segment-summary-heading"><span className="field-label">Ollama 逐段規劃輸出 <span>可直接編輯</span></span><strong>{longPlan?.segments.length || 0} 段</strong></div>
-              {!longPlan && <div className="long-empty-output">尚無分段提示詞。請先輸入故事描述並按「用 Ollama 產生分鏡時間與 H3 提示詞」。</div>}
+              <div className="long-segment-summary-heading"><span className="field-label">{promptProvider === "codex" ? "Codex CLI" : "Ollama"} 逐段規劃輸出 <span>可直接編輯</span></span><strong>{longPlan?.segments.length || 0} 段</strong></div>
+              {!longPlan && <div className="long-empty-output">尚無分段提示詞。請先輸入故事描述並按「用 {promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡時間與 H3 提示詞」。</div>}
               {longPlan?.segments.map((segment, index) => (
                 <div className="long-segment-card" key={segment.id || index}>
                   <div className="long-segment-card-heading">
                     <span>第 {index + 1} 段 · {segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒 <b>{(segment.mode || (index === 0 && longInputType === "text" ? "t2v" : "i2v")).toUpperCase()}</b></span>
-                    <small>{segment.promptSource === "manual" ? "手動提示詞" : "Ollama 產出"}{segment.error ? ` · ${typeof segment.error === "string" ? segment.error : segment.error.message || segment.error.code || "error"}` : ""}</small>
+                    <small>{segment.promptSource === "manual" ? "手動提示詞" : segment.promptSource?.startsWith("codex") ? "Codex CLI 產出" : "Ollama 產出"}{segment.error ? ` · ${typeof segment.error === "string" ? segment.error : segment.error.message || segment.error.code || "error"}` : ""}</small>
                   </div>
                   <div className="long-segment-meta-grid">
                     <label className="setting-field"><span className="field-label">分鏡描述</span><textarea className="text-input long-segment-description" value={segment.description} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段描述`} /></label>
                     <label className="setting-field"><span className="field-label">段尾狀態 <span>供下一段延續</span></span><textarea className="text-input long-segment-ending" value={segment.endingState || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, endingState: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段段尾狀態`} /></label>
                   </div>
-                  <label className="setting-field"><span className="field-label">{segment.mode === "t2v" ? "T2VA" : "I2VA"} H3 prompt <span>Ollama 內容，可直接編輯</span></span><textarea className="text-input long-segment-prompt" value={segment.prompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value, promptSource: "manual" } : item) } : current)} placeholder="Ollama 產出的 H3 prompt 會顯示在這裡" aria-label={`第 ${index + 1} 段 prompt`} /></label>
+                  <label className="setting-field"><span className="field-label">{segment.mode === "t2v" ? "T2VA" : "I2VA"} H3 prompt <span>{segment.promptSource?.startsWith("codex") ? "Codex CLI" : "Ollama"} 內容，可直接編輯</span></span><textarea className="text-input long-segment-prompt" value={segment.prompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value, promptSource: "manual" } : item) } : current)} placeholder={`${segment.promptSource?.startsWith("codex") ? "Codex CLI" : "Ollama"} 產出的 H3 prompt 會顯示在這裡`} aria-label={`第 ${index + 1} 段 prompt`} /></label>
                   <label className="setting-field"><span className="field-label">此段負面提示詞 <span>空白則使用全片設定</span></span><textarea className="text-input long-segment-negative" value={segment.negativePrompt || ""} onChange={(event) => setLongPlan((current) => current ? { ...current, segments: current.segments.map((item, itemIndex) => itemIndex === index ? { ...item, negativePrompt: event.target.value } : item) } : current)} aria-label={`第 ${index + 1} 段負面提示詞`} /></label>
                 </div>
               ))}
@@ -1819,11 +2068,27 @@ export default function Home() {
                 placeholder="例如：一個人在月台等待，風吹動他的外套…"
               />
               <div className="prompt-tool-row">
-                <div className="ollama-select">
+                <div className="prompt-provider-switch" role="group" aria-label="提示詞生成來源">
+                  <button
+                    type="button"
+                    className={promptProvider === "ollama" ? "is-active" : ""}
+                    onClick={() => { setPromptProvider("ollama"); if (longPlan) setLongPlanDirty(true); }}
+                  >
+                    <span className="ollama-badge">O</span> Ollama
+                  </button>
+                  <button
+                    type="button"
+                    className={promptProvider === "codex" ? "is-active" : ""}
+                    onClick={() => { setPromptProvider("codex"); if (longPlan) setLongPlanDirty(true); }}
+                  >
+                    <span className="codex-badge">C</span> Codex CLI
+                  </button>
+                </div>
+                <div className="ollama-select" hidden={promptProvider !== "ollama"}>
                   <span className="ollama-badge">O</span>
                   <select
                     value={ollamaModel}
-                    onChange={(event) => setOllamaModel(event.target.value)}
+                    onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }}
                     aria-label="Ollama 模型"
                   >
                     {promptModels.map((model) => {
@@ -1837,14 +2102,44 @@ export default function Home() {
                     })}
                   </select>
                 </div>
+                <div className="prompt-provider-fields" hidden={promptProvider !== "codex"}>
+                  <div className="ollama-select codex-model-select">
+                    <span className="codex-badge">C</span>
+                    <select
+                      value={effectiveCodexModel}
+                      onChange={(event) => selectCodexModel(event.target.value)}
+                      aria-label="Codex CLI 模型"
+                    >
+                      {availableCodexModels.map((model) => (
+                        <option key={model.value} value={model.value}>
+                          {model.label} · {model.note}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="codex-reasoning-select">
+                    <span>Reasoning</span>
+                    <select
+                      value={effectiveCodexReasoningEffort}
+                    onChange={(event) => { setCodexReasoningEffort(event.target.value); if (longPlan) setLongPlanDirty(true); }}
+                      aria-label="Codex CLI 推理程度"
+                    >
+                      {availableCodexReasoningOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label} · {option.note}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <button
                   type="button"
                   className="outline-button"
                   onClick={() => void generatePrompt()}
-                  disabled={ollamaBusy}
+                  disabled={promptBusy}
                 >
                   <Icon name="spark" />
-                  {ollamaBusy ? "整理中…" : `產生 ${promptFormatLabel} 提示詞`}
+                  {promptBusy ? `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 生成中…` : `產生 ${promptFormatLabel} 提示詞`}
                 </button>
               </div>
 
@@ -2267,6 +2562,41 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+              {deletableOutputAssets.length > 0 && (
+                <div className="asset-bulk-actions">
+                  <span className="asset-selection-status">
+                    {selectedDeletableAssets.length ? `已選 ${selectedDeletableAssets.length} 個` : "可多選輸出資源"}
+                  </span>
+                  <button
+                    type="button"
+                    className="outline-button small-button"
+                    onClick={toggleVisibleAssetSelection}
+                    disabled={Boolean(deletingAssetKey) || !visibleDeletableAssets.length}
+                  >
+                    {allVisibleDeletableAssetsSelected ? "取消全選" : "全選目前篩選"}
+                  </button>
+                  {selectedDeletableAssets.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        className="outline-button small-button"
+                        onClick={() => setSelectedAssetKeys([])}
+                        disabled={Boolean(deletingAssetKey)}
+                      >
+                        清除選取
+                      </button>
+                      <button
+                        type="button"
+                        className="asset-bulk-delete-button"
+                        onClick={() => void deleteSelectedOutputAssets()}
+                        disabled={Boolean(deletingAssetKey)}
+                      >
+                        <Icon name="close" /> 刪除選取 ({selectedDeletableAssets.length})
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
               <button type="button" className="outline-button small-button" onClick={() => void refreshAssets()}>
                 <Icon name="refresh" /> 重新掃描
               </button>
@@ -2290,9 +2620,20 @@ export default function Home() {
                         <div className="asset-grid">
                         {group.assets.slice(0, 12).map((asset) => (
                           <article
-                            className={"asset-card " + (selectedAsset?.root === asset.root && selectedAsset.name === asset.name ? "is-selected" : "")}
-                            key={asset.root + ":" + asset.name}
+                            className={"asset-card " + (selectedAsset?.root === asset.root && selectedAsset.name === asset.name ? "is-selected " : "") + (selectedAssetKeySet.has(assetKey(asset)) ? "is-bulk-selected" : "")}
+                            key={assetKey(asset)}
                           >
+                            {isDeletableAsset(asset) && (
+                              <label className="asset-select-control">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedAssetKeySet.has(assetKey(asset))}
+                                  onChange={() => toggleAssetSelection(asset)}
+                                  aria-label={`選取刪除資源 ${asset.name}`}
+                                />
+                                <span aria-hidden="true" />
+                              </label>
+                            )}
                             <button
                               type="button"
                               className="asset-card-main"
@@ -2322,7 +2663,7 @@ export default function Home() {
                                   <button
                                     type="button"
                                     className="asset-delete-button"
-                                    disabled={deletingAssetKey === asset.root + ":" + asset.name}
+                                    disabled={Boolean(deletingAssetKey)}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       void deleteOutputAsset(asset);
@@ -2331,7 +2672,7 @@ export default function Home() {
                                     title="刪除輸出資源"
                                   >
                                     <Icon name="close" />
-                                    <span>{deletingAssetKey === asset.root + ":" + asset.name ? "刪除中" : "刪除"}</span>
+                                    <span>{deletingAssetKey === assetKey(asset) ? "刪除中" : "刪除"}</span>
                                   </button>
                                 )}
                               </div>
@@ -2461,11 +2802,11 @@ export default function Home() {
                   <button
                     type="button"
                     className="preview-delete-button"
-                    disabled={deletingAssetKey === assetPreview.root + ":" + assetPreview.name}
+                    disabled={Boolean(deletingAssetKey)}
                     onClick={() => void deleteOutputAsset(assetPreview)}
                   >
                     <Icon name="close" />
-                    {deletingAssetKey === assetPreview.root + ":" + assetPreview.name
+                    {deletingAssetKey === assetKey(assetPreview)
                       ? "刪除中"
                       : `刪除${assetPreview.kind === "image" ? "圖片" : "影片"}`}
                   </button>

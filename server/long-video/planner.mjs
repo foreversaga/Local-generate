@@ -9,15 +9,34 @@ function stripJsonFence(value) {
   return String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
 }
 
-function parseResponse(value) {
+function plannerProvider(input) {
+  return input?.provider === "codex" || input?.promptProvider === "codex" ? "codex" : "ollama";
+}
+
+function plannerErrorCode(provider, suffix) {
+  return `${provider === "codex" ? "CODEX" : "OLLAMA"}_${suffix}`;
+}
+
+function parseResponse(value, provider = "ollama") {
   if (value && typeof value === "object") {
-    if (value.response !== undefined) return parseResponse(value.response);
-    if (value.message?.content !== undefined) return parseResponse(value.message.content);
+    if (value.response !== undefined) return parseResponse(value.response, provider);
+    if (value.message?.content !== undefined) return parseResponse(value.message.content, provider);
     return value;
   }
   const text = stripJsonFence(value);
   try { return JSON.parse(text); } catch (error) {
-    throw new LongVideoError("OLLAMA_INVALID_JSON", "Ollama returned invalid JSON for sequence planning.", 502, { cause: error.message });
+    // Codex occasionally adds one short sentence before or after an
+    // otherwise valid JSON object. Recover the outer object before spending
+    // another full CLI request on a formatting-only failure.
+    const firstObject = text.indexOf("{");
+    const lastObject = text.lastIndexOf("}");
+    if (firstObject >= 0 && lastObject > firstObject) {
+      try { return JSON.parse(text.slice(firstObject, lastObject + 1)); } catch {
+        // Preserve the provider-specific INVALID_JSON error below.
+      }
+    }
+    const label = provider === "codex" ? "Codex CLI" : "Ollama";
+    throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} returned invalid JSON for sequence planning.`, 502, { cause: error.message });
   }
 }
 
@@ -90,17 +109,61 @@ function plannerPrompt(input, canonicalTimeline = null) {
   ].join("\n");
 }
 
-function modelTimeline(segments, duration) {
+function modelTimeline(segments, duration, provider = "ollama") {
+  const label = provider === "codex" ? "Codex CLI" : "Ollama";
   if (!Array.isArray(segments) || segments.length < 2) {
-    throw new LongVideoError("OLLAMA_TIMELINE_INVALID", "Ollama must return at least two timed storyboard segments.", 502);
+    throw new LongVideoError(plannerErrorCode(provider, "TIMELINE_INVALID"), `${label} must return at least two timed storyboard segments.`, 502);
   }
   try {
     return validateTimeline(segments, duration);
   } catch (error) {
     if (error instanceof LongVideoError) {
-      throw new LongVideoError("OLLAMA_TIMELINE_INVALID", `Ollama returned an invalid storyboard timeline: ${error.message}`, 502, { causeCode: error.code });
+      throw new LongVideoError(plannerErrorCode(provider, "TIMELINE_INVALID"), `${label} returned an invalid storyboard timeline: ${error.message}`, 502, { causeCode: error.code });
     }
     throw error;
+  }
+}
+
+function recoverContiguousTimeline(segments, duration, segmentDurationHint) {
+  if (!Array.isArray(segments) || segments.length < 2) return null;
+  const totalDuration = Number(duration);
+  if (!Number.isFinite(totalDuration) || totalDuration < 1) return null;
+  const maxSegments = Math.floor((totalDuration + 0.000001) / 0.5);
+  if (segments.length > maxSegments) return null;
+
+  const fallbackDuration = segmentDurationHint || totalDuration / segments.length;
+  const requestedDurations = segments.map((segment) => {
+    const explicitDuration = Number(segment?.duration);
+    if (Number.isFinite(explicitDuration) && explicitDuration > 0) return explicitDuration;
+    const start = Number(segment?.start);
+    const end = Number(segment?.end);
+    return Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : fallbackDuration;
+  });
+
+  let cursor = 0;
+  const recovered = segments.map((segment, index) => {
+    const remainingSegments = segments.length - index;
+    const remainingDuration = totalDuration - cursor;
+    const minimumForLaterSegments = 0.5 * (remainingSegments - 1);
+    const requested = requestedDurations[index];
+    const segmentDuration = index === segments.length - 1
+      ? remainingDuration
+      : Math.min(
+        Math.max(0.5, requested),
+        Math.max(0.5, remainingDuration - minimumForLaterSegments),
+      );
+    const start = Number(cursor.toFixed(3));
+    const end = index === segments.length - 1
+      ? Number(totalDuration.toFixed(3))
+      : Number((cursor + segmentDuration).toFixed(3));
+    cursor = end;
+    return { ...segment, start, end, duration: end - start };
+  });
+
+  try {
+    return validateTimeline(recovered, totalDuration);
+  } catch {
+    return null;
   }
 }
 
@@ -131,6 +194,8 @@ function repairPlannerPrompt(basePrompt, raw, error, { duration, timelineMode })
 }
 
 async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, timeoutMs, attempt }) {
+  const provider = plannerProvider(requestInput);
+  const label = provider === "codex" ? "Codex CLI" : "Ollama";
   try {
     if (request) return await request({ input: requestInput, model, prompt, attempt, repair: attempt > 1 });
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
@@ -153,16 +218,16 @@ async function requestPlannerModel({ request, requestInput, model, prompt, fetch
     }
   } catch (error) {
     if (error instanceof LongVideoError) throw error;
-    throw new LongVideoError("OLLAMA_UNAVAILABLE", `Unable to reach Ollama: ${error.message}`, 502);
+    throw new LongVideoError(plannerErrorCode(provider, "UNAVAILABLE"), `Unable to reach ${label}: ${error.message}`, 502);
   }
 }
 
-function promptDraft(segment, bible, mode) {
+function promptDraft(segment, bible, mode, provider = "ollama") {
   const rawPrompt = clean(segment.prompt);
   if (rawPrompt) {
     try {
       validatePrompt(rawPrompt, { mode });
-      return { prompt: rawPrompt, promptSource: "ollama" };
+      return { prompt: rawPrompt, promptSource: provider };
     } catch {
       // Structured fields below are composed server-side into the exact H3
       // wrapper when a local model returns a malformed full prompt.
@@ -170,16 +235,17 @@ function promptDraft(segment, bible, mode) {
   }
   const prompt = buildSegmentPrompt(segment, bible, { mode, firstFrame: mode === "i2v", pictureLabel: "Picture 1", shotId: "Shot 1" });
   validatePrompt(prompt, { mode });
-  return { prompt, promptSource: "ollama_structured" };
+  return { prompt, promptSource: `${provider}_structured` };
 }
 
-export async function planSequence(input, {
-  fetchImpl = globalThis.fetch,
-  ollamaUrl = process.env.OLLAMA_URL || "http://127.0.0.1:11434",
-  model = input?.ollamaModel || input?.model || "gemma4:12b",
-  timeoutMs = 120000,
-  request = null,
-} = {}) {
+export async function planSequence(input, options = {}) {
+  input = input || {};
+  const provider = plannerProvider(input);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const ollamaUrl = options.ollamaUrl || process.env.OLLAMA_URL || "http://127.0.0.1:11434";
+  const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || "gemma4:12b");
+  const timeoutMs = options.timeoutMs ?? 120000;
+  const request = options.request || null;
   const normalizedInput = validateSequenceInput(input || {});
   if (normalizedInput.inputType === "text" && !normalizedInput.inputText && !normalizedInput.brief && !input.timelineText && !input.storyboard) {
     throw new LongVideoError("PLAN_INPUT_REQUIRED", "Text planning requires inputText.", 400);
@@ -212,30 +278,85 @@ export async function planSequence(input, {
   let parsed;
   let semanticSegments = [];
   let repairAttempts = 0;
+  let retryCodes = [];
+  let lastCandidate = null;
+  let lastCandidateSegments = [];
+  let serverTimelineRepair = false;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, timeoutMs, attempt });
+    let raw;
     try {
-      const candidate = parseResponse(raw);
+      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, timeoutMs, attempt });
+      const candidate = parseResponse(raw, provider);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-        throw new LongVideoError("OLLAMA_INVALID_JSON", "Ollama must return one JSON object for sequence planning.", 502);
+        const label = provider === "codex" ? "Codex CLI" : "Ollama";
+        throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} must return one JSON object for sequence planning.`, 502);
       }
       const candidateSegments = Array.isArray(candidate.segments) ? candidate.segments : Array.isArray(candidate.timeline) ? candidate.timeline : [];
-      if (timelineMode === "auto") canonicalTimeline = modelTimeline(candidateSegments, normalizedInput.duration);
+      lastCandidate = candidate;
+      lastCandidateSegments = candidateSegments;
+      if (timelineMode === "auto") canonicalTimeline = modelTimeline(candidateSegments, normalizedInput.duration, provider);
       parsed = candidate;
       semanticSegments = candidateSegments;
-      repairAttempts = attempt - 1;
       break;
     } catch (error) {
-      const repairable = error instanceof LongVideoError && ["OLLAMA_INVALID_JSON", "OLLAMA_TIMELINE_INVALID"].includes(error.code);
-      if (attempt === 1 && repairable) {
-        console.warn("[long-video] planner.retry", JSON.stringify({ model, attempt, errorCode: error.code, timelineMode }));
-        activePrompt = repairPlannerPrompt(basePrompt, raw, error, { duration: normalizedInput.duration, timelineMode });
+      const repairable = error instanceof LongVideoError && [
+        plannerErrorCode(provider, "INVALID_JSON"),
+        plannerErrorCode(provider, "TIMELINE_INVALID"),
+      ].includes(error.code);
+      const transientCodexFailure = provider === "codex" && error instanceof LongVideoError && [
+        "CODEX_REQUEST_FAILED",
+        "CODEX_EMPTY_RESPONSE",
+      ].includes(error.code);
+      if (attempt === 1 && (repairable || transientCodexFailure)) {
+        retryCodes.push(error.code);
+        if (repairable) repairAttempts += 1;
+        console.warn("[long-video] planner.retry", JSON.stringify({
+          model,
+          attempt,
+          errorCode: error.code,
+          retryKind: repairable ? "format" : "codex_transient",
+          timelineMode,
+        }));
+        activePrompt = repairable
+          ? repairPlannerPrompt(basePrompt, raw, error, { duration: normalizedInput.duration, timelineMode })
+          : [
+              basePrompt,
+              "",
+              "RETRY REQUEST: The previous Codex CLI invocation ended without a usable response.",
+              "Run the same planning task again and return the complete JSON object only. Do not explain the retry.",
+            ].join("\n");
         continue;
+      }
+      if (
+        attempt === 2 &&
+        provider === "codex" &&
+        timelineMode === "auto" &&
+        error instanceof LongVideoError &&
+        error.code === "CODEX_TIMELINE_INVALID"
+      ) {
+        const recovered = recoverContiguousTimeline(lastCandidateSegments, normalizedInput.duration, durationHint);
+        if (recovered && lastCandidate) {
+          parsed = lastCandidate;
+          semanticSegments = lastCandidateSegments;
+          canonicalTimeline = recovered;
+          serverTimelineRepair = true;
+          console.warn("[long-video] planner.timeline_recovered", JSON.stringify({
+            model,
+            attempt,
+            errorCode: error.code,
+            segments: recovered.length,
+            duration: normalizedInput.duration,
+          }));
+          break;
+        }
       }
       throw error;
     }
   }
-  if (!parsed) throw new LongVideoError("OLLAMA_INVALID_JSON", "Ollama did not return a usable sequence plan.", 502);
+  if (!parsed) {
+    const label = provider === "codex" ? "Codex CLI" : "Ollama";
+    throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} did not return a usable sequence plan.`, 502);
+  }
   const bible = validateContinuityBible(parsed.continuityBible || parsed.continuity_bible);
   const negativePrompt = mergeNegativePrompt(normalizedInput.negativePrompt, parsed.negativePrompt || parsed.negative_prompt);
   const segments = canonicalTimeline.map((canonical, index) => ({
@@ -251,7 +372,7 @@ export async function planSequence(input, {
   // with I2VA and continues with I2VA as well.
   const drafts = segments.map((segment, index) => {
     const mode = normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
-    const generated = promptDraft(segment, bible, mode);
+    const generated = promptDraft(segment, bible, mode, provider);
     return {
       ...segment,
       id: segment.id || `segment-${String(index + 1).padStart(3, "0")}`,
@@ -269,7 +390,8 @@ export async function planSequence(input, {
     ...(normalizedInput.inputAsset ? { inputAsset: sanitizeAssetRef(normalizedInput.inputAsset) } : {}),
     duration: normalizedInput.duration ?? drafts[drafts.length - 1].end,
     negativePrompt,
-    ollamaModel: model,
+    ...(provider === "codex" ? { codexModel: model } : { ollamaModel: model }),
+    promptProvider: provider,
     continuityBible: bible,
     segments: drafts,
     timeline: drafts,
@@ -282,11 +404,13 @@ export async function planSequence(input, {
     planMeta: {
       model,
       generatedAt: new Date().toISOString(),
-      source: "ollama",
-      timelineSource: timelineMode === "auto" ? "ollama" : "author",
-      promptSource: drafts.every((segment) => segment.promptSource === "ollama") ? "ollama" : "ollama_structured",
+      source: provider,
+      timelineSource: timelineMode === "auto" ? provider : "author",
+      promptSource: drafts.every((segment) => segment.promptSource === provider) ? provider : `${provider}_structured`,
       segmentDurationHint: durationHint,
       repairAttempts,
+      ...(retryCodes.length ? { retryAttempts: retryCodes.length, retryCodes } : {}),
+      ...(serverTimelineRepair ? { timelineRepair: "server_contiguous" } : {}),
     },
   };
 }

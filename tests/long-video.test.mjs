@@ -10,9 +10,9 @@ import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailFrame } from "../server/long-video/media.mjs";
 import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
-import { planSequence } from "../server/long-video/planner.mjs";
+import { parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
-import { createSequenceRecord, sanitizeAssetRef, validateSequenceInput } from "../server/long-video/schema.mjs";
+import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateSequenceInput } from "../server/long-video/schema.mjs";
 
 function apiRequest(method, url, value = {}) {
   return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
@@ -209,6 +209,103 @@ test("automatic planner uses Ollama storyboard timing and structured H3 content"
   assert.match(plan.segments[0].prompt, /a wide shot follows the courier/);
   assert.match(plan.segments[1].prompt, /^For the target video, at 0\.00 seconds into the target video/);
   assert.equal(plan.segments[1].negativePrompt, "hand distortion");
+});
+
+test("Codex planner preserves provider metadata and structured H3 segments", async () => {
+  const plan = await planSequence({
+    promptProvider: "codex",
+    codexModel: "gpt-5.6-luna",
+    inputType: "text",
+    inputText: "A lantern bearer crosses a quiet mountain bridge.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    request: async () => ({
+      continuityBible: { visualStyle: "cinematic", environment: "mountain bridge" },
+      segments: [
+        { start: 0, end: 5, description: "The lantern bearer reaches the bridge." },
+        { start: 5, end: 10, description: "The lantern bearer crosses into the mist." },
+      ],
+    }),
+  });
+  assert.equal(plan.promptProvider, "codex");
+  assert.equal(plan.codexModel, "gpt-5.6-luna");
+  assert.equal(plan.planMeta.source, "codex");
+  assert.equal(plan.planMeta.timelineSource, "codex");
+  assert.equal(plan.planMeta.promptSource, "codex_structured");
+  assert.match(plan.segments[1].prompt, /^For the target video, at 0\.00 seconds into the target video/);
+});
+
+test("Codex planner extracts a JSON object surrounded by short commentary", () => {
+  const parsed = parsePlannerResponse("Here is the plan:\n{\"continuityBible\":{},\"segments\":[]}\n", "codex");
+  assert.deepEqual(parsed, { continuityBible: {}, segments: [] });
+});
+
+test("Codex planner retries a transient CLI response failure", async () => {
+  let attempts = 0;
+  const plan = await planSequence({
+    promptProvider: "codex",
+    codexModel: "gpt-5.6-luna",
+    inputType: "text",
+    inputText: "A lantern bearer crosses a quiet mountain bridge.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    request: async ({ attempt }) => {
+      attempts += 1;
+      if (attempt === 1) throw new LongVideoError("CODEX_REQUEST_FAILED", "temporary CLI exit", 502);
+      return {
+        continuityBible: {},
+        segments: [{ start: 0, end: 5, description: "first" }, { start: 5, end: 10, description: "second" }],
+      };
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(plan.planMeta.repairAttempts, 0);
+  assert.equal(plan.planMeta.retryAttempts, 1);
+  assert.deepEqual(plan.planMeta.retryCodes, ["CODEX_REQUEST_FAILED"]);
+});
+
+test("Codex planner recovers a malformed automatic timeline after one repair", async () => {
+  let attempts = 0;
+  const plan = await planSequence({
+    promptProvider: "codex",
+    codexModel: "gpt-5.6-luna",
+    inputType: "text",
+    inputText: "A lantern bearer crosses a quiet mountain bridge.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    request: async () => {
+      attempts += 1;
+      return {
+        continuityBible: {},
+        segments: attempts === 1
+          ? [{ start: 0, end: 4, description: "first" }, { start: 5, end: 10, description: "second" }]
+          : [{ start: 0, end: 6, description: "first" }, { start: 7, end: 10, description: "second" }],
+      };
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(plan.planMeta.repairAttempts, 1);
+  assert.equal(plan.planMeta.timelineRepair, "server_contiguous");
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 6], [6, 10]]);
+});
+
+test("Codex planner keeps provider-specific request failures", async () => {
+  await assert.rejects(() => planSequence({
+    promptProvider: "codex",
+    codexModel: "gpt-5.6-luna",
+    inputType: "text",
+    inputText: "A lantern bearer crosses a quiet mountain bridge.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    request: async () => { throw new Error("CLI unavailable"); },
+  }), {
+    code: "CODEX_UNAVAILABLE",
+    message: /Unable to reach Codex CLI: CLI unavailable/,
+  });
 });
 
 test("automatic planner rejects invalid Ollama storyboard arithmetic", async () => {

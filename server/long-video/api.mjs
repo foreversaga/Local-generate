@@ -44,7 +44,7 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "ollamaModel", "seam", "planMeta", "planningSettings"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -77,7 +77,7 @@ function normalizedPlanningSettings(source, segments, duration) {
   const rawHint = Number(source?.planningSettings?.segmentDurationHint ?? source?.planMeta?.segmentDurationHint ?? 5);
   const segmentDurationHint = Number(Math.min(60, Math.max(0.5, Number.isFinite(rawHint) ? rawHint : 5)).toFixed(3));
   return {
-    timelineMode: source?.planMeta?.timelineSource === "ollama" || source?.planningSettings?.timelineMode === "auto" ? "auto" : "manual",
+    timelineMode: ["ollama", "codex"].includes(source?.planMeta?.timelineSource) || source?.planningSettings?.timelineMode === "auto" ? "auto" : "manual",
     targetDuration: duration,
     segmentDurationHint,
     segmentCount: segments.length,
@@ -115,7 +115,12 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         timelineMode: input.timelineMode || (input.timelineText || input.storyboard ? "manual" : "auto"),
         duration: input.duration,
         segmentDurationHint: input.segmentDurationHint,
-        model: input.ollamaModel || input.model || "gemma4:12b",
+        model: input.promptProvider === "codex" || input.provider === "codex"
+          ? input.codexModel || input.model || "gpt-5.6-luna"
+          : input.ollamaModel || input.model || "gemma4:12b",
+        reasoningEffort: input.promptProvider === "codex" || input.provider === "codex"
+          ? input.reasoningEffort || input.codexReasoningEffort || "medium"
+          : undefined,
         hasNegativeConstraints: Boolean(String(input.negativePrompt || "").trim()),
       }));
       const plan = await (context.plan || defaultPlan)(input, context.planOptions || {});
@@ -124,6 +129,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         timelineSource: plan.planMeta?.timelineSource,
         promptSource: plan.planMeta?.promptSource,
         repairAttempts: plan.planMeta?.repairAttempts || 0,
+        retryAttempts: plan.planMeta?.retryAttempts || 0,
+        retryCodes: plan.planMeta?.retryCodes,
+        timelineRepair: plan.planMeta?.timelineRepair,
         duration: plan.duration,
         segments: plan.segments?.length || 0,
       }));
@@ -183,7 +191,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       const normalized = validateSequenceInput(candidate, { requireTimeline: true });
       const criticalFields = ["inputType", "inputAsset", "imagePurpose", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "ollamaModel", "seam", "planMeta", "continuityBible"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
       }

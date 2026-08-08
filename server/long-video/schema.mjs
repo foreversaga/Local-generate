@@ -106,7 +106,7 @@ export function validateSegment(value, index = 0) {
     ...(nonDiegeticMusic ? { nonDiegeticMusic } : {}),
     ...(continuityNote ? { continuityNote } : {}),
     ...(endingState ? { endingState } : {}),
-    ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
+    ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "codex" || value.promptSource === "codex_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
     mode: value.mode === "i2v" ? "i2v" : value.mode === "ref2v" ? "ref2v" : "t2v",
     status: SEGMENT_STATES.includes(value.status) ? value.status : "pending",
     attempt: Math.max(0, Math.floor(finite(value.attempt, 0))),
@@ -194,7 +194,7 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
   }));
   const rawSegmentDurationHint = finite(payload.planningSettings?.segmentDurationHint ?? payload.planMeta?.segmentDurationHint, 5);
   const normalizedSegmentDurationHint = Number(Math.min(60, Math.max(0.5, rawSegmentDurationHint)).toFixed(3));
-  const timelineMode = payload.planMeta?.timelineSource === "ollama" || payload.planningSettings?.timelineMode === "auto" ? "auto" : "manual";
+  const timelineMode = ["ollama", "codex"].includes(payload.planMeta?.timelineSource) || payload.planningSettings?.timelineMode === "auto" ? "auto" : "manual";
   const duration = payload.duration ?? timeline[timeline.length - 1].end;
   return {
     schemaVersion: 1,
@@ -227,7 +227,10 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     seed: payload.seed,
     negativePrompt: payload.negativePrompt,
     modelProfile: payload.modelProfile,
+    ...(payload.promptProvider ? { promptProvider: payload.promptProvider } : {}),
     ...(payload.ollamaModel ? { ollamaModel: payload.ollamaModel } : {}),
+    ...(payload.codexModel ? { codexModel: payload.codexModel } : {}),
+    ...(payload.codexReasoningEffort ? { codexReasoningEffort: payload.codexReasoningEffort } : {}),
     seam: payload.seam,
     ...(payload.planMeta ? { planMeta: payload.planMeta } : {}),
   };
