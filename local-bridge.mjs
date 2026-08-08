@@ -115,9 +115,11 @@ function updateJobTiming(job) {
   if (job.status !== "running") return;
 
   if (estimate.durationMs) {
-    // Keep a real ComfyUI progress event from moving backwards when the
-    // timing estimate is refreshed between two websocket updates.
-    job.progress = Math.min(95, Math.max(job.progress, 2, (elapsedMs / estimate.durationMs) * 100));
+    job.estimatedProgress = Math.min(95, Math.max(2, (elapsedMs / estimate.durationMs) * 100));
+    if (job.progressSource !== "native") {
+      job.progress = Math.max(job.progress, job.estimatedProgress);
+      job.progressSource = "estimated";
+    }
     return;
   }
 
@@ -126,7 +128,8 @@ function updateJobTiming(job) {
   // Advance through a clearly-labeled warm-up band so a live job does not
   // look frozen at the initial placeholder value of 2%.
   const warmupProgress = Math.min(18, 8 + Math.max(0, elapsedMs - 1000) / 1000);
-  job.progress = Math.max(job.progress, warmupProgress);
+  job.estimatedProgress = warmupProgress;
+  if (job.progressSource !== "native") job.progress = Math.max(job.progress, warmupProgress);
   if (job.progress < 20 && ["正在啟動生成…", "等待 ComfyUI 回報進度…"].includes(job.stage)) {
     job.stage = "等待 ComfyUI 回報進度…";
   }
@@ -619,10 +622,105 @@ function publicJob(job) {
     estimatedDurationMs: job.estimatedDurationMs,
     etaMs: job.etaMs,
     timingSampleCount: job.timingSampleCount,
+    progressSource: job.progressSource,
+    estimatedProgress: job.estimatedProgress,
+    nativeCurrent: job.nativeCurrent,
+    nativeMaximum: job.nativeMaximum,
+    comfyNode: job.comfyNode,
+    connectionState: job.connectionState,
+    updatedAt: job.updatedAt,
+    lastNativeProgressAt: job.lastNativeProgressAt,
   };
 }
 
+function touchJob(job) {
+  job.updatedAt = now();
+}
+
+function stageProgress(classType) {
+  return {
+    CLIPLoader: 20,
+    UNETLoader: 24,
+    VAELoader: 27,
+    MiniMaxH3ImageToVideo: 30,
+    SamplerCustomAdvanced: 32,
+    VAEDecode: 93,
+    VAEDecodeAudio: 95,
+    CreateVideo: 97,
+    SaveVideo: 98,
+  }[classType] || 20;
+}
+
+function updateJobFromStructuredEvent(job, event) {
+  touchJob(job);
+  const type = String(event?.type || "");
+  if (type === "queued") {
+    job.stage = "已送入 ComfyUI 佇列";
+    job.progress = Math.max(job.progress, 19);
+    job.connectionState = "queued";
+    return;
+  }
+  if (type === "websocket_connected") {
+    job.connectionState = "connected";
+    return;
+  }
+  if (type === "websocket_reconnecting") {
+    job.connectionState = "reconnecting";
+    job.stage = "ComfyUI 進度連線重連中…";
+    return;
+  }
+  if (type === "heartbeat") {
+    job.connectionState = event.transport === "polling" ? "polling" : "connected";
+    return;
+  }
+  if (type === "executing") {
+    job.connectionState = "connected";
+    if (event.node == null) {
+      job.stage = "ComfyUI 執行完成，讀取輸出…";
+      job.progress = Math.max(job.progress, 98);
+      return;
+    }
+    job.comfyNode = String(event.class_type || event.node);
+    job.stage = String(event.stage || `ComfyUI / ${job.comfyNode}`);
+    if (job.progressSource !== "native") job.progress = Math.max(job.progress, stageProgress(event.class_type));
+    return;
+  }
+  if (type === "progress") {
+    const current = Math.max(0, Number(event.value) || 0);
+    const maximum = Math.max(1, Number(event.max) || 1);
+    job.nativeCurrent = current;
+    job.nativeMaximum = maximum;
+    job.progressSource = "native";
+    job.lastNativeProgressAt = job.updatedAt;
+    job.connectionState = "connected";
+    job.progress = Math.min(94, 20 + (current / maximum) * 72);
+    job.stage = String(event.stage || (job.mode === "replace" ? "逐段生成影片…" : "採樣生成影格…"));
+    return;
+  }
+  if (type === "artifact") {
+    const relativeName = String(event.relative_name || "").replaceAll("\\", "/").replace(/^\/+/, "");
+    if (!relativeName || event.folder_type !== "output") return;
+    // Validate now; resolveMediaPath performs the final on-disk check after
+    // the child exits and ComfyUI has closed the output file.
+    safePath(OUTPUT_ROOT, relativeName);
+    job.outputRelativeName = relativeName;
+    job.outputName = relativeName;
+    job.stage = "ComfyUI 已寫入原生成品";
+    job.progress = Math.max(job.progress, 99);
+  }
+}
+
 function updateJobFromLine(job, line) {
+  const marker = "H3_PROGRESS ";
+  const markerIndex = line.indexOf(marker);
+  if (markerIndex >= 0) {
+    try {
+      updateJobFromStructuredEvent(job, JSON.parse(line.slice(markerIndex + marker.length)));
+      return;
+    } catch {
+      // Fall through to the legacy text parser for compatibility.
+    }
+  }
   const progress = line.match(/progress=(\d+)\/(\d+)/i);
   if (progress) {
     const current = Number(progress[1]);
@@ -630,12 +728,18 @@ function updateJobFromLine(job, line) {
     // Reserve the first 20% for input preparation and ComfyUI queueing;
     // map the actual node progress into the remaining generation band.
     job.progress = Math.min(94, Math.max(job.progress, 20 + (current / maximum) * 72));
+    job.progressSource = "native";
+    job.nativeCurrent = current;
+    job.nativeMaximum = maximum;
+    job.lastNativeProgressAt = now();
+    touchJob(job);
     job.stage = job.mode === "replace" ? "逐段生成影片…" : "生成影格…";
   }
   const node = line.match(/node=([^\s]+)/i);
   if (node) {
     job.stage = "ComfyUI / " + node[1];
     job.progress = Math.min(94, Math.max(job.progress, 20));
+    touchJob(job);
   }
   const chunk = line.match(/chunk=(\d+)/i);
   if (chunk) {
@@ -649,6 +753,7 @@ function updateJobFromLine(job, line) {
   if (/queued|prompt_id/i.test(line)) {
     job.stage = "已送入 ComfyUI 佇列";
     job.progress = Math.max(job.progress, 19);
+    touchJob(job);
   }
 }
 
@@ -713,11 +818,14 @@ function pumpGenerationQueue() {
   entry.job.executionStartedMs = Date.now();
   entry.job.progress = Math.max(entry.job.progress, 8);
   entry.job.stage = "正在啟動生成…";
+  entry.job.connectionState = "starting";
+  touchJob(entry.job);
   try {
     const actualChild = spawn(entry.command, entry.args, entry.options);
     entry.child.actualChild = actualChild;
     entry.job.progress = Math.max(entry.job.progress, 9);
     entry.job.stage = "等待 ComfyUI 回報進度…";
+    touchJob(entry.job);
     actualChild.stdout.pipe(entry.child.stdout);
     actualChild.stderr.pipe(entry.child.stderr);
     actualChild.on("error", (error) => entry.child.emit("error", error));
@@ -787,6 +895,8 @@ async function startGeneration(payload) {
     status: "queued",
     mode,
     progress: 2,
+    progressSource: "estimated",
+    estimatedProgress: 2,
     stage: "準備本機輸入…",
     prompt,
     seed,
@@ -798,6 +908,8 @@ async function startGeneration(payload) {
     duration,
     modelProfile,
     startedAt: now(),
+    updatedAt: now(),
+    connectionState: "starting",
     outputName,
     outputPath,
     cancelRequested: false,
@@ -862,6 +974,8 @@ async function startGeneration(payload) {
   const childEnv = {
     ...process.env,
     PYTHONUNBUFFERED: "1",
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
     MINIMAX_H3_LOGS_ROOT: LOG_ROOT,
   };
   if (childEnv.Path && childEnv.PATH) delete childEnv.PATH;
@@ -880,7 +994,9 @@ async function startGeneration(payload) {
   });
   child.on("close", async (code) => {
     jobProcesses.delete(job.id);
-    const outputExists = await fs.stat(outputPath).then(() => true).catch(() => false);
+    const outputRelativeName = job.outputRelativeName || outputName;
+    const nativeOutputPath = await resolveMediaPath("output", outputRelativeName).catch(() => null);
+    const outputExists = Boolean(nativeOutputPath);
     if (job.cancelRequested) {
       job.status = "cancelled";
       job.stage = "已停止";
@@ -889,7 +1005,7 @@ async function startGeneration(payload) {
       job.progress = 100;
       job.stage = "完成，影片已寫入 ComfyUI output";
       try {
-        job.output = await toAsset("output", outputName);
+        job.output = await toAsset("output", outputRelativeName);
       } catch {
         job.error = "生成完成，但找不到輸出影片。";
         job.status = "failed";
@@ -907,6 +1023,7 @@ async function startGeneration(payload) {
       job.etaMs = 0;
     }
     job.finishedAt = now();
+    touchJob(job);
     reservedOutputPaths.delete(outputPath);
     trimJobs();
     queueMicrotask(pumpGenerationQueue);

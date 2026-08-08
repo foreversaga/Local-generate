@@ -70,6 +70,9 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /setRenderJobs\(trackedJobs\)/);
   assert.match(page, /renderJobs\.find\(\(item\) => item\.status === "running"\)/);
   assert.match(page, /function isFinishedJob\(job: Job\)/);
+  assert.match(page, /原生步數/);
+  assert.match(page, /尚未收到原生步數（目前為估算）/);
+  assert.match(page, /progressUpdateAge/);
   assert.match(page, /const trackedRenderJobIds = renderJobIds/);
   assert.match(page, /tracked\.every\(isFinishedJob\)/);
   assert.match(page, /referenceImageName: referenceImage\?\.kind === "image"/);
@@ -94,6 +97,14 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /const timingSampleWindow = 5/);
   assert.match(bridge, /withinTenPercent/);
   assert.match(bridge, /const warmupProgress = Math\.min\(18/);
+  assert.match(bridge, /H3_PROGRESS /);
+  assert.match(bridge, /progressSource !== "native"/);
+  assert.match(bridge, /nativeCurrent/);
+  assert.match(bridge, /websocket_reconnecting/);
+  assert.match(bridge, /PYTHONUTF8: "1"/);
+  assert.match(bridge, /PYTHONIOENCODING: "utf-8"/);
+  assert.match(bridge, /type === "artifact"/);
+  assert.match(bridge, /outputRelativeName/);
   assert.match(bridge, /20 \+ \(current \/ maximum\) \* 72/);
   assert.match(bridge, /entry\.job\.progress = Math\.max\(entry\.job\.progress, 8\)/);
   assert.match(bridge, /function promptSystem\(mode, durationSeconds, hasVisualReference\)/);

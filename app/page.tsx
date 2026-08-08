@@ -60,6 +60,14 @@ type Job = {
   estimatedDurationMs?: number | null;
   etaMs?: number | null;
   timingSampleCount?: number;
+  progressSource?: "estimated" | "native";
+  estimatedProgress?: number;
+  nativeCurrent?: number;
+  nativeMaximum?: number;
+  comfyNode?: string;
+  connectionState?: "starting" | "queued" | "connected" | "reconnecting" | "polling";
+  updatedAt?: string;
+  lastNativeProgressAt?: string;
 };
 
 type Toast = {
@@ -170,6 +178,12 @@ function formatDurationMs(value?: number | null) {
   const seconds = Math.max(0, Math.ceil(Number(value) / 1000));
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+function progressUpdateAge(updatedAt?: string) {
+  if (!updatedAt) return "尚未收到事件";
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(updatedAt)) / 1000));
+  return ageSeconds < 2 ? "剛剛更新" : `${ageSeconds} 秒前更新`;
 }
 
 function isActiveJob(job: Job) {
@@ -917,8 +931,17 @@ export default function Home() {
   const timingLabel = activeJob?.estimatedDurationMs
     ? ` · 預估剩餘 ${formatDurationMs(activeJob.etaMs)}（最近 ${activeJob.timingSampleCount || 0}/5）`
     : "";
+  const nativeProgressLabel = activeJob?.progressSource === "native" && activeJob.nativeMaximum
+    ? ` · 原生步數 ${activeJob.nativeCurrent ?? 0}/${activeJob.nativeMaximum}`
+    : " · 尚未收到原生步數（目前為估算）";
+  const connectionLabel = activeJob?.connectionState === "reconnecting"
+    ? " · 進度連線重連中"
+    : activeJob?.connectionState === "polling"
+      ? " · 使用完成狀態輪詢"
+      : "";
+  const updateLabel = activeJob ? ` · ${progressUpdateAge(activeJob.updatedAt)}` : "";
   const progressStage = activeJob
-    ? `${progressBatchLabel}Seed ${activeJob.seed ?? "—"} · ${activeJob.stage}${timingLabel}`
+    ? `${progressBatchLabel}Seed ${activeJob.seed ?? "—"} · ${activeJob.stage}${nativeProgressLabel}${connectionLabel}${updateLabel}${timingLabel}`
     : outputAsset ? "完成，可在資源庫預覽" : "尚未開始生成";
   const currentStages = [
     { label: "準備輸入", done: Boolean(activeJob && activeJob.progress > 4) },
