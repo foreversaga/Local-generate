@@ -1254,6 +1254,60 @@ code {
   font-size: 10px;
 }
 
+.progress-timing {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 2px 0 5px;
+}
+
+.progress-timing-item {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(8, 14, 19, 0.32);
+}
+
+.progress-timing-item span,
+.progress-timing-item strong {
+  display: block;
+}
+
+.progress-timing-item span {
+  overflow: hidden;
+  color: #71847e;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-timing-item strong {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #dce9dc;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-timing-complete {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: #526b56;
+  background: rgba(200, 241, 105, 0.06);
+}
+
+.progress-timing-complete strong {
+  margin-top: 0;
+  color: var(--lime);
+}
+
 .stage-list {
   display: grid;
   gap: 10px;

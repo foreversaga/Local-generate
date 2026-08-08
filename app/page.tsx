@@ -599,6 +599,9 @@ export default function Home() {
     .filter((item) => item.output)
     .sort((left, right) => String(right.finishedAt || "").localeCompare(String(left.finishedAt || "")))[0]
     ?.output;
+  const latestCompletedJob = [...renderJobs]
+    .filter((item) => item.status === "completed" && Number.isFinite(item.elapsedMs))
+    .sort((left, right) => String(right.finishedAt || "").localeCompare(String(left.finishedAt || "")))[0];
   const activeRenderJobIds = renderJobs
     .filter(isActiveJob)
     .map((item) => item.id);
@@ -1669,9 +1672,6 @@ export default function Home() {
   const progressBatchLabel = activeJob && progressBatchTotal > 1
     ? `第 ${activeJob.batchIndex || Math.min(completedRenderCount + 1, progressBatchTotal)} / ${progressBatchTotal} 部影片 · `
     : "";
-  const timingLabel = activeJob?.estimatedDurationMs
-    ? ` · 預估剩餘 ${formatDurationMs(activeJob.etaMs)}（最近 ${activeJob.timingSampleCount || 0}/5）`
-    : "";
   const nativeProgressLabel = activeJob?.progressSource === "native" && activeJob.nativeMaximum
     ? ` · 原生步數 ${activeJob.nativeCurrent ?? 0}/${activeJob.nativeMaximum}`
     : " · 尚未收到原生步數（目前為估算）";
@@ -1682,7 +1682,7 @@ export default function Home() {
       : "";
   const updateLabel = activeJob ? ` · ${progressUpdateAge(activeJob.updatedAt)}` : "";
   const progressStage = activeJob
-    ? `${progressBatchLabel}Seed ${activeJob.seed ?? "—"} · ${activeJob.stage}${nativeProgressLabel}${connectionLabel}${updateLabel}${timingLabel}`
+    ? `${progressBatchLabel}Seed ${activeJob.seed ?? "—"} · ${activeJob.stage}${nativeProgressLabel}${connectionLabel}${updateLabel}`
     : outputAsset ? "完成，可在資源庫預覽" : "尚未開始生成";
   const currentStages = [
     { label: "準備輸入", done: Boolean(activeJob && activeJob.progress > 4) },
@@ -2513,6 +2513,31 @@ export default function Home() {
                 <span style={{ width: (activeJob ? activeJob.progress : outputAsset ? 100 : 0) + "%" }} />
               </div>
               <div className="progress-stage">{progressStage}</div>
+              {(activeJob || latestCompletedJob) && (
+                <div className="progress-timing" aria-label="生成時間資訊">
+                  {activeJob ? (
+                    <>
+                      <div className="progress-timing-item">
+                        <span>已耗時</span>
+                        <strong>{formatDurationMs(activeJob.elapsedMs)}</strong>
+                      </div>
+                      <div className="progress-timing-item">
+                        <span>預估總耗時</span>
+                        <strong>{formatDurationMs(activeJob.estimatedDurationMs)}</strong>
+                      </div>
+                      <div className="progress-timing-item">
+                        <span>預估剩餘</span>
+                        <strong>{formatDurationMs(activeJob.etaMs)}</strong>
+                      </div>
+                    </>
+                  ) : latestCompletedJob ? (
+                    <div className="progress-timing-item progress-timing-complete">
+                      <span>實際生成總時間</span>
+                      <strong>{formatDurationMs(latestCompletedJob.elapsedMs)}</strong>
+                    </div>
+                  ) : null}
+                </div>
+              )}
               <div className="stage-list">
                 {currentStages.map((stage, index) => (
                   <div className={"stage-item " + (stage.done ? "is-done" : "") + (activeJob && !stage.done && index === currentStages.findIndex((item) => !item.done) ? " is-current" : "")} key={stage.label}>
