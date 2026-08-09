@@ -13,6 +13,7 @@ import { checkMediaTools } from "./server/long-video/media.mjs";
 import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
+import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
 import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
 import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
 import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
@@ -585,6 +586,8 @@ async function runtimeBusyReason() {
   if (activeGenerationId || generationQueue.length || jobProcesses.size) return "A video generation is queued or running.";
   const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
   if (seedJobs.some((job) => ["queued", "running"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
+  const img2imgJobs = typeof img2imgController?.getJobs === "function" ? img2imgController.getJobs() : [];
+  if (img2imgJobs.some((job) => ["queued", "running"].includes(job?.status))) return "An image-to-image job is queued or running.";
   const sequenceJobs = await listLongVideoJobs().catch(() => null);
   if (!Array.isArray(sequenceJobs)) return "Long-video job state could not be verified.";
   if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return "A long-video job is active.";
@@ -638,6 +641,7 @@ async function switchRuntimeMode(mode) {
     COMFY_URL = target.comfyUrl;
     OLLAMA_URL = target.ollamaUrl;
     seedvr2Controller = createSeedVR2ControllerForRuntime();
+    img2imgController = createImg2ImgControllerForRuntime();
     return target;
   } finally {
     runtimeSwitching = false;
@@ -1968,6 +1972,14 @@ async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000, onProgres
   throw error;
 }
 
+export function sequenceGenerationReferenceFields(payload = {}, stagedReferences = []) {
+  if (payload.mode !== "ref2v") return {};
+  const names = stagedReferences.length
+    ? stagedReferences.map((reference) => reference.name)
+    : (Array.isArray(payload.referenceImageNames) ? payload.referenceImageNames : []);
+  return { referenceImageNames: names };
+}
+
 async function startSequenceGeneration(payload) {
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
@@ -1999,7 +2011,7 @@ async function startSequenceGeneration(payload) {
       prompt: payload.prompt,
       negativePrompt: payload.negativePrompt,
       inputImageName: stagedInput?.name || "",
-      referenceImageNames: stagedReferences.length ? stagedReferences.map((reference) => reference.name) : (payload.referenceImageNames || []),
+      ...sequenceGenerationReferenceFields(payload, stagedReferences),
       inputVideoName: payload.inputVideoName || "",
       duration: payload.duration,
       width: payload.width,
@@ -2134,6 +2146,22 @@ async function activeInputAssetUse(relativeName) {
     return { blocked: true, code: "ASSET_USE_UNKNOWN" };
   }
 
+  try {
+    const img2imgJobs = typeof img2imgController?.getJobs === "function" ? img2imgController.getJobs() : [];
+    const target = inputAssetKey("input", relativeName);
+    if (!Array.isArray(img2imgJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    for (const job of img2imgJobs) {
+      if (!["queued", "running"].includes(job?.status)) continue;
+      if (job?.sourceRoot !== "input" || typeof job?.sourceName !== "string") continue;
+      let sourceName;
+      try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+      if (classifyFile(sourceName) !== "image") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      if (inputAssetKey("input", sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
+    }
+  } catch {
+    return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  }
+
   let sequenceJobs;
   try { sequenceJobs = await listLongVideoJobs(); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
   if (!Array.isArray(sequenceJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
@@ -2180,6 +2208,21 @@ async function activeAssetUse(rootName, relativeName) {
       try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
       if (classifyFile(sourceName) !== "video") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
       if (inputAssetKey(job.sourceRoot, sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
+    }
+  } catch {
+    return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  }
+  try {
+    const img2imgJobs = typeof img2imgController?.getJobs === "function" ? img2imgController.getJobs() : [];
+    if (!Array.isArray(img2imgJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    const target = inputAssetKey("output", relativeName);
+    for (const job of img2imgJobs) {
+      if (!["queued", "running"].includes(job?.status)) continue;
+      if (job?.sourceRoot !== "output" || typeof job?.sourceName !== "string") continue;
+      let sourceName;
+      try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+      if (classifyFile(sourceName) !== "image") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      if (inputAssetKey("output", sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
     }
   } catch {
     return { blocked: true, code: "ASSET_USE_UNKNOWN" };
@@ -2305,7 +2348,19 @@ function createSeedVR2ControllerForRuntime() {
   });
 }
 
+function createImg2ImgControllerForRuntime() {
+  return createImg2ImgController({
+    comfyUrl: COMFY_URL,
+    remote: COMFY_REMOTE,
+    inputRoot: INPUT_ROOT,
+    outputRoot: OUTPUT_ROOT,
+    toAsset,
+    beforeRun: () => releaseOllamaForComfy(),
+  });
+}
+
 let seedvr2Controller = createSeedVR2ControllerForRuntime();
+let img2imgController = createImg2ImgControllerForRuntime();
 
 async function route(req, res) {
   if (req.method === "OPTIONS") {
@@ -2433,6 +2488,17 @@ async function route(req, res) {
       });
     }
     return;
+  }
+
+  if (pathname === "/api/img2img" || pathname.startsWith("/api/img2img/")) {
+    const dispatch = () => img2imgController.handleRoute(req, res, {
+      pathname,
+      readJson,
+      sendJson,
+      sendError,
+    });
+    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
+    if (handled || res.headersSent) return;
   }
   if (req.method === "POST" && pathname === "/api/prompt") {
     let payload = null;

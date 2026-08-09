@@ -41,6 +41,40 @@ type UpscaleJob = {
 const UPSCALE_POLL_STATUSES = new Set<UpscaleJobStatus>(["queued", "running"]);
 const UPSCALE_TERMINAL_STATUSES = new Set<UpscaleJobStatus>(["completed", "failed", "cancelled"]);
 
+type Img2ImgJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+type Img2ImgJob = {
+  id: string;
+  status: Img2ImgJobStatus;
+  progress: number;
+  stage: string;
+  sourceName: string;
+  sourceRoot: "input" | "output";
+  prompt: string;
+  negativePrompt: string;
+  model: string;
+  denoise: number;
+  steps: number;
+  cfg: number;
+  seed: number;
+  output?: Asset;
+  error?: string;
+};
+
+const IMG2IMG_POLL_STATUSES = new Set<Img2ImgJobStatus>(["queued", "running"]);
+const IMG2IMG_TERMINAL_STATUSES = new Set<Img2ImgJobStatus>(["completed", "failed", "cancelled"]);
+const IMG2IMG_MODELS = [
+  {
+    value: "sd_xl_turbo_1.0_fp16.safetensors",
+    label: "SDXL Turbo 1.0 FP16",
+    note: "快速預覽 · 建議 4 steps / CFG 1",
+  },
+  {
+    value: "v1-5-pruned-emaonly-fp16.safetensors",
+    label: "Stable Diffusion 1.5 FP16",
+    note: "細節調整 · 建議 20 steps / CFG 7",
+  },
+] as const;
+
 type Health = {
   bridge: boolean;
   h3Root: boolean;
@@ -248,6 +282,7 @@ const navItems = [
   { label: "工作台", icon: "grid", target: "workspace" },
   { label: "生成紀錄", icon: "clock", target: "render-queue" },
   { label: "影片升頻", icon: "spark", target: "video-upscale" },
+  { label: "圖片重繪", icon: "image", target: "image-to-image" },
   { label: "資源庫", icon: "folder", target: "asset-library" },
   { label: "系統設定", icon: "sliders", target: "render-settings" },
 ];
@@ -691,6 +726,18 @@ export default function Home() {
   const [upscaleSubmitting, setUpscaleSubmitting] = useState(false);
   const [upscaleUploading, setUpscaleUploading] = useState(false);
   const [upscaleError, setUpscaleError] = useState("");
+  const [img2imgSource, setImg2ImgSource] = useState<Asset | null>(null);
+  const [img2imgPrompt, setImg2ImgPrompt] = useState("");
+  const [img2imgNegativePrompt, setImg2ImgNegativePrompt] = useState("");
+  const [img2imgModel, setImg2ImgModel] = useState(IMG2IMG_MODELS[0].value as string);
+  const [img2imgDenoise, setImg2ImgDenoise] = useState(0.65);
+  const [img2imgSteps, setImg2ImgSteps] = useState(4);
+  const [img2imgCfg, setImg2ImgCfg] = useState(1);
+  const [img2imgSeed, setImg2ImgSeed] = useState(12345);
+  const [img2imgJob, setImg2ImgJob] = useState<Img2ImgJob | null>(null);
+  const [img2imgSubmitting, setImg2ImgSubmitting] = useState(false);
+  const [img2imgUploading, setImg2ImgUploading] = useState(false);
+  const [img2imgError, setImg2ImgError] = useState("");
   const longErrorDialogKeyRef = useRef("");
   const renderJobsRef = useRef<Job[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -698,6 +745,7 @@ export default function Home() {
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const upscaleInputRef = useRef<HTMLInputElement>(null);
+  const img2imgInputRef = useRef<HTMLInputElement>(null);
 
   const filteredAssets = useMemo(
     () =>
@@ -876,6 +924,34 @@ export default function Home() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [upscaleJob?.id, upscaleJob?.status]);
+
+  useEffect(() => {
+    const trackedJobId = img2imgJob?.id;
+    const trackedStatus = img2imgJob?.status;
+    if (!trackedJobId || !IMG2IMG_POLL_STATUSES.has(trackedStatus || "queued")) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`${BRIDGE_URL}/api/img2img/jobs/${encodeURIComponent(trackedJobId)}`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { job?: Img2ImgJob; error?: string };
+        if (!payload.job) return;
+        const nextJob = payload.job;
+        const terminalTransition = IMG2IMG_TERMINAL_STATUSES.has(nextJob.status) && nextJob.status !== trackedStatus;
+        setImg2ImgJob(nextJob);
+        if (terminalTransition) {
+          if (nextJob.status === "completed") {
+            void refreshAssets();
+            showToast("以圖生圖完成，結果已加入素材庫。", "success");
+          } else if (nextJob.status === "failed") {
+            setImg2ImgError(nextJob.error || "以圖生圖失敗，請稍後再試。");
+          }
+        }
+      } catch {
+        // The next poll or manual refresh can recover the status view.
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [img2imgJob?.id, img2imgJob?.status]);
 
   useEffect(() => {
     if (!longErrorDialog) return;
@@ -1392,7 +1468,7 @@ export default function Home() {
     syncLongReferenceAssets(longReferenceAssets.filter((item) => assetKey(item) !== assetKey(asset)));
   }
 
-  async function uploadFiles(files: File[], target: "image" | "lastFrame" | "video" | "upscale") {
+  async function uploadFiles(files: File[], target: "image" | "lastFrame" | "video" | "upscale" | "img2img") {
     const multiImageTarget = target === "image" && (
       (studioMode === "single" && mode === "ref2v") ||
       (studioMode === "long" && longReferenceMode === "multi_reference")
@@ -1416,12 +1492,17 @@ export default function Home() {
         ? `已達參考圖片上限（${studioMode === "long" ? MAX_LONG_REFERENCE_IMAGES : MAX_REF2V_IMAGES} 張）或檔案已存在。`
         : "沒有可上傳的檔案。";
       if (target === "upscale") setUpscaleError(message);
+      if (target === "img2img") setImg2ImgError(message);
       showToast(message, "error");
       return;
     }
     if (target === "upscale") {
       setUpscaleUploading(true);
       setUpscaleError("");
+    }
+    if (target === "img2img") {
+      setImg2ImgUploading(true);
+      setImg2ImgError("");
     }
     const uploaded: Asset[] = [];
     const failures: string[] = [];
@@ -1457,6 +1538,10 @@ export default function Home() {
         if (target === "lastFrame") setLastFrameImage(uploaded[0]);
         if (target === "video") setSourceVideo(uploaded[0]);
         if (target === "upscale") setUpscaleSource(uploaded[0]);
+        if (target === "img2img") {
+          setImg2ImgSource(uploaded[0]);
+          setImg2ImgJob(null);
+        }
         setSelectedAsset(uploaded[uploaded.length - 1]);
         await refreshAssets();
       }
@@ -1464,22 +1549,24 @@ export default function Home() {
       if (failures.length) {
         const message = `成功 ${uploaded.length} 個，失敗 ${failures.length} 個${skippedNote}：${failures[0]}`;
         if (target === "upscale") setUpscaleError(message);
+        if (target === "img2img") setImg2ImgError(message);
         showToast(message, "error");
       } else {
         showToast(`資源已加入資源庫${skippedNote}。`, "success");
       }
     } finally {
       if (target === "upscale") setUpscaleUploading(false);
+      if (target === "img2img") setImg2ImgUploading(false);
     }
   }
 
-  async function uploadFile(file: File, target: "image" | "lastFrame" | "video" | "upscale") {
+  async function uploadFile(file: File, target: "image" | "lastFrame" | "video" | "upscale" | "img2img") {
     await uploadFiles([file], target);
   }
 
   function onFileChange(
     event: ChangeEvent<HTMLInputElement>,
-    target: "image" | "lastFrame" | "video" | "upscale",
+    target: "image" | "lastFrame" | "video" | "upscale" | "img2img",
   ) {
     const files = Array.from(event.target.files || []);
     const multiImageTarget = target === "image" && (
@@ -1527,6 +1614,69 @@ export default function Home() {
       setUpscaleError(error instanceof Error ? error.message : "無法啟動 SeedVR2 升頻。 ");
     } finally {
       setUpscaleSubmitting(false);
+    }
+  }
+
+  function selectAssetForImg2Img(asset: Asset) {
+    if (asset.kind !== "image") return;
+    setImg2ImgSource(asset);
+    setImg2ImgJob(null);
+    setImg2ImgError("");
+    setAssetPreview(null);
+    showToast(`已選取以圖生圖來源：${asset.name}`, "info");
+    navigateToSection("image-to-image");
+  }
+
+  function updateImg2ImgModel(value: string) {
+    setImg2ImgModel(value);
+    if (value === IMG2IMG_MODELS[0].value) {
+      setImg2ImgSteps(4);
+      setImg2ImgCfg(1);
+    } else {
+      setImg2ImgSteps(20);
+      setImg2ImgCfg(7);
+    }
+  }
+
+  async function startImg2Img() {
+    if (!img2imgSource || img2imgSource.kind !== "image") {
+      setImg2ImgError("請先選擇來源圖片。");
+      return;
+    }
+    if (!img2imgPrompt.trim()) {
+      setImg2ImgError("請輸入希望圖片呈現的內容。");
+      return;
+    }
+    if (img2imgSubmitting || img2imgUploading || (img2imgJob && IMG2IMG_POLL_STATUSES.has(img2imgJob.status))) return;
+    setImg2ImgSubmitting(true);
+    setImg2ImgError("");
+    try {
+      const response = await fetch(BRIDGE_URL + "/api/img2img", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceName: img2imgSource.name,
+          sourceRoot: img2imgSource.root,
+          prompt: img2imgPrompt.trim(),
+          negativePrompt: img2imgNegativePrompt.trim(),
+          model: img2imgModel,
+          denoise: img2imgDenoise,
+          steps: img2imgSteps,
+          cfg: img2imgCfg,
+          seed: img2imgSeed,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { job?: Img2ImgJob; error?: string; code?: string };
+      if (!response.ok || !payload.job) {
+        throw new Error(payload.code ? `${payload.code}: ${payload.error || "無法啟動以圖生圖。"}` : payload.error || "無法啟動以圖生圖。");
+      }
+      setImg2ImgJob(payload.job);
+      if (payload.job.status === "completed") void refreshAssets();
+      if (payload.job.status === "failed") setImg2ImgError(payload.job.error || "以圖生圖失敗。");
+    } catch (error) {
+      setImg2ImgError(error instanceof Error ? error.message : "無法啟動以圖生圖。");
+    } finally {
+      setImg2ImgSubmitting(false);
     }
   }
 
@@ -1582,6 +1732,7 @@ export default function Home() {
     if (sourceVideo && deletedKeys.has(assetKey(sourceVideo))) setSourceVideo(null);
     if (lastFrameImage && deletedKeys.has(assetKey(lastFrameImage))) setLastFrameImage(null);
     if (upscaleSource && deletedKeys.has(assetKey(upscaleSource))) setUpscaleSource(null);
+    if (img2imgSource && deletedKeys.has(assetKey(img2imgSource))) setImg2ImgSource(null);
     const upscaleSourceDeleted = Boolean(
       upscaleJob?.sourceRoot &&
       upscaleJob.sourceName &&
@@ -1595,6 +1746,14 @@ export default function Home() {
     const upscaleOutputDeleted = Boolean(upscaleJob?.output && deletedKeys.has(assetKey(upscaleJob.output)));
     if (upscaleSourceDeleted || upscaleLegacySourceDeleted) setUpscaleJob(null);
     else if (upscaleOutputDeleted && upscaleJob) setUpscaleJob({ ...upscaleJob, output: undefined });
+    const img2imgSourceDeleted = Boolean(
+      img2imgJob?.sourceRoot &&
+      img2imgJob.sourceName &&
+      deletedKeys.has(assetKeyFromParts(img2imgJob.sourceRoot, img2imgJob.sourceName)),
+    );
+    const img2imgOutputDeleted = Boolean(img2imgJob?.output && deletedKeys.has(assetKey(img2imgJob.output)));
+    if (img2imgSourceDeleted) setImg2ImgJob(null);
+    else if (img2imgOutputDeleted && img2imgJob) setImg2ImgJob({ ...img2imgJob, output: undefined });
     if (selectedAsset && deletedKeys.has(assetKey(selectedAsset))) setSelectedAsset(null);
     if (assetPreview && deletedKeys.has(assetKey(assetPreview))) setAssetPreview(null);
     if (longPlan) {
@@ -2246,8 +2405,14 @@ export default function Home() {
     ? `${upscaleJob.status === "completed" ? "已完成" : upscaleJob.status === "failed" ? "升頻失敗" : upscaleJob.status === "cancelled" ? "已取消" : upscaleJob.status === "running" ? "正在升頻" : "等待處理"}${upscaleJob.stage ? ` · ${upscaleJob.stage}` : ""}`
     : "尚未開始升頻";
   const upscaleSubmitDisabled = !upscaleSource || upscaleUploading || upscaleSubmitting || upscaleActive;
+  const img2imgActive = Boolean(img2imgJob && IMG2IMG_POLL_STATUSES.has(img2imgJob.status));
+  const img2imgProgress = Math.min(100, Math.max(0, Math.round(Number(img2imgJob?.progress) || 0)));
+  const img2imgStatusLabel = img2imgJob
+    ? `${img2imgJob.status === "completed" ? "已完成" : img2imgJob.status === "failed" ? "生成失敗" : img2imgJob.status === "cancelled" ? "已取消" : img2imgJob.status === "running" ? "正在生成" : "等待處理"}${img2imgJob.stage ? ` · ${img2imgJob.stage}` : ""}`
+    : "尚未開始生成";
+  const img2imgSubmitDisabled = !img2imgSource || !img2imgPrompt.trim() || img2imgUploading || img2imgSubmitting || img2imgActive;
   const runtimeMode = health?.runtime?.mode || (health?.comfy.remote ? "remote" : "local");
-  const runtimeSwitchDisabled = runtimeSwitchBusy || renderBusy || renderSubmitting || longBusy || longJobActive || upscaleSubmitting || upscaleActive;
+  const runtimeSwitchDisabled = runtimeSwitchBusy || renderBusy || renderSubmitting || longBusy || longJobActive || upscaleSubmitting || upscaleActive || img2imgSubmitting || img2imgActive;
 
   return (
     <main className="studio-shell">
@@ -2498,6 +2663,208 @@ export default function Home() {
                   </button>
                   <a className="outline-button preview-download-button" href={assetDownloadUrl(upscaleJob.output)} download={assetFileName(upscaleJob.output)}>
                     <Icon name="download" /> 下載升頻結果
+                  </a>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="panel upscale-panel img2img-panel" id="image-to-image" aria-labelledby="image-to-image-title">
+            <div className="panel-heading upscale-heading">
+              <div>
+                <span className="section-code">IMAGE TO IMAGE / COMFYUI</span>
+                <h2 id="image-to-image-title">以圖生圖</h2>
+                <p className="upscale-intro">使用目前選擇的本機或 Vast ComfyUI，保留來源構圖並依提示詞重新繪製。</p>
+              </div>
+              <span className="panel-mark panel-mark-number">I2I</span>
+            </div>
+
+            <div className="upscale-grid img2img-grid">
+              <div className="upscale-source-card">
+                <div className="slot-topline">
+                  <span className="field-label">來源圖片</span>
+                  <span className="slot-hint">IMAGE</span>
+                </div>
+                {img2imgSource ? (
+                  <div className="upscale-selected-media img2img-selected-media">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={assetUrl(img2imgSource)} alt={`以圖生圖來源：${img2imgSource.name}`} />
+                    <div className="upscale-selected-info">
+                      <strong title={img2imgSource.name}>{img2imgSource.name}</strong>
+                      <span>{formatBytes(img2imgSource.size)} · {img2imgSource.root.toUpperCase()}</span>
+                      <button
+                        type="button"
+                        className="upscale-clear-button"
+                        onClick={() => { setImg2ImgSource(null); setImg2ImgJob(null); setImg2ImgError(""); }}
+                      >
+                        移除來源
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="upscale-upload-zone">
+                    <Icon name="image" />
+                    <strong>選擇或上傳圖片</strong>
+                    <span>PNG、JPG、WEBP</span>
+                    <button
+                      type="button"
+                      className="upscale-file-label"
+                      onClick={() => img2imgInputRef.current?.click()}
+                      disabled={img2imgUploading}
+                      aria-label="選擇以圖生圖來源圖片"
+                      aria-controls="img2img-image-input"
+                      aria-describedby="img2img-source-help"
+                    >
+                      <Icon name="upload" /> {img2imgUploading ? "上傳中…" : "選擇圖片"}
+                    </button>
+                    <input
+                      id="img2img-image-input"
+                      ref={img2imgInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      hidden
+                      onChange={(event) => onFileChange(event, "img2img")}
+                    />
+                    <small id="img2img-source-help">也能從下方素材庫選取輸入或輸出圖片。</small>
+                  </div>
+                )}
+              </div>
+
+              <div className="upscale-control-card img2img-control-card">
+                <div className="upscale-model-summary">
+                  <div>
+                    <span className="section-code">COMFYUI CHECKPOINT</span>
+                    <strong>{runtimeMode === "remote" ? "Vast RTX 5090" : "本機 GPU"}</strong>
+                  </div>
+                  <span className="upscale-scale-badge">{runtimeMode === "remote" ? "REMOTE" : "LOCAL"}</span>
+                </div>
+
+                <div className="img2img-form">
+                  <label className="img2img-field" htmlFor="img2img-model">
+                    <span>模型</span>
+                    <select id="img2img-model" value={img2imgModel} onChange={(event) => updateImg2ImgModel(event.target.value)} disabled={img2imgActive}>
+                      {IMG2IMG_MODELS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <small>{IMG2IMG_MODELS.find((option) => option.value === img2imgModel)?.note}</small>
+                  </label>
+
+                  <label className="img2img-field" htmlFor="img2img-prompt">
+                    <span>正向提示詞</span>
+                    <textarea
+                      id="img2img-prompt"
+                      value={img2imgPrompt}
+                      onChange={(event) => { setImg2ImgPrompt(event.target.value); if (img2imgError) setImg2ImgError(""); }}
+                      placeholder="例如：cinematic portrait, soft window light, detailed skin texture"
+                      maxLength={4000}
+                      rows={4}
+                      aria-invalid={Boolean(img2imgError && !img2imgPrompt.trim())}
+                      aria-describedby="img2img-prompt-help"
+                    />
+                    <small id="img2img-prompt-help">描述希望結果呈現的主體、風格、光線與細節。</small>
+                  </label>
+
+                  <label className="img2img-field" htmlFor="img2img-negative-prompt">
+                    <span>負向提示詞（可選）</span>
+                    <textarea
+                      id="img2img-negative-prompt"
+                      value={img2imgNegativePrompt}
+                      onChange={(event) => setImg2ImgNegativePrompt(event.target.value)}
+                      placeholder="例如：blurry, low quality, artifacts"
+                      maxLength={4000}
+                      rows={2}
+                    />
+                  </label>
+
+                  <div className="img2img-settings-grid">
+                    <label className="img2img-field" htmlFor="img2img-denoise">
+                      <span>重繪強度 <strong>{img2imgDenoise.toFixed(2)}</strong></span>
+                      <input
+                        id="img2img-denoise"
+                        type="range"
+                        min="0.01"
+                        max="1"
+                        step="0.01"
+                        value={img2imgDenoise}
+                        onChange={(event) => setImg2ImgDenoise(Number(event.target.value))}
+                      />
+                      <small>越高越偏離原圖；0.45–0.70 通常較平衡。</small>
+                    </label>
+                    <label className="img2img-field" htmlFor="img2img-steps">
+                      <span>Steps</span>
+                      <input id="img2img-steps" type="number" min="1" max="50" value={img2imgSteps} onChange={(event) => setImg2ImgSteps(Math.min(50, Math.max(1, Number(event.target.value) || 1)))} />
+                    </label>
+                    <label className="img2img-field" htmlFor="img2img-cfg">
+                      <span>CFG</span>
+                      <input id="img2img-cfg" type="number" min="0" max="20" step="0.5" value={img2imgCfg} onChange={(event) => setImg2ImgCfg(Math.min(20, Math.max(0, Number(event.target.value) || 0)))} />
+                    </label>
+                    <label className="img2img-field" htmlFor="img2img-seed">
+                      <span>Seed</span>
+                      <input id="img2img-seed" type="number" min="0" max="2147483647" value={img2imgSeed} onChange={(event) => setImg2ImgSeed(Math.min(2147483647, Math.max(0, Number(event.target.value) || 0)))} />
+                    </label>
+                  </div>
+
+                  <div className="img2img-seed-actions">
+                    <button type="button" className="outline-button small-button" onClick={() => setImg2ImgSeed(Math.floor(Math.random() * 2147483648))} disabled={img2imgActive}>
+                      隨機 Seed
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  className="upscale-submit-button"
+                  onClick={() => void startImg2Img()}
+                  disabled={img2imgSubmitDisabled}
+                  aria-busy={img2imgSubmitting || img2imgUploading}
+                >
+                  <Icon name="spark" />
+                  {img2imgUploading ? "上傳圖片中…" : img2imgSubmitting ? "正在排程…" : img2imgActive ? "圖片生成中…" : "開始以圖生圖"}
+                </button>
+
+                <div className="upscale-status" aria-live="polite">
+                  <div className="upscale-status-line">
+                    <span className={`status-dot ${img2imgActive ? "is-on" : img2imgJob?.status === "failed" ? "is-error" : ""}`} />
+                    <span>{img2imgStatusLabel}</span>
+                    {img2imgJob && <strong>{img2imgProgress}%</strong>}
+                  </div>
+                  {img2imgJob && (
+                    <div
+                      className="upscale-progress-track"
+                      role="progressbar"
+                      aria-label="以圖生圖進度"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={img2imgProgress}
+                      aria-valuetext={`${img2imgProgress}%`}
+                    >
+                      <span style={{ width: `${img2imgProgress}%` }} />
+                    </div>
+                  )}
+                </div>
+                {img2imgError && <p className="upscale-error" role="alert">{img2imgError}</p>}
+              </div>
+            </div>
+
+            {img2imgJob?.status === "completed" && img2imgJob.output && (
+              <div className="upscale-result-card img2img-result-card" aria-live="polite">
+                <div className="upscale-result-heading">
+                  <div>
+                    <span className="section-code">IMAGE RESULT</span>
+                    <strong>{img2imgJob.output.name}</strong>
+                  </div>
+                  <span className="upscale-result-status">完成 · {img2imgJob.model.startsWith("sd_xl") ? "SDXL" : "SD 1.5"}</span>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="img2img-result-image" src={assetUrl(img2imgJob.output)} alt={`以圖生圖結果：${img2imgJob.output.name}`} />
+                <div className="upscale-result-actions">
+                  <button type="button" className="preview-use-button" onClick={() => openAssetPreview(img2imgJob.output as Asset)}>
+                    <Icon name="image" /> 預覽結果
+                  </button>
+                  <button type="button" className="preview-reference-button" onClick={() => selectAssetForImg2Img(img2imgJob.output as Asset)}>
+                    再次重繪
+                  </button>
+                  <a className="outline-button preview-download-button" href={assetDownloadUrl(img2imgJob.output)} download={assetFileName(img2imgJob.output)}>
+                    <Icon name="download" /> 下載圖片
                   </a>
                 </div>
               </div>
@@ -3539,6 +3906,20 @@ export default function Home() {
                                     </button>
                                   </>
                                 )}
+                                {asset.kind === "image" && (
+                                  <button
+                                    type="button"
+                                    className="asset-reference-button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      selectAssetForImg2Img(asset);
+                                    }}
+                                    aria-label={`用於以圖生圖 ${asset.name}`}
+                                    title="用於以圖生圖"
+                                  >
+                                    以圖生圖
+                                  </button>
+                                )}
                                 {isDeletableAsset(asset) && (
                                   <button
                                     type="button"
@@ -3702,6 +4083,15 @@ export default function Home() {
                     onClick={() => selectAssetForUpscale(assetPreview)}
                   >
                     <Icon name="spark" /> 用於影片升頻
+                  </button>
+                )}
+                {assetPreview.kind === "image" && (
+                  <button
+                    type="button"
+                    className="preview-upscale-button"
+                    onClick={() => selectAssetForImg2Img(assetPreview)}
+                  >
+                    <Icon name="spark" /> 用於以圖生圖
                   </button>
                 )}
                 {assetPreview.root === "input" && assetPreview.kind === "image" && (

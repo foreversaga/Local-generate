@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { codexLongPlanModeInstruction, codexLongPlanReferences, normalizeReferenceImageNames, referenceImageArgs } from "../local-bridge.mjs";
+import { codexLongPlanModeInstruction, codexLongPlanReferences, normalizeReferenceImageNames, referenceImageArgs, sequenceGenerationReferenceFields } from "../local-bridge.mjs";
 import { buildRef2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { planSequence } from "../server/long-video/planner.mjs";
 import { appendMultiReferenceTail, runSequence } from "../server/long-video/runner.mjs";
@@ -26,6 +26,20 @@ test("normalizes plural Ref2V references with stable order and repeated args", (
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageName: "other.png", referenceImageNames: ["first.png"] }), { code: "REFERENCE_IMAGES_CONFLICT" });
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageNames: [""] }), { code: "REFERENCE_IMAGE_EMPTY" });
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageNames: Array.from({ length: 10 }, (_, index) => `${index}.png`) }), { code: "REFERENCE_IMAGES_LIMIT" });
+});
+
+test("long-video bridge only forwards plural references to Ref2V generation", () => {
+  assert.deepEqual(
+    sequenceGenerationReferenceFields({ mode: "i2v", referenceImageNames: ["stale.png"] }),
+    {},
+  );
+  assert.deepEqual(
+    sequenceGenerationReferenceFields(
+      { mode: "ref2v", referenceImageNames: ["original.png"] },
+      [{ name: "staged-first.png" }, { name: "staged-second.png" }],
+    ),
+    { referenceImageNames: ["staged-first.png", "staged-second.png"] },
+  );
 });
 
 test("multi_reference schema dedupes ordered image refs and enforces limits", () => {

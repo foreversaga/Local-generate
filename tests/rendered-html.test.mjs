@@ -35,6 +35,9 @@ test("renders the H3 Studio interface without promotional shell copy", async () 
   assert.match(html, /影片寬度（px）/);
   assert.match(html, /影片高度（px）/);
   assert.match(html, /aria-label="交換影片寬度與高度"/);
+  assert.match(html, /id="image-to-image"/);
+  assert.match(html, /以圖生圖/);
+  assert.match(html, /SDXL Turbo 1.0 FP16/);
   assert.doesNotMatch(html, /Gemma 3 4B/);
   assert.doesNotMatch(html, /黃色雨衣|Cinematic night street|h3-rainy-neon/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
@@ -89,6 +92,12 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /accept="video\/\*"/);
   assert.match(page, /selectAssetForUpscale/);
   assert.match(page, /SeedVR2 3B Int8/);
+  assert.match(page, /BRIDGE_URL \+ "\/api\/img2img"/);
+  assert.match(page, /\/api\/img2img\/jobs\/\$\{encodeURIComponent\(trackedJobId\)\}/);
+  assert.match(page, /sourceRoot: img2imgSource\.root/);
+  assert.match(page, /selectAssetForImg2Img/);
+  assert.match(page, /sd_xl_turbo_1\.0_fp16\.safetensors/);
+  assert.match(page, /v1-5-pruned-emaonly-fp16\.safetensors/);
   assert.match(page, /role="progressbar"/);
   assert.match(page, /role="alert"/);
   assert.match(page, /const VIDEO_PAGE_SIZE = 10/);
@@ -251,6 +260,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /req\.method === "DELETE" && pathname === "\/api\/assets"/);
   assert.match(bridge, /pathname === "\/api\/runtime"/);
   assert.match(bridge, /switchRuntimeMode/);
+  assert.match(bridge, /createImg2ImgController/);
+  assert.match(bridge, /pathname === "\/api\/img2img"/);
   assert.match(page, /MODEL RUNTIME/);
   assert.match(page, /selectRuntimeMode\("remote"\)/);
   assert.match(page, /effectiveOllamaModel/);
