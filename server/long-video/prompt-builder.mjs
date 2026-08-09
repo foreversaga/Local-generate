@@ -1,3 +1,5 @@
+import { validateH3Prompt } from "../h3-prompt/validator.mjs";
+
 const T2VA_FIELDS = ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"];
 const REF2VA_FIELDS = ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"];
 
@@ -39,13 +41,58 @@ function stripFieldPrefix(value, field) {
   return clean(value).replace(new RegExp(`^${field}\\s*:\\s*`, "i"), "").trim();
 }
 
+const SHOT_MARKER_RE = /\[Shot\s+(\d+)\]/gi;
+const SHOT_CUT_RE = /^\s*At\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?|\d+(?:\.\d+)?)\s*,/i;
+
+function hasUsableShotStructure(value) {
+  const text = clean(value);
+  const markers = [...text.matchAll(SHOT_MARKER_RE)];
+  if (!markers.length || Number(markers[0][1]) !== 1) return false;
+  let previousTimestamp;
+  for (let index = 0; index < markers.length; index += 1) {
+    if (Number(markers[index][1]) !== index + 1) return false;
+    const end = index + 1 < markers.length ? markers[index + 1].index : text.length;
+    const afterMarker = text.slice(markers[index].index + markers[index][0].length, end);
+    const cut = afterMarker.match(SHOT_CUT_RE);
+    if (index === 0) {
+      if (cut) return false;
+      continue;
+    }
+    if (!cut) return false;
+    const timestamp = parsePromptClock(cut[1]);
+    if (!Number.isFinite(timestamp) || (previousTimestamp !== undefined && timestamp <= previousTimestamp)) return false;
+    previousTimestamp = timestamp;
+  }
+  return true;
+}
+
+function parsePromptClock(value) {
+  const text = String(value);
+  if (!text.includes(":")) return Number(text);
+  const parts = text.split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part)) || parts.length < 2 || parts.length > 3) return NaN;
+  return parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function shotBody(value, fallback) {
+  const candidate = stripFieldPrefix(value, "integrated_multimodal_description") || stripFieldPrefix(value, "detailed_description");
+  const candidateMarkers = [...candidate.matchAll(SHOT_MARKER_RE)];
+  // Plain prose is safe to anchor at Shot 1 and retains the model's semantic
+  // detail.  Only a present-but-malformed shot sequence is replaced by the
+  // deterministic segment/bible description.
+  const candidateIsUsable = Boolean(candidate) && (!candidateMarkers.length || hasUsableShotStructure(candidate));
+  const source = candidateIsUsable ? candidate : clean(fallback);
+  const withoutMarkers = source.replace(/\[Shot\s+\d+\]/gi, "").trim();
+  const body = hasUsableShotStructure(source) ? source : withoutMarkers;
+  return /^\[Shot\s+1\]/i.test(body) ? body : `[Shot 1] ${body || "The scene develops according to the supplied direction."}`;
+}
+
 function integratedDescription(segment, bible) {
   const generated = stripFieldPrefix(
     segment.integratedMultimodalDescription || segment.integrated_multimodal_description,
     "integrated_multimodal_description",
   );
-  const value = generated || description(segment, bible);
-  return /^\[Shot\s+1\]/i.test(value) ? value : `[Shot 1] ${value}`;
+  return shotBody(generated, description(segment, bible));
 }
 
 function soundscape(segment, bible) {
@@ -63,18 +110,19 @@ function music(segment, bible) {
 }
 
 export function buildT2VAPrompt(segment, bible = {}) {
-  return [
+  const prompt = [
     `integrated_multimodal_description: ${integratedDescription(segment, bible)}`,
     `overall_soundscape: ${soundscape(segment, bible)}`,
     `non_diegetic_music: ${music(segment, bible)}`,
   ].join("\n\n");
+  return ensureValidPrompt(prompt, "t2v", segment, bible);
 }
 
-export function buildI2VAPrompt(segment, bible = {}, options = {}) {
-  const shot = clean(options.shotId || segment.shotId, "Shot 1");
-  const picture = clean(options.pictureLabel || segment.pictureLabel, "Picture 1");
-  const firstLine = `For the target video, at 0.00 seconds into the target video, <${picture}> (from [${shot}]) is fully referenced.`;
-  return [
+export function buildI2VAPrompt(segment, bible = {}) {
+  // The H3 contract intentionally fixes this line.  Callers may supply
+  // continuation metadata, but must not alter the frame-zero alignment.
+  const firstLine = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
+  const prompt = [
     firstLine,
     "",
     `integrated_multimodal_description: ${integratedDescription(segment, bible)}`,
@@ -83,18 +131,13 @@ export function buildI2VAPrompt(segment, bible = {}, options = {}) {
     "",
     `non_diegetic_music: ${music(segment, bible)}`,
   ].join("\n");
+  return ensureValidPrompt(prompt, "i2v", segment, bible);
 }
 
 export function buildRef2VAPrompt(segment, bible = {}, references = {}) {
-  const fields = {
-    subject_definitions: clean(references.subjectDefinitions || segment.subjectDefinitions, "<Subject 1>: the principal subject."),
-    summary: `[reference generation] ${clean(segment.summary || segment.description)}`,
-    retention_analysis: clean(segment.retentionAnalysis, "fully_preserved: subject identity and composition; weak_reference: none"),
-    detailed_description: description(segment, bible),
-    overall_soundscape: clean(segment.overallSoundscape || bible.sound, "Natural diegetic sound"),
-    non_diegetic_music: clean(segment.nonDiegeticMusic || bible.nonDiegeticMusic, "N/A"),
-  };
-  return REF2VA_FIELDS.map((field) => `${field}: ${fields[field]}`).join("\n\n");
+  const fields = ref2vaFields(segment, bible, references);
+  const prompt = REF2VA_FIELDS.map((field) => `${field}: ${fields[field]}`).join("\n\n");
+  return ensureValidPrompt(prompt, "ref2v", segment, bible, references);
 }
 
 export function buildSegmentPrompt(segment, bible = {}, options = {}) {
@@ -107,3 +150,102 @@ export function buildSegmentPrompt(segment, bible = {}, options = {}) {
 export { T2VA_FIELDS, REF2VA_FIELDS };
 export const buildT2VPrompt = buildT2VAPrompt;
 export const buildI2VPrompt = buildI2VAPrompt;
+
+const H3_LABEL_RE = /<(Subject|Picture|Video|Audio)\s+(\d+)>/gi;
+const SUMMARY_PREFIX_RE = /^\[((?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference)(?:\s*\+\s*(?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference))*)\]\s*/i;
+
+function normalizeLabel(type, number) {
+  return `<${type[0].toUpperCase()}${type.slice(1).toLowerCase()} ${Number(number)}>`;
+}
+
+function referenceSources(references = {}) {
+  if (Array.isArray(references)) return references;
+  if (!references || typeof references !== "object") return [];
+  return references.assets || references.referenceAssets || references.images || [];
+}
+
+function labelsUsedIn(...values) {
+  const labels = new Map();
+  for (const value of values) {
+    for (const match of String(value || "").matchAll(H3_LABEL_RE)) {
+      const label = normalizeLabel(match[1], match[2]);
+      if (!labels.has(label)) labels.set(label, "referenced content");
+    }
+  }
+  return labels;
+}
+
+function buildReferenceDefinitions(segment, references, usage) {
+  const referenceConfig = references && typeof references === "object" && !Array.isArray(references) ? references : {};
+  const source = clean(referenceConfig.subjectDefinitions || segment.subjectDefinitions);
+  const definitions = new Map();
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.match(/^\s*<(Subject|Picture|Video|Audio)\s+(\d+)>\s*(.*)$/i);
+    if (!match) continue;
+    const label = normalizeLabel(match[1], match[2]);
+    definitions.set(label, `${label} ${match[3].trim() || "is referenced content."}`.trim());
+  }
+  const assets = referenceSources(referenceConfig);
+  assets.forEach((asset, index) => {
+    const label = `<Picture ${index + 1}>`;
+    if (!definitions.has(label)) definitions.set(label, `${label} is ordered reference picture ${index + 1}${asset?.name ? ` (${asset.name})` : ""}.`);
+  });
+  for (const [label, hint] of usage) {
+    if (!definitions.has(label)) definitions.set(label, `${label} is ${hint}.`);
+  }
+  if (!definitions.has("<Subject 1>")) definitions.set("<Subject 1>", "<Subject 1> is the principal referenced subject.");
+  if (!definitions.has("<Picture 1>")) definitions.set("<Picture 1>", "<Picture 1> is the first ordered reference picture.");
+  return [...definitions.values()].join("\n");
+}
+
+function ref2vaFields(segment, bible, references = {}) {
+  const summaryText = stripFieldPrefix(segment.summary, "summary") || clean(segment.description) || "The target video follows the supplied reference direction.";
+  const summary = SUMMARY_PREFIX_RE.test(summaryText)
+    ? summaryText
+    : `[reference generation] ${summaryText}`;
+  const detailedCandidate = stripFieldPrefix(segment.detailedDescription || segment.detailed_description, "detailed_description");
+  const detailedFallback = description(segment, bible);
+  const usage = labelsUsedIn(summary, segment.retentionAnalysis || segment.retention_analysis, detailedCandidate, segment.description);
+  const subjectDefinitions = buildReferenceDefinitions(segment, references, usage);
+  const defined = labelsUsedIn(subjectDefinitions);
+  const retentionCandidate = stripFieldPrefix(segment.retentionAnalysis || segment.retention_analysis, "retention_analysis");
+  const retention = retentionCandidate && [...labelsUsedIn(retentionCandidate).keys()].every((label) => defined.has(label))
+    ? retentionCandidate
+    : [...defined.keys()].map((label) => `${label} ([Shot 1]): fully_preserved - the referenced identity and composition remain consistent.`).join("\n");
+  return {
+    subject_definitions: subjectDefinitions,
+    summary,
+    retention_analysis: retention,
+    detailed_description: shotBody(detailedCandidate, detailedFallback),
+    overall_soundscape: stripFieldPrefix(segment.overallSoundscape || segment.overall_soundscape || bible.sound, "overall_soundscape") || "Natural diegetic sound",
+    non_diegetic_music: stripFieldPrefix(segment.nonDiegeticMusic || segment.non_diegetic_music || bible.nonDiegeticMusic, "non_diegetic_music") || "N/A",
+  };
+}
+
+function fallbackPrompt(mode, segment, bible, references) {
+  if (mode === "ref2v") {
+    const fallback = ref2vaFields({ ...segment, summary: "The target video preserves the supplied reference subject." }, bible, references);
+    return REF2VA_FIELDS.map((field) => `${field}: ${fallback[field]}`).join("\n\n");
+  }
+  const body = `[Shot 1] ${description(segment, bible) || "The scene develops according to the supplied direction."}`;
+  const fields = [
+    `integrated_multimodal_description: ${body}`,
+    `overall_soundscape: ${soundscape(segment, bible)}`,
+    `non_diegetic_music: ${music(segment, bible)}`,
+  ];
+  const core = fields.join("\n\n");
+  return mode === "i2v"
+    ? `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n${core}`
+    : core;
+}
+
+function ensureValidPrompt(prompt, mode, segment, bible, references = {}) {
+  try {
+    validateH3Prompt(prompt, { mode, ...(Number.isFinite(Number(segment?.duration)) ? { duration: Number(segment.duration) } : {}) });
+    return prompt;
+  } catch {
+    const fallback = fallbackPrompt(mode, segment, bible, references);
+    validateH3Prompt(fallback, { mode, ...(Number.isFinite(Number(segment?.duration)) ? { duration: Number(segment.duration) } : {}) });
+    return fallback;
+  }
+}

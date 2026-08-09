@@ -352,9 +352,25 @@ test("automatic planner repairs one invalid JSON response", async () => {
   assert.equal(plan.planMeta.repairAttempts, 1);
 });
 
+test("planner records malformed segment prompt fallback and keeps the emitted prompt valid", async () => {
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "manual", timelineText: "5s: first\n5s: second" }, {
+    request: async () => ({
+      continuityBible: {},
+      segments: [
+        { start: 0, end: 5, description: "first", prompt: "integrated_multimodal_description: missing shot marker\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A" },
+        { start: 5, end: 10, description: "second" },
+      ],
+    }),
+  });
+  assert.equal(plan.segments[0].promptFallback.reasonCode, "PROMPT_SHOT1_REQUIRED");
+  assert.equal(plan.planMeta.promptFallbacks[0].segmentIndex, 0);
+  assert.doesNotThrow(() => validatePrompt(plan.segments[0].prompt, { mode: "t2v", duration: 5 }));
+});
+
 test("planner accepts timeline-only text briefs", async () => {
   const plan = await planSequence({ inputType: "text", timelineText: "5s: first\n5s: second" }, { request: async () => ({ continuityBible: {}, segments: [] }) });
   assert.equal(plan.segments.length, 2);
+  assert.match(plan.negativePrompt, /unwanted random text/);
 });
 
 test("segment PATCH persists canonical duration and invalidates downstream", async () => {

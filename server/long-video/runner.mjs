@@ -30,6 +30,57 @@ function outputAssetRef(filePath) {
   return { root: "output", name: path.relative(outputRoot(), filePath).replaceAll("\\", "/"), kind: path.extname(filePath).toLowerCase() === ".png" ? "image" : "video" };
 }
 
+function referenceKey(reference) {
+  if (!reference?.name) return "";
+  return `${reference.root === "output" ? "output" : "input"}:${String(reference.name).replaceAll("\\", "/")}`.toLocaleLowerCase();
+}
+
+function staticReferenceAssets(job) {
+  if (job?.referenceMode !== "multi_reference") return [];
+  const assets = [];
+  const seen = new Set();
+  for (const reference of [job.inputAsset, ...(Array.isArray(job.referenceAssets) ? job.referenceAssets : [])]) {
+    if (!reference?.name) continue;
+    const normalized = { root: reference.root === "output" ? "output" : "input", name: String(reference.name).replaceAll("\\", "/"), kind: "image" };
+    const key = referenceKey(normalized);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    assets.push(normalized);
+  }
+  return assets;
+}
+
+function segmentReferenceAssets(job, previousTail) {
+  const references = staticReferenceAssets(job);
+  if (previousTail) {
+    const tail = outputAssetRef(previousTail);
+    const key = referenceKey(tail);
+    if (key && !references.some((reference) => referenceKey(reference) === key)) references.push(tail);
+  }
+  if (references.length > 9) throw new LongVideoError("REFERENCE_ASSETS_LIMIT", "A Ref2VA segment may use at most 9 image references.", 400);
+  return references;
+}
+
+/**
+ * Ensure every multi-reference continuation explicitly labels the generated
+ * previous tail.  Custom prompts are allowed, but they must carry the same
+ * non-frame-zero continuity semantics as the generated fallback prompt.
+ * Keeping this helper pure makes the admission contract easy to test without
+ * running a video model.
+ */
+export function appendMultiReferenceTail(prompt, references = [], previousTail = null) {
+  const text = String(prompt || "").trim();
+  if (!previousTail || !Array.isArray(references) || references.length < 1) return text;
+  const tailLabel = `<Picture ${references.length}>`;
+  const instruction = `${tailLabel} is the previous segment's normalized tail frame, used as a normal continuity reference; do not lock it to frame 0.`;
+  if (text.toLocaleLowerCase().includes(instruction.toLocaleLowerCase())) return text;
+  const detailedBoundary = /(\bdetailed_description\s*:[\s\S]*?)(\n\n(?=overall_soundscape\s*:))/i;
+  if (detailedBoundary.test(text)) {
+    return text.replace(detailedBoundary, `$1\n${instruction}$2`).trim();
+  }
+  return `${text}${text ? "\n\n" : ""}${instruction}`.trim();
+}
+
 function persistedAttemptPrompt(prompt, runtimePaths = []) {
   let safe = String(prompt || "");
   for (const runtimePath of runtimePaths) {
@@ -127,18 +178,36 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const rawPath = fileFor(folder, `${prefix}-raw.mp4`);
       const normalizedPath = fileFor(folder, `${prefix}.mp4`);
       const tailPath = fileFor(folder, `${prefix}-tail.png`);
-      const mode = index === 0 && job.inputType === "text" ? "t2v" : "i2v";
-      const continuation = index > 0 && previousTail
+      const multiReference = job.referenceMode === "multi_reference";
+      const mode = multiReference ? "ref2v" : index === 0 && job.inputType === "text" ? "t2v" : "i2v";
+      const references = multiReference ? segmentReferenceAssets(job, index > 0 ? previousTail : null) : [];
+      const continuation = !multiReference && index > 0 && previousTail
         ? "Continue directly from the supplied normalized tail frame as Picture 1; preserve the ending state and motion direction from the previous segment."
         : "";
       let prompt = segment.prompt;
       if (typeof deps.finalizePrompt === "function") {
-        prompt = await deps.finalizePrompt({ segment, segmentIndex: index, mode, previousTail, continuityBible: job.continuityBible, endingState: segment.endingState });
+        prompt = await deps.finalizePrompt({ segment, segmentIndex: index, mode, previousTail, references, continuityBible: job.continuityBible, endingState: segment.endingState });
       }
       try {
         validatePrompt(prompt, { mode });
+        if (multiReference && !/<Picture\s+1>/i.test(prompt)) throw new Error("Ref2VA prompt must declare ordered picture labels.");
       } catch {
-        prompt = buildSegmentPrompt({ ...segment, continuityNote: continuation }, job.continuityBible, { mode, firstFrame: index === 0, pictureLabel: "Picture 1", shotId: "Shot 1" });
+        const fallbackSegment = multiReference
+          ? {
+              ...segment,
+              description: `Ordered reference pictures: ${references.map((reference, referenceIndex) => `<Picture ${referenceIndex + 1}> (${reference.name || "reference"})`).join(", ")}.\n${segment.description || ""}`.trim(),
+              continuityNote: continuation,
+            }
+          : { ...segment, continuityNote: continuation };
+        prompt = buildSegmentPrompt(fallbackSegment, job.continuityBible, {
+          mode,
+          firstFrame: index === 0,
+          pictureLabel: "Picture 1",
+          shotId: "Shot 1",
+        });
+      }
+      if (multiReference && index > 0 && previousTail) {
+        prompt = appendMultiReferenceTail(prompt, references, previousTail);
       }
       const negativePrompt = combinedNegativePrompt(job.negativePrompt, segment.negativePrompt);
       const startedAt = new Date().toISOString();
@@ -186,7 +255,12 @@ export async function runSequence(sequenceOrId, deps = {}) {
         modelProfile: job.modelProfile,
         duration: segment.duration,
         inputAsset: index === 0 ? job.inputAsset : null,
-        inputImagePath: index === 0 ? job.inputAsset?.path || job.inputAsset?.fullPath || job.inputAsset?.name || null : previousTail,
+        inputImagePath: multiReference ? null : index === 0 ? job.inputAsset?.path || job.inputAsset?.fullPath || job.inputAsset?.name || null : previousTail,
+        ...(multiReference ? {
+          referenceMode: "multi_reference",
+          referenceImageNames: references.map((reference) => reference.name),
+          referenceAssets: references,
+        } : {}),
         tailImagePath: previousTail,
         outputPath: rawPath,
         outputRelative: path.relative(outputRoot(), rawPath).replaceAll("\\", "/"),

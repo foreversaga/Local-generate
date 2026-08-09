@@ -34,6 +34,7 @@ test("renders the H3 Studio interface without promotional shell copy", async () 
   assert.match(html, /開始生成影片/);
   assert.match(html, /影片寬度（px）/);
   assert.match(html, /影片高度（px）/);
+  assert.match(html, /aria-label="交換影片寬度與高度"/);
   assert.doesNotMatch(html, /Gemma 3 4B/);
   assert.doesNotMatch(html, /黃色雨衣|Cinematic night street|h3-rainy-neon/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
@@ -41,16 +42,22 @@ test("renders the H3 Studio interface without promotional shell copy", async () 
 });
 
 test("uses the same-origin API on the web service", async () => {
-  const [page, vite, packageJson, readme, bridge, restartScript] = await Promise.all([
+  const [page, vite, packageJson, readme, bridge, h3Instruction, h3Validator, restartScript] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../server/h3-prompt/instruction.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../server/h3-prompt/validator.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/restart-web.ps1", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /const BRIDGE_URL = "\/app"/);
+  assert.match(page, /<button\s+type="button"\s+className="resolution-swap-button"/);
+  assert.match(page, /aria-label="交換影片寬度與高度"/);
+  assert.match(page, /title="交換寬度與高度"/);
+  assert.match(page, /function swapResolution\(\)[\s\S]*?setWidth\(currentHeight\)[\s\S]*?setHeight\(currentWidth\)/);
   assert.match(vite, /name:\s*["']h3-local-api["']/);
   assert.match(vite, /port:\s*webPort/);
   assert.match(vite, /const listenHost = "0\.0\.0\.0"/);
@@ -67,6 +74,22 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /codexReasoningEffort/);
   assert.match(page, /ultra/);
   assert.match(page, /BRIDGE_URL \+ "\/api\/prompt"/);
+  assert.match(page, /const H3_PROMPT_MAX_CHARS = 7000/);
+  assert.match(page, /H3_IMAGE_PROMPT_MODES\.has\(mode\)/);
+  assert.match(page, /I2VA 提示詞需要參考圖片/);
+  assert.match(page, /FL2VA 提示詞需要首幀與尾幀圖片/);
+  assert.match(page, /L2VA 提示詞需要尾幀圖片/);
+  assert.match(page, /maxLength=\{isH3PromptMode\(mode\) \? H3_PROMPT_MAX_CHARS : undefined\}/);
+  assert.match(page, /apiErrorMessage\(payload, "無法建立生成工作"\)/);
+  assert.match(page, /影片升頻/);
+  assert.match(page, /BRIDGE_URL \+ "\/api\/upscale"/);
+  assert.match(page, /\/api\/upscale\/jobs\/\$\{encodeURIComponent\(trackedJobId\)\}/);
+  assert.match(page, /sourceRoot: upscaleSource\.root/);
+  assert.match(page, /accept="video\/\*"/);
+  assert.match(page, /selectAssetForUpscale/);
+  assert.match(page, /SeedVR2 3B Int8/);
+  assert.match(page, /role="progressbar"/);
+  assert.match(page, /role="alert"/);
   assert.match(page, /const VIDEO_PAGE_SIZE = 10/);
   assert.match(page, /const videoPageNumbers = Array\.from\(\{ length: videoPageCount \}/);
   assert.match(page, /asset-pagination-number/);
@@ -80,6 +103,31 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /async function deleteOutputAsset\(asset: Asset\)/);
   assert.match(page, /asset\.kind === "image" \|\| asset\.kind === "video"/);
   assert.match(page, /method: "DELETE"/);
+  assert.match(page, /const MAX_REF2V_IMAGES = 9/);
+  assert.match(page, /referenceImageNames/);
+  assert.match(page, /multiple/);
+  assert.match(page, /uploadFiles\(files/);
+  assert.match(page, /從 Ref2V 參考選取移除/);
+  assert.match(page, /const MAX_LONG_REFERENCE_IMAGES = 8/);
+  assert.match(page, /referenceMode/);
+  assert.match(page, /referenceAssets/);
+  assert.match(page, /multi_reference/);
+  assert.match(page, /多參考會將前段尾幀作下一段 reference/);
+  assert.match(page, /加入一般參考/);
+  assert.match(page, /加入長片參考/);
+  assert.match(page, /root=" \+ encodeURIComponent\(asset\.root\)/);
+  assert.match(page, /資源使用中，請先停止使用中的工作後再刪除/);
+  assert.match(page, /const responseStatus = response\.status/);
+  assert.match(page, /function assetDeleteFailureMessage\(status: number, payload: AssetDeletePayload\)/);
+  assert.match(page, /ASSET_USE_UNKNOWN/);
+  assert.match(page, /upscaleSourceDeleted/);
+  assert.match(page, /upscaleLegacySourceDeleted/);
+  assert.match(page, /upscaleOutputDeleted/);
+  assert.match(page, /finalAsset && deletedKeys\.has\(assetKeyFromParts/);
+  assert.match(page, /setHistory\(\(current\) => current\.map/);
+  assert.match(page, /asset\.root !== "input"/);
+  assert.match(page, /Ref2V 多參考只接受 ComfyUI\/input 圖片/);
+  assert.match(page, /function clearDeletedAssetState/);
   assert.match(page, /selectedAssetKeys/);
   assert.match(page, /async function deleteOutputAssets\(requestedAssets: Asset\[\]/);
   assert.match(page, /全選目前篩選/);
@@ -177,14 +225,14 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /"--ask-for-approval",\s*"never",\s*"exec"/);
   assert.match(bridge, /--output-last-message/);
   assert.match(bridge, /pathname === "\/api\/prompt"/);
-  assert.match(bridge, /integrated_multimodal_description/);
-  assert.match(bridge, /For the target video, at 0\.00 seconds into the target video/);
+  assert.match(h3Instruction, /integrated_multimodal_description/);
+  assert.match(h3Instruction, /For the target video, at 0\.00 seconds into the target video/);
   assert.match(bridge, /FL2VA first-and-last-frame video/);
-  assert.match(bridge, /Picture 2 \(from Shot 1\) aligns with the/);
+  assert.match(h3Instruction, /Picture 2 \(from Shot <FINAL_SHOT>\) aligns with the/);
   assert.match(bridge, /L2VA last-frame video/);
-  assert.match(bridge, /Ref2VA full-reference prompt engineer/);
-  assert.match(bridge, /subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music/);
-  assert.match(bridge, /<Subject N>, <Picture N>, <Video N>, and <Audio N>/);
+  assert.match(h3Instruction, /Ref2VA subject_definitions/);
+  assert.match(h3Validator, /subject_definitions.*summary.*retention_analysis.*detailed_description.*overall_soundscape.*non_diegetic_music/s);
+  assert.match(h3Instruction, /<Subject N>.*<Picture N>.*<Video N>.*<Audio N>/s);
   assert.match(bridge, /"ref2v"/);
   assert.match(bridge, /--task", "ref2v"/);
   assert.match(bridge, /--reference-image/);
@@ -193,7 +241,7 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /identity drift, face drift, costume drift/);
   assert.match(bridge, /source-video preview frame/);
   assert.match(bridge, /hasLastImageGeneratorFlag/);
-  assert.match(bridge, /--last-image/);
+  assert.match(bridge, /--last-frame/);
   assert.match(bridge, /async function deleteOutputAsset\(relativeName\)/);
   assert.match(bridge, /只能刪除 output 內受支援的圖片或影片/);
   assert.match(bridge, /async function stageSequenceInputImage\(payload\)/);

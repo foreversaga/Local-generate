@@ -11,6 +11,11 @@ import { planSequence as defaultPlanSequence } from "./server/long-video/planner
 import { runSequence } from "./server/long-video/runner.mjs";
 import { checkMediaTools } from "./server/long-video/media.mjs";
 import { LongVideoError } from "./server/long-video/schema.mjs";
+import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
+import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
+import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
+import { validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
+import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -50,6 +55,10 @@ const jobs = new Map();
 const jobProcesses = new Map();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
+// Asset admission and deletion share a process-wide FIFO barrier.  The lock
+// is held only through route admission/registration (never model execution),
+// so a delete cannot pass a concurrently admitted source asset.
+let assetLifecycleTail = Promise.resolve();
 let activeGenerationId = null;
 const timingSampleWindow = 5;
 let timingSamples = [];
@@ -74,7 +83,7 @@ const timingHistoryReady = fs
 async function hasLastImageGeneratorFlag() {
   if (typeof generatorSupportsLastImage === "boolean") return generatorSupportsLastImage;
   const source = await fs.readFile(GENERATOR, "utf8").catch(() => "");
-  generatorSupportsLastImage = /--last-image\b/.test(source);
+  generatorSupportsLastImage = /--last-frame\b/.test(source);
   return generatorSupportsLastImage;
 }
 
@@ -283,8 +292,15 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function sendError(res, status, message) {
-  sendJson(res, status, { error: message });
+function sendError(res, status, message, code) {
+  sendJson(res, status, { error: message, ...(code ? { code } : {}) });
+}
+
+export function withAssetLifecycleLock(operation) {
+  if (typeof operation !== "function") throw new TypeError("asset lifecycle operation must be a function");
+  const run = assetLifecycleTail.then(operation, operation);
+  assetLifecycleTail = run.catch(() => {});
+  return run;
 }
 
 async function readBody(req) {
@@ -511,7 +527,60 @@ function cleanPromptText(value) {
 }
 
 function promptMode(value) {
-  return ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(value) ? value : "t2v";
+  if (value === undefined || value === null || String(value).trim() === "") return "t2v";
+  const normalized = String(value).trim().toLowerCase();
+  if (["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(normalized)) return normalized;
+  throw new LongVideoError(
+    "PROMPT_MODE_INVALID",
+    `Unsupported video prompt mode: ${String(value)}.`,
+    400,
+    { mode: value, supportedModes: ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"] },
+  );
+}
+
+const MAX_REFERENCE_IMAGE_NAMES = 9;
+
+export function normalizeReferenceImageNames(payload = {}, { mode = payload.mode } = {}) {
+  const scalarProvided = typeof payload.referenceImageName === "string" && payload.referenceImageName.trim();
+  const scalar = scalarProvided ? payload.referenceImageName.trim() : "";
+  const arrayProvided = Object.prototype.hasOwnProperty.call(payload, "referenceImageNames");
+  if (arrayProvided && mode !== "ref2v") {
+    const error = new LongVideoError("REFERENCE_IMAGES_MODE_INVALID", "referenceImageNames is only supported for mode=ref2v.", 400);
+    throw error;
+  }
+  let names;
+  if (arrayProvided) {
+    if (!Array.isArray(payload.referenceImageNames)) {
+      throw new LongVideoError("REFERENCE_IMAGES_INVALID", "referenceImageNames must be an array of non-empty strings.", 400);
+    }
+    names = payload.referenceImageNames.map((value, index) => {
+      if (typeof value !== "string" || !value.trim()) {
+        throw new LongVideoError("REFERENCE_IMAGE_EMPTY", `referenceImageNames[${index}] must be a non-empty string.`, 400);
+      }
+      return value.trim();
+    });
+    if (scalar && (!names.length || scalar !== names[0])) {
+      throw new LongVideoError("REFERENCE_IMAGES_CONFLICT", "referenceImageName must match referenceImageNames[0] when both are supplied.", 400);
+    }
+  } else {
+    names = scalar ? [scalar] : [];
+  }
+  const unique = [];
+  const seen = new Set();
+  for (const name of names) {
+    const key = name.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(name);
+  }
+  if (unique.length > MAX_REFERENCE_IMAGE_NAMES) {
+    throw new LongVideoError("REFERENCE_IMAGES_LIMIT", `At most ${MAX_REFERENCE_IMAGE_NAMES} reference images are supported.`, 400);
+  }
+  return unique;
+}
+
+export function referenceImageArgs(paths = []) {
+  return paths.flatMap((value) => ["--reference-image", value]);
 }
 
 function promptProvider(value) {
@@ -551,96 +620,38 @@ async function validateCodexSelection(model, reasoningEffort) {
 }
 
 function promptSystem(mode, durationSeconds, hasVisualReference) {
-  if (mode === "i2v") {
-    return (
-      "You are a professional MiniMax H3 I2VA video prompt engineer following the h3-prompt-writing guide. " +
-      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
-      "The first line must be exactly: For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced. " +
-      "Then add one blank line and exactly these three fields in this order: " +
-      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
-      (hasVisualReference
-        ? "Inspect the attached first-frame reference and start [Shot 1] from it; preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, "
-        : "Start [Shot 1] from the supplied first-frame reference, preserve its subject identity, clothing, colors, composition, key objects, and spatial relationships, ") +
-      "then describe continuous forward development. Use later shot timestamps only for real cuts, keep all timing within " +
-      durationSeconds.toFixed(2) +
-      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
-      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
-      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
-    );
+  if (mode !== "replace") {
+    return buildH3PromptSystem({ mode, duration: durationSeconds, hasVisualReference });
   }
-
-  if (mode === "fl2v") {
-    return (
-      "You are a professional MiniMax H3 FL2VA video prompt engineer following the h3-prompt-writing guide. " +
-      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
-      "The first line must be exactly: How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) aligns with the " +
-      durationSeconds.toFixed(2) +
-      "-second mark of the target video. " +
-      "Then add one blank line and exactly these three fields in this order: " +
-      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
-      "Treat Picture 1 as the opening frame and Picture 2 as the ending frame. Describe a continuous path between them, preserve identity and scene anchors, and make the final [Shot N] reach Picture 2. " +
-      "Prefer one shot unless the user explicitly requests cuts. Keep all timing within " +
-      durationSeconds.toFixed(2) +
-      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
-      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
-      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
-    );
-  }
-
-  if (mode === "l2v") {
-    return (
-      "You are a professional MiniMax H3 L2VA video prompt engineer following the h3-prompt-writing guide. " +
-      "Write the final prompt in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
-      "The first line must be exactly: How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the " +
-      durationSeconds.toFixed(2) +
-      "-second mark of the target video. " +
-      "Then add one blank line and exactly these three fields in this order: " +
-      "integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
-      "Treat Picture 1 as the final frame only. Infer a plausible preceding state, describe the transition and gradual convergence, and land on Picture 1 in the final [Shot N]. " +
-      "Keep all timing within " +
-      durationSeconds.toFixed(2) +
-      " seconds, and describe composition, subjects, environment, actions, camera, and sound. " +
-      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
-      "Do not add headings beyond the required field names, explanations, markdown, plot summaries, or invented readable text."
-    );
-  }
-
-  if (mode === "ref2v") {
-    return (
-      "You are a professional MiniMax H3 Ref2VA full-reference prompt engineer following the h3-prompt-writing guide. " +
-      "Write all six sections in English and preserve dialogue, lyrics, and visible scene text in their original language. " +
-      "Return exactly these sections in this order, each as a field with a colon: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. " +
-      "Use stable labels <Subject N>, <Picture N>, <Video N>, and <Audio N> for referenced content. Define every label before using it later. " +
-      "The summary must begin with a square-bracketed task-type prefix such as [reference generation], [keyframe completion], or [video editing + reference generation]. " +
-      "In retention_analysis use the fixed visible relationship markers fully_preserved, partially_preserved, attribute_transfer, weak_reference and the fixed audio markers fully_copy, partially_copy, reference, weak_reference. " +
-      "The detailed_description must be a playback-order shot timeline with composition, subject appearance and position, environment, lighting, actions, state changes, camera, sound, and reference labels at the points where they apply. " +
-      "Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
-      "Do not add markdown fences, explanations, extra headings, or labels that are not part of the six required sections."
-    );
-  }
-
-  if (mode === "replace") {
-    return (
-      "You are a professional Wan2.2 Animate video replacement prompt engineer. " +
-      "Write one production-ready English positive prompt for replacing the selected subject while preserving the source video's motion, camera path, framing, environment, lighting, timing, and scene continuity. " +
-      (hasVisualReference
-        ? "Inspect the attached reference image and source-video preview frame. Transfer the reference subject's identity, face, hair, clothing, colors, body proportions, and material details into the source video's moving subject while keeping the source motion and pose timing. "
-        : "Use the named reference media as the source of subject identity and motion context. ") +
-      "Describe the final subject appearance, actions, expression, composition, lighting, material details, occlusion, and motion continuity in one cohesive prompt. Do not redesign the background, camera, or choreography unless the user explicitly requests it. " +
-      "Return only the prompt, with no headings, explanations, markdown, or invented readable text."
-    );
-  }
-
   return (
-    "You are a professional MiniMax H3 T2VA video prompt engineer following the h3-prompt-writing guide. " +
-    "Turn the user's idea into a complete audiovisual timeline in English while preserving dialogue, lyrics, and visible scene text in their original language. " +
-    "Return exactly these three fields in this order: integrated_multimodal_description, overall_soundscape, non_diegetic_music. " +
-    "The integrated_multimodal_description must begin with [Shot 1], describe composition, subjects, environment, actions, camera, dialogue, and diegetic sound, " +
-    "and use strictly increasing timestamps only for later cuts. Keep all timing within " +
-    durationSeconds.toFixed(2) +
-    " seconds. Use 1–4 English sentences for overall_soundscape and 1–3 English sentences or N/A for non_diegetic_music. " +
-    "Do not add explanations, markdown, plot summaries, or invented readable text."
+    "You are a professional Wan2.2 Animate video replacement prompt engineer. " +
+    "Write one production-ready English positive prompt for replacing the selected subject while preserving the source video's motion, camera path, framing, environment, lighting, timing, and scene continuity. " +
+    (hasVisualReference
+      ? "Inspect the attached reference image and source-video preview frame. Transfer the reference subject's identity, face, hair, clothing, colors, body proportions, and material details into the source video's moving subject while keeping the source motion and pose timing. "
+      : "Use the named reference media as the source of subject identity and motion context. ") +
+    "Describe the final subject appearance, actions, expression, composition, lighting, material details, occlusion, and motion continuity in one cohesive prompt. Do not redesign the background, camera, or choreography unless the user explicitly requests it. " +
+    "Return only the prompt, with no headings, explanations, markdown, or invented readable text."
   );
+}
+
+async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] }) {
+  const result = await fetchJson(
+    OLLAMA_URL + "/api/generate",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        system,
+        prompt,
+        stream: false,
+        options: { temperature: 0.2, top_p: 0.9 },
+        ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
+      }),
+    },
+    120000,
+  );
+  return cleanPromptText(result.response || result.message?.content);
 }
 
 async function createPrompt(payload) {
@@ -654,7 +665,8 @@ async function createPrompt(payload) {
     : null;
   const mode = promptMode(payload.mode);
   const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
-  const referenceImageName = String(payload.referenceImageName || "").trim();
+  const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
+  const referenceImageName = referenceImageNames[0] || "";
   const firstFrameName = String(payload.firstFrameName || "").trim();
   const lastFrameName = String(payload.lastFrameName || "").trim();
   const sourceVideoName = String(payload.sourceVideoName || "").trim();
@@ -665,9 +677,18 @@ async function createPrompt(payload) {
         role: String(item.role || "reference_image"),
         data: String(item.data).replace(/^data:[^;]+;base64,/, "").trim(),
       }))
+      .filter((item) => item.data)
     : [];
   const negativePrompt = String(payload.negativePrompt || "").trim();
   if (!brief) throw new LongVideoError("PROMPT_INPUT_REQUIRED", "請先輸入一段畫面想法。", 400);
+  if (provider === "ollama" && ["i2v", "fl2v", "l2v", "ref2v"].includes(mode) && !visualInputs.length) {
+    throw new LongVideoError(
+      "PROMPT_VISUAL_INPUT_REQUIRED",
+      `Ollama ${mode.toUpperCase()} prompt generation was not given an actual image/video visual input; attach the reference media so the model cannot claim it inspected unseen content.`,
+      400,
+      { mode, model },
+    );
+  }
   const modeLabel = {
     t2v: "T2VA text-to-video",
     i2v: "I2VA image-to-video",
@@ -683,7 +704,7 @@ async function createPrompt(payload) {
       ? `A reference image is supplied and must be treated as <Picture 1> at the first frame${referenceImageName ? ` (asset: ${referenceImageName})` : ""}.`
       : "",
     mode === "ref2v" && referenceImageName
-      ? `<Picture 1> is the supplied reference image (asset: ${referenceImageName}); define its visual subjects and concrete frame role before reusing the label.`
+      ? referenceImageNames.map((name, index) => `<Picture ${index + 1}> is supplied reference image ${index + 1} (asset: ${name}); define its visual subjects and concrete reference role before reusing the label.`).join("\n")
       : "",
     mode === "ref2v" && sourceVideoName
       ? `<Video 1> is the supplied reference video (asset: ${sourceVideoName}); define its structural or visual reference role and do not invent an audio track unless one is actually supplied.`
@@ -701,7 +722,7 @@ async function createPrompt(payload) {
       ? `The source video asset is ${sourceVideoName}; preserve its motion and scene continuity.`
       : "",
     visualInputs.length
-      ? `Attached visual references: ${visualInputs.map((item) => item.role).join(", ")}. Inspect them and keep their visible identities and composition consistent.`
+      ? `Attached visual references in order: ${visualInputs.map((item, index) => `<Picture ${index + 1}> (${item.role})`).join(", ")}. Inspect every attached image and keep each visible identity and composition consistent.`
       : "",
     negativePrompt ? `User-provided negative constraints: ${negativePrompt}` : "",
   ].filter(Boolean).join("\n");
@@ -718,29 +739,33 @@ async function createPrompt(payload) {
       negativePrompt,
     });
   }
-  const result = await fetchJson(
-    OLLAMA_URL + "/api/generate",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  const prompt = await requestOllamaPrompt({
+    model,
+    system: promptSystem(mode, durationSeconds, visualInputs.length > 0),
+    prompt: context + "\n\nUser idea:\n" + brief,
+    visualInputs,
+  });
+  if (!prompt) throw new Error("Ollama 回傳了空的提示詞。");
+  let finalPrompt = prompt;
+  if (mode !== "replace") {
+    const validation = await validateOrRepairH3Prompt(prompt, {
+      mode,
+      duration: durationSeconds,
+      hasVisualReference: visualInputs.length > 0,
+      repair: async (repairRequest) => requestOllamaPrompt({
         model,
         system: promptSystem(mode, durationSeconds, visualInputs.length > 0),
-        prompt: context + "\n\nUser idea:\n" + brief,
-        stream: false,
-        options: { temperature: 0.7, top_p: 0.9 },
-        ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
+        prompt: repairRequest,
+        visualInputs,
       }),
-    },
-    120000,
-  );
-  const prompt = cleanPromptText(result.response || result.message?.content);
-  if (!prompt) throw new Error("Ollama 回傳了空的提示詞。");
+    });
+    finalPrompt = validation.prompt;
+  }
   const defaultNegativePrompt = mode === "replace"
-    ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, text, logo, watermark"
-    : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, text, logo, watermark";
+    ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, unwanted random text, logo, watermark"
+    : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
   return {
-    prompt,
+    prompt: finalPrompt,
     negativePrompt: negativePrompt || defaultNegativePrompt,
   };
 }
@@ -827,8 +852,8 @@ async function createCodexPrompt({ brief, context, mode, durationSeconds, model,
     const prompt = cleanPromptText(raw);
     if (!prompt) throw new Error("Codex CLI 回傳了空的提示詞。");
     const defaultNegativePrompt = mode === "replace"
-      ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, text, logo, watermark"
-      : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, text, logo, watermark";
+      ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, unwanted random text, logo, watermark"
+      : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
     return {
       prompt,
       negativePrompt: negativePrompt || defaultNegativePrompt,
@@ -836,6 +861,33 @@ async function createCodexPrompt({ brief, context, mode, durationSeconds, model,
   } finally {
     await fs.rm(requestDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function codexLongPlanReferences(requestInput = {}) {
+  if (requestInput.referenceMode !== "multi_reference") return [];
+  const references = [];
+  const seen = new Set();
+  for (const reference of [requestInput.inputAsset, ...(Array.isArray(requestInput.referenceAssets) ? requestInput.referenceAssets : [])]) {
+    if (!reference?.name) continue;
+    const root = reference.root === "output" ? "output" : "input";
+    const name = String(reference.name).replaceAll("\\", "/");
+    const key = `${root}:${name}`.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push({ root, name, kind: "image" });
+  }
+  return references;
+}
+
+function codexLongPlanModeInstruction(requestInput, references = []) {
+  if (requestInput.referenceMode === "multi_reference") {
+    const labels = references.map((reference, index) => `<Picture ${index + 1}> (${reference.name})`).join(", ") || "the supplied pictures";
+    const tailLabel = `<Picture ${references.length + 1}>`;
+    return `Use Ref2VA for every segment with ordered static references ${labels}. Keep every segment in the same Ref2VA mode and do not apply a first-frame lock. For continuation segments, append the previous normalized tail as ${tailLabel}, a normal continuity reference (not a frame-zero lock), after the static references.`;
+  }
+  return requestInput.inputType === "image"
+    ? "The attached image is the actual first_frame reference. Use its visible content for the first I2VA segment and do not invent unseen details."
+    : "The first segment must be T2VA; every later segment must continue from the previous segment's normalized tail as I2VA.";
 }
 
 async function requestCodexLongPlanModel({ input: requestInput, prompt, model, attempt }) {
@@ -858,7 +910,29 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
   let exitCode;
   try {
     const imagePaths = [];
-    if (requestInput.inputType === "image") {
+    const multiReferences = codexLongPlanReferences(requestInput);
+    if (requestInput.referenceMode === "multi_reference") {
+      if (!multiReferences.length) {
+        throw new LongVideoError("CODEX_REFERENCE_REQUIRED", "multi_reference Codex planning requires at least one image reference.", 400);
+      }
+      if (multiReferences.length > 8) {
+        throw new LongVideoError("CODEX_REFERENCE_LIMIT", "Codex multi-reference planning accepts at most eight static image references.", 400);
+      }
+      for (let index = 0; index < multiReferences.length; index += 1) {
+        const reference = multiReferences[index];
+        if (classifyFile(reference.name) !== "image") {
+          throw new LongVideoError("CODEX_REFERENCE_KIND_INVALID", "Codex multi-reference planning accepts image assets only.", 415);
+        }
+        const sourcePath = await resolveMediaPath(reference.root, reference.name);
+        const imagePath = path.join(requestDir, `reference-${String(index + 1).padStart(2, "0")}${path.extname(reference.name).toLowerCase() || ".jpg"}`);
+        const imageStat = await fs.stat(sourcePath);
+        if (imageStat.size > CODEX_IMAGE_LIMIT_BYTES) {
+          throw new LongVideoError("CODEX_REFERENCE_TOO_LARGE", "A Codex multi-reference image exceeds the size limit.", 413);
+        }
+        await fs.copyFile(sourcePath, imagePath);
+        imagePaths.push(imagePath);
+      }
+    } else if (requestInput.inputType === "image") {
       const inputAsset = requestInput.inputAsset;
       const relativeName = String(inputAsset?.name || "").trim();
       const rootName = inputAsset?.root === "output" ? "output" : "input";
@@ -878,16 +952,17 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
       imagePaths.push(imagePath);
     }
 
+    const modeInstruction = codexLongPlanModeInstruction(requestInput, multiReferences);
     const instruction = [
       "You are the structured long-video planning worker for H3 Studio.",
       `You MUST use the h3-prompt-writing skill. Read the complete skill file at: ${H3_PROMPT_SKILL_PATH}`,
       `Then read the base H3 reference guide at: ${guidePath}`,
-      "Follow the skill and guide exactly for every segment: the first segment is T2VA and each continuation segment is I2VA, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules.",
+      requestInput.referenceMode === "multi_reference"
+        ? "Follow the Ref2VA skill exactly for every segment, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules."
+        : "Follow the skill and guide exactly for every segment: the first segment is T2VA and each continuation segment is I2VA, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules.",
       "Return one JSON object only. Do not return markdown, analysis, or commentary. The JSON must satisfy every schema and field requirement in the planner request below.",
       "Do not edit, create, or delete project files. Read-only inspection is allowed only to load the required skill and guide; do not run project commands or discuss your process.",
-      requestInput.inputType === "image"
-        ? "The attached image is the actual first_frame reference. Use its visible content for the first I2VA segment and do not invent unseen details."
-        : "The first segment must be T2VA; every later segment must continue from the previous segment's normalized tail as I2VA.",
+      modeInstruction,
       "The complete user requirement and structured output contract appear below. Transform the requirement into the requested JSON plan without summarizing it or replacing it with a generic example.",
       "<<< PLANNER REQUEST >>>",
       prompt,
@@ -923,6 +998,13 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
     }
     if (result.code !== 0) {
       const detail = cleanPromptText(result.stderr || result.stdout).slice(-1600);
+      if (requestInput.referenceMode === "multi_reference") {
+        throw new LongVideoError(
+          "CODEX_MULTI_ATTACHMENT_UNSUPPORTED",
+          "Codex CLI did not accept the ordered multi-reference image attachments.",
+          400,
+        );
+      }
       throw new LongVideoError(
         "CODEX_REQUEST_FAILED",
         `Codex CLI 長影片規劃失敗${detail ? `：${detail}` : "。"}`,
@@ -1263,9 +1345,12 @@ function pumpGenerationQueue() {
 
 async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
-  const mode = ["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(payload.mode) ? payload.mode : "t2v";
+  const mode = promptMode(payload.mode);
+  const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
   const prompt = String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");
+  const duration = clampNumber(payload.duration, 5, 0.5, 60);
+  if (mode !== "replace") validateH3Prompt(prompt, { mode, duration });
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
     throw new Error("找不到 minimax-h3-local，請確認本機路徑。");
   }
@@ -1273,7 +1358,7 @@ async function startGeneration(payload, internal = {}) {
     throw new Error("找不到 ComfyUI 虛擬環境的 Python。");
   }
   if ((mode === "fl2v" || mode === "l2v") && !(await hasLastImageGeneratorFlag())) {
-    throw new Error("目前本機 generate.py 尚未公開 --last-image；FL2VA/L2VA 提示詞已可產出，但影片生成需先更新本機 CLI。");
+    throw new Error("目前本機 generate.py 尚未公開 --last-frame；FL2VA/L2VA 提示詞已可產出，但影片生成需先更新本機 CLI。");
   }
   const requestedOutputName = outputFileName(payload.outputName);
   await fs.mkdir(INPUT_ROOT, { recursive: true });
@@ -1281,6 +1366,7 @@ async function startGeneration(payload, internal = {}) {
   await fs.mkdir(LOG_ROOT, { recursive: true });
 
   let inputImagePath = null;
+  let referenceImagePaths = [];
   let lastImagePath = null;
   let inputVideoPath = null;
   if (mode === "i2v" || mode === "fl2v") {
@@ -1307,9 +1393,22 @@ async function startGeneration(payload, internal = {}) {
     inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
   }
   if (mode === "ref2v") {
-    if (payload.referenceImageName) {
-      inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
+    if (Array.isArray(internal.referenceImagePaths)) {
+      if (internal.referenceImagePaths.length !== referenceImageNames.length) {
+        throw new Error("Ref2VA reference image count does not match staged assets.");
+      }
+      referenceImagePaths = await Promise.all(internal.referenceImagePaths.map(async (value) => {
+        const candidate = path.resolve(String(value));
+        const inputRoot = path.resolve(INPUT_ROOT);
+        if (candidate !== inputRoot && !candidate.startsWith(inputRoot + path.sep)) throw new Error("Ref2VA staged image is outside ComfyUI/input.");
+        const stat = await fs.stat(candidate).catch(() => null);
+        if (!stat?.isFile() || classifyFile(candidate) !== "image") throw new Error("Ref2VA staged image is invalid.");
+        return candidate;
+      }));
+    } else {
+      referenceImagePaths = await Promise.all(referenceImageNames.map((name) => resolveInputMedia(name, "image")));
     }
+    inputImagePath = referenceImagePaths[0] || null;
     if (payload.inputVideoName) {
       inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
     }
@@ -1331,7 +1430,6 @@ async function startGeneration(payload, internal = {}) {
 
   const width = Math.round(clampNumber(payload.width, mode === "replace" ? 832 : 736, 32, 2048));
   const height = Math.round(clampNumber(payload.height, mode === "replace" ? 480 : 416, 32, 2048));
-  const duration = clampNumber(payload.duration, 5, 0.5, 60);
   const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
   const modelProfile = mode === "replace"
@@ -1421,11 +1519,11 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       COMFY_URL,
     ];
-    if (inputImagePath) args.push("--input-image", inputImagePath);
-    if (lastImagePath) args.push("--last-image", lastImagePath);
+    if (inputImagePath && mode !== "ref2v") args.push("--input-image", inputImagePath);
+    if (lastImagePath) args.push("--last-frame", lastImagePath);
     if (mode === "ref2v") {
       args.push("--task", "ref2v");
-      if (inputImagePath) args.push("--reference-image", inputImagePath);
+      args.push(...referenceImageArgs(referenceImagePaths));
       if (inputVideoPath) args.push("--reference-video", inputVideoPath);
     }
   }
@@ -1454,40 +1552,54 @@ async function startGeneration(payload, internal = {}) {
   });
   child.on("close", async (code) => {
     job.exitCode = Number.isInteger(code) ? code : (job.exitCode ?? null);
-    jobProcesses.delete(job.id);
-    const outputRelativeName = job.outputRelativeName || outputName;
-    const nativeOutputPath = await resolveMediaPath("output", outputRelativeName).catch(() => null);
-    const outputExists = Boolean(nativeOutputPath);
-    if (job.cancelRequested) {
-      job.status = "cancelled";
-      job.stage = "已停止";
-    } else if (code === 0 && outputExists) {
-      job.status = "completed";
-      job.progress = 100;
-      job.stage = "完成，影片已寫入 ComfyUI output";
+    await withAssetLifecycleLock(async () => {
       try {
-        job.output = await toAsset("output", outputRelativeName);
-      } catch {
-        job.error = "生成完成，但找不到輸出影片。";
-        job.status = "failed";
+        const outputRelativeName = job.outputRelativeName || outputName;
+        const nativeOutputPath = await resolveMediaPath("output", outputRelativeName).catch(() => null);
+        const outputExists = Boolean(nativeOutputPath);
+        if (job.cancelRequested) {
+          job.status = "cancelled";
+          job.stage = "cancelled";
+        } else if (code === 0 && outputExists) {
+          job.status = "completed";
+          job.progress = 100;
+          job.stage = "completed";
+          try {
+            job.output = await toAsset("output", outputRelativeName);
+          } catch (error) {
+            job.error = error instanceof Error ? error.message : "Output registration failed.";
+            job.status = "failed";
+          }
+        } else {
+          job.status = "failed";
+          job.stage = "failed";
+          if (!job.error) job.error = "Generation exited with code " + String(code);
+        }
+        job.elapsedMs = Number.isFinite(job.executionStartedMs)
+          ? Math.max(0, Date.now() - job.executionStartedMs)
+          : elapsedMilliseconds(job);
+        if (job.status === "completed") {
+          recordTimingSample(job, job.elapsedMs);
+          job.etaMs = 0;
+        }
+        job.finishedAt = now();
+        touchJob(job);
+      } catch (error) {
+        job.status = job.cancelRequested ? "cancelled" : "failed";
+        job.stage = job.cancelRequested ? "cancelled" : "failed";
+        if (!job.error) job.error = error instanceof Error ? error.message : String(error);
+        job.finishedAt = now();
+        try { touchJob(job); } catch (touchError) { job.error = job.error || String(touchError); }
+      } finally {
+        // Keep the source admitted until output/toAsset registration has
+        // completed.  DELETE and the next generation admission cannot slip
+        // between completion and this cleanup.
+        jobProcesses.delete(job.id);
+        reservedOutputPaths.delete(outputPath);
+        trimJobs();
+        queueMicrotask(pumpGenerationQueue);
       }
-    } else {
-      job.status = "failed";
-      job.stage = "生成失敗";
-      if (!job.error) job.error = "生成程序結束，代碼：" + String(code);
-    }
-    job.elapsedMs = Number.isFinite(job.executionStartedMs)
-      ? Math.max(0, Date.now() - job.executionStartedMs)
-      : elapsedMilliseconds(job);
-    if (job.status === "completed") {
-      recordTimingSample(job, job.elapsedMs);
-      job.etaMs = 0;
-    }
-    job.finishedAt = now();
-    touchJob(job);
-    reservedOutputPaths.delete(outputPath);
-    trimJobs();
-    queueMicrotask(pumpGenerationQueue);
+    });
   });
   return publicJob(job);
 }
@@ -1535,6 +1647,38 @@ async function stageSequenceInputImage(payload) {
   const stagedPath = safePath(INPUT_ROOT, stagedName);
   await fs.copyFile(sourcePath, stagedPath);
   return { name: stagedName, path: stagedPath, source: relativeName };
+}
+
+function sequenceReferenceAssets(payload) {
+  if (Array.isArray(payload.referenceAssets)) return payload.referenceAssets;
+  if (Array.isArray(payload.referenceImageNames)) return payload.referenceImageNames.map((name) => ({ root: "input", name }));
+  return [];
+}
+
+async function stageSequenceInputImages(payload) {
+  const references = sequenceReferenceAssets(payload);
+  const staged = [];
+  try {
+    for (const reference of references) {
+      const sourceReference = reference && typeof reference === "object" ? reference : { name: reference };
+      const rawName = String(sourceReference.name || "").trim();
+      if (!rawName) throw new Error("Multi-reference generation requires non-empty image names.");
+      const rootName = sourceReference.root === "output" ? "output" : "input";
+      const rootPath = rootName === "output" ? OUTPUT_ROOT : INPUT_ROOT;
+      const relativeName = sequenceMediaName(rawName, rootPath);
+      const sourcePath = await resolveMediaPath(rootName, relativeName);
+      if (classifyFile(relativeName) !== "image") throw new Error("Multi-reference assets must be image files: " + relativeName);
+      await fs.mkdir(INPUT_ROOT, { recursive: true });
+      const stagedName = sequenceStageName(payload, path.extname(relativeName));
+      const stagedPath = safePath(INPUT_ROOT, stagedName);
+      await fs.copyFile(sourcePath, stagedPath);
+      staged.push({ name: stagedName, path: stagedPath, source: relativeName });
+    }
+    return staged;
+  } catch (error) {
+    await Promise.all(staged.map((item) => removeStagedSequenceInput(item)));
+    throw error;
+  }
 }
 
 async function removeStagedSequenceInput(staged) {
@@ -1602,7 +1746,11 @@ async function startSequenceGeneration(payload) {
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
     : null;
+  let stagedReferences = [];
   try {
+    stagedReferences = payload.mode === "ref2v" && payload.referenceMode === "multi_reference"
+      ? await stageSequenceInputImages(payload)
+      : [];
     if (stagedInput) {
       await reportSequenceInputStage(payload, {
         event: "generation.input.stage",
@@ -1611,12 +1759,22 @@ async function startSequenceGeneration(payload) {
         stagedName: stagedInput.name,
       });
     }
+    for (const stagedReference of stagedReferences) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.stage",
+        stage: "reference",
+        source: stagedReference.source,
+        stagedName: stagedReference.name,
+      });
+    }
     const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
     const legacy = await startGeneration({
       mode: payload.mode,
       prompt: payload.prompt,
       negativePrompt: payload.negativePrompt,
       inputImageName: stagedInput?.name || "",
+      referenceImageNames: stagedReferences.length ? stagedReferences.map((reference) => reference.name) : (payload.referenceImageNames || []),
+      inputVideoName: payload.inputVideoName || "",
       duration: payload.duration,
       width: payload.width,
       height: payload.height,
@@ -1624,7 +1782,10 @@ async function startSequenceGeneration(payload) {
       seed: payload.seed,
       modelProfile: payload.modelProfile || "nvfp4_blackwell",
       sequenceOutputPath,
-    }, { inputImagePath: stagedInput?.path });
+    }, {
+      inputImagePath: stagedInput?.path,
+      referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
+    });
     return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
   } finally {
     if (stagedInput) {
@@ -1634,7 +1795,15 @@ async function startSequenceGeneration(payload) {
         stagedName: stagedInput.name,
       });
     }
+    for (const stagedReference of stagedReferences) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.cleanup",
+        stage: "cleanup",
+        stagedName: stagedReference.name,
+      });
+    }
     await removeStagedSequenceInput(stagedInput);
+    await Promise.all(stagedReferences.map((reference) => removeStagedSequenceInput(reference)));
   }
 }
 
@@ -1682,35 +1851,231 @@ async function uploadAsset(payload) {
   return await toAsset("input", outputName);
 }
 
-async function deleteOutputAsset(relativeName) {
-  const cleanName = String(relativeName || "")
-    .replaceAll("\\", "/")
-    .replace(/^\/+/, "");
-  const kind = cleanName ? classifyFile(cleanName) : null;
-  if (!cleanName || !kind) {
-    throw new Error("只能刪除 output 內受支援的圖片或影片。");
-  }
+const ACTIVE_LONG_VIDEO_STATES = new Set(["planning", "queued", "running", "paused", "assembling"]);
 
-  const candidates = mediaRoots("output").map((root) => safePath(root, cleanName));
-  const existingPaths = [];
-  for (const candidate of candidates) {
-    const stat = await fs.stat(candidate).catch(() => null);
-    if (stat?.isFile()) existingPaths.push(candidate);
-  }
-  if (!existingPaths.length) {
-    throw new Error("找不到要刪除的輸出資源：" + cleanName);
-  }
-
-  for (const candidate of existingPaths) {
-    await fs.unlink(candidate);
-  }
-  return {
-    name: cleanName,
-    root: "output",
-    kind,
-    deletedCount: existingPaths.length,
-  };
+function assetDeletionError(code, message, status = 400) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
 }
+
+function canonicalInputAssetName(value) {
+  if (typeof value !== "string") throw assetDeletionError("ASSET_PATH_INVALID", "Input asset name must be a relative path.", 400);
+  const normalized = value.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  const hasControl = Array.from(normalized).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+  if (
+    !normalized ||
+    normalized.length > 1024 ||
+    normalized.startsWith("/") ||
+    /^[A-Za-z]:/.test(normalized) ||
+    hasControl ||
+    segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    throw assetDeletionError("ASSET_PATH_INVALID", "Input asset name must be a safe relative path.", 400);
+  }
+  return normalized;
+}
+
+function pathContained(root, candidate) {
+  const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+  const absoluteRoot = normalize(path.resolve(root));
+  const absoluteCandidate = normalize(path.resolve(candidate));
+  return absoluteCandidate === absoluteRoot || absoluteCandidate.startsWith(absoluteRoot + path.sep);
+}
+
+function inputAssetKey(rootName, relativeName) {
+  const normalized = relativeName.replaceAll("\\", "/");
+  return `${rootName}:${process.platform === "win32" ? normalized.toLowerCase() : normalized}`;
+}
+
+async function activeInputAssetUse(relativeName) {
+  if (jobProcesses.size > 0) return { blocked: true, code: "ASSET_IN_USE" };
+  try {
+    const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
+    const target = inputAssetKey("input", relativeName);
+    if (!Array.isArray(seedJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    for (const job of seedJobs) {
+      if (!["queued", "running"].includes(job?.status)) continue;
+      if (job?.sourceRoot !== "input") continue;
+      let sourceName;
+      try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+      if (classifyFile(sourceName) !== "video") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      if (inputAssetKey("input", sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
+    }
+  } catch {
+    return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  }
+
+  let sequenceJobs;
+  try { sequenceJobs = await listLongVideoJobs(); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+  if (!Array.isArray(sequenceJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  const target = inputAssetKey("input", relativeName);
+  for (const job of sequenceJobs) {
+    if (!ACTIVE_LONG_VIDEO_STATES.has(job?.status)) continue;
+    const references = [];
+    if (job.inputAsset) references.push(job.inputAsset);
+    if (job.referenceAssets !== undefined) {
+      if (!Array.isArray(job.referenceAssets)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      references.push(...job.referenceAssets);
+    }
+    if (job.referenceMode === "multi_reference" && !references.length) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    if (job.referenceMode !== "multi_reference" && job.inputType === "image" && !job.inputAsset) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    for (const reference of references) {
+      if (!reference || typeof reference.name !== "string") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      if (classifyFile(reference.name) !== "image") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      const rootName = reference.root || "input";
+      if (rootName === "output") continue;
+      if (rootName !== "input") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      let sourceName;
+      try { sourceName = canonicalInputAssetName(reference.name); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+      if (inputAssetKey("input", sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
+    }
+  }
+  return null;
+}
+
+// Output assets have additional producers (SeedVR2 and long-video assembly).
+// Keep the existing input-source checks above, then fail closed for any active
+// output producer whose exact artifact set is not yet persisted.
+async function activeAssetUse(rootName, relativeName) {
+  if (rootName === "input") return activeInputAssetUse(relativeName);
+  if (rootName !== "output") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  if (jobProcesses.size > 0) return { blocked: true, code: "ASSET_IN_USE" };
+  try {
+    const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
+    if (!Array.isArray(seedJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+    const target = inputAssetKey("output", relativeName);
+    for (const job of seedJobs) {
+      if (!["queued", "running"].includes(job?.status)) continue;
+      if (!['input', 'output'].includes(job?.sourceRoot) || typeof job?.sourceName !== "string") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      let sourceName;
+      try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+      if (classifyFile(sourceName) !== "video") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+      if (inputAssetKey(job.sourceRoot, sourceName) === target) return { blocked: true, code: "ASSET_IN_USE" };
+    }
+  } catch {
+    return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  }
+  let sequenceJobs;
+  try { sequenceJobs = await listLongVideoJobs(); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
+  if (!Array.isArray(sequenceJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
+  // The runner writes raw/normalized/tail/final output refs over the whole
+  // active lifecycle; block output deletion conservatively rather than risk a
+  // stale artifact lookup.
+  if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return { blocked: true, code: "ASSET_IN_USE" };
+  return null;
+}
+
+async function deleteInputAsset(relativeName, { inputRoot = INPUT_ROOT, activeCheck = activeInputAssetUse } = {}) {
+  const check = activeCheck === activeInputAssetUse
+    ? activeAssetUse
+    : (typeof activeCheck === "function" ? (_rootName, cleanName) => activeCheck(cleanName) : null);
+  return deleteMediaAsset("input", relativeName, { rootPath: inputRoot, activeCheck: check || activeAssetUse });
+}
+
+async function deleteOutputAsset(relativeName) {
+  return deleteMediaAsset("output", relativeName);
+}
+
+async function assertNoSymlinkSegments(rootPath, cleanName) {
+  let current = path.resolve(rootPath);
+  for (const segment of cleanName.split("/")) {
+    current = path.join(current, segment);
+    const segmentStat = await fs.lstat(current).catch((error) => {
+      if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+      throw error;
+    });
+    if (segmentStat.isSymbolicLink()) {
+      throw assetDeletionError("ASSET_NOT_REGULAR", "Symlink or reparse media assets cannot be deleted.", 409);
+    }
+  }
+}
+
+/**
+ * Canonical, single-file deletion for either ComfyUI media root.  The active
+ * check is deliberately performed before filesystem admission, and the final
+ * lstat/realpath pass immediately precedes the one unlink call.
+ */
+async function deleteMediaAsset(rootName, relativeName, {
+  rootPath = rootName === "input" ? INPUT_ROOT : OUTPUT_ROOT,
+  activeCheck = activeAssetUse,
+} = {}) {
+  if (!["input", "output"].includes(rootName)) {
+    throw assetDeletionError("ASSET_ROOT_INVALID", "Asset root must be input or output.", 400);
+  }
+  const cleanName = canonicalInputAssetName(relativeName);
+  const kind = classifyFile(cleanName);
+  if (!kind) {
+    const message = rootName === "output"
+      ? "只能刪除 output 內受支援的圖片或影片。"
+      : "Only image or video assets can be deleted.";
+    throw assetDeletionError("ASSET_KIND_INVALID", message, 415);
+  }
+
+  const activeUse = typeof activeCheck === "function" ? await activeCheck(rootName, cleanName) : null;
+  if (activeUse?.blocked) {
+    throw assetDeletionError(activeUse.code || "ASSET_IN_USE", "Media asset is in use by an active job.", 409);
+  }
+
+  const rootAbsolute = path.resolve(rootPath);
+  const rootReal = await fs.realpath(rootAbsolute).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  const rootStat = await fs.stat(rootReal);
+  if (!rootStat.isDirectory()) throw assetDeletionError("ASSET_ROOT_INVALID", "Media asset root is not a directory.", 409);
+  const candidate = safePath(rootAbsolute, cleanName);
+  if (!pathContained(rootAbsolute, candidate)) throw assetDeletionError("ASSET_PATH_INVALID", "Media asset path is outside its root.", 400);
+  await assertNoSymlinkSegments(rootAbsolute, cleanName);
+  const candidateStat = await fs.lstat(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  if (candidateStat.isSymbolicLink() || !candidateStat.isFile()) {
+    throw assetDeletionError("ASSET_NOT_REGULAR", "Only a single regular media file can be deleted.", 409);
+  }
+  const candidateReal = await fs.realpath(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  if (!pathContained(rootReal, candidateReal)) throw assetDeletionError("ASSET_PATH_INVALID", "Media asset path is outside its root.", 409);
+  const realStat = await fs.stat(candidateReal);
+  if (!realStat.isFile()) throw assetDeletionError("ASSET_NOT_REGULAR", "Only a single regular media file can be deleted.", 409);
+
+  // Final no-retry revalidation closes the route-level TOCTOU window.  An OS
+  // replacement after this point cannot be made atomic with unlink on every
+  // supported Windows/POSIX filesystem and remains a documented residual risk.
+  const finalRootReal = await fs.realpath(rootAbsolute).catch(() => null);
+  if (!finalRootReal || !pathContained(rootReal, finalRootReal) || !pathContained(finalRootReal, rootReal)) {
+    throw assetDeletionError("ASSET_PATH_INVALID", "Media asset root changed during deletion.", 409);
+  }
+  await assertNoSymlinkSegments(rootAbsolute, cleanName);
+  const finalStat = await fs.lstat(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  if (finalStat.isSymbolicLink() || !finalStat.isFile()) throw assetDeletionError("ASSET_NOT_REGULAR", "Only a single regular media file can be deleted.", 409);
+  const finalReal = await fs.realpath(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  if (!pathContained(rootReal, finalReal)) throw assetDeletionError("ASSET_PATH_INVALID", "Media asset path is outside its root.", 409);
+  await fs.unlink(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media asset was not found.", 404);
+    throw error;
+  });
+  return { name: cleanName, root: rootName, kind, deletedCount: 1 };
+}
+
+const seedvr2Controller = createSeedVR2Controller({
+  comfyUrl: COMFY_URL,
+  comfyRoot: COMFY_ROOT,
+  inputRoot: INPUT_ROOT,
+  outputRoot: OUTPUT_ROOT,
+  toAsset,
+});
 
 async function route(req, res) {
   if (req.method === "OPTIONS") {
@@ -1721,8 +2086,19 @@ async function route(req, res) {
   const requestUrl = new URL(req.url || "/", "http://localhost");
   const pathname = requestUrl.pathname;
 
+  if (pathname === "/api/upscale" || pathname.startsWith("/api/upscale/")) {
+    const dispatch = () => seedvr2Controller.handleRoute(req, res, {
+      pathname,
+      readJson,
+      sendJson,
+      sendError,
+    });
+    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(dispatch));
+    if (handled || res.headersSent) return;
+  }
+
   if (pathname === "/api/sequences" || pathname.startsWith("/api/sequences/")) {
-    const handled = await handleLongVideoRoute(req, res, {
+    const dispatch = () => handleLongVideoRoute(req, res, {
       plan: planSequenceWithPromptProvider,
       planOptions: { ollamaUrl: OLLAMA_URL },
       outputOptions: { root: OUTPUT_ROOT },
@@ -1732,6 +2108,7 @@ async function route(req, res) {
         generate: startSequenceGeneration,
       }),
     });
+    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(dispatch));
     if (handled || res.headersSent) return;
   }
 
@@ -1751,11 +2128,19 @@ async function route(req, res) {
   if (req.method === "DELETE" && pathname === "/api/assets") {
     const root = requestUrl.searchParams.get("root");
     const relativeName = requestUrl.searchParams.get("name");
-    if (root !== "output" || !relativeName) {
-      sendError(res, 400, "只能刪除 output 內受支援的圖片或影片。");
+    if (!["input", "output"].includes(root) || !relativeName) {
+      sendError(res, 400, "Asset root must be input or output and name must be provided.");
       return;
     }
-    sendJson(res, 200, { asset: await deleteOutputAsset(relativeName) });
+    try {
+      const asset = await withAssetLifecycleLock(() => root === "input"
+        ? deleteInputAsset(relativeName)
+        : deleteOutputAsset(relativeName));
+      sendJson(res, 200, { asset });
+    } catch (error) {
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      sendError(res, status, error?.status ? error.message : "Media asset deletion failed.", error?.code);
+    }
     return;
   }
   if (req.method === "GET" && pathname === "/api/jobs") {
@@ -1805,7 +2190,16 @@ async function route(req, res) {
     return;
   }
   if (req.method === "POST" && pathname === "/api/generate") {
-    sendJson(res, 202, { job: await startGeneration(await readJson(req)) });
+    try {
+      const payload = await readJson(req);
+      sendJson(res, 202, { job: await withAssetLifecycleLock(() => startGeneration(payload)) });
+    } catch (error) {
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      sendJson(res, status, {
+        error: error instanceof Error ? error.message : "Video generation failed.",
+        ...(error?.code ? { code: error.code } : {}),
+      });
+    }
     return;
   }
   if (req.method === "POST" && pathname.startsWith("/api/jobs/") && pathname.endsWith("/cancel")) {
@@ -1873,4 +2267,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
 */
 
-export { route };
+export {
+  route,
+  canonicalInputAssetName,
+  deleteInputAsset,
+  deleteOutputAsset,
+  deleteMediaAsset,
+  activeAssetUse,
+  codexLongPlanReferences,
+  codexLongPlanModeInstruction,
+};

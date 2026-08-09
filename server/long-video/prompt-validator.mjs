@@ -1,26 +1,13 @@
-import { LongVideoError } from "./schema.mjs";
-import { REF2VA_FIELDS, T2VA_FIELDS } from "./prompt-builder.mjs";
+import { validateH3Prompt, inspectH3Prompt, checkH3Prompt, normalizeH3Mode, T2VA_FIELDS, REF2VA_FIELDS } from "../h3-prompt/validator.mjs";
 
-function fieldNames(prompt) {
-  return String(prompt || "").split(/\r?\n/).map((line) => line.match(/^\s*([a-z][a-z0-9_]*)\s*:/i)?.[1]).filter(Boolean);
+/**
+ * Long-video's historical adapter accepts `{ mode }`.  Keep that surface,
+ * while also accepting `{ inputType, duration }` for callers that validate a
+ * single prompt before they have a normalized segment object.
+ */
+export function validatePrompt(prompt, options = {}) {
+  const mode = options.mode ?? options.inputType ?? "t2v";
+  return validateH3Prompt(prompt, { ...options, mode });
 }
 
-export function validatePrompt(prompt, { mode = "t2v" } = {}) {
-  const value = String(prompt || "").trim();
-  if (!value) throw new LongVideoError("PROMPT_REQUIRED", "Prompt is required.", 400);
-  if (mode === "i2v") {
-    if (!/^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot \d+\]\) is fully referenced\./.test(value)) throw new LongVideoError("PROMPT_I2VA_FIRST_LINE", "I2VA prompt must begin with the Picture 1 first-frame reference line.", 400);
-  }
-  const names = fieldNames(value);
-  const required = mode === "ref2v" ? REF2VA_FIELDS : T2VA_FIELDS;
-  const positions = required.map((field) => names.indexOf(field));
-  if (positions.some((position) => position < 0) || positions.some((position, index) => index > 0 && position <= positions[index - 1])) {
-    throw new LongVideoError("PROMPT_FIELDS_INVALID", `Prompt fields must appear in order: ${required.join(", ")}.`, 400, { required });
-  }
-  if (mode !== "ref2v" && !/integrated_multimodal_description\s*:\s*\[Shot\s+1\]/i.test(value)) {
-    throw new LongVideoError("PROMPT_SHOT1_REQUIRED", "integrated_multimodal_description must begin with [Shot 1].", 400);
-  }
-  return { valid: true, mode, fields: required, prompt: value };
-}
-
-export const validateH3Prompt = validatePrompt;
+export { validateH3Prompt, inspectH3Prompt, checkH3Prompt, normalizeH3Mode, T2VA_FIELDS, REF2VA_FIELDS };

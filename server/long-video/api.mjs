@@ -44,7 +44,7 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -189,13 +189,14 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       // complete merged payload so image assets, dimensions, seam, duration,
       // and timeline invariants cannot be bypassed by partial updates.
       const normalized = validateSequenceInput(candidate, { requireTimeline: true });
-      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible"];
+      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
       }
       let mergedSegments = patch.segments || patch.timeline || current.segments;
+      if (normalized.referenceMode === "multi_reference") mergedSegments = mergedSegments.map((segment) => ({ ...segment, mode: "ref2v" }));
       if (generationCriticalChanged) mergedSegments = invalidateFromSegment(mergedSegments, 0);
       patch.segments = mergedSegments;
       patch.timeline = mergedSegments;

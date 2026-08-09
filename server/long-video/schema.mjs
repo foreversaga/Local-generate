@@ -27,6 +27,9 @@ export const SEGMENT_STATES = [
   "stale",
 ];
 
+export const REFERENCE_MODES = ["continuity", "multi_reference"];
+export const MAX_REFERENCE_ASSETS = 8;
+
 export class LongVideoError extends Error {
   constructor(code, message, status = 400, details = undefined) {
     super(message);
@@ -139,27 +142,63 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   const title = text(value.title, "Untitled sequence");
   if (value.inputType !== undefined && value.inputType !== "text" && value.inputType !== "image") fail("INPUT_TYPE_INVALID", "inputType must be text or image.");
   const inputType = value.inputType === "image" ? "image" : "text";
-  const imagePurpose = value.imagePurpose === "first_frame" ? "first_frame" : undefined;
-  if (inputType === "image" && imagePurpose !== "first_frame") {
-    fail("IMAGE_PURPOSE_REQUIRED", "Image input must explicitly use imagePurpose=first_frame.");
-  }
-  if (inputType === "image" && (value.inputAsset === undefined || value.inputAsset === null)) {
-    fail("INPUT_ASSET_REQUIRED", "Image first_frame input requires an image asset.", 400);
-  }
+  const referenceMode = value.referenceMode === undefined ? "continuity" : value.referenceMode;
+  if (!REFERENCE_MODES.includes(referenceMode)) fail("REFERENCE_MODE_INVALID", "referenceMode must be continuity or multi_reference.");
+  const rawReferenceAssets = value.referenceAssets === undefined ? [] : value.referenceAssets;
+  if (!Array.isArray(rawReferenceAssets)) fail("REFERENCE_ASSETS_INVALID", "referenceAssets must be an array of image assets.");
   let inputAsset;
-  if (value.inputAsset !== undefined) {
+  if (value.inputAsset !== undefined && value.inputAsset !== null) {
     inputAsset = sanitizeAssetRef(value.inputAsset);
-    if (inputType === "image") {
-      if (!inputAsset?.name) fail("INPUT_ASSET_REQUIRED", "Image first_frame input requires an image asset name.", 400);
-      if (inputAsset && inputAsset.kind === "video") fail("INPUT_ASSET_KIND_INVALID", "Image first_frame input must reference an image asset.", 400);
+    if (inputType === "image" || referenceMode === "multi_reference") {
+      if (!inputAsset?.name) fail("INPUT_ASSET_REQUIRED", referenceMode === "multi_reference" ? "Reference input requires an image asset name." : "Image first_frame input requires an image asset name.", 400);
+      if (inputAsset && inputAsset.kind === "video") fail("INPUT_ASSET_KIND_INVALID", "Reference input must reference an image asset.", 400);
       if (inputAsset && typeof inputAsset === "object") inputAsset = { ...inputAsset, kind: "image" };
     }
+  }
+  const referenceAssets = [];
+  const seenReferenceAssets = new Set();
+  for (const valueRef of rawReferenceAssets) {
+    const reference = sanitizeAssetRef(valueRef);
+    if (!reference?.name) fail("REFERENCE_ASSET_REQUIRED", "Each reference asset requires an image name.", 400);
+    if (reference.kind === "video") fail("REFERENCE_ASSET_KIND_INVALID", "referenceAssets may contain image assets only.", 400);
+    const normalized = { ...reference, root: reference.root === "output" ? "output" : "input", kind: "image" };
+    const key = `${normalized.root}:${normalized.name}`.toLocaleLowerCase();
+    if (seenReferenceAssets.has(key)) continue;
+    seenReferenceAssets.add(key);
+    referenceAssets.push(normalized);
+  }
+  if (referenceMode === "continuity" && referenceAssets.length) {
+    fail("REFERENCE_ASSETS_CONTINUITY", "referenceAssets require referenceMode=multi_reference.", 400);
+  }
+  if (referenceMode === "multi_reference") {
+    const effectiveReferences = [];
+    const effectiveKeys = new Set();
+    for (const reference of [inputAsset, ...referenceAssets]) {
+      if (!reference?.name) continue;
+      const normalized = { ...reference, root: reference.root === "output" ? "output" : "input", kind: "image" };
+      const key = `${normalized.root}:${normalized.name}`.toLocaleLowerCase();
+      if (effectiveKeys.has(key)) continue;
+      effectiveKeys.add(key);
+      effectiveReferences.push(normalized);
+    }
+    if (!effectiveReferences.length) fail("REFERENCE_ASSETS_REQUIRED", "multi_reference requires at least one image reference.", 400);
+    if (effectiveReferences.length > MAX_REFERENCE_ASSETS) {
+      fail("REFERENCE_ASSETS_LIMIT", `multi_reference supports at most ${MAX_REFERENCE_ASSETS} image references.`, 400);
+    }
+  }
+  const imagePurpose = referenceMode === "continuity" && value.imagePurpose === "first_frame" ? "first_frame" : undefined;
+  if (referenceMode === "continuity" && inputType === "image" && imagePurpose !== "first_frame") {
+    fail("IMAGE_PURPOSE_REQUIRED", "Image input must explicitly use imagePurpose=first_frame.");
+  }
+  if (referenceMode === "continuity" && inputType === "image" && (value.inputAsset === undefined || value.inputAsset === null)) {
+    fail("INPUT_ASSET_REQUIRED", "Image first_frame input requires an image asset.", 400);
   }
   const duration = finite(value.duration, undefined);
   if (duration !== undefined && (duration <= 0 || duration > 3600)) fail("DURATION_INVALID", "Duration must be greater than 0 and no more than 3600 seconds.");
   let timeline;
   const timelineSource = value.timeline !== undefined ? value.timeline : value.segments;
   if (timelineSource !== undefined || requireTimeline) timeline = validateTimeline(timelineSource, duration);
+  if (timeline && referenceMode === "multi_reference") timeline = timeline.map((segment) => ({ ...segment, mode: "ref2v" }));
   const width = finite(value.width, 736);
   const height = finite(value.height, 416);
   if (!Number.isInteger(width) || width < 32 || width > 2048 || width % 32 !== 0) fail("WIDTH_INVALID", "Sequence width must be an integer multiple of 32 between 32 and 2048.");
@@ -169,7 +208,9 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
     ...value,
     title,
     inputType,
-    ...(inputType === "image" ? { imagePurpose } : {}),
+    referenceMode,
+    referenceAssets,
+    ...(imagePurpose ? { imagePurpose } : {}),
     ...(value.inputText !== undefined ? { inputText: text(value.inputText) } : {}),
     ...(inputAsset !== undefined ? { inputAsset } : {}),
     ...(duration !== undefined ? { duration } : {}),
@@ -205,6 +246,8 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     createdAt: now,
     updatedAt: now,
     inputType: payload.inputType,
+    referenceMode: payload.referenceMode,
+    referenceAssets: payload.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(payload.imagePurpose ? { imagePurpose: payload.imagePurpose } : {}),
     ...(payload.inputText ? { inputText: payload.inputText } : {}),
     ...(payload.inputAsset ? { inputAsset: sanitizeAssetRef(payload.inputAsset) } : {}),

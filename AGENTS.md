@@ -59,6 +59,7 @@ npm.cmd run dev
 
 - Web 使用 `0.0.0.0:8787`，本機網址為 `http://127.0.0.1:8787/app`；遠端裝置使用主機可連線的 IP 或主機名稱加 `/app`。
 - Web 與本機 API 共用同一個 `8787` process；`local-bridge.mjs` 是被 Vite/Vinext 掛載的 route，不是獨立服務。
+- 重啟 H3 Studio Web/API（`8787`）只能由主對話／主代理親自執行，禁止委派給子代理；此規則優先於一般的操作委派規則。
 - 不要執行 `node local-bridge.mjs`、`npm run bridge`，也不要新增獨立 bridge launcher。
 - 不要恢復 HMR WebSocket 或要求 Tailscale Serve 轉送 Web；目前設定已停用 HMR/WS。
 - 健康檢查：

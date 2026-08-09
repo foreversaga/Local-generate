@@ -17,6 +17,30 @@ type Asset = {
   url: string;
 };
 
+type LongReferenceMode = "continuity" | "multi_reference";
+
+const MAX_REF2V_IMAGES = 9;
+const MAX_LONG_REFERENCE_IMAGES = 8;
+const H3_PROMPT_MAX_CHARS = 7000;
+const H3_PROMPT_WARNING_THRESHOLD = 6500;
+const H3_IMAGE_PROMPT_MODES = new Set<Mode>(["i2v", "fl2v", "l2v", "ref2v"]);
+
+type UpscaleJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+type UpscaleJob = {
+  id: string;
+  status: UpscaleJobStatus;
+  progress: number;
+  stage: string;
+  sourceName: string;
+  sourceRoot?: "input" | "output";
+  scale: number;
+  output?: Asset;
+  error?: string;
+};
+
+const UPSCALE_POLL_STATUSES = new Set<UpscaleJobStatus>(["queued", "running"]);
+const UPSCALE_TERMINAL_STATUSES = new Set<UpscaleJobStatus>(["completed", "failed", "cancelled"]);
+
 type Health = {
   bridge: boolean;
   h3Root: boolean;
@@ -86,6 +110,19 @@ type Toast = {
   tone: "info" | "success" | "error";
 };
 
+type ApiErrorPayload = {
+  error?: string | { code?: string; message?: string };
+  code?: string;
+};
+
+function apiErrorMessage(payload: ApiErrorPayload, fallback: string) {
+  const message = typeof payload.error === "string"
+    ? payload.error
+    : payload.error?.message || fallback;
+  const code = payload.code || (typeof payload.error === "object" ? payload.error?.code : "");
+  return code ? `${code}: ${message}` : message;
+}
+
 type LongErrorDialog = {
   title: string;
   code: string;
@@ -116,6 +153,8 @@ type LongPlan = {
   imagePurpose?: "first_frame";
   inputText?: string;
   inputAsset?: Asset;
+  referenceMode?: LongReferenceMode;
+  referenceAssets?: Asset[];
   duration?: number;
   promptProvider?: PromptProvider;
   ollamaModel?: string;
@@ -192,6 +231,7 @@ type CodexModelOption = {
 const navItems = [
   { label: "工作台", icon: "grid", target: "workspace" },
   { label: "生成紀錄", icon: "clock", target: "render-queue" },
+  { label: "影片升頻", icon: "spark", target: "video-upscale" },
   { label: "資源庫", icon: "folder", target: "asset-library" },
   { label: "系統設定", icon: "sliders", target: "render-settings" },
 ];
@@ -254,6 +294,7 @@ function Icon({ name }: { name: string }) {
     check: "✓",
     pause: "Ⅱ",
     refresh: "↻",
+    swap: "⇄",
     plus: "+",
     play: "▶",
     download: "⇩",
@@ -422,11 +463,49 @@ function assetUrl(asset: Asset) {
 }
 
 function isDeletableAsset(asset: Asset) {
-  return asset.root === "output" && (asset.kind === "image" || asset.kind === "video");
+  return (asset.root === "input" || asset.root === "output") && (asset.kind === "image" || asset.kind === "video");
 }
 
 function assetKey(asset: Asset) {
-  return asset.root + ":" + asset.name;
+  return assetKeyFromParts(asset.root, asset.name);
+}
+
+function assetKeyFromParts(root: Asset["root"], name: string) {
+  return root + ":" + name;
+}
+
+type AssetDeletePayload = {
+  asset?: { deletedCount?: number };
+  code?: string;
+  error?: string | { code?: string; message?: string };
+  message?: string;
+};
+
+function assetDeleteFailureMessage(status: number, payload: AssetDeletePayload) {
+  const code = typeof payload.code === "string"
+    ? payload.code
+    : payload.error && typeof payload.error === "object" && typeof payload.error.code === "string"
+      ? payload.error.code
+      : "";
+  const serverMessage = typeof payload.error === "string"
+    ? payload.error
+    : payload.error && typeof payload.error === "object" && typeof payload.error.message === "string"
+      ? payload.error.message
+      : typeof payload.message === "string" ? payload.message : "";
+  if (status === 409 || code === "ASSET_IN_USE" || code === "ASSET_USE_UNKNOWN") {
+    return "資源使用中，請先停止使用中的工作後再刪除。";
+  }
+  return serverMessage || `刪除資源失敗（HTTP ${status}）。`;
+}
+
+function uniqueAssets(items: Asset[], limit = Number.POSITIVE_INFINITY) {
+  const seen = new Set<string>();
+  return items.filter((asset) => {
+    const key = assetKey(asset);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return seen.size <= limit;
+  });
 }
 
 const BULK_DELETE_ASSET_KEY = "__bulk_delete__";
@@ -438,6 +517,10 @@ function modelSupportsPromptImages(model: string) {
     normalized.includes("gemma3") ||
     normalized.includes("gemma4") ||
     normalized.includes("gemma3n");
+}
+
+function isH3PromptMode(mode: Mode) {
+  return mode !== "replace";
 }
 
 async function assetToPromptImage(asset: Asset) {
@@ -533,7 +616,10 @@ export default function Home() {
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [assetPreview, setAssetPreview] = useState<Asset | null>(null);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
+  const [referenceImages, setReferenceImages] = useState<Asset[]>([]);
   const [longReferenceImage, setLongReferenceImage] = useState<Asset | null>(null);
+  const [longReferenceMode, setLongReferenceMode] = useState<LongReferenceMode>("continuity");
+  const [longReferenceAssets, setLongReferenceAssets] = useState<Asset[]>([]);
   const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
   const [sourceVideo, setSourceVideo] = useState<Asset | null>(null);
   const [mode, setMode] = useState<Mode>("t2v");
@@ -579,11 +665,18 @@ export default function Home() {
   const [longError, setLongError] = useState("");
   const [longErrorDialog, setLongErrorDialog] = useState<LongErrorDialog | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [upscaleSource, setUpscaleSource] = useState<Asset | null>(null);
+  const [upscaleJob, setUpscaleJob] = useState<UpscaleJob | null>(null);
+  const [upscaleSubmitting, setUpscaleSubmitting] = useState(false);
+  const [upscaleUploading, setUpscaleUploading] = useState(false);
+  const [upscaleError, setUpscaleError] = useState("");
   const longErrorDialogKeyRef = useRef("");
   const renderJobsRef = useRef<Job[]>([]);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const longImageInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const upscaleInputRef = useRef<HTMLInputElement>(null);
 
   const filteredAssets = useMemo(
     () =>
@@ -622,7 +715,7 @@ export default function Home() {
     )
     : filteredOutputAssets;
   const selectedAssetKeySet = new Set(selectedAssetKeys);
-  const deletableOutputAssets = outputAssets.filter(isDeletableAsset);
+  const deletableAssets = assets.filter(isDeletableAsset);
   const selectedDeletableAssets = assets.filter((asset) => isDeletableAsset(asset) && selectedAssetKeySet.has(assetKey(asset)));
   const visibleDeletableAssets = filteredAssets.filter(isDeletableAsset);
   const allVisibleDeletableAssetsSelected = visibleDeletableAssets.length > 0 && visibleDeletableAssets.every((asset) => selectedAssetKeySet.has(assetKey(asset)));
@@ -736,6 +829,34 @@ export default function Home() {
   }, [longJob?.id, longJob?.status]);
 
   useEffect(() => {
+    const trackedJobId = upscaleJob?.id;
+    const trackedStatus = upscaleJob?.status;
+    if (!trackedJobId || !UPSCALE_POLL_STATUSES.has(trackedStatus || "queued")) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(trackedJobId)}`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { job?: UpscaleJob; error?: string };
+        if (!payload.job) return;
+        const nextJob = payload.job;
+        const terminalTransition = UPSCALE_TERMINAL_STATUSES.has(nextJob.status) && nextJob.status !== trackedStatus;
+        setUpscaleJob(nextJob);
+        if (terminalTransition) {
+          if (nextJob.status === "completed") {
+            void refreshAssets();
+            showToast("影片升頻完成，可預覽或下載。", "success");
+          } else if (nextJob.status === "failed") {
+            setUpscaleError(nextJob.error || "SeedVR2 升頻失敗，請稍後再試。 ");
+          }
+        }
+      } catch {
+        // The next poll or a manual retry can recover the status view.
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [upscaleJob?.id, upscaleJob?.status]);
+
+  useEffect(() => {
     if (!longErrorDialog) return;
     const previousOverflow = document.body.style.overflow;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -835,6 +956,8 @@ export default function Home() {
     setLongFolder("");
     setLongInputType("text");
     setLongReferenceImage(null);
+    setLongReferenceMode("continuity");
+    setLongReferenceAssets([]);
     setLongTimelineMode("auto");
     setLongDuration(10);
     setLongSegmentDurationHint(5);
@@ -874,12 +997,17 @@ export default function Home() {
         setLongTitle(latest.title || "");
         setLongInputType(latest.inputType || "text");
         setLongBrief(latest.inputText || "");
-        if (latest.inputAsset && typeof latest.inputAsset === "object" && latest.inputAsset.kind === "image") {
-          const hydratedAsset = assets.find((asset) => asset.root === latest.inputAsset?.root && asset.name === latest.inputAsset?.name);
-          setLongReferenceImage(hydratedAsset || latest.inputAsset);
-        } else {
-          setLongReferenceImage(null);
-        }
+        const hydrateLongAsset = (candidate?: Asset) => {
+          if (!candidate || candidate.kind !== "image") return null;
+          return assets.find((asset) => asset.root === candidate.root && asset.name === candidate.name) || candidate;
+        };
+        const hydratedLongAssets = uniqueAssets([
+          hydrateLongAsset(latest.inputAsset),
+          ...(Array.isArray(latest.referenceAssets) ? latest.referenceAssets.map(hydrateLongAsset) : []),
+        ].filter((asset): asset is Asset => Boolean(asset)), MAX_LONG_REFERENCE_IMAGES);
+        setLongReferenceMode(latest.referenceMode === "multi_reference" ? "multi_reference" : "continuity");
+        setLongReferenceAssets(hydratedLongAssets);
+        setLongReferenceImage(hydratedLongAssets[0] || null);
         setLongFolder(latest.outputFolder || "");
         setLongDuration(latest.duration || 10);
         setLongTimeline((latest.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
@@ -911,6 +1039,11 @@ export default function Home() {
 
   function updateMode(nextMode: Mode) {
     setMode(nextMode);
+    if (nextMode === "ref2v" && window.matchMedia("(max-width: 780px)").matches) {
+      window.setTimeout(() => {
+        document.getElementById("reference-media")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+    }
     if (nextMode === "replace") {
       setModelProfile("wan22_animate_fp8");
       setWidth(832);
@@ -943,11 +1076,23 @@ export default function Home() {
       showToast("請先輸入提示詞。", "error");
       return;
     }
+    if (mode === "i2v" && !referenceImage) {
+      showToast("I2VA 提示詞需要參考圖片。", "error");
+      return;
+    }
+    if (mode === "fl2v" && (!referenceImage || !lastFrameImage)) {
+      showToast("FL2VA 提示詞需要首幀與尾幀圖片。", "error");
+      return;
+    }
+    if (mode === "l2v" && !lastFrameImage) {
+      showToast("L2VA 提示詞需要尾幀圖片。", "error");
+      return;
+    }
     if (mode === "replace" && (!referenceImage || !sourceVideo)) {
       showToast("影片替換提示詞需要參考圖片與來源影片。", "error");
       return;
     }
-    if (mode === "ref2v" && !referenceImage && !sourceVideo) {
+    if (mode === "ref2v" && !referenceImages.length && !sourceVideo) {
       showToast("Ref2VA 至少需要一個參考圖片或參考影片。", "error");
       return;
     }
@@ -967,6 +1112,14 @@ export default function Home() {
       showToast(`模型 ${ollamaModel} 尚未安裝。`, "error");
       return;
     }
+    if (
+      promptProvider === "ollama" &&
+      H3_IMAGE_PROMPT_MODES.has(mode) &&
+      !modelSupportsPromptImages(ollamaModel)
+    ) {
+      showToast(`模型 ${ollamaModel} 不支援圖片理解，無法產生 ${promptFormatLabel} 提示詞。請改用 vision 模型或 Codex CLI。`, "error");
+      return;
+    }
     setPromptBusy(true);
     try {
       const promptImages: Array<{ role: string; data: string }> = [];
@@ -977,11 +1130,13 @@ export default function Home() {
             data: await assetToPromptImage(referenceImage),
           });
         }
-        if (mode === "ref2v" && referenceImage?.kind === "image") {
-          promptImages.push({
-            role: "picture_1",
-            data: await assetToPromptImage(referenceImage),
-          });
+        if (mode === "ref2v") {
+          for (const [index, asset] of referenceImages.entries()) {
+            promptImages.push({
+              role: `picture_${index + 1}`,
+              data: await assetToPromptImage(asset),
+            });
+          }
         }
         if (mode === "fl2v" && referenceImage?.kind === "image") {
           promptImages.push({
@@ -1021,18 +1176,23 @@ export default function Home() {
           mode,
           duration,
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          ...(mode === "ref2v" ? {
+            referenceImageNames: referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES),
+            referenceImageName: referenceImages[0]?.name || "",
+          } : {}),
           firstFrameName: referenceImage?.kind === "image" ? referenceImage.name : "",
           lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           images: promptImages,
         }),
       });
-      const payload = (await response.json()) as {
+      const payload = (await response.json()) as ApiErrorPayload & {
         prompt?: string;
         negativePrompt?: string;
-        error?: string;
       };
-      if (!response.ok) throw new Error(payload.error || `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 沒有回應`);
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(payload, `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 沒有回應`));
+      }
       if (payload.prompt) setPrompt(payload.prompt);
       if (payload.negativePrompt) setNegativePrompt(payload.negativePrompt);
       showToast(`${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 已產生 H3 提示詞。`, "success");
@@ -1055,59 +1215,265 @@ export default function Home() {
     });
   }
 
-  async function uploadFile(file: File, target: "image" | "lastFrame" | "video") {
-    try {
-        showToast("正在上傳 " + file.name + "…");
-      const response = await fetch(BRIDGE_URL + "/api/assets/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: file.name,
-          mimeType: file.type,
-          data: await fileToBase64(file),
-        }),
-      });
-      const payload = (await response.json()) as { asset?: Asset; error?: string };
-      if (!response.ok || !payload.asset) {
-        throw new Error(payload.error || "上傳失敗");
+  function syncGeneralReferenceImages(next: Asset[]) {
+    const normalized = uniqueAssets(next.filter((asset) => asset.kind === "image"), MAX_REF2V_IMAGES);
+    setReferenceImages(normalized);
+    setReferenceImage(normalized[0] || null);
+  }
+
+  function syncLongReferenceAssets(next: Asset[], markDirty = true) {
+    const normalized = uniqueAssets(next.filter((asset) => asset.kind === "image"), MAX_LONG_REFERENCE_IMAGES);
+    setLongReferenceAssets(normalized);
+    setLongReferenceImage(normalized[0] || null);
+    if (markDirty && longPlan) setLongPlanDirty(true);
+  }
+
+  function currentLongReferenceSelection() {
+    return uniqueAssets(
+      [...longReferenceAssets, ...(longReferenceImage ? [longReferenceImage] : [])],
+      MAX_LONG_REFERENCE_IMAGES,
+    );
+  }
+
+  function updateLongReferenceMode(nextMode: LongReferenceMode) {
+    if (nextMode === longReferenceMode) return;
+    const current = uniqueAssets(
+      [...longReferenceAssets, ...(longReferenceImage ? [longReferenceImage] : [])],
+      MAX_LONG_REFERENCE_IMAGES,
+    );
+    if (nextMode === "continuity") {
+      const first = current[0] || null;
+      syncLongReferenceAssets(first ? [first] : []);
+      if (current.length > 1) showToast("已切回連續首幀，僅保留第一張參考圖。", "info");
+    } else {
+      syncLongReferenceAssets(current);
+    }
+    setLongReferenceMode(nextMode);
+    if (longPlan) setLongPlanDirty(true);
+  }
+
+  function addGeneralReferenceAssets(incoming: Asset[]) {
+    if (!incoming.length) return;
+    if (mode !== "ref2v") {
+      const image = incoming.find((asset) => asset.kind === "image");
+      if (!image) return;
+      syncGeneralReferenceImages([image]);
+      showToast("已套用一張參考圖片。", "success");
+      return;
+    }
+    const inputImages = incoming.filter((asset) => asset.root === "input" && asset.kind === "image");
+    if (!inputImages.length) {
+      showToast("Ref2V 多參考只接受 ComfyUI/input 圖片。輸出圖片仍可作單圖套用。", "error");
+      return;
+    }
+    const next = uniqueAssets([...referenceImages, ...inputImages], MAX_REF2V_IMAGES);
+    syncGeneralReferenceImages(next);
+    if (next.length < referenceImages.length + inputImages.length) {
+      showToast(`Ref2V 最多保留 ${MAX_REF2V_IMAGES} 張且會自動去重。`, "info");
+    } else {
+      showToast(`已加入 ${inputImages.length} 張 Ref2V 參考圖片。`, "success");
+    }
+  }
+
+  function swapResolution() {
+    const currentWidth = width;
+    const currentHeight = height;
+    setWidth(currentHeight);
+    setHeight(currentWidth);
+  }
+
+  function addLongReferenceAsset(asset: Asset) {
+    if (asset.kind !== "image") return;
+    if (asset.root !== "input") {
+      if (longReferenceMode === "multi_reference") {
+        showToast("長片多參考只接受 ComfyUI/input 圖片；輸出圖片僅能作單圖套用。", "error");
+        return;
       }
-      if (target === "image") {
-        if (studioMode === "long") {
-          setLongReferenceImage(payload.asset);
-          if (longPlan) setLongPlanDirty(true);
-        } else {
-          setReferenceImage(payload.asset);
+      syncLongReferenceAssets([asset]);
+      showToast("已套用輸出圖片作為連續首幀單圖。", "success");
+      return;
+    }
+    const current = uniqueAssets(
+      [...longReferenceAssets, ...(longReferenceImage ? [longReferenceImage] : [])],
+      MAX_LONG_REFERENCE_IMAGES,
+    );
+    if (longReferenceMode === "continuity" && current.length && !current.some((item) => assetKey(item) === assetKey(asset))) {
+      const next = uniqueAssets([...current, asset], MAX_LONG_REFERENCE_IMAGES);
+      setLongReferenceMode("multi_reference");
+      syncLongReferenceAssets(next);
+      if (longPlan) setLongPlanDirty(true);
+      showToast("已切換到多參考模式並加入圖片。", "success");
+      return;
+    }
+    const next = uniqueAssets([...current, asset], MAX_LONG_REFERENCE_IMAGES);
+    syncLongReferenceAssets(next);
+    const alreadySelected = current.some((item) => assetKey(item) === assetKey(asset));
+    if (alreadySelected) {
+      showToast("這張圖片已在長片參考清單。", "info");
+    } else if (next.length === current.length) {
+      showToast(`長片多參考最多保留 ${MAX_LONG_REFERENCE_IMAGES} 張。`, "info");
+    } else {
+      showToast("已加入長片參考圖片。", "success");
+    }
+  }
+
+  function removeGeneralReference(asset: Asset) {
+    syncGeneralReferenceImages(referenceImages.filter((item) => assetKey(item) !== assetKey(asset)));
+  }
+
+  function removeLongReference(asset: Asset) {
+    syncLongReferenceAssets(longReferenceAssets.filter((item) => assetKey(item) !== assetKey(asset)));
+  }
+
+  async function uploadFiles(files: File[], target: "image" | "lastFrame" | "video" | "upscale") {
+    const multiImageTarget = target === "image" && (
+      (studioMode === "single" && mode === "ref2v") ||
+      (studioMode === "long" && longReferenceMode === "multi_reference")
+    );
+    const existing = target === "image"
+      ? studioMode === "long" ? longReferenceAssets : mode === "ref2v" ? referenceImages : referenceImage ? [referenceImage] : []
+      : [];
+    const existingKeys = new Set(existing.map(assetKey));
+    const seenNames = new Set<string>();
+    const candidates = files.filter((file) => {
+      if (!multiImageTarget && seenNames.size > 0) return false;
+      if (seenNames.has(file.name) || existingKeys.has(`input:${file.name}`)) return false;
+      seenNames.add(file.name);
+      return true;
+    }).slice(0, target === "image" && multiImageTarget
+      ? Math.max(0, (studioMode === "long" ? MAX_LONG_REFERENCE_IMAGES : MAX_REF2V_IMAGES) - existing.length)
+      : 1);
+    const skipped = Math.max(0, files.length - candidates.length);
+    if (!candidates.length) {
+      const message = target === "image" && multiImageTarget
+        ? `已達參考圖片上限（${studioMode === "long" ? MAX_LONG_REFERENCE_IMAGES : MAX_REF2V_IMAGES} 張）或檔案已存在。`
+        : "沒有可上傳的檔案。";
+      if (target === "upscale") setUpscaleError(message);
+      showToast(message, "error");
+      return;
+    }
+    if (target === "upscale") {
+      setUpscaleUploading(true);
+      setUpscaleError("");
+    }
+    const uploaded: Asset[] = [];
+    const failures: string[] = [];
+    try {
+      showToast(`正在上傳 ${candidates.length} 個檔案…`);
+      for (const file of candidates) {
+        try {
+          const response = await fetch(BRIDGE_URL + "/api/assets/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: file.name,
+              mimeType: file.type,
+              data: await fileToBase64(file),
+            }),
+          });
+          const payload = (await response.json()) as { asset?: Asset; error?: string };
+          if (!response.ok || !payload.asset) throw new Error(payload.error || "上傳失敗");
+          uploaded.push(payload.asset);
+        } catch (error) {
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "上傳失敗"}`);
         }
       }
-      if (target === "lastFrame") setLastFrameImage(payload.asset);
-      if (target === "video") setSourceVideo(payload.asset);
-      setSelectedAsset(payload.asset);
-      await refreshAssets();
-      showToast("檔案已上傳。", "success");
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "檔案上傳失敗。", "error");
+      if (uploaded.length) {
+        if (target === "image") {
+          if (studioMode === "long") {
+            if (longReferenceMode === "multi_reference") syncLongReferenceAssets([...longReferenceAssets, ...uploaded]);
+            else syncLongReferenceAssets([uploaded[0]]);
+          }
+          else if (mode === "ref2v") syncGeneralReferenceImages([...referenceImages, ...uploaded]);
+          else setReferenceImage(uploaded[0]);
+        }
+        if (target === "lastFrame") setLastFrameImage(uploaded[0]);
+        if (target === "video") setSourceVideo(uploaded[0]);
+        if (target === "upscale") setUpscaleSource(uploaded[0]);
+        setSelectedAsset(uploaded[uploaded.length - 1]);
+        await refreshAssets();
+      }
+      const skippedNote = skipped ? `，略過 ${skipped} 個重複/超出上限檔案` : "";
+      if (failures.length) {
+        const message = `成功 ${uploaded.length} 個，失敗 ${failures.length} 個${skippedNote}：${failures[0]}`;
+        if (target === "upscale") setUpscaleError(message);
+        showToast(message, "error");
+      } else {
+        showToast(`資源已加入資源庫${skippedNote}。`, "success");
+      }
+    } finally {
+      if (target === "upscale") setUpscaleUploading(false);
     }
+  }
+
+  async function uploadFile(file: File, target: "image" | "lastFrame" | "video" | "upscale") {
+    await uploadFiles([file], target);
   }
 
   function onFileChange(
     event: ChangeEvent<HTMLInputElement>,
-    target: "image" | "lastFrame" | "video",
+    target: "image" | "lastFrame" | "video" | "upscale",
   ) {
-    const file = event.target.files?.[0];
-    if (file) void uploadFile(file, target);
+    const files = Array.from(event.target.files || []);
+    const multiImageTarget = target === "image" && (
+      (studioMode === "single" && mode === "ref2v") ||
+      (studioMode === "long" && longReferenceMode === "multi_reference")
+    );
+    if (files.length) {
+      if (multiImageTarget) void uploadFiles(files, target);
+      else void uploadFile(files[0], target);
+    }
     event.target.value = "";
+  }
+
+  function selectAssetForUpscale(asset: Asset) {
+    if (asset.kind !== "video") return;
+    setUpscaleSource(asset);
+    setUpscaleError("");
+    setAssetPreview(null);
+    showToast(`已選取影片升頻來源：${asset.name}`, "info");
+    navigateToSection("video-upscale");
+  }
+
+  async function startUpscale() {
+    if (!upscaleSource || upscaleSource.kind !== "video") {
+      setUpscaleError("請先選擇要升頻的影片。 ");
+      return;
+    }
+    if (upscaleSubmitting || upscaleUploading || (upscaleJob && UPSCALE_POLL_STATUSES.has(upscaleJob.status))) return;
+    setUpscaleSubmitting(true);
+    setUpscaleError("");
+    try {
+      const response = await fetch(BRIDGE_URL + "/api/upscale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceName: upscaleSource.name, sourceRoot: upscaleSource.root, scale: 2 }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { job?: UpscaleJob; error?: string };
+      if (!response.ok || !payload.job) {
+        throw new Error(payload.error || "無法啟動 SeedVR2 升頻。 ");
+      }
+      setUpscaleJob(payload.job);
+      if (payload.job.status === "completed") void refreshAssets();
+      if (payload.job.status === "failed") setUpscaleError(payload.job.error || "SeedVR2 升頻失敗。 ");
+    } catch (error) {
+      setUpscaleError(error instanceof Error ? error.message : "無法啟動 SeedVR2 升頻。 ");
+    } finally {
+      setUpscaleSubmitting(false);
+    }
   }
 
   function applyAssetToWorkspace(asset: Asset) {
     setSelectedAsset(asset);
     if (asset.kind === "image") {
       if (studioMode === "long") {
-        setLongReferenceImage(asset);
-        if (longPlan) setLongPlanDirty(true);
+        addLongReferenceAsset(asset);
       }
-      else if (mode === "l2v") setLastFrameImage(asset);
-      else setReferenceImage(asset);
-      showToast("已選取參考圖片：" + asset.name);
+      else if (mode === "l2v") {
+        setLastFrameImage(asset);
+        showToast("已選取尾幀圖片：" + asset.name);
+      }
+      else addGeneralReferenceAssets([asset]);
     } else {
       setSourceVideo(asset);
       showToast("已選取來源影片：" + asset.name);
@@ -1139,6 +1505,58 @@ export default function Home() {
     });
   }
 
+  function clearDeletedAssetState(deletedKeys: Set<string>) {
+    const nextGeneralReferences = referenceImages.filter((asset) => !deletedKeys.has(assetKey(asset)));
+    const nextLongReferences = longReferenceAssets.filter((asset) => !deletedKeys.has(assetKey(asset)));
+    setReferenceImages(nextGeneralReferences);
+    if (referenceImage && deletedKeys.has(assetKey(referenceImage))) setReferenceImage(nextGeneralReferences[0] || null);
+    setLongReferenceAssets(nextLongReferences);
+    if (longReferenceImage && deletedKeys.has(assetKey(longReferenceImage))) setLongReferenceImage(nextLongReferences[0] || null);
+    if (sourceVideo && deletedKeys.has(assetKey(sourceVideo))) setSourceVideo(null);
+    if (lastFrameImage && deletedKeys.has(assetKey(lastFrameImage))) setLastFrameImage(null);
+    if (upscaleSource && deletedKeys.has(assetKey(upscaleSource))) setUpscaleSource(null);
+    const upscaleSourceDeleted = Boolean(
+      upscaleJob?.sourceRoot &&
+      upscaleJob.sourceName &&
+      deletedKeys.has(assetKeyFromParts(upscaleJob.sourceRoot, upscaleJob.sourceName)),
+    );
+    const upscaleLegacySourceDeleted = Boolean(
+      upscaleJob?.sourceName &&
+      !upscaleJob.sourceRoot &&
+      (deletedKeys.has(assetKeyFromParts("input", upscaleJob.sourceName)) || deletedKeys.has(assetKeyFromParts("output", upscaleJob.sourceName))),
+    );
+    const upscaleOutputDeleted = Boolean(upscaleJob?.output && deletedKeys.has(assetKey(upscaleJob.output)));
+    if (upscaleSourceDeleted || upscaleLegacySourceDeleted) setUpscaleJob(null);
+    else if (upscaleOutputDeleted && upscaleJob) setUpscaleJob({ ...upscaleJob, output: undefined });
+    if (selectedAsset && deletedKeys.has(assetKey(selectedAsset))) setSelectedAsset(null);
+    if (assetPreview && deletedKeys.has(assetKey(assetPreview))) setAssetPreview(null);
+    if (longPlan) {
+      const nextPlan = {
+        ...longPlan,
+        inputAsset: longPlan.inputAsset && deletedKeys.has(assetKey(longPlan.inputAsset)) ? undefined : longPlan.inputAsset,
+        referenceAssets: longPlan.referenceAssets?.filter((asset) => !deletedKeys.has(assetKey(asset))),
+      };
+      if (nextPlan.inputAsset !== longPlan.inputAsset || nextPlan.referenceAssets?.length !== longPlan.referenceAssets?.length) {
+        setLongPlan(nextPlan);
+        setLongPlanDirty(true);
+      }
+    }
+    if (longJob) {
+      const nextJob = {
+        ...longJob,
+        inputAsset: longJob.inputAsset && deletedKeys.has(assetKey(longJob.inputAsset)) ? undefined : longJob.inputAsset,
+        referenceAssets: longJob.referenceAssets?.filter((asset) => !deletedKeys.has(assetKey(asset))),
+        finalAsset: longJob.finalAsset && deletedKeys.has(assetKeyFromParts(longJob.finalAsset.root, longJob.finalAsset.name)) ? undefined : longJob.finalAsset,
+        finalPath: longJob.finalAsset && deletedKeys.has(assetKeyFromParts(longJob.finalAsset.root, longJob.finalAsset.name)) ? undefined : longJob.finalPath,
+      };
+      if (
+        nextJob.inputAsset !== longJob.inputAsset ||
+        nextJob.referenceAssets?.length !== longJob.referenceAssets?.length ||
+        nextJob.finalAsset !== longJob.finalAsset
+      ) setLongJob(nextJob);
+    }
+  }
+
   async function deleteOutputAssets(requestedAssets: Asset[], confirmation: string) {
     const candidates = Array.from(new Map(
       requestedAssets
@@ -1153,16 +1571,18 @@ export default function Home() {
       const outcomes = await Promise.all(candidates.map(async (asset) => {
         try {
           const response = await fetch(
-            BRIDGE_URL + "/api/assets?root=output&name=" + encodeURIComponent(asset.name),
+            BRIDGE_URL + "/api/assets?root=" + encodeURIComponent(asset.root) + "&name=" + encodeURIComponent(asset.name),
             { method: "DELETE" },
           );
-          const payload = (await response.json().catch(() => ({}))) as { asset?: { deletedCount?: number }; error?: string };
+          const responseStatus = response.status;
+          const payload = (await response.json().catch(() => ({}))) as AssetDeletePayload;
           if (!response.ok || !payload.asset) {
-            throw new Error(payload.error || "刪除輸出資源失敗。");
+            return { asset, error: assetDeleteFailureMessage(responseStatus, payload) };
           }
           return { asset, deletedCount: Number(payload.asset.deletedCount) || 1 };
         } catch (error) {
-          return { asset, error: error instanceof Error ? error.message : "刪除輸出資源失敗。" };
+          const message = error instanceof Error ? error.message : "刪除資源失敗。";
+          return { asset, error: message };
         }
       }));
       const succeeded = outcomes.filter((item) => !item.error);
@@ -1176,9 +1596,13 @@ export default function Home() {
             ? { ...job, output: undefined }
             : job
         )));
+        setHistory((current) => current.map((job) => (
+          job.output && deletedKeys.has(assetKey(job.output))
+            ? { ...job, output: undefined }
+            : job
+        )));
         setSelectedAssetKeys((current) => current.filter((key) => !deletedKeys.has(key)));
-        if (selectedAsset && deletedKeys.has(assetKey(selectedAsset))) setSelectedAsset(null);
-        if (assetPreview && deletedKeys.has(assetKey(assetPreview))) setAssetPreview(null);
+        clearDeletedAssetState(deletedKeys);
         await refreshAssets();
       }
 
@@ -1186,10 +1610,10 @@ export default function Home() {
       if (failed.length) {
         showToast(`已刪除 ${succeeded.length} 個資源，${failed.length} 個刪除失敗：${failed[0].error}`, "error");
       } else {
-        showToast(`已刪除 ${succeeded.length} 個輸出資源（清除 ${deletedFileCount} 個輸出檔）。`, "success");
+        showToast(`已刪除 ${succeeded.length} 個資源（清除 ${deletedFileCount} 個檔案）。`, "success");
       }
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "刪除輸出資源失敗。", "error");
+      showToast(error instanceof Error ? error.message : "刪除資源失敗。", "error");
     } finally {
       setDeletingAssetKey(null);
     }
@@ -1198,14 +1622,14 @@ export default function Home() {
   async function deleteOutputAsset(asset: Asset) {
     if (!isDeletableAsset(asset)) return;
     const kindLabel = asset.kind === "image" ? "圖片" : "影片";
-    await deleteOutputAssets([asset], `確定要刪除輸出${kindLabel}「${asset.name}」嗎？`);
+    await deleteOutputAssets([asset], `確定要刪除${asset.root === "input" ? "輸入" : "輸出"}${kindLabel}「${asset.name}」嗎？此操作無法復原。`);
   }
 
   async function deleteSelectedOutputAssets() {
     if (!selectedDeletableAssets.length) return;
     await deleteOutputAssets(
       selectedDeletableAssets,
-      `確定要刪除選取的 ${selectedDeletableAssets.length} 個輸出資源嗎？此操作無法復原。`,
+      `確定要刪除選取的 ${selectedDeletableAssets.length} 個資源嗎？可能包含輸入與輸出檔案，此操作無法復原。`,
     );
   }
 
@@ -1214,7 +1638,11 @@ export default function Home() {
       showToast("請先填入提示詞。", "error");
       return;
     }
-    if (mode === "ref2v" && !referenceImage && !sourceVideo) {
+    if (isH3PromptMode(mode) && prompt.length > H3_PROMPT_MAX_CHARS) {
+      showToast(`H3 提示詞不可超過 ${H3_PROMPT_MAX_CHARS} 字元，目前為 ${prompt.length} 字元。`, "error");
+      return;
+    }
+    if (mode === "ref2v" && !referenceImages.length && !sourceVideo) {
       showToast("Ref2VA 至少需要一個參考圖片或參考影片。", "error");
       return;
     }
@@ -1251,6 +1679,7 @@ export default function Home() {
     if (seed !== submittedSeed) setSeed(submittedSeed);
     const count = Math.min(20, Math.max(1, Math.round(renderCount || 1)));
     const firstFrameName = referenceImage?.kind === "image" ? referenceImage.name : "";
+    const referenceImageNames = referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
     const lastFrameName = lastFrameImage?.kind === "image" ? lastFrameImage.name : "";
     const batchId = count > 1
       ? `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -1275,6 +1704,7 @@ export default function Home() {
                 lastImageName: mode === "fl2v" || mode === "l2v" ? lastFrameName : "",
                 inputVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
                 referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+                ...(mode === "ref2v" ? { referenceImageNames } : {}),
                 modelProfile,
                 width,
                 height,
@@ -1287,9 +1717,9 @@ export default function Home() {
                 batchTotal: count,
               }),
             }).then(async (response) => {
-              const payload = (await response.json()) as { job?: Job; error?: string };
+              const payload = (await response.json()) as ApiErrorPayload & { job?: Job };
               if (!response.ok || !payload.job) {
-                throw new Error(payload.error || "無法建立生成工作");
+                throw new Error(apiErrorMessage(payload, "無法建立生成工作"));
               }
               const createdJob = payload.job;
               setRenderJobs((current) =>
@@ -1325,6 +1755,7 @@ export default function Home() {
           lastImageName: mode === "fl2v" || mode === "l2v" ? lastFrameName : "",
           inputVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          ...(mode === "ref2v" ? { referenceImageNames } : {}),
           modelProfile,
           width,
           height,
@@ -1337,8 +1768,8 @@ export default function Home() {
           batchTotal: 1,
         }),
       });
-      const payload = (await response.json()) as { job?: Job; error?: string };
-      if (!response.ok || !payload.job) throw new Error(payload.error || "無法建立生成工作");
+      const payload = (await response.json()) as ApiErrorPayload & { job?: Job };
+      if (!response.ok || !payload.job) throw new Error(apiErrorMessage(payload, "無法建立生成工作"));
       setRenderJobs([payload.job]);
       setRenderSubmitting(false);
       setHistory((items) => [payload.job as Job, ...items.filter((item) => item.id !== payload.job?.id)]);
@@ -1410,7 +1841,8 @@ export default function Home() {
     setLongError("");
     setLongPlannerNotice("");
     if (!longBrief.trim()) throw new Error("請先輸入長影片的整體提示詞／故事描述。");
-    if (longInputType === "image" && (!longReferenceImage || longReferenceImage.kind !== "image")) throw new Error("圖片起點需要 first_frame 參考圖。");
+    const selectedLongReferences = currentLongReferenceSelection();
+    if (longInputType === "image" && !selectedLongReferences.length) throw new Error("圖片起點需要 first_frame 參考圖。");
     const plannerLabel = promptProvider === "codex" ? "Codex CLI" : "Ollama";
     if (promptProvider === "codex") {
       if (!codexOnline) throw new Error("Codex CLI 尚未可用。");
@@ -1435,8 +1867,12 @@ export default function Home() {
           title: longTitle || "Untitled long video",
           inputType: longInputType,
           inputText: longBrief,
-          inputAsset: longInputType === "image" && longReferenceImage ? longReferenceImage : undefined,
+          inputAsset: longInputType === "image" ? selectedLongReferences[0] : undefined,
           imagePurpose: longInputType === "image" ? "first_frame" : undefined,
+          referenceMode: longInputType === "image" ? longReferenceMode : "continuity",
+          referenceAssets: longInputType === "image" && longReferenceMode === "multi_reference"
+            ? selectedLongReferences.slice(1, MAX_LONG_REFERENCE_IMAGES)
+            : [],
           timelineMode: longTimelineMode,
           duration: longTimelineMode === "auto" ? submittedDuration : undefined,
           segmentDurationHint: submittedSegmentDurationHint,
@@ -1463,6 +1899,13 @@ export default function Home() {
       }
       const plan = payload.plan;
       setLongPlan(plan);
+      const plannedReferences = uniqueAssets([
+        plan.inputAsset,
+        ...(Array.isArray(plan.referenceAssets) ? plan.referenceAssets : []),
+      ].filter((asset): asset is Asset => Boolean(asset) && asset.kind === "image"), MAX_LONG_REFERENCE_IMAGES);
+      setLongReferenceMode(plan.referenceMode === "multi_reference" ? "multi_reference" : longReferenceMode);
+      setLongReferenceAssets(plannedReferences);
+      setLongReferenceImage(plannedReferences[0] || null);
       setLongTimeline(plan.segments.map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
       setLongDuration(plan.duration || submittedDuration);
       setLongSegmentDurationHint(plan.planningSettings?.segmentDurationHint || submittedSegmentDurationHint);
@@ -1513,6 +1956,7 @@ export default function Home() {
     const submittedSeed = normalizedSeed(seed);
     if (steps !== submittedSteps) setSteps(submittedSteps);
     if (seed !== submittedSeed) setSeed(submittedSeed);
+    const selectedLongReferences = currentLongReferenceSelection();
     const existing = longJob && ["draft", "ready", "interrupted", "failed"].includes(longJob.status) ? longJob : null;
     const response = await fetch(existing ? `${BRIDGE_URL}/api/sequences/${encodeURIComponent(existing.id)}` : BRIDGE_URL + "/api/sequences", {
       method: existing ? "PATCH" : "POST",
@@ -1521,8 +1965,12 @@ export default function Home() {
         title: longTitle || plan.title || "Untitled long video",
         inputType: longInputType,
         inputText: longBrief,
-        inputAsset: longInputType === "image" && longReferenceImage ? longReferenceImage : undefined,
+        inputAsset: longInputType === "image" ? selectedLongReferences[0] : undefined,
         imagePurpose: longInputType === "image" ? "first_frame" : undefined,
+        referenceMode: longInputType === "image" ? longReferenceMode : "continuity",
+        referenceAssets: longInputType === "image" && longReferenceMode === "multi_reference"
+          ? selectedLongReferences.slice(1, MAX_LONG_REFERENCE_IMAGES)
+          : [],
         continuityBible: plan.continuityBible,
         planMeta: plan.planMeta,
         planningSettings: plan.planningSettings,
@@ -1709,7 +2157,7 @@ export default function Home() {
   const longNativeProgressLabel = longJob?.progressSource === "native" && longJob.nativeMaximum
     ? `原生步數 ${longJob.nativeCurrent ?? 0}/${longJob.nativeMaximum}`
     : "等待原生步數";
-  const primaryFrameAsset = mode === "l2v" ? lastFrameImage : referenceImage;
+  const primaryFrameAsset = mode === "ref2v" ? referenceImages[0] || null : mode === "l2v" ? lastFrameImage : referenceImage;
   const primaryFrameInputRef = mode === "l2v" ? lastFrameInputRef : imageInputRef;
   const primaryFrameTarget = mode === "l2v" ? "lastFrame" : "image";
   const primaryFrameLabel = mode === "l2v"
@@ -1717,10 +2165,17 @@ export default function Home() {
       : mode === "fl2v"
         ? "首幀圖片"
         : mode === "ref2v"
-          ? "參考圖片（Picture 1）"
+          ? `參考圖片（Picture 1 · 最多 ${MAX_REF2V_IMAGES} 張）`
         : mode === "replace"
           ? "替換人物參考圖"
         : "參考圖片（可選）";
+
+  const upscaleActive = Boolean(upscaleJob && UPSCALE_POLL_STATUSES.has(upscaleJob.status));
+  const upscaleProgress = Math.min(100, Math.max(0, Math.round(Number(upscaleJob?.progress) || 0)));
+  const upscaleStatusLabel = upscaleJob
+    ? `${upscaleJob.status === "completed" ? "已完成" : upscaleJob.status === "failed" ? "升頻失敗" : upscaleJob.status === "cancelled" ? "已取消" : upscaleJob.status === "running" ? "正在升頻" : "等待處理"}${upscaleJob.stage ? ` · ${upscaleJob.stage}` : ""}`
+    : "尚未開始升頻";
+  const upscaleSubmitDisabled = !upscaleSource || upscaleUploading || upscaleSubmitting || upscaleActive;
 
   return (
     <main className="studio-shell">
@@ -1852,6 +2307,131 @@ export default function Home() {
             </div>
           </section>
 
+          <section className="panel upscale-panel" id="video-upscale" aria-labelledby="video-upscale-title">
+            <div className="panel-heading upscale-heading">
+              <div>
+                <span className="section-code">VIDEO UPSCALE / SEEDVR2</span>
+                <h2 id="video-upscale-title">影片升頻</h2>
+                <p className="upscale-intro">選擇影片後，以 SeedVR2 3B Int8 執行 2× 解析度提升。</p>
+              </div>
+              <span className="panel-mark panel-mark-number">2×</span>
+            </div>
+
+            <div className="upscale-grid">
+              <div className="upscale-source-card">
+                <div className="slot-topline">
+                  <span className="field-label">來源影片</span>
+                  <span className="slot-hint">VIDEO</span>
+                </div>
+                {upscaleSource ? (
+                  <div className="upscale-selected-media">
+                    <video src={assetUrl(upscaleSource)} controls playsInline preload="metadata">
+                      <track kind="captions" />
+                    </video>
+                    <div className="upscale-selected-info">
+                      <strong title={upscaleSource.name}>{upscaleSource.name}</strong>
+                      <span>{formatBytes(upscaleSource.size)} · {upscaleSource.root.toUpperCase()}</span>
+                      <button type="button" className="upscale-clear-button" onClick={() => { setUpscaleSource(null); setUpscaleError(""); }}>
+                        移除來源
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="upscale-upload-zone">
+                    <Icon name="video" />
+                    <strong>選擇或上傳影片</strong>
+                    <span>MP4、MOV、WEBM 等影片格式</span>
+                    <button
+                      type="button"
+                      className="upscale-file-label"
+                      onClick={() => upscaleInputRef.current?.click()}
+                      disabled={upscaleUploading}
+                      aria-label="選擇影片檔案"
+                      aria-controls="upscale-video-input"
+                      aria-describedby="upscale-source-help"
+                    >
+                      <Icon name="upload" /> 選擇影片
+                    </button>
+                    <input
+                      id="upscale-video-input"
+                      ref={upscaleInputRef}
+                      type="file"
+                      accept="video/*"
+                      hidden
+                      onChange={(event) => onFileChange(event, "upscale")}
+                    />
+                    <small id="upscale-source-help">也可以從下方資產庫影片的預覽視窗選取。</small>
+                  </div>
+                )}
+              </div>
+
+              <div className="upscale-control-card">
+                <div className="upscale-model-summary">
+                  <div>
+                    <span className="section-code">UPSCALE PROFILE</span>
+                    <strong>SeedVR2 3B Int8</strong>
+                  </div>
+                  <span className="upscale-scale-badge">2×</span>
+                </div>
+                <p className="upscale-model-copy">保留原始影片時間軸與音訊，將畫面提升至 2× 解析度。</p>
+                <button
+                  type="button"
+                  className="upscale-submit-button"
+                  onClick={() => void startUpscale()}
+                  disabled={upscaleSubmitDisabled}
+                  aria-busy={upscaleSubmitting || upscaleUploading}
+                >
+                  <Icon name="spark" />
+                  {upscaleUploading ? "上傳影片中…" : upscaleSubmitting ? "正在排程…" : upscaleActive ? "升頻處理中…" : "開始 2× 升頻"}
+                </button>
+                <div className="upscale-status" aria-live="polite">
+                  <div className="upscale-status-line">
+                    <span className={"status-dot " + (upscaleActive ? "is-on" : upscaleJob?.status === "failed" ? "is-error" : "")} />
+                    <span>{upscaleStatusLabel}</span>
+                    {upscaleJob && <strong>{upscaleProgress}%</strong>}
+                  </div>
+                  {upscaleJob && (
+                    <div
+                      className="upscale-progress-track"
+                      role="progressbar"
+                      aria-label="SeedVR2 升頻進度"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={upscaleProgress}
+                      aria-valuetext={`${upscaleProgress}%`}
+                    >
+                      <span style={{ width: `${upscaleProgress}%` }} />
+                    </div>
+                  )}
+                </div>
+                {upscaleError && <p className="upscale-error" role="alert">{upscaleError}</p>}
+              </div>
+            </div>
+
+            {upscaleJob?.status === "completed" && upscaleJob.output && (
+              <div className="upscale-result-card" aria-live="polite">
+                <div className="upscale-result-heading">
+                  <div>
+                    <span className="section-code">UPSCALE RESULT</span>
+                    <strong>{upscaleJob.output.name}</strong>
+                  </div>
+                  <span className="upscale-result-status">完成 · 2×</span>
+                </div>
+                <video className="upscale-result-video" src={assetUrl(upscaleJob.output)} controls playsInline preload="metadata">
+                  <track kind="captions" />
+                </video>
+                <div className="upscale-result-actions">
+                  <button type="button" className="preview-use-button" onClick={() => openAssetPreview(upscaleJob.output as Asset)}>
+                    <Icon name="play" /> 預覽結果
+                  </button>
+                  <a className="outline-button preview-download-button" href={assetDownloadUrl(upscaleJob.output)} download={assetFileName(upscaleJob.output)}>
+                    <Icon name="download" /> 下載升頻結果
+                  </a>
+                </div>
+              </div>
+            )}
+          </section>
+
           <section className={"panel long-video-panel " + (studioMode === "long" ? "is-visible" : "is-hidden")} id="long-video" aria-labelledby="long-video-title">
             <div className="panel-heading">
               <div>
@@ -1873,10 +2453,80 @@ export default function Home() {
               <button type="button" className={longInputType === "image" ? "is-active" : ""} onClick={() => { if (longInputType !== "image" && longPlan) setLongPlanDirty(true); setLongInputType("image"); }}>圖片起點 / first_frame</button>
             </div>
             {longInputType === "image" && (
-              <div className="long-first-frame-row">
-                <span className="field-label">first_frame 參考圖</span>
-                {longReferenceImage?.kind === "image" ? <><span className="long-reference-name">{longReferenceImage.name}</span><button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>更換圖片</button></> : <button type="button" className="outline-button small-button" onClick={() => imageInputRef.current?.click()}>選擇圖片資產</button>}
-                <small>圖片是第 0.00 秒首幀；下方文字會送給目前選擇的 {promptProvider === "codex" ? "Codex CLI" : "Ollama"} 作為故事與動作方向。</small>
+              <div className="long-reference-settings">
+                <fieldset className="long-reference-mode-fieldset">
+                  <legend>參考模式</legend>
+                  <label htmlFor="long-reference-continuity">
+                    <input
+                      id="long-reference-continuity"
+                      type="radio"
+                      name="long-reference-mode"
+                      value="continuity"
+                      checked={longReferenceMode === "continuity"}
+                      onChange={() => updateLongReferenceMode("continuity")}
+                    />
+                    連續首幀（單圖）
+                    <span><small>第 0.00 秒鎖定這張圖片。</small></span>
+                  </label>
+                  <label htmlFor="long-reference-multi">
+                    <input
+                      id="long-reference-multi"
+                      type="radio"
+                      name="long-reference-mode"
+                      value="multi_reference"
+                      checked={longReferenceMode === "multi_reference"}
+                      onChange={() => updateLongReferenceMode("multi_reference")}
+                    />
+                    多參考（最多 {MAX_LONG_REFERENCE_IMAGES} 張）
+                    <span><small>用於角色、服裝與風格一致性。</small></span>
+                  </label>
+                </fieldset>
+                {longReferenceMode === "multi_reference" ? (
+                  <div className="long-multi-reference-picker">
+                    {longReferenceAssets.length > 0 && (
+                      <div className="multi-reference-grid" aria-label="已選取的長片參考圖片">
+                        {longReferenceAssets.map((asset, index) => (
+                          <div className="multi-reference-item" key={assetKey(asset)}>
+                            <AssetThumb asset={asset} />
+                            <span className="multi-reference-index">{index + 1}</span>
+                            <button
+                              type="button"
+                              className="multi-reference-remove"
+                              onClick={() => removeLongReference(asset)}
+                              aria-label={`從長片參考選取移除 ${asset.name}`}
+                            >
+                              <Icon name="close" />
+                            </button>
+                            <small title={asset.name}>{asset.name}</small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="outline-button small-button"
+                      onClick={() => longImageInputRef.current?.click()}
+                      disabled={longReferenceAssets.length >= MAX_LONG_REFERENCE_IMAGES}
+                    >
+                      <Icon name="image" /> 新增長片參考圖片
+                    </button>
+                    <p className="long-reference-warning" aria-live="polite">多參考會將前段尾幀作下一段 reference，能維持人物／風格但不保證 frame0 鎖定。已選 {longReferenceAssets.length} / {MAX_LONG_REFERENCE_IMAGES} 張。</p>
+                  </div>
+                ) : (
+                  <div className="long-first-frame-row">
+                    <span className="field-label">first_frame 參考圖</span>
+                    {longReferenceImage?.kind === "image" ? <><span className="long-reference-name">{longReferenceImage.name}</span><button type="button" className="outline-button small-button" onClick={() => longImageInputRef.current?.click()}>更換圖片</button></> : <button type="button" className="outline-button small-button" onClick={() => longImageInputRef.current?.click()}>選擇圖片資產</button>}
+                    <small>圖片是第 0.00 秒首幀；下方文字會送給目前選擇的 {promptProvider === "codex" ? "Codex CLI" : "Ollama"} 作為故事與動作方向。</small>
+                  </div>
+                )}
+                <input
+                  ref={longImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple={longReferenceMode === "multi_reference"}
+                  hidden
+                  onChange={(event) => onFileChange(event, "image")}
+                />
               </div>
             )}
             <div className="long-prompt-grid">
@@ -2146,13 +2796,18 @@ export default function Home() {
 
               <div className="divider-label">
                 <span>H3 PROMPT / 可直接編輯</span>
-                <span>{prompt.length} chars</span>
+                <span aria-live="polite">
+                  {isH3PromptMode(mode)
+                    ? `${prompt.length} / ${H3_PROMPT_MAX_CHARS} chars${prompt.length >= H3_PROMPT_WARNING_THRESHOLD ? " · 接近上限" : ""}`
+                    : `${prompt.length} chars`}
+                </span>
               </div>
               <textarea
                 id="prompt"
                 className="text-input prompt-input"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
+                maxLength={isH3PromptMode(mode) ? H3_PROMPT_MAX_CHARS : undefined}
                 placeholder="輸入要送給 MiniMax H3 的提示詞…"
               />
               <div className="prompt-footer">
@@ -2218,7 +2873,7 @@ export default function Home() {
                   onClick={() => updateMode("ref2v")}
                 >
                   <span className="mode-icon"><Icon name="folder" /></span>
-                  <span><strong>完整參考生片</strong><small>Ref2VA · References</small></span>
+                  <span><strong>多圖參考生片</strong><small>Ref2VA · 最多 9 張</small></span>
                 </button>
                 <button
                   type="button"
@@ -2273,7 +2928,15 @@ export default function Home() {
                         }}
                       />
                     </label>
-                    <span className="resolution-separator" aria-hidden="true">×</span>
+                    <button
+                      type="button"
+                      className="resolution-swap-button"
+                      onClick={swapResolution}
+                      aria-label="交換影片寬度與高度"
+                      title="交換寬度與高度"
+                    >
+                      <Icon name="swap" />
+                    </button>
                     <label className="resolution-input">
                       <span>高</span>
                       <input
@@ -2399,7 +3062,7 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="media-grid single-mode-only">
+          <section id="reference-media" className="media-grid single-mode-only">
             <div className="panel media-panel">
               <div className="panel-heading media-heading">
                 <div>
@@ -2414,35 +3077,84 @@ export default function Home() {
                     <span className="field-label">{primaryFrameLabel}</span>
                     <span className="slot-hint">IMAGE</span>
                   </div>
-                  {primaryFrameAsset ? (
-                    <div className="selected-media">
-                      <AssetThumb asset={primaryFrameAsset} />
-                      <div className="selected-media-info">
-                        <strong>{primaryFrameAsset.name}</strong>
-                        <span>{formatBytes(primaryFrameAsset.size)} · input</span>
-                      </div>
+                  {mode === "ref2v" ? (
+                    <div className="multi-reference-picker">
+                      {referenceImages.length > 0 && (
+                        <div className="multi-reference-grid" aria-label="已選取的 Ref2V 參考圖片">
+                          {referenceImages.map((asset, index) => (
+                            <div className="multi-reference-item" key={assetKey(asset)}>
+                              <AssetThumb asset={asset} />
+                              <span className="multi-reference-index">{index + 1}</span>
+                              <button
+                                type="button"
+                                className="multi-reference-remove"
+                                onClick={() => removeGeneralReference(asset)}
+                                aria-label={`從 Ref2V 參考選取移除 ${asset.name}`}
+                              >
+                                <Icon name="close" />
+                              </button>
+                              <small title={asset.name}>{asset.name}</small>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <button
                         type="button"
-                        onClick={() => mode === "l2v" ? setLastFrameImage(null) : setReferenceImage(null)}
-                        aria-label="移除參考圖片"
+                        className="drop-zone multi-reference-add"
+                        onClick={() => imageInputRef.current?.click()}
+                        disabled={referenceImages.length >= MAX_REF2V_IMAGES}
+                        aria-label="新增 Ref2V 參考圖片，可多選"
                       >
-                        <Icon name="close" />
+                        <span className="drop-icon"><Icon name="image" /></span>
+                        <span><strong>{referenceImages.length ? "新增參考圖片" : "拖曳或選擇多張圖片"}</strong><small>PNG, JPG, WEBP · 最多 {MAX_REF2V_IMAGES} 張</small></span>
+                        <span className="drop-plus"><Icon name="plus" /></span>
                       </button>
+                      <input
+                        key="ref2v-multi-image-input"
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        hidden
+                        onChange={(event) => onFileChange(event, "image")}
+                      />
+                      <small className="multi-reference-count" aria-live="polite">已選 {referenceImages.length} / {MAX_REF2V_IMAGES} 張；可逐張移除選取，不會刪除資源檔案。</small>
                     </div>
                   ) : (
-                    <button type="button" className="drop-zone" onClick={() => primaryFrameInputRef.current?.click()}>
-                      <span className="drop-icon"><Icon name="image" /></span>
-                      <span><strong>拖曳或選擇圖片</strong><small>PNG, JPG, WEBP</small></span>
-                      <span className="drop-plus"><Icon name="plus" /></span>
-                    </button>
+                    <>
+                      {primaryFrameAsset ? (
+                        <div className="selected-media">
+                          <AssetThumb asset={primaryFrameAsset} />
+                          <div className="selected-media-info">
+                            <strong>{primaryFrameAsset.name}</strong>
+                            <span>{formatBytes(primaryFrameAsset.size)} · input</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => mode === "l2v" ? setLastFrameImage(null) : setReferenceImage(null)}
+                            aria-label="移除參考圖片"
+                          >
+                            <Icon name="close" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" className="drop-zone" onClick={() => primaryFrameInputRef.current?.click()}>
+                          <span className="drop-icon"><Icon name="image" /></span>
+                          <span><strong>拖曳或選擇圖片</strong><small>PNG, JPG, WEBP</small></span>
+                          <span className="drop-plus"><Icon name="plus" /></span>
+                        </button>
+                      )}
+                      <input
+                        key={`primary-frame-image-input-${mode}`}
+                        ref={primaryFrameInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        multiple={studioMode === "long" && longReferenceMode === "multi_reference"}
+                        hidden
+                        onChange={(event) => onFileChange(event, primaryFrameTarget)}
+                      />
+                    </>
                   )}
-                  <input
-                    ref={primaryFrameInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    hidden
-                    onChange={(event) => onFileChange(event, primaryFrameTarget)}
-                  />
                 </div>
                 {(mode === "replace" || mode === "ref2v") && (
                   <div className="reference-slot">
@@ -2588,10 +3300,10 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              {deletableOutputAssets.length > 0 && (
+              {deletableAssets.length > 0 && (
                 <div className="asset-bulk-actions">
                   <span className="asset-selection-status">
-                    {selectedDeletableAssets.length ? `已選 ${selectedDeletableAssets.length} 個` : "可多選輸出資源"}
+                    {selectedDeletableAssets.length ? `已選 ${selectedDeletableAssets.length} 個` : "可多選輸入／輸出資源"}
                   </span>
                   <button
                     type="button"
@@ -2685,6 +3397,34 @@ export default function Home() {
                                   <Icon name="download" />
                                   <span>下載</span>
                                 </a>
+                                {asset.root === "input" && asset.kind === "image" && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="asset-reference-button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        addGeneralReferenceAssets([asset]);
+                                      }}
+                                      aria-label={`加入一般參考 ${asset.name}`}
+                                      title="加入一般參考"
+                                    >
+                                      一般參考
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="asset-reference-button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        addLongReferenceAsset(asset);
+                                      }}
+                                      aria-label={`加入長片參考 ${asset.name}`}
+                                      title="加入長片參考"
+                                    >
+                                      長片參考
+                                    </button>
+                                  </>
+                                )}
                                 {isDeletableAsset(asset) && (
                                   <button
                                     type="button"
@@ -2694,8 +3434,8 @@ export default function Home() {
                                       event.stopPropagation();
                                       void deleteOutputAsset(asset);
                                     }}
-                                    aria-label={`刪除輸出${asset.kind === "image" ? "圖片" : "影片"} ${asset.name}`}
-                                    title="刪除輸出資源"
+                                    aria-label={`刪除${asset.root === "input" ? "輸入" : "輸出"}${asset.kind === "image" ? "圖片" : "影片"} ${asset.name}`}
+                                    title={`刪除${asset.root === "input" ? "輸入" : "輸出"}資源`}
                                   >
                                     <Icon name="close" />
                                     <span>{deletingAssetKey === assetKey(asset) ? "刪除中" : "刪除"}</span>
@@ -2841,6 +3581,33 @@ export default function Home() {
                 >
                   <Icon name="download" /> 下載資源
                 </a>
+                {assetPreview.kind === "video" && (
+                  <button
+                    type="button"
+                    className="preview-upscale-button"
+                    onClick={() => selectAssetForUpscale(assetPreview)}
+                  >
+                    <Icon name="spark" /> 用於影片升頻
+                  </button>
+                )}
+                {assetPreview.root === "input" && assetPreview.kind === "image" && (
+                  <>
+                    <button
+                      type="button"
+                      className="preview-reference-button"
+                      onClick={() => addGeneralReferenceAssets([assetPreview])}
+                    >
+                      加入一般參考
+                    </button>
+                    <button
+                      type="button"
+                      className="preview-reference-button"
+                      onClick={() => addLongReferenceAsset(assetPreview)}
+                    >
+                      加入長片參考
+                    </button>
+                  </>
+                )}
                 {isDeletableAsset(assetPreview) && (
                   <button
                     type="button"
@@ -2851,7 +3618,7 @@ export default function Home() {
                     <Icon name="close" />
                     {deletingAssetKey === assetKey(assetPreview)
                       ? "刪除中"
-                      : `刪除${assetPreview.kind === "image" ? "圖片" : "影片"}`}
+                      : `刪除${assetPreview.root === "input" ? "輸入" : "輸出"}${assetPreview.kind === "image" ? "圖片" : "影片"}`}
                   </button>
                 )}
                 <button
@@ -2866,7 +3633,10 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            <p className="asset-preview-hint">按 Esc 或右上角的關閉按鈕即可關閉預覽。</p>
+            <p className="asset-preview-hint">
+              按 Esc 或右上角的關閉按鈕即可關閉預覽。
+              {assetPreview.root === "output" && assetPreview.kind === "image" && " 多參考選取只接受 ComfyUI/input 圖片；此輸出可作單圖套用。"}
+            </p>
           </section>
         </div>
       )}
@@ -2894,7 +3664,7 @@ export default function Home() {
       )}
 
       {toast && (
-        <div className={"toast toast-" + toast.tone} role="status">
+        <div className={"toast toast-" + toast.tone} role={toast.tone === "error" ? "alert" : "status"}>
           <span className="toast-mark">{toast.tone === "success" ? "✓" : toast.tone === "error" ? "!" : "·"}</span>
           {toast.message}
         </div>

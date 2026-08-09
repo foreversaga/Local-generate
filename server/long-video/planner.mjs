@@ -3,7 +3,7 @@ import { LongVideoError, sanitizeAssetRef, validateContinuityBible, validateSequ
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 
-const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, text, logo, watermark";
+const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
 
 function stripJsonFence(value) {
   return String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
@@ -67,6 +67,21 @@ function mergeNegativePrompt(userValue, modelValue) {
   return `${user}, ${model}`;
 }
 
+function effectiveReferenceAssets(input) {
+  if (input?.referenceMode !== "multi_reference") return [];
+  const references = [];
+  const seen = new Set();
+  for (const reference of [input.inputAsset, ...(Array.isArray(input.referenceAssets) ? input.referenceAssets : [])]) {
+    if (!reference?.name) continue;
+    const normalized = { root: reference.root === "output" ? "output" : "input", name: String(reference.name).replaceAll("\\", "/"), kind: "image" };
+    const key = `${normalized.root}:${normalized.name}`.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push(normalized);
+  }
+  return references;
+}
+
 function plannerPrompt(input, canonicalTimeline = null) {
   const mode = planningMode(input);
   const duration = Number(input.duration);
@@ -75,9 +90,13 @@ function plannerPrompt(input, canonicalTimeline = null) {
     ? Math.min(120, Math.max(2, Math.ceil(duration / hint), Math.ceil(duration / 60)))
     : 2;
   const idea = clean(input.inputText || input.brief);
+  const multiReference = input.referenceMode === "multi_reference";
+  const referenceAssets = effectiveReferenceAssets(input);
   const source = [
     idea ? `User's complete story direction: ${idea}` : "",
-    input.inputType === "image"
+    multiReference
+      ? `This sequence uses multi-reference Ref2VA. Treat the supplied image assets as ordered static references (${referenceAssets.map((reference, index) => `Picture ${index + 1}=${reference.name}`).join(", ") || "Picture 1"}), not as a first-frame lock. Every segment must use Ref2VA; continuation segments may append the previous normalized tail as the final reference while preserving the static reference order.`
+      : input.inputType === "image"
       ? `The supplied image asset is the first frame reference (${input.inputAsset?.name || input.inputAsset || "provided asset"}). Do not invent unseen image details; write the first segment as I2VA and preserve the referenced frame.`
       : "The first segment is T2VA. Every later segment is I2VA and starts from the actual normalized tail frame of the previous segment.",
     clean(input.negativePrompt) ? `User negative constraints that must be preserved: ${clean(input.negativePrompt)}` : "",
@@ -97,6 +116,9 @@ function plannerPrompt(input, canonicalTimeline = null) {
     "Plan a coherent MiniMax H3 long-video sequence from the user's direction.",
     timing,
     "Required top-level JSON keys: negativePrompt, continuityBible, segments.",
+    input.referenceMode === "multi_reference"
+      ? `Use Ref2VA for every segment. Ordered static image references are: ${referenceAssets.map((reference, index) => `Picture ${index + 1} (${reference.name || "asset"})`).join(", ") || "provided references"}. Do not write a first-frame lock or I2VA continuation instruction.`
+      : "",
     "continuityBible keys: visualStyle, characters, environment, lighting, camera, motionDirection, keyObjects, sound, nonDiegeticMusic, mustPreserve, mustAvoid.",
     "Each character uses id, appearance, clothing, and optional voice.",
     "Each segment must use these keys: start, end, description, integratedMultimodalDescription, overallSoundscape, nonDiegeticMusic, continuityNote, endingState, negativePrompt.",
@@ -222,20 +244,54 @@ async function requestPlannerModel({ request, requestInput, model, prompt, fetch
   }
 }
 
-function promptDraft(segment, bible, mode, provider = "ollama") {
+function promptDraft(segment, bible, mode, provider = "ollama", options = {}) {
   const rawPrompt = clean(segment.prompt);
+  let fallbackReason = null;
   if (rawPrompt) {
     try {
-      validatePrompt(rawPrompt, { mode });
+      validatePrompt(rawPrompt, { mode, duration: segment.duration });
+      if (mode === "ref2v" && !/<Picture\s+1>/i.test(rawPrompt)) {
+        throw new LongVideoError("PROMPT_REFERENCE_ORDER_REQUIRED", "Ref2VA prompt must declare ordered picture labels.", 400);
+      }
       return { prompt: rawPrompt, promptSource: provider };
-    } catch {
+    } catch (error) {
       // Structured fields below are composed server-side into the exact H3
       // wrapper when a local model returns a malformed full prompt.
+      fallbackReason = {
+        code: error?.code || "PROMPT_INVALID",
+        message: error?.message || String(error),
+      };
     }
   }
-  const prompt = buildSegmentPrompt(segment, bible, { mode, firstFrame: mode === "i2v", pictureLabel: "Picture 1", shotId: "Shot 1" });
-  validatePrompt(prompt, { mode });
+  const prompt = buildSegmentPrompt(segment, bible, { mode, firstFrame: mode === "i2v", pictureLabel: "Picture 1", shotId: "Shot 1", ...options });
+  try {
+    validatePrompt(prompt, { mode, duration: segment.duration });
+  } catch (error) {
+    throw new LongVideoError("PROMPT_FALLBACK_INVALID", "Deterministic H3 prompt fallback failed validation.", 502, {
+      mode,
+      segmentDuration: segment.duration,
+      fallbackError: { code: error?.code || "PROMPT_INVALID", message: error?.message || String(error) },
+      ...(fallbackReason ? { originalError: fallbackReason } : {}),
+    });
+  }
+  if (fallbackReason) {
+    const notice = {
+      source: `${provider}_structured`,
+      reasonCode: fallbackReason.code,
+      reason: fallbackReason.message,
+      ...fallbackReason,
+    };
+    if (typeof options.onFallback === "function") options.onFallback(notice);
+    return { prompt, promptSource: `${provider}_structured`, promptFallback: notice };
+  }
   return { prompt, promptSource: `${provider}_structured` };
+}
+
+function withReferenceLabels(segment, references) {
+  const labels = Array.isArray(references) && references.length
+    ? `Ordered reference pictures: ${references.map((reference, index) => `<Picture ${index + 1}> (${reference.name || "reference"})`).join(", ")}.`
+    : "";
+  return labels ? { ...segment, description: `${labels}\n${segment.description || ""}`.trim() } : segment;
 }
 
 export async function planSequence(input, options = {}) {
@@ -247,10 +303,11 @@ export async function planSequence(input, options = {}) {
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
   const normalizedInput = validateSequenceInput(input || {});
+  const normalizedReferenceAssets = effectiveReferenceAssets(normalizedInput);
   if (normalizedInput.inputType === "text" && !normalizedInput.inputText && !normalizedInput.brief && !input.timelineText && !input.storyboard) {
     throw new LongVideoError("PLAN_INPUT_REQUIRED", "Text planning requires inputText.", 400);
   }
-  if (normalizedInput.inputType === "image" && !normalizedInput.inputAsset) {
+  if (normalizedInput.referenceMode !== "multi_reference" && normalizedInput.inputType === "image" && !normalizedInput.inputAsset) {
     throw new LongVideoError("PLAN_IMAGE_REQUIRED", "Image planning requires an inputAsset reference.", 400);
   }
   const timelineMode = planningMode(input);
@@ -282,6 +339,7 @@ export async function planSequence(input, options = {}) {
   let lastCandidate = null;
   let lastCandidateSegments = [];
   let serverTimelineRepair = false;
+  const promptFallbacks = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     let raw;
     try {
@@ -367,12 +425,23 @@ export async function planSequence(input, options = {}) {
     duration: canonical.duration,
     description: clean(semanticSegments[index]?.description || semanticSegments[index]?.scene) || canonical.description,
   }));
-  // The first text segment is T2VA; every continuation segment is I2VA so
-  // the previous normalized tail can be used as Picture 1. Image input starts
-  // with I2VA and continues with I2VA as well.
+  // Continuity mode keeps the legacy T2VA/I2VA split. Multi-reference mode
+  // deliberately uses Ref2VA for every segment; the runner appends a previous
+  // tail reference without turning it into a frame-zero lock.
   const drafts = segments.map((segment, index) => {
-    const mode = normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
-    const generated = promptDraft(segment, bible, mode, provider);
+    const mode = normalizedInput.referenceMode === "multi_reference"
+      ? "ref2v"
+      : normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
+    const generated = promptDraft(
+      normalizedInput.referenceMode === "multi_reference" ? withReferenceLabels(segment, normalizedReferenceAssets) : segment,
+      bible,
+      mode,
+      provider,
+      {
+        ...(normalizedInput.referenceMode === "multi_reference" ? { references: { assets: normalizedReferenceAssets } } : {}),
+        onFallback: (reason) => promptFallbacks.push({ segmentIndex: index, ...reason }),
+      },
+    );
     return {
       ...segment,
       id: segment.id || `segment-${String(index + 1).padStart(3, "0")}`,
@@ -385,6 +454,8 @@ export async function planSequence(input, options = {}) {
   return {
     title: normalizedInput.title,
     inputType: normalizedInput.inputType,
+    referenceMode: normalizedInput.referenceMode,
+    referenceAssets: normalizedInput.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(normalizedInput.imagePurpose ? { imagePurpose: normalizedInput.imagePurpose } : {}),
     ...(normalizedInput.inputText ? { inputText: normalizedInput.inputText } : {}),
     ...(normalizedInput.inputAsset ? { inputAsset: sanitizeAssetRef(normalizedInput.inputAsset) } : {}),
@@ -411,6 +482,7 @@ export async function planSequence(input, options = {}) {
       repairAttempts,
       ...(retryCodes.length ? { retryAttempts: retryCodes.length, retryCodes } : {}),
       ...(serverTimelineRepair ? { timelineRepair: "server_contiguous" } : {}),
+      ...(promptFallbacks.length ? { promptFallbacks } : {}),
     },
   };
 }
