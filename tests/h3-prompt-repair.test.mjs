@@ -123,6 +123,14 @@ test("system instructions cover mode-specific H3 contracts without local skill c
     "<cutoff>",
     "double quotation marks",
     "diegetic",
+    "stable visual identity block",
+    "face shape",
+    "eye spacing/eye shape",
+    "hairstyle silhouette",
+    "body silhouette",
+    "distinctive marks",
+    "transition, MG, warping, compression, inversion, overlay",
+    "front-facing or closed-mouth",
   ]) assert.match(common, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(common, /local skill|read .*skill/i);
 
@@ -137,5 +145,6 @@ test("system instructions cover mode-specific H3 contracts without local skill c
   const ref2v = buildH3PromptSystem({ mode: "ref2v", duration: 8 });
   for (const field of ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"]) assert.match(ref2v, new RegExp(field));
   assert.match(ref2v, /fully_preserved/);
+  assert.match(ref2v, /identity attributes.*fully_preserved.*appropriate marker/);
 });
 

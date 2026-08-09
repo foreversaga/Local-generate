@@ -52,6 +52,16 @@ function text(value, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
+// Character identity anchors are deliberately normalized to short text.  The
+// planner accepts either a scalar or a list for palette/marks because model
+// providers commonly vary those shapes; persisting one deterministic string
+// keeps the continuity bible backward compatible with the existing text
+// appearance/clothing fields.
+function identityText(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item ?? "").trim()).filter(Boolean).join(", ");
+  return text(value, "");
+}
+
 function finite(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -64,6 +74,11 @@ export function validateContinuityBible(value) {
     visualStyle: text(source.visualStyle, "Consistent cinematic style"),
     characters: characters.map((character, index) => ({
       id: text(character?.id, `character-${index + 1}`),
+      faceIdentity: identityText(character?.faceIdentity),
+      hair: identityText(character?.hair),
+      silhouette: identityText(character?.silhouette),
+      palette: identityText(character?.palette),
+      distinctiveMarks: identityText(character?.distinctiveMarks),
       appearance: text(character?.appearance, ""),
       clothing: text(character?.clothing, ""),
       ...(text(character?.voice) ? { voice: text(character.voice) } : {}),

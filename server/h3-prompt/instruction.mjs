@@ -44,6 +44,9 @@ const CORE_RULES = [
   "Use <scenetrans> when the same dialogue or lyric continues across a cut, and <cutoff> when speech is truncated by the video ending; state the audible continuity in prose.",
   "Put visible banners, signs, labels, subtitles, and neon text in English double quotation marks while preserving the original text and punctuation verbatim.",
   "Keep diegetic dialogue, singing, instruments, radio, television, and physical sounds in the integrated/detailed description. Use overall_soundscape only for ambience, physical action sounds, and non-verbal human sounds. Use non_diegetic_music only for audience-only background music; use N/A when absent.",
+  "Conditional identity-consistency rule: when a human or human-like character clearly appears more than once, establish a stable visual identity block at the first clear appearance using only traits stated by the user or visibly supplied by a reference; never invent unseen identity details.",
+  "For every later shot in which that character's face is visible, briefly restate the same identity anchors with consistent wording: face shape, eye spacing/eye shape, brows, nose, mouth, skin tone, hairstyle silhouette, clothing, body silhouette, and distinctive marks. Keep this concise and do not require every task to be front-facing or closed-mouth; preserve the user's requested pose, expression, and action.",
+  "Unless the user explicitly requests it, a transition, MG, warping, compression, inversion, overlay, or similar graphic/camera effect must not reset, obscure, reconstruct, or distort the character's face or identity. Describe the effect around a preserved face and stable identity instead.",
   "Return only the requested fields and their content. Do not add Markdown fences, commentary, or extra top-level fields.",
 ];
 
@@ -67,7 +70,7 @@ export function buildH3PromptSystem({ mode = "t2v", duration, hasVisualReference
     sections.push(
       "Ref2VA subject_definitions must define every <Subject N>, <Picture N>, <Video N>, and <Audio N> label on its own definition line before any later section uses that label.",
       "Ref2VA summary must begin with a bracketed task prefix using only keyframe completion, reference generation, video editing, video continuation, audio reuse, and audio reference joined by + when needed.",
-      "Ref2VA retention_analysis must state how each defined reference is fully_preserved, partially_preserved, attribute_transfer, weak_reference, fully_copy, partially_copy, or reference, according to its role.",
+      "Ref2VA retention_analysis must state how each defined reference is fully_preserved, partially_preserved, attribute_transfer, weak_reference, fully_copy, partially_copy, or reference, according to its role; for identity attributes, put fully_preserved or the appropriate marker explicitly next to those attributes.",
       "Ref2VA detailed_description is the playback-order visual and audio body and must contain [Shot 1].",
     );
   } else {

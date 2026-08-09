@@ -2086,6 +2086,16 @@ export default function Home() {
     setLongPlanning(true);
     setLongPlannerNotice(`已送出規劃要求，正在等待本機 ${plannerLabel} 回應…`);
     try {
+      const plannerImages = longInputType === "image"
+        ? await Promise.all(
+          selectedLongReferences
+            .slice(0, longReferenceMode === "multi_reference" ? MAX_LONG_REFERENCE_IMAGES : 1)
+            .map(async (asset, index) => ({
+              role: longReferenceMode === "multi_reference" ? `picture_${index + 1}` : "first_frame",
+              data: await assetToPromptImage(asset),
+            })),
+        )
+        : [];
       const response = await fetch(BRIDGE_URL + "/api/sequences/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2108,6 +2118,7 @@ export default function Home() {
           codexModel: effectiveCodexModel,
           reasoningEffort: effectiveCodexReasoningEffort,
           negativePrompt: longNegativePrompt,
+          ...(plannerImages.length ? { plannerImages } : {}),
         }),
       });
       let payload: { plan?: LongPlan; error?: { code?: string; message?: string } | string };

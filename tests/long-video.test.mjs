@@ -5,14 +5,14 @@ import path from "node:path";
 import test from "node:test";
 import { allocateSequenceOutputPath, sequenceAttemptFile, validateOutputFolderName } from "../server/long-video/paths.mjs";
 import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
-import { buildI2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
+import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailFrame } from "../server/long-video/media.mjs";
 import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
-import { parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
+import { normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
-import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateSequenceInput } from "../server/long-video/schema.mjs";
+import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
 
 function apiRequest(method, url, value = {}) {
   return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
@@ -83,6 +83,63 @@ test("prompt field order and I2VA first line are stable", () => {
   assert.match(i2v, /^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot 1\]\) is fully referenced\./);
   validatePrompt(i2v, { mode: "i2v" });
   assert.throws(() => validatePrompt("integrated_multimodal_description: walk\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A", { mode: "t2v" }), { code: "PROMPT_SHOT1_REQUIRED" });
+});
+
+test("continuity bible preserves explicit face identity anchors and prompt builders reuse them", () => {
+  const bible = validateContinuityBible({
+    characters: [{
+      id: "hero",
+      faceIdentity: "oval face with a left-cheek scar",
+      hair: "short black curls",
+      silhouette: "lean athletic frame",
+      palette: ["navy", "copper"],
+      distinctiveMarks: "silver ear cuff",
+      appearance: "young courier",
+      clothing: "navy raincoat",
+      voice: "low and urgent",
+    }],
+  });
+  assert.deepEqual(bible.characters[0], {
+    id: "hero",
+    faceIdentity: "oval face with a left-cheek scar",
+    hair: "short black curls",
+    silhouette: "lean athletic frame",
+    palette: "navy, copper",
+    distinctiveMarks: "silver ear cuff",
+    appearance: "young courier",
+    clothing: "navy raincoat",
+    voice: "low and urgent",
+  });
+  const t2v = buildT2VAPrompt({ description: "runs", endingState: "at the closing train door" }, bible);
+  assert.match(t2v, /face identity: oval face with a left-cheek scar/);
+  assert.match(t2v, /Ending state: at the closing train door/);
+  const ref2v = buildRef2VAPrompt({ description: "runs" }, bible, { assets: [{ name: "hero.png" }] });
+  assert.match(ref2v, /subject_definitions:[\s\S]*stable referenced character identity/);
+  assert.match(ref2v, /retention_analysis:[\s\S]*face identity: oval face with a left-cheek scar/);
+});
+
+test("planner normalizes attached reference image bytes and forwards them only to Ollama images", async () => {
+  assert.deepEqual(normalizePlannerImages([{ role: "hero", data: "data:image/png;base64, aGVsbG8=" }]), [{ role: "hero", data: "aGVsbG8=" }]);
+  let bodyWithImage;
+  const plan = await planSequence({
+    inputType: "image",
+    imagePurpose: "first_frame",
+    inputAsset: { root: "input", name: "hero.png", kind: "image" },
+    plannerImages: [{ role: "hero", data: "data:image/png;base64,aGVsbG8=" }],
+    inputText: "A courier waits at the train door.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    fetchImpl: async (_url, init) => {
+      bodyWithImage = JSON.parse(init.body);
+      return { ok: true, text: async () => JSON.stringify({ continuityBible: {}, segments: [{ start: 0, end: 5, description: "waits" }, { start: 5, end: 10, description: "boards" }] }) };
+    },
+  });
+  assert.equal(plan.segments.length, 2);
+  assert.deepEqual(bodyWithImage.images, ["aGVsbG8="]);
+  assert.equal(bodyWithImage.options.temperature, 0.2);
+  assert.equal(bodyWithImage.options.top_p, 0.85);
+  assert.match(bodyWithImage.prompt, /Actual reference image bytes are attached/);
 });
 
 test("tail extraction selects the PNG encoder on FFmpeg 9", async () => {

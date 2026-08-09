@@ -45,6 +45,24 @@ function clean(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// `plannerImages` is the normalized hand-off for real visual references.  It
+// mirrors the existing prompt bridge shape ({ role, data }) while accepting a
+// bare base64 string for small integrations.  Image bytes never enter the
+// textual planner prompt or persisted plan; they are only forwarded to
+// Ollama's `images` request field.
+function normalizePlannerImages(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const rawData = typeof item === "string" ? item : item?.data;
+    const data = clean(rawData).replace(/^data:[^;]+;base64,/i, "").trim();
+    if (!data) return null;
+    return {
+      role: clean(typeof item === "object" ? item?.role : "") || `reference_image_${index + 1}`,
+      data,
+    };
+  }).filter(Boolean);
+}
+
 function hasTimelineInput(input) {
   return Boolean(clean(input?.timelineText || input?.storyboard)) || Array.isArray(input?.timeline) || Array.isArray(input?.segments);
 }
@@ -93,6 +111,10 @@ function plannerPrompt(input, canonicalTimeline = null) {
   const idea = clean(input.inputText || input.brief);
   const multiReference = input.referenceMode === "multi_reference";
   const referenceAssets = effectiveReferenceAssets(input);
+  const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
+  const visualInspection = plannerImages.length
+    ? "Actual reference image bytes are attached to this planning request. You may inspect those attached images and describe only visible details."
+    : "No actual reference image bytes are attached to this planning request. Do not claim to have inspected an image; use only the supplied asset names and text direction.";
   const source = [
     idea ? `User's complete story direction: ${idea}` : "",
     multiReference
@@ -100,6 +122,7 @@ function plannerPrompt(input, canonicalTimeline = null) {
       : input.inputType === "image"
       ? `The supplied image asset is the first frame reference (${input.inputAsset?.name || input.inputAsset || "provided asset"}). Do not invent unseen image details; write the first segment as I2VA and preserve the referenced frame.`
       : "The first segment is T2VA. Every later segment is I2VA and starts from the actual normalized tail frame of the previous segment.",
+    visualInspection,
     clean(input.negativePrompt) ? `User negative constraints that must be preserved: ${clean(input.negativePrompt)}` : "",
   ].filter(Boolean).join("\n");
   const timing = mode === "manual"
@@ -121,12 +144,16 @@ function plannerPrompt(input, canonicalTimeline = null) {
       ? `Use Ref2VA for every segment. Ordered static image references are: ${referenceAssets.map((reference, index) => `Picture ${index + 1} (${reference.name || "asset"})`).join(", ") || "provided references"}. Do not write a first-frame lock or I2VA continuation instruction.`
       : "",
     "continuityBible keys: visualStyle, characters, environment, lighting, camera, motionDirection, keyObjects, sound, nonDiegeticMusic, mustPreserve, mustAvoid.",
-    "Each character uses id, appearance, clothing, and optional voice.",
+    "Each character uses id, faceIdentity, hair, silhouette, palette, distinctiveMarks, appearance, clothing, and optional voice. Define these identity anchors once and reuse the same values for every segment where that character is visible.",
+    "When a face is visible, every segment's endingState must preserve the same faceIdentity, hair, silhouette, palette, and distinctiveMarks for the next segment.",
     "Each segment must use these keys: start, end, description, integratedMultimodalDescription, overallSoundscape, nonDiegeticMusic, continuityNote, endingState, negativePrompt.",
     "start and end are global seconds. description is a concise editable storyboard summary. endingState is a concise description of the exact final visual state that the next segment must continue.",
     "integratedMultimodalDescription is English H3 content for this segment only. It must begin with [Shot 1], cover composition, subjects, environment, action, camera, dialogue and diegetic sound, and use timestamps relative to this segment starting at 0 only for later cuts.",
     "overallSoundscape is 1-4 English sentences. nonDiegeticMusic is 1-3 English sentences or N/A. Preserve dialogue, lyrics, and visible text in their original language.",
     "For continuation segments, describe forward motion from Picture 1 without writing the Picture 1 instruction line; the server adds the exact I2VA wrapper.",
+    input.referenceMode === "multi_reference"
+      ? "For every Ref2VA segment, provide concrete subjectDefinitions, summary, retentionAnalysis, and detailedDescription. Define each visible subject with the continuityBible identity anchors; do not use a generic principal-subject fallback when a character identity is available."
+      : "",
     "negativePrompt is the full-video negative prompt. A segment negativePrompt may add only segment-specific exclusions and may otherwise be an empty string.",
     source,
   ].join("\n");
@@ -236,18 +263,21 @@ async function requestPlannerModel({ request, requestInput, model, prompt, fetch
         throw new Error(`remote ComfyUI refused GPU release (${freeResponse.status})`);
       }
     }
+    const plannerImages = normalizePlannerImages(requestInput?.plannerImages || requestInput?.images);
+    const requestBody = {
+      model,
+      prompt,
+      stream: false,
+      format: "json",
+      think: false,
+      keep_alive: 0,
+      options: { temperature: 0.2, top_p: attempt > 1 ? 0.75 : 0.85, num_ctx: 8192 },
+      ...(plannerImages.length ? { images: plannerImages.map((image) => image.data) } : {}),
+    };
     const response = await fetchImpl(`${String(ollamaUrl).replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        format: "json",
-        think: false,
-        keep_alive: 0,
-        options: { temperature: attempt > 1 ? 0.2 : 0.65, top_p: attempt > 1 ? 0.75 : 0.9, num_ctx: 8192 },
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = typeof response.text === "function"
@@ -327,6 +357,7 @@ export async function planSequence(input, options = {}) {
   const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
+  const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
   const normalizedInput = validateSequenceInput(input || {});
   const normalizedReferenceAssets = effectiveReferenceAssets(normalizedInput);
   if (normalizedInput.inputType === "text" && !normalizedInput.inputText && !normalizedInput.brief && !input.timelineText && !input.storyboard) {
@@ -353,6 +384,7 @@ export async function planSequence(input, options = {}) {
     ...normalizedInput,
     timelineMode,
     segmentDurationHint: durationHint,
+    ...(plannerImages.length ? { plannerImages } : {}),
     ...(canonicalTimeline ? { timeline: canonicalTimeline } : {}),
   };
   const basePrompt = plannerPrompt(requestInput, canonicalTimeline);
@@ -512,5 +544,5 @@ export async function planSequence(input, options = {}) {
   };
 }
 
-export { plannerPrompt, parseResponse as parsePlannerResponse };
+export { plannerPrompt, parseResponse as parsePlannerResponse, normalizePlannerImages };
 export const createPlan = planSequence;

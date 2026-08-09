@@ -8,13 +8,49 @@ function clean(value, fallback = "") {
   return text || fallback;
 }
 
+function identityField(value) {
+  if (Array.isArray(value)) return value.map((item) => clean(item)).filter(Boolean).join(", ");
+  return clean(value);
+}
+
+function characterDescriptor(character = {}) {
+  const id = clean(character.id, "character");
+  return [
+    id,
+    identityField(character.faceIdentity) && `face identity: ${identityField(character.faceIdentity)}`,
+    identityField(character.hair) && `hair: ${identityField(character.hair)}`,
+    identityField(character.silhouette) && `silhouette: ${identityField(character.silhouette)}`,
+    identityField(character.palette) && `palette: ${identityField(character.palette)}`,
+    identityField(character.distinctiveMarks) && `distinctive marks: ${identityField(character.distinctiveMarks)}`,
+    identityField(character.appearance) && `appearance: ${identityField(character.appearance)}`,
+    identityField(character.clothing) && `clothing: ${identityField(character.clothing)}`,
+    identityField(character.voice) && `voice: ${identityField(character.voice)}`,
+  ].filter(Boolean).join("; ");
+}
+
+function identityAnchors(bible = {}) {
+  const characters = Array.isArray(bible.characters) ? bible.characters : [];
+  const identityKeys = ["faceIdentity", "hair", "silhouette", "palette", "distinctiveMarks"];
+  if (!characters.length || !characters.some((character) => identityKeys.some((key) => identityField(character?.[key])))) return "";
+  return `Identity anchors (reuse unchanged for every visible appearance): ${characters.map(characterDescriptor).join(" | ")}`;
+}
+
+function appendIdentityAnchors(value, bible = {}) {
+  const body = clean(value);
+  const anchors = identityAnchors(bible);
+  if (!anchors || body.includes(anchors)) return body;
+  return [body, anchors].filter(Boolean).join("\n");
+}
+
 function bibleText(bible = {}) {
   const characters = Array.isArray(bible.characters)
     ? bible.characters.map((item) => `${item.id || "character"}: ${item.appearance || ""}; clothing: ${item.clothing || ""}`).join(" | ")
     : "";
+  const anchors = identityAnchors(bible);
   return [
     bible.visualStyle && `Visual style: ${bible.visualStyle}`,
     characters && `Characters: ${characters}`,
+    anchors,
     bible.environment && `Environment: ${bible.environment}`,
     bible.lighting && `Lighting: ${bible.lighting}`,
     bible.camera && `Camera: ${bible.camera}`,
@@ -34,6 +70,8 @@ function description(segment, bible) {
     segment.continuityNote && `Continuity note: ${segment.continuityNote}`,
     segment.camera && `Camera: ${segment.camera}`,
     segment.action && `Action: ${segment.action}`,
+    segment.endingState && `Ending state: ${segment.endingState}`,
+    segment.endingState && identityAnchors(bible) && "If a face is visible at the ending state, preserve the same face identity, hair, silhouette, palette, and distinctive marks.",
   ].filter(Boolean).join("\n");
 }
 
@@ -92,7 +130,11 @@ function integratedDescription(segment, bible) {
     segment.integratedMultimodalDescription || segment.integrated_multimodal_description,
     "integrated_multimodal_description",
   );
-  return shotBody(generated, description(segment, bible));
+  const body = shotBody(generated, description(segment, bible));
+  return appendIdentityAnchors(
+    [body, segment.endingState && `Ending state: ${segment.endingState}`].filter(Boolean).join("\n"),
+    bible,
+  );
 }
 
 function soundscape(segment, bible) {
@@ -200,23 +242,42 @@ function buildReferenceDefinitions(segment, references, usage) {
 
 function ref2vaFields(segment, bible, references = {}) {
   const summaryText = stripFieldPrefix(segment.summary, "summary") || clean(segment.description) || "The target video follows the supplied reference direction.";
-  const summary = SUMMARY_PREFIX_RE.test(summaryText)
+  const summaryBase = SUMMARY_PREFIX_RE.test(summaryText)
     ? summaryText
     : `[reference generation] ${summaryText}`;
   const detailedCandidate = stripFieldPrefix(segment.detailedDescription || segment.detailed_description, "detailed_description");
   const detailedFallback = description(segment, bible);
-  const usage = labelsUsedIn(summary, segment.retentionAnalysis || segment.retention_analysis, detailedCandidate, segment.description);
-  const subjectDefinitions = buildReferenceDefinitions(segment, references, usage);
+  const usage = labelsUsedIn(summaryBase, segment.retentionAnalysis || segment.retention_analysis, detailedCandidate, segment.description);
+  const subjectDefinitionLines = buildReferenceDefinitions(segment, references, usage).split(/\r?\n/).filter(Boolean);
+  const characters = Array.isArray(bible?.characters) ? bible.characters : [];
+  characters.forEach((character, index) => {
+    const label = `<Subject ${index + 1}>`;
+    const descriptor = characterDescriptor(character);
+    const existingIndex = subjectDefinitionLines.findIndex((line) => line.startsWith(`${label} `));
+    const identityLine = `${label} is the stable referenced character identity: ${descriptor}.`;
+    if (existingIndex >= 0) {
+      if (/principal referenced subject/i.test(subjectDefinitionLines[existingIndex])) {
+        subjectDefinitionLines[existingIndex] = identityLine;
+      } else if (!/stable referenced character identity|identity anchors/i.test(subjectDefinitionLines[existingIndex])) {
+        subjectDefinitionLines[existingIndex] = `${subjectDefinitionLines[existingIndex]} ${identityLine}`;
+      }
+    } else {
+      subjectDefinitionLines.push(identityLine);
+    }
+  });
+  const subjectDefinitions = subjectDefinitionLines.join("\n");
   const defined = labelsUsedIn(subjectDefinitions);
   const retentionCandidate = stripFieldPrefix(segment.retentionAnalysis || segment.retention_analysis, "retention_analysis");
-  const retention = retentionCandidate && [...labelsUsedIn(retentionCandidate).keys()].every((label) => defined.has(label))
+  const retentionBase = retentionCandidate && [...labelsUsedIn(retentionCandidate).keys()].every((label) => defined.has(label))
     ? retentionCandidate
     : [...defined.keys()].map((label) => `${label} ([Shot 1]): fully_preserved - the referenced identity and composition remain consistent.`).join("\n");
+  const retention = appendIdentityAnchors(retentionBase, bible);
+  const summary = appendIdentityAnchors(summaryBase, bible);
   return {
     subject_definitions: subjectDefinitions,
     summary,
     retention_analysis: retention,
-    detailed_description: shotBody(detailedCandidate, detailedFallback),
+    detailed_description: appendIdentityAnchors(shotBody(detailedCandidate, detailedFallback), bible),
     overall_soundscape: stripFieldPrefix(segment.overallSoundscape || segment.overall_soundscape || bible.sound, "overall_soundscape") || "Natural diegetic sound",
     non_diegetic_music: stripFieldPrefix(segment.nonDiegeticMusic || segment.non_diegetic_music || bible.nonDiegeticMusic, "non_diegetic_music") || "N/A",
   };

@@ -63,6 +63,8 @@ const H3_PROMPT_SKILL_PATH = path.resolve(
 const CODEX_PROMPT_TMP_ROOT = path.join(PROJECT_ROOT, ".tmp", "codex-prompts");
 const CODEX_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_IMAGE_LIMIT_BYTES = 12 * 1024 * 1024;
+const MAX_PLANNER_IMAGES = 8;
+const DEFAULT_SHORT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark, identity drift, face drift, face morphing, facial feature drift, age drift, hairstyle drift, costume drift, body-shape drift, asymmetrical eyes, mismatched pupils, extra eyes, duplicated facial features, distorted jaw, facial flicker";
 const MAX_BODY_BYTES = 260 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
@@ -749,6 +751,42 @@ function promptMode(value) {
 
 const MAX_REFERENCE_IMAGE_NAMES = 9;
 
+function normalizeBase64ImageData(value, index, codePrefix = "PLANNER_IMAGE") {
+  const data = String(value || "").replace(/^data:[^;]+;base64,/, "").trim();
+  if (!data || !/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 !== 0) {
+    throw new LongVideoError(`${codePrefix}_INVALID`, `Image data at index ${index} must be valid base64.`, 400);
+  }
+  const buffer = Buffer.from(data, "base64");
+  if (!buffer.length) {
+    throw new LongVideoError(`${codePrefix}_INVALID`, `Image data at index ${index} must not be empty.`, 400);
+  }
+  if (buffer.length > CODEX_IMAGE_LIMIT_BYTES) {
+    throw new LongVideoError(`${codePrefix}_TOO_LARGE`, `Image data at index ${index} exceeds the ${CODEX_IMAGE_LIMIT_BYTES}-byte limit.`, 413);
+  }
+  return data;
+}
+
+function normalizePlannerImages(value, { inputType = "text", referenceMode = "continuity" } = {}) {
+  const imagePlanning = inputType === "image" || referenceMode === "multi_reference";
+  if (!imagePlanning || value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new LongVideoError("PLANNER_IMAGES_INVALID", "plannerImages must be an array of image payloads.", 400);
+  }
+  if (value.length > MAX_PLANNER_IMAGES) {
+    throw new LongVideoError("PLANNER_IMAGES_LIMIT", `At most ${MAX_PLANNER_IMAGES} planner images are supported.`, 400);
+  }
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || typeof item.data !== "string") {
+      throw new LongVideoError("PLANNER_IMAGE_INVALID", `plannerImages[${index}] must contain base64 image data.`, 400);
+    }
+    const role = String(item.role || "reference_image").trim().slice(0, 80) || "reference_image";
+    return {
+      role,
+      data: normalizeBase64ImageData(item.data, index),
+    };
+  });
+}
+
 export function normalizeReferenceImageNames(payload = {}, { mode = payload.mode } = {}) {
   const scalarProvided = typeof payload.referenceImageName === "string" && payload.referenceImageName.trim();
   const scalar = scalarProvided ? payload.referenceImageName.trim() : "";
@@ -975,7 +1013,7 @@ async function createPrompt(payload) {
   }
   const defaultNegativePrompt = mode === "replace"
     ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, unwanted random text, logo, watermark"
-    : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
+    : DEFAULT_SHORT_NEGATIVE_PROMPT;
   return {
     prompt: finalPrompt,
     negativePrompt: negativePrompt || defaultNegativePrompt,
@@ -1065,7 +1103,7 @@ async function createCodexPrompt({ brief, context, mode, durationSeconds, model,
     if (!prompt) throw new Error("Codex CLI 回傳了空的提示詞。");
     const defaultNegativePrompt = mode === "replace"
       ? "identity drift, face drift, costume drift, body-shape drift, altered background, changed camera path, pose mismatch, motion mismatch, flicker, jitter, warping, extra limbs, deformed hands, unwanted random text, logo, watermark"
-      : "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
+      : DEFAULT_SHORT_NEGATIVE_PROMPT;
     return {
       prompt,
       negativePrompt: negativePrompt || defaultNegativePrompt,
@@ -1247,19 +1285,30 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
 }
 
 async function planSequenceWithPromptProvider(input, options = {}) {
-  const provider = promptProvider(input?.provider || input?.promptProvider);
+  const plannerInput = input && typeof input === "object" ? { ...input } : input;
+  if (plannerInput && typeof plannerInput === "object") {
+    const plannerImages = normalizePlannerImages(plannerInput.plannerImages, {
+      inputType: plannerInput.inputType,
+      referenceMode: plannerInput.referenceMode,
+    });
+    // Text planning must not carry image bytes, even if a stale client sends
+    // them. Image planning keeps only the bounded, normalized payload.
+    if (plannerImages.length) plannerInput.plannerImages = plannerImages;
+    else delete plannerInput.plannerImages;
+  }
+  const provider = promptProvider(plannerInput?.provider || plannerInput?.promptProvider);
   if (provider !== "codex") {
-    const model = input?.ollamaModel || input?.model || defaultOllamaModel();
+    const model = plannerInput?.ollamaModel || plannerInput?.model || defaultOllamaModel();
     return defaultPlanSequence(
-      { ...input, promptProvider: "ollama", ollamaModel: model },
+      { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
       { ...options, model },
     );
   }
-  const model = codexModel(input.codexModel || input.model);
-  const reasoningEffort = codexReasoningEffort(input.reasoningEffort || input.codexReasoningEffort);
+  const model = codexModel(plannerInput.codexModel || plannerInput.model);
+  const reasoningEffort = codexReasoningEffort(plannerInput.reasoningEffort || plannerInput.codexReasoningEffort);
   await validateCodexSelection(model, reasoningEffort);
   return defaultPlanSequence(
-    { ...input, promptProvider: "codex", codexModel: model, reasoningEffort },
+    { ...plannerInput, promptProvider: "codex", codexModel: model, reasoningEffort },
     { ...options, model, request: requestCodexLongPlanModel },
   );
 }
@@ -2607,4 +2656,5 @@ export {
   activeAssetUse,
   codexLongPlanReferences,
   codexLongPlanModeInstruction,
+  normalizePlannerImages,
 };
