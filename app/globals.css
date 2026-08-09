@@ -773,6 +773,24 @@ h1 {
   color: #d8e5df;
 }
 
+.prompt-validation-error {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #704b45;
+  border-radius: 8px;
+  background: rgba(112, 75, 69, 0.16);
+  color: #e5b8af;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.prompt-validation-error strong {
+  color: #f0c8c0;
+  letter-spacing: 0.04em;
+}
+
 .prompt-footer {
   margin-top: 18px;
 }
@@ -785,6 +803,90 @@ h1 {
   min-height: 54px;
   color: #a8b7b5;
   font-size: 11px;
+}
+
+.runtime-mode-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 18px;
+  padding: 13px;
+  border: 1px solid #2a3b43;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(141, 226, 221, 0.07), rgba(200, 241, 105, 0.035));
+}
+
+.runtime-mode-copy {
+  min-width: 0;
+}
+
+.runtime-mode-copy strong,
+.runtime-mode-copy small {
+  display: block;
+}
+
+.runtime-mode-copy strong {
+  margin-top: 4px;
+  color: #e3efeb;
+  font-size: 12px;
+}
+
+.runtime-mode-copy small {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #71868a;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-mode-switch {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border: 1px solid #31434a;
+  border-radius: 9px;
+  background: #0b1219;
+}
+
+.runtime-mode-switch button {
+  min-width: 74px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #718186;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.runtime-mode-switch button.is-active {
+  color: #10170d;
+  background: var(--lime);
+}
+
+.runtime-mode-health {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 6px;
+  color: #788b8e;
+  font-size: 9px;
+}
+
+.runtime-mode-health.is-online .status-dot {
+  background: var(--lime);
+  box-shadow: 0 0 0 3px rgba(200, 241, 105, 0.1);
+}
+
+.runtime-mode-health.is-offline {
+  color: var(--danger);
+}
+
+.runtime-mode-health.is-offline .status-dot {
+  background: var(--danger);
 }
 
 .mode-grid {
@@ -2759,6 +2861,20 @@ input[type="range"] {
 }
 
 @media (max-width: 780px) {
+  .runtime-mode-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .runtime-mode-switch {
+    width: 100%;
+  }
+
+  .runtime-mode-switch button {
+    flex: 1;
+    min-width: 0;
+  }
+
   .studio-shell {
     display: block;
     overflow: visible;

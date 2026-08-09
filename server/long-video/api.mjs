@@ -117,7 +117,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         segmentDurationHint: input.segmentDurationHint,
         model: input.promptProvider === "codex" || input.provider === "codex"
           ? input.codexModel || input.model || "gpt-5.6-luna"
-          : input.ollamaModel || input.model || "gemma4:12b",
+          : input.ollamaModel || input.model,
         reasoningEffort: input.promptProvider === "codex" || input.provider === "codex"
           ? input.reasoningEffort || input.codexReasoningEffort || "medium"
           : undefined,

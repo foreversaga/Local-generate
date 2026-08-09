@@ -21,6 +21,24 @@ function promptFromRepairResult(value) {
   return String(value ?? "");
 }
 
+const I2VA_FIRST_LINE = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
+const INTEGRATED_FIELD = "integrated_multimodal_description:";
+
+/**
+ * Fix deterministic contract mistakes without asking the model to rewrite
+ * creative content. Gemma commonly merges the mandatory I2VA alignment line
+ * into the first field even after a model-driven repair request.
+ */
+export function normalizeDeterministicH3Prompt(prompt, options = {}) {
+  const mode = normalizeH3Mode(options.mode ?? options.inputType ?? "t2v");
+  const value = String(prompt ?? "").trim();
+  if (mode !== "i2v" || !value) return value;
+  const mergedPrefix = `${INTEGRATED_FIELD} ${I2VA_FIRST_LINE}`;
+  if (!value.toLowerCase().startsWith(mergedPrefix.toLowerCase())) return value;
+  const body = value.slice(mergedPrefix.length).trimStart();
+  return `${I2VA_FIRST_LINE}\n\n${INTEGRATED_FIELD}${body ? ` ${body}` : ""}`;
+}
+
 /**
  * Build a bounded, injection-resistant repair request.  The original model
  * output and validation data are explicitly marked as untrusted data; only
@@ -53,8 +71,9 @@ export function buildH3PromptRepairPrompt({ prompt, mode = "t2v", duration, erro
 }
 
 /**
- * Validate once, call the injected repair function at most once when needed,
- * and validate the repair. No network or model call is performed here.
+ * Validate once, then call the injected repair function a bounded number of
+ * times when needed. The final candidate and validation diagnostics are kept
+ * on the error so callers can offer the model output for manual editing.
  */
 export async function validateOrRepairH3Prompt(prompt, options = {}) {
   const {
@@ -64,40 +83,83 @@ export async function validateOrRepairH3Prompt(prompt, options = {}) {
     hasVisualReference = false,
     repair,
     validate = validateH3Prompt,
+    maxRepairAttempts: requestedMaxRepairAttempts = 2,
   } = options || {};
   const mode = normalizeH3Mode(requestedMode ?? inputType ?? "t2v");
   const validationOptions = { mode, ...(duration !== undefined ? { duration } : {}) };
-  try {
-    const result = validate(prompt, validationOptions);
-    return { ...result, repaired: false, repairAttempts: 0 };
-  } catch (firstError) {
-    if (typeof repair !== "function") throw firstError;
-    const firstValidation = errorInfo(firstError);
-    const repairPrompt = buildH3PromptRepairPrompt({ prompt, mode, duration, error: firstError, hasVisualReference });
-    let repairResult;
+  const maxRepairAttempts = Math.max(0, Math.min(3, Number.isInteger(requestedMaxRepairAttempts) ? requestedMaxRepairAttempts : 2));
+  const validationHistory = [];
+  const repairPrompts = [];
+  let candidatePrompt = String(prompt ?? "");
+  let deterministicRepairs = 0;
+
+  for (let repairAttempts = 0; ; repairAttempts += 1) {
+    const normalizedPrompt = normalizeDeterministicH3Prompt(candidatePrompt, { mode });
+    if (normalizedPrompt !== candidatePrompt) {
+      candidatePrompt = normalizedPrompt;
+      deterministicRepairs += 1;
+    }
     try {
-      repairResult = await repair(repairPrompt, {
+      const result = validate(candidatePrompt, validationOptions);
+      return {
+        ...result,
+        repaired: repairAttempts > 0 || deterministicRepairs > 0,
+        repairAttempts,
+        deterministicRepairs,
+        ...(repairPrompts.length ? { repairPrompt: repairPrompts.at(-1), repairPrompts } : {}),
+      };
+    } catch (validationError) {
+      const validation = errorInfo(validationError);
+      validationHistory.push(validation);
+      if (typeof repair !== "function" && repairAttempts === 0) throw validationError;
+      if (typeof repair !== "function" || repairAttempts >= maxRepairAttempts) {
+        throw new LongVideoError(
+          "PROMPT_REPAIR_FAILED",
+          `H3 prompt remained invalid after ${repairAttempts} repair attempt${repairAttempts === 1 ? "" : "s"}.`,
+          400,
+          {
+            firstValidation: validationHistory[0],
+            ...(validationHistory[1] ? { secondValidation: validationHistory[1] } : {}),
+            finalValidation: validation,
+            validationHistory,
+            candidatePrompt,
+            repairAttempts,
+          },
+        );
+      }
+
+      const repairPrompt = buildH3PromptRepairPrompt({
+        prompt: candidatePrompt,
         mode,
         duration,
-        originalPrompt: String(prompt ?? ""),
-        firstValidation,
-        repairPrompt,
+        error: validationError,
+        hasVisualReference,
       });
-    } catch (repairError) {
-      throw new LongVideoError("PROMPT_REPAIR_FAILED", "H3 prompt repair callback failed.", 400, {
-        firstValidation,
-        repairError: errorInfo(repairError),
-      });
-    }
-    const repairedPrompt = promptFromRepairResult(repairResult);
-    try {
-      const result = validate(repairedPrompt, validationOptions);
-      return { ...result, repaired: true, repairAttempts: 1, repairPrompt };
-    } catch (secondError) {
-      throw new LongVideoError("PROMPT_REPAIR_FAILED", "H3 prompt remained invalid after one repair attempt.", 400, {
-        firstValidation,
-        secondValidation: errorInfo(secondError),
-      });
+      repairPrompts.push(repairPrompt);
+      try {
+        const repairResult = await repair(repairPrompt, {
+          attempt: repairAttempts + 1,
+          maxRepairAttempts,
+          mode,
+          duration,
+          originalPrompt: String(prompt ?? ""),
+          candidatePrompt,
+          firstValidation: validationHistory[0],
+          previousValidation: validation,
+          validationHistory: [...validationHistory],
+          repairPrompt,
+        });
+        candidatePrompt = promptFromRepairResult(repairResult);
+      } catch (repairError) {
+        throw new LongVideoError("PROMPT_REPAIR_FAILED", "H3 prompt repair callback failed.", 400, {
+          firstValidation: validationHistory[0],
+          finalValidation: validation,
+          validationHistory,
+          candidatePrompt,
+          repairAttempts,
+          repairError: errorInfo(repairError),
+        });
+      }
     }
   }
 }

@@ -4,6 +4,7 @@ import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 
 const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
+export const DEFAULT_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 
 function stripJsonFence(value) {
   return String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
@@ -215,16 +216,38 @@ function repairPlannerPrompt(basePrompt, raw, error, { duration, timelineMode })
   ].join("\n");
 }
 
-async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, timeoutMs, attempt }) {
+async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt }) {
   const provider = plannerProvider(requestInput);
   const label = provider === "codex" ? "Codex CLI" : "Ollama";
   try {
     if (request) return await request({ input: requestInput, model, prompt, attempt, repair: attempt > 1 });
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
+    if (comfyUrl && remoteComfy) {
+      const freeResponse = await fetchImpl(`${String(comfyUrl).replace(/\/$/, "")}/free`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unload_models: true, free_memory: true }),
+        signal: AbortSignal.timeout(30000),
+      }).catch((error) => {
+        if (remoteComfy) throw error;
+        return null;
+      });
+      if (remoteComfy && freeResponse && !freeResponse.ok) {
+        throw new Error(`remote ComfyUI refused GPU release (${freeResponse.status})`);
+      }
+    }
     const response = await fetchImpl(`${String(ollamaUrl).replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt, stream: false, format: "json", options: { temperature: attempt > 1 ? 0.2 : 0.65, top_p: attempt > 1 ? 0.75 : 0.9 } }),
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: false,
+        format: "json",
+        think: false,
+        keep_alive: 0,
+        options: { temperature: attempt > 1 ? 0.2 : 0.65, top_p: attempt > 1 ? 0.75 : 0.9, num_ctx: 8192 },
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = typeof response.text === "function"
@@ -299,7 +322,9 @@ export async function planSequence(input, options = {}) {
   const provider = plannerProvider(input);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const ollamaUrl = options.ollamaUrl || process.env.OLLAMA_URL || "http://127.0.0.1:11434";
-  const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || "gemma4:12b");
+  const comfyUrl = options.comfyUrl || process.env.COMFY_URL || "";
+  const remoteComfy = options.remoteComfy ?? /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
+  const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
   const normalizedInput = validateSequenceInput(input || {});
@@ -343,7 +368,7 @@ export async function planSequence(input, options = {}) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     let raw;
     try {
-      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, timeoutMs, attempt });
+      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt });
       const candidate = parseResponse(raw, provider);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
         const label = provider === "codex" ? "Codex CLI" : "Ollama";

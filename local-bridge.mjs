@@ -14,7 +14,8 @@ import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
 import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
-import { validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
+import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
+import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -32,11 +33,24 @@ const LOG_ROOT = path.resolve(
 const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
-const PYTHON = path.join(COMFY_ROOT, "venv", "Scripts", "python.exe");
+const PYTHON = path.resolve(
+  process.env.MINIMAX_H3_PYTHON || path.join(COMFY_ROOT, "venv", "Scripts", "python.exe"),
+);
 const REF2VA_MODEL_NAME = "minimax_h3_ref2va_pruned_nvfp4.safetensors";
 const REF2VA_MODEL = path.join(COMFY_ROOT, "models", "diffusion_models", REF2VA_MODEL_NAME);
-const COMFY_URL = (process.env.COMFY_URL || "http://127.0.0.1:8188").replace(/\/$/, "");
-const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
+const INITIAL_REMOTE_MODE = /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
+const LOCAL_COMFY_URL = (process.env.LOCAL_COMFY_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:8188" : process.env.COMFY_URL) || "http://127.0.0.1:8188").replace(/\/$/, "");
+const LOCAL_OLLAMA_URL = (process.env.LOCAL_OLLAMA_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:11434" : process.env.OLLAMA_URL) || "http://127.0.0.1:11434").replace(/\/$/, "");
+const REMOTE_COMFY_URL = (process.env.REMOTE_COMFY_URL || (INITIAL_REMOTE_MODE ? process.env.COMFY_URL : "") || "http://127.0.0.1:18188").replace(/\/$/, "");
+const REMOTE_OLLAMA_URL = (process.env.REMOTE_OLLAMA_URL || (INITIAL_REMOTE_MODE ? process.env.OLLAMA_URL : "") || "http://127.0.0.1:11435").replace(/\/$/, "");
+let COMFY_REMOTE = INITIAL_REMOTE_MODE;
+let COMFY_URL = COMFY_REMOTE ? REMOTE_COMFY_URL : LOCAL_COMFY_URL;
+let OLLAMA_URL = COMFY_REMOTE ? REMOTE_OLLAMA_URL : LOCAL_OLLAMA_URL;
+let runtimeSwitching = false;
+let activeRuntimeOperations = 0;
+const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
+const defaultOllamaModel = () => COMFY_REMOTE ? GEMMA4_OLLAMA_MODEL : QWEN_OLLAMA_MODEL;
 const CODEX_CLI = process.env.CODEX_CLI_PATH || (process.platform === "win32" ? "codex.cmd" : "codex");
 const CODEX_HOME = path.resolve(
   process.env.CODEX_HOME || path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), ".codex"),
@@ -87,13 +101,14 @@ async function hasLastImageGeneratorFlag() {
   return generatorSupportsLastImage;
 }
 
-function captureProcess(command, args, { cwd = PROJECT_ROOT, timeoutMs = 5000, input = "" } = {}) {
+function captureProcess(command, args, { cwd = PROJECT_ROOT, timeoutMs = 5000, input = "", settleOnExit = false } = {}) {
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
     let child;
+    let timer;
     try {
       child = spawn(command, args, {
         cwd,
@@ -119,19 +134,22 @@ function captureProcess(command, args, { cwd = PROJECT_ROOT, timeoutMs = 5000, i
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       reject(error);
     });
-    child.on("close", (code, signal) => {
+    const finish = (code, signal) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       resolve({ code, signal, stdout, stderr, timedOut });
-    });
+    };
+    child.on("close", finish);
+    if (settleOnExit) child.on("exit", finish);
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       child.kill();
     }, timeoutMs);
-    child.once("close", () => clearTimeout(timer));
     if (input) child.stdin.end(input, "utf8");
     else child.stdin.end();
   });
@@ -294,6 +312,37 @@ function sendJson(res, status, payload) {
 
 function sendError(res, status, message, code) {
   sendJson(res, status, { error: message, ...(code ? { code } : {}) });
+}
+
+function promptErrorPayload(error) {
+  const details = error?.details && typeof error.details === "object" ? error.details : null;
+  const candidatePrompt = typeof details?.candidatePrompt === "string" ? details.candidatePrompt : "";
+  return {
+    error: error instanceof Error ? error.message : "Prompt generation failed.",
+    ...(error?.code ? { code: error.code } : {}),
+    ...(details ? { details } : {}),
+    ...(candidatePrompt ? { candidatePrompt } : {}),
+  };
+}
+
+async function persistPromptError({ stage, endpoint, payload, error }) {
+  try {
+    return await appendPromptError({
+      logRoot: LOG_ROOT,
+      stage,
+      endpoint,
+      payload,
+      error,
+      runtime: {
+        mode: COMFY_REMOTE ? "remote" : "local",
+        comfyUrl: COMFY_URL,
+        ollamaUrl: OLLAMA_URL,
+      },
+    });
+  } catch (logError) {
+    console.error("[prompt-error-log] Unable to persist prompt error:", logError);
+    return null;
+  }
 }
 
 export function withAssetLifecycleLock(operation) {
@@ -484,6 +533,155 @@ async function fetchJson(url, init = {}, timeoutMs = 1800) {
   return payload;
 }
 
+function makeRuntimeError(code, message, status = 400, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  error.details = details;
+  return error;
+}
+
+function runtimeTarget(remote = COMFY_REMOTE) {
+  return remote
+    ? { mode: "remote", remote: true, comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL }
+    : { mode: "local", remote: false, comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL };
+}
+
+async function probeRuntimeTarget(remote) {
+  const target = runtimeTarget(remote);
+  const [comfy, ollama] = await Promise.all([
+    fetchJson(target.comfyUrl + "/system_stats", {}, 5000).catch(() => null),
+    fetchJson(target.ollamaUrl + "/api/tags", {}, 5000).catch(() => null),
+  ]);
+  return {
+    ...target,
+    comfyOnline: Boolean(comfy),
+    ollamaOnline: Boolean(ollama),
+  };
+}
+
+async function startRuntimeServices(remote) {
+  if (process.platform !== "win32") return;
+  const script = path.join(PROJECT_ROOT, "scripts", "vast", remote ? "start-tunnel.ps1" : "start-local-runtime.ps1");
+  const exists = await fs.stat(script).then((item) => item.isFile()).catch(() => false);
+  if (!exists) throw makeRuntimeError("RUNTIME_START_SCRIPT_MISSING", `Runtime startup script is missing: ${script}`, 500);
+  const result = await captureProcess("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", script,
+  ], { cwd: PROJECT_ROOT, timeoutMs: remote ? 45000 : 120000, settleOnExit: true });
+  if (result.code !== 0 || result.timedOut) {
+    const detail = String(result.stderr || result.stdout || "").trim().slice(-2000);
+    throw makeRuntimeError(
+      "RUNTIME_START_FAILED",
+      `${remote ? "Vast tunnel" : "Local model services"} failed to start${detail ? `: ${detail}` : "."}`,
+      503,
+    );
+  }
+}
+
+async function runtimeBusyReason() {
+  if (activeRuntimeOperations > 0) return "A model request is being admitted.";
+  if (activeGenerationId || generationQueue.length || jobProcesses.size) return "A video generation is queued or running.";
+  const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
+  if (seedJobs.some((job) => ["queued", "running"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
+  const sequenceJobs = await listLongVideoJobs().catch(() => null);
+  if (!Array.isArray(sequenceJobs)) return "Long-video job state could not be verified.";
+  if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return "A long-video job is active.";
+  return "";
+}
+
+async function releaseRuntimeGpu(target) {
+  await fetchJson(target.comfyUrl + "/free", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ unload_models: true, free_memory: true }),
+  }, 15000).catch(() => null);
+  const running = await fetchJson(target.ollamaUrl + "/api/ps", {}, 5000).catch(() => null);
+  for (const item of Array.isArray(running?.models) ? running.models : []) {
+    const model = String(item?.name || item?.model || "").trim();
+    if (!model) continue;
+    await fetchJson(target.ollamaUrl + "/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt: "", stream: false, keep_alive: 0 }),
+    }, 30000).catch(() => null);
+  }
+}
+
+async function switchRuntimeMode(mode) {
+  const remote = mode === "remote";
+  if (!remote && mode !== "local") throw makeRuntimeError("RUNTIME_MODE_INVALID", "Runtime mode must be local or remote.", 400);
+  if (runtimeSwitching) throw makeRuntimeError("RUNTIME_SWITCH_BUSY", "A runtime switch is already in progress.", 409);
+  runtimeSwitching = true;
+  try {
+    const busy = await runtimeBusyReason();
+    if (busy) throw makeRuntimeError("RUNTIME_IN_USE", `Cannot switch model runtime: ${busy}`, 409);
+    if (remote === COMFY_REMOTE) return await probeRuntimeTarget(remote);
+
+    let target = await probeRuntimeTarget(remote);
+    if (!target.comfyOnline || !target.ollamaOnline) {
+      await startRuntimeServices(remote);
+      target = await probeRuntimeTarget(remote);
+    }
+    if (!target.comfyOnline || !target.ollamaOnline) {
+      throw makeRuntimeError(
+        "RUNTIME_UNAVAILABLE",
+        `${remote ? "Vast" : "Local"} runtime is unavailable (ComfyUI: ${target.comfyOnline ? "online" : "offline"}, Ollama: ${target.ollamaOnline ? "online" : "offline"}).`,
+        503,
+        target,
+      );
+    }
+
+    await releaseRuntimeGpu(runtimeTarget(COMFY_REMOTE));
+    COMFY_REMOTE = remote;
+    COMFY_URL = target.comfyUrl;
+    OLLAMA_URL = target.ollamaUrl;
+    seedvr2Controller = createSeedVR2ControllerForRuntime();
+    return target;
+  } finally {
+    runtimeSwitching = false;
+  }
+}
+
+async function withRuntimeOperation(operation) {
+  if (runtimeSwitching) throw makeRuntimeError("RUNTIME_SWITCH_BUSY", "Model runtime is switching; try again shortly.", 409);
+  activeRuntimeOperations += 1;
+  try {
+    return await operation();
+  } finally {
+    activeRuntimeOperations = Math.max(0, activeRuntimeOperations - 1);
+  }
+}
+
+async function releaseComfyForOllama() {
+  if (!COMFY_REMOTE) return;
+  try {
+    await fetchJson(COMFY_URL + "/free", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+    }, 30000);
+  } catch (error) {
+    throw new Error(`Unable to release the remote ComfyUI GPU before Ollama: ${error.message}`);
+  }
+}
+
+async function releaseOllamaForComfy() {
+  if (!COMFY_REMOTE) return;
+  const running = await fetchJson(OLLAMA_URL + "/api/ps", {}, 10000).catch(() => null);
+  const loaded = Array.isArray(running?.models) ? running.models : [];
+  for (const item of loaded) {
+    const model = String(item?.name || item?.model || "").trim();
+    if (!model) continue;
+    await fetchJson(OLLAMA_URL + "/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt: "", stream: false, keep_alive: 0 }),
+    }, 30000);
+  }
+}
+
 async function health() {
   const [ollama, comfy, codex] = await Promise.all([
     fetchJson(OLLAMA_URL + "/api/tags").catch(() => null),
@@ -506,9 +704,16 @@ async function health() {
       .stat(H3_ROOT)
       .then((value) => value.isDirectory())
       .catch(() => false),
-    ollama: { online: Boolean(ollama), models },
+    ollama: { online: Boolean(ollama), url: OLLAMA_URL, models },
     codex,
-    comfy: { online: Boolean(comfy), url: COMFY_URL, devices },
+    comfy: { online: Boolean(comfy), url: COMFY_URL, remote: COMFY_REMOTE, devices },
+    runtime: {
+      mode: COMFY_REMOTE ? "remote" : "local",
+      switching: runtimeSwitching,
+      activeOperations: activeRuntimeOperations,
+      local: { comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL },
+      remote: { comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL },
+    },
     paths: {
       h3Root: H3_ROOT,
       comfyRoot: COMFY_ROOT,
@@ -635,6 +840,7 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
 }
 
 async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] }) {
+  await releaseComfyForOllama();
   const result = await fetchJson(
     OLLAMA_URL + "/api/generate",
     {
@@ -645,7 +851,9 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] })
         system,
         prompt,
         stream: false,
-        options: { temperature: 0.2, top_p: 0.9 },
+        think: false,
+        keep_alive: 0,
+        options: { temperature: 0.2, top_p: 0.9, num_ctx: 8192 },
         ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
       }),
     },
@@ -659,7 +867,7 @@ async function createPrompt(payload) {
   const provider = promptProvider(payload.provider);
   const model = provider === "codex"
     ? codexModel(payload.codexModel || payload.model)
-    : String(payload.model || "gemma4:12b");
+    : String(payload.model || defaultOllamaModel());
   const reasoningEffort = provider === "codex"
     ? codexReasoningEffort(payload.reasoningEffort || payload.codexReasoningEffort)
     : null;
@@ -1037,7 +1245,11 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
 async function planSequenceWithPromptProvider(input, options = {}) {
   const provider = promptProvider(input?.provider || input?.promptProvider);
   if (provider !== "codex") {
-    return defaultPlanSequence({ ...input, promptProvider: "ollama" }, options);
+    const model = input?.ollamaModel || input?.model || defaultOllamaModel();
+    return defaultPlanSequence(
+      { ...input, promptProvider: "ollama", ollamaModel: model },
+      { ...options, model },
+    );
   }
   const model = codexModel(input.codexModel || input.model);
   const reasoningEffort = codexReasoningEffort(input.reasoningEffort || input.codexReasoningEffort);
@@ -1304,7 +1516,7 @@ function queueSpawn(command, args, options, job) {
   return child;
 }
 
-function pumpGenerationQueue() {
+async function pumpGenerationQueue() {
   if (activeGenerationId || !generationQueue.length) return;
   const entry = generationQueue.shift();
   if (!entry) return;
@@ -1323,6 +1535,15 @@ function pumpGenerationQueue() {
   entry.job.connectionState = "starting";
   touchJob(entry.job);
   try {
+    entry.job.stage = "Releasing Ollama GPU memory";
+    touchJob(entry.job);
+    await releaseOllamaForComfy();
+    if (entry.child.cancelled) {
+      activeGenerationId = null;
+      queueMicrotask(() => entry.child.emit("close", null));
+      queueMicrotask(pumpGenerationQueue);
+      return;
+    }
     const actualChild = spawn(entry.command, entry.args, entry.options);
     entry.child.actualChild = actualChild;
     entry.job.progress = Math.max(entry.job.progress, 9);
@@ -1347,7 +1568,10 @@ async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
   const mode = promptMode(payload.mode);
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
-  const prompt = String(payload.prompt || "").trim();
+  const submittedPrompt = String(payload.prompt || "").trim();
+  const prompt = mode === "replace"
+    ? submittedPrompt
+    : normalizeDeterministicH3Prompt(submittedPrompt, { mode });
   if (!prompt) throw new Error("提示詞不能是空白。");
   const duration = clampNumber(payload.duration, 5, 0.5, 60);
   if (mode !== "replace") validateH3Prompt(prompt, { mode, duration });
@@ -1415,7 +1639,7 @@ async function startGeneration(payload, internal = {}) {
     if (!inputImagePath && !inputVideoPath) {
       throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
     }
-    if (!(await fs.stat(REF2VA_MODEL).catch(() => null))) {
+    if (!COMFY_REMOTE && !(await fs.stat(REF2VA_MODEL).catch(() => null))) {
       throw new Error(
         `尚未安裝 Ref2VA diffusion model：${REF2VA_MODEL_NAME}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
       );
@@ -1495,6 +1719,7 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       COMFY_URL,
     ];
+    if (COMFY_REMOTE) args.push("--remote-comfy");
   } else {
     args = [
       GENERATOR,
@@ -1519,6 +1744,7 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       COMFY_URL,
     ];
+    if (COMFY_REMOTE) args.push("--remote-comfy");
     if (inputImagePath && mode !== "ref2v") args.push("--input-image", inputImagePath);
     if (lastImagePath) args.push("--last-frame", lastImagePath);
     if (mode === "ref2v") {
@@ -2069,13 +2295,17 @@ async function deleteMediaAsset(rootName, relativeName, {
   return { name: cleanName, root: rootName, kind, deletedCount: 1 };
 }
 
-const seedvr2Controller = createSeedVR2Controller({
-  comfyUrl: COMFY_URL,
-  comfyRoot: COMFY_ROOT,
-  inputRoot: INPUT_ROOT,
-  outputRoot: OUTPUT_ROOT,
-  toAsset,
-});
+function createSeedVR2ControllerForRuntime() {
+  return createSeedVR2Controller({
+    comfyUrl: COMFY_URL,
+    comfyRoot: COMFY_ROOT,
+    inputRoot: INPUT_ROOT,
+    outputRoot: OUTPUT_ROOT,
+    toAsset,
+  });
+}
+
+let seedvr2Controller = createSeedVR2ControllerForRuntime();
 
 async function route(req, res) {
   if (req.method === "OPTIONS") {
@@ -2086,6 +2316,30 @@ async function route(req, res) {
   const requestUrl = new URL(req.url || "/", "http://localhost");
   const pathname = requestUrl.pathname;
 
+  if (pathname === "/api/runtime") {
+    if (req.method === "GET") {
+      sendJson(res, 200, { runtime: await probeRuntimeTarget(COMFY_REMOTE), health: await health() });
+      return;
+    }
+    if (req.method === "POST") {
+      try {
+        const payload = await readJson(req);
+        const runtime = await switchRuntimeMode(String(payload.mode || ""));
+        sendJson(res, 200, { runtime, health: await health() });
+      } catch (error) {
+        const status = Number.isInteger(error?.status) ? error.status : 500;
+        sendJson(res, status, {
+          error: error instanceof Error ? error.message : "Runtime switch failed.",
+          ...(error?.code ? { code: error.code } : {}),
+          ...(error?.details ? { details: error.details } : {}),
+        });
+      }
+      return;
+    }
+    sendError(res, 405, "Runtime endpoint only supports GET and POST.");
+    return;
+  }
+
   if (pathname === "/api/upscale" || pathname.startsWith("/api/upscale/")) {
     const dispatch = () => seedvr2Controller.handleRoute(req, res, {
       pathname,
@@ -2093,14 +2347,14 @@ async function route(req, res) {
       sendJson,
       sendError,
     });
-    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(dispatch));
+    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
     if (handled || res.headersSent) return;
   }
 
   if (pathname === "/api/sequences" || pathname.startsWith("/api/sequences/")) {
     const dispatch = () => handleLongVideoRoute(req, res, {
       plan: planSequenceWithPromptProvider,
-      planOptions: { ollamaUrl: OLLAMA_URL },
+      planOptions: { ollamaUrl: OLLAMA_URL, comfyUrl: COMFY_URL, remoteComfy: COMFY_REMOTE },
       outputOptions: { root: OUTPUT_ROOT },
       preflight: () => checkMediaTools(),
       runJob: (job, deps) => runSequence(job, {
@@ -2108,7 +2362,7 @@ async function route(req, res) {
         generate: startSequenceGeneration,
       }),
     });
-    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(dispatch));
+    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
     if (handled || res.headersSent) return;
   }
 
@@ -2166,38 +2420,48 @@ async function route(req, res) {
     return;
   }
   if (req.method === "POST" && pathname === "/api/ollama/prompt") {
+    let payload = null;
     try {
-      sendJson(res, 200, await createPrompt({ ...(await readJson(req)), provider: "ollama" }));
+      payload = { ...(await readJson(req)), provider: "ollama" };
+      sendJson(res, 200, await withRuntimeOperation(async () => createPrompt(payload)));
     } catch (error) {
+      const saved = await persistPromptError({ stage: "prompt_generation", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 502;
       sendJson(res, status, {
-        error: error instanceof Error ? error.message : "Prompt generation failed.",
-        ...(error?.code ? { code: error.code } : {}),
+        ...promptErrorPayload(error),
+        ...(saved ? { errorLog: saved.filePath } : {}),
       });
     }
     return;
   }
   if (req.method === "POST" && pathname === "/api/prompt") {
+    let payload = null;
     try {
-      sendJson(res, 200, await createPrompt(await readJson(req)));
+      payload = await readJson(req);
+      sendJson(res, 200, await withRuntimeOperation(async () => createPrompt(payload)));
     } catch (error) {
+      const saved = await persistPromptError({ stage: "prompt_generation", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 502;
       sendJson(res, status, {
-        error: error instanceof Error ? error.message : "Prompt generation failed.",
-        ...(error?.code ? { code: error.code } : {}),
+        ...promptErrorPayload(error),
+        ...(saved ? { errorLog: saved.filePath } : {}),
       });
     }
     return;
   }
   if (req.method === "POST" && pathname === "/api/generate") {
+    let payload = null;
     try {
-      const payload = await readJson(req);
-      sendJson(res, 202, { job: await withAssetLifecycleLock(() => startGeneration(payload)) });
+      payload = await readJson(req);
+      sendJson(res, 202, { job: await withAssetLifecycleLock(() => withRuntimeOperation(() => startGeneration(payload))) });
     } catch (error) {
+      const saved = await persistPromptError({ stage: "video_submission", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 500;
       sendJson(res, status, {
         error: error instanceof Error ? error.message : "Video generation failed.",
         ...(error?.code ? { code: error.code } : {}),
+        ...(error?.details ? { details: error.details } : {}),
+        ...(saved ? { errorLog: saved.filePath } : {}),
       });
     }
     return;
@@ -2262,6 +2526,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   console.log("MiniMax project: " + H3_ROOT);
   console.log("ComfyUI: " + COMFY_URL);
   console.log("Ollama: " + OLLAMA_URL);
+  console.log("Remote ComfyUI mode: " + COMFY_REMOTE);
   });
 }
 

@@ -1,5 +1,23 @@
 # H3 Studio
 
+## Vast RTX 5090 remote mode
+
+The current Vast instance is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet.
+
+```powershell
+cd C:\Users\forev\minimax-h3-video-studio
+.\scripts\vast\start-vast-remote.ps1
+.\scripts\vast\status.ps1
+```
+
+The launcher forwards local `127.0.0.1:18188` to remote ComfyUI and local `127.0.0.1:11435` to remote Ollama, then starts the Web/API on `http://127.0.0.1:8787/app` with the Vast runtime initially selected. The **MODEL RUNTIME** control in the WebUI can switch the live process between **本機** (`8188` / `11434`) and **Vast 5090** (`18188` / `11435`). A switch is rejected while generation or upscaling is active; when safe, the bridge checks or starts the selected services and releases loaded models on the runtime being left. Inputs stay in the local media library, are uploaded for each remote workflow, and completed artifacts are downloaded back into the local output library.
+
+Remote prompt generation defaults to `hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M`; `huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M` remains selectable. Both models support text and image prompt inputs. Before Ollama inference the bridge unloads ComfyUI models; before video generation it unloads active Ollama models. Ollama requests use an 8192-token context and `keep_alive: 0`.
+
+Prompt-generation failures and H3 validation failures that occur before a video job is admitted are appended to `logs/prompt-errors-YYYYMMDD.jsonl`. Each record includes the problematic submitted or final candidate prompt, validation/API error details, model, mode, duration, runtime, and timestamp. Attached image data is never written to this log.
+
+The rented instance does not have a persistent Vast volume. Stopping and restarting the same instance preserves `/workspace`, but recycling or destroying it removes Ollama, H3 weights, and configuration. Update the host and SSH port parameters in `scripts/vast/start-tunnel.ps1` after renting a replacement instance.
+
 ## Long-video jobs and diagnostics
 
 Long-video drafts and jobs are persisted under `data/jobs/<sequence-id>/`. Each job has an atomic `job.json`, segment files, and an append-only `events.jsonl` with generation, ffprobe/ffmpeg, assembly, API start, and restart-recovery events. A daily summary is written to `logs/long-video-YYYYMMDD.jsonl`; logs include command exit codes and the last stderr bytes but never tokens, base64 media, or repeated full prompts. Set `FFMPEG_PATH` and `FFPROBE_PATH` when the executables are not on `PATH`. Sequence output folders are allocated exclusively below `ComfyUI/output`; an existing folder returns `OUTPUT_FOLDER_EXISTS`.

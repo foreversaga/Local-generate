@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildH3PromptSystem } from "../server/h3-prompt/instruction.mjs";
-import { validateOrRepairH3Prompt } from "../server/h3-prompt/repair.mjs";
+import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "../server/h3-prompt/repair.mjs";
 
 const validT2V = [
   "integrated_multimodal_description: [Shot 1] Live-action, cinematic, a subject enters the room.",
@@ -11,6 +11,8 @@ const validT2V = [
   "non_diegetic_music: N/A",
 ].join("\n");
 const invalidT2V = "integrated_multimodal_description: A subject enters the room.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A";
+const i2vaFirstLine = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
+const mergedI2va = `integrated_multimodal_description: ${i2vaFirstLine}\n\n[Shot 1] The referenced subject walks forward.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A`;
 
 test("does not call repair when the first validation succeeds", async () => {
   let calls = 0;
@@ -50,7 +52,41 @@ test("repairs once and validates the repaired output", async () => {
   assert.match(request, /Only repair the H3 format contract/);
 });
 
-test("stops after one repair and retains both validation errors", async () => {
+test("deterministically separates Gemma's merged I2VA alignment line", async () => {
+  let calls = 0;
+  const normalized = normalizeDeterministicH3Prompt(mergedI2va, { mode: "i2v" });
+  assert.equal(normalized, `${i2vaFirstLine}\n\nintegrated_multimodal_description: [Shot 1] The referenced subject walks forward.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A`);
+  const result = await validateOrRepairH3Prompt(mergedI2va, {
+    mode: "i2v",
+    duration: 5,
+    repair: async () => { calls += 1; return mergedI2va; },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.valid, true);
+  assert.equal(result.repaired, true);
+  assert.equal(result.repairAttempts, 0);
+  assert.equal(result.deterministicRepairs, 1);
+  assert.equal(result.prompt, normalized);
+});
+
+test("repairs twice when the first repaired candidate is still invalid", async () => {
+  let calls = 0;
+  const result = await validateOrRepairH3Prompt(invalidT2V, {
+    mode: "t2v",
+    repair: async (_repairPrompt, context) => {
+      calls += 1;
+      assert.equal(context.attempt, calls);
+      assert.equal(context.maxRepairAttempts, 2);
+      return calls === 1 ? invalidT2V : validT2V;
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.repaired, true);
+  assert.equal(result.repairAttempts, 2);
+  assert.equal(result.repairPrompts.length, 2);
+});
+
+test("stops after two repairs and retains the final candidate and validation errors", async () => {
   let calls = 0;
   await assert.rejects(
     () => validateOrRepairH3Prompt(invalidT2V, {
@@ -61,10 +97,14 @@ test("stops after one repair and retains both validation errors", async () => {
       assert.equal(error.code, "PROMPT_REPAIR_FAILED");
       assert.equal(error.details.firstValidation.code, "PROMPT_SHOT1_REQUIRED");
       assert.equal(error.details.secondValidation.code, "PROMPT_SHOT1_REQUIRED");
+      assert.equal(error.details.finalValidation.code, "PROMPT_SHOT1_REQUIRED");
+      assert.equal(error.details.validationHistory.length, 3);
+      assert.equal(error.details.candidatePrompt, invalidT2V);
+      assert.equal(error.details.repairAttempts, 2);
       return true;
     },
   );
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 test("system instructions cover mode-specific H3 contracts without local skill claims", () => {

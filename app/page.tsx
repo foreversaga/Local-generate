@@ -46,6 +46,7 @@ type Health = {
   h3Root: boolean;
   ollama: {
     online: boolean;
+    url?: string;
     models: string[];
   };
   codex: {
@@ -62,7 +63,15 @@ type Health = {
   comfy: {
     online: boolean;
     url: string;
+    remote?: boolean;
     devices: Array<{ name?: string; vram_total?: number; vram_free?: number }>;
+  };
+  runtime?: {
+    mode: "local" | "remote";
+    switching: boolean;
+    activeOperations: number;
+    local: { comfyUrl: string; ollamaUrl: string };
+    remote: { comfyUrl: string; ollamaUrl: string };
   };
   paths: {
     h3Root: string;
@@ -113,6 +122,13 @@ type Toast = {
 type ApiErrorPayload = {
   error?: string | { code?: string; message?: string };
   code?: string;
+  candidatePrompt?: string;
+  details?: {
+    candidatePrompt?: string;
+    repairAttempts?: number;
+    finalValidation?: { code?: string; message?: string };
+    secondValidation?: { code?: string; message?: string };
+  };
 };
 
 function apiErrorMessage(payload: ApiErrorPayload, fallback: string) {
@@ -236,20 +252,23 @@ const navItems = [
   { label: "系統設定", icon: "sliders", target: "render-settings" },
 ];
 
+const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
+const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+const DEFAULT_OLLAMA_MODEL = GEMMA4_OLLAMA_MODEL;
+
 const promptModelCatalog: PromptModelOption[] = [
-  { value: "gemma4:12b", label: "Gemma 4 12B", note: "文字＋圖片", vision: true },
-  { value: "qwen3-vl:8b-instruct", label: "Qwen3 VL 8B", note: "文字＋圖片", vision: true },
-  { value: "gemma3:1b", label: "Gemma 3 1B", note: "文字", vision: false },
-  { value: "gemma3:4b", label: "Gemma 3 4B", note: "文字＋圖片", vision: true },
-  { value: "gemma3:12b", label: "Gemma 3 12B", note: "文字＋圖片", vision: true },
-  { value: "gemma3:27b", label: "Gemma 3 27B", note: "文字＋圖片", vision: true },
-  { value: "gemma3n:e2b", label: "Gemma 3n E2B", note: "低資源＋圖片", vision: true },
-  { value: "gemma3n:e4b", label: "Gemma 3n E4B", note: "低資源＋圖片", vision: true },
-  { value: "gemma2:2b", label: "Gemma 2 2B", note: "文字", vision: false },
-  { value: "gemma2:9b", label: "Gemma 2 9B", note: "文字", vision: false },
-  { value: "gemma2:27b", label: "Gemma 2 27B", note: "文字", vision: false },
-  { value: "gemma:2b", label: "Gemma 1 2B", note: "文字", vision: false },
-  { value: "gemma:7b", label: "Gemma 1 7B", note: "文字", vision: false },
+  {
+    value: GEMMA4_OLLAMA_MODEL,
+    label: "Gemma 4 26B-A4B Uncensored",
+    note: "Remote RTX 5090 · Balanced Q4_K_M · text + image",
+    vision: true,
+  },
+  {
+    value: QWEN_OLLAMA_MODEL,
+    label: "Qwen3-VL Abliterated 32B",
+    note: "Remote RTX 5090 · text + image",
+    vision: true,
+  },
 ];
 
 const codexModelCatalog: CodexModelOption[] = [
@@ -625,9 +644,10 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("t2v");
   const [promptBrief, setPromptBrief] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [promptGenerationError, setPromptGenerationError] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [promptProvider, setPromptProvider] = useState<PromptProvider>("ollama");
-  const [ollamaModel, setOllamaModel] = useState("gemma4:12b");
+  const [ollamaModel, setOllamaModel] = useState(DEFAULT_OLLAMA_MODEL);
   const [codexModel, setCodexModel] = useState("gpt-5.6-luna");
   const [codexReasoningEffort, setCodexReasoningEffort] = useState("medium");
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
@@ -644,6 +664,7 @@ export default function Home() {
   const [renderJobs, setRenderJobs] = useState<Job[]>([]);
   const [renderBatchSize, setRenderBatchSize] = useState(0);
   const [renderSubmitting, setRenderSubmitting] = useState(false);
+  const [runtimeSwitchBusy, setRuntimeSwitchBusy] = useState(false);
   const [studioMode, setStudioMode] = useState<"single" | "long">("single");
   const [longTitle, setLongTitle] = useState("");
   const [longInputType, setLongInputType] = useState<"text" | "image">("text");
@@ -895,15 +916,50 @@ export default function Home() {
       const nextHealth = (await response.json()) as Health;
       setHealth(nextHealth);
       setBridgeOnline(true);
-      if (
-        nextHealth.ollama.models.length &&
-        !nextHealth.ollama.models.includes(ollamaModel)
-      ) {
-        setOllamaModel(nextHealth.ollama.models[0]);
+      if (nextHealth.ollama.models.length) {
+        setOllamaModel((current) => nextHealth.ollama.models.includes(current)
+          ? current
+          : nextHealth.ollama.models[0]);
       }
     } catch {
       setBridgeOnline(false);
       setHealth(null);
+    }
+  }
+
+  async function selectRuntimeMode(mode: "local" | "remote") {
+    const currentMode = health?.runtime?.mode || (health?.comfy.remote ? "remote" : "local");
+    if (runtimeSwitchBusy || mode === currentMode) return;
+    setRuntimeSwitchBusy(true);
+    try {
+      const response = await fetch(BRIDGE_URL + "/api/runtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        health?: Health;
+        error?: string;
+        code?: string;
+      };
+      if (!response.ok || !payload.health) {
+        throw new Error(payload.code ? `${payload.code}: ${payload.error || "Runtime switch failed."}` : payload.error || "Runtime switch failed.");
+      }
+      setHealth(payload.health);
+      setBridgeOnline(true);
+      if (payload.health.ollama.models.length) {
+        setOllamaModel((current) => mode === "remote" && payload.health!.ollama.models.includes(GEMMA4_OLLAMA_MODEL)
+          ? GEMMA4_OLLAMA_MODEL
+          : payload.health!.ollama.models.includes(current)
+            ? current
+            : payload.health!.ollama.models[0]);
+      }
+      showToast(mode === "remote" ? "已切換到 Vast RTX 5090。" : "已切換到本機模型。", "success");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Runtime switch failed.", "error");
+      await refreshStatus();
+    } finally {
+      setRuntimeSwitchBusy(false);
     }
   }
 
@@ -1020,7 +1076,9 @@ export default function Home() {
         if (latest.seed !== undefined) setSeed(latest.seed);
         if (latest.modelProfile) setModelProfile(latest.modelProfile);
         if (latest.promptProvider) setPromptProvider(latest.promptProvider);
-        if (latest.ollamaModel) setOllamaModel(latest.ollamaModel);
+        // A saved job may reference a model that is not installed on the
+        // currently selected runtime. Health reconciliation owns the live
+        // model choice, so restoring a job must not overwrite it.
         if (latest.codexModel) setCodexModel(latest.codexModel);
         if (latest.codexReasoningEffort) setCodexReasoningEffort(latest.codexReasoningEffort);
         setLongNegativePrompt(latest.negativePrompt || "");
@@ -1108,22 +1166,23 @@ export default function Home() {
       showToast("找不到 h3-prompt-writing skill。", "error");
       return;
     }
-    if (promptProvider === "ollama" && !visibleModels.includes(ollamaModel)) {
-      showToast(`模型 ${ollamaModel} 尚未安裝。`, "error");
+    if (promptProvider === "ollama" && !visibleModels.includes(effectiveOllamaModel)) {
+      showToast(`模型 ${effectiveOllamaModel} 尚未安裝。`, "error");
       return;
     }
     if (
       promptProvider === "ollama" &&
       H3_IMAGE_PROMPT_MODES.has(mode) &&
-      !modelSupportsPromptImages(ollamaModel)
+      !modelSupportsPromptImages(effectiveOllamaModel)
     ) {
-      showToast(`模型 ${ollamaModel} 不支援圖片理解，無法產生 ${promptFormatLabel} 提示詞。請改用 vision 模型或 Codex CLI。`, "error");
+      showToast(`模型 ${effectiveOllamaModel} 不支援圖片理解，無法產生 ${promptFormatLabel} 提示詞。請改用 vision 模型或 Codex CLI。`, "error");
       return;
     }
+    setPromptGenerationError("");
     setPromptBusy(true);
     try {
       const promptImages: Array<{ role: string; data: string }> = [];
-      if (promptProvider === "codex" || modelSupportsPromptImages(ollamaModel)) {
+      if (promptProvider === "codex" || modelSupportsPromptImages(effectiveOllamaModel)) {
         if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
           promptImages.push({
             role: "reference_image",
@@ -1168,7 +1227,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider: promptProvider,
-          model: promptProvider === "codex" ? effectiveCodexModel : ollamaModel,
+          model: promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel,
           codexModel: effectiveCodexModel,
           reasoningEffort: effectiveCodexReasoningEffort,
           brief: promptBrief,
@@ -1191,6 +1250,14 @@ export default function Home() {
         negativePrompt?: string;
       };
       if (!response.ok) {
+        const candidatePrompt = payload.candidatePrompt || payload.details?.candidatePrompt || "";
+        const validation = payload.details?.finalValidation || payload.details?.secondValidation;
+        if (candidatePrompt) setPrompt(candidatePrompt);
+        if (candidatePrompt || validation) {
+          const attempts = payload.details?.repairAttempts;
+          const validationMessage = [validation?.code, validation?.message].filter(Boolean).join(": ") || apiErrorMessage(payload, "H3 提示詞格式驗證失敗。");
+          setPromptGenerationError(`${validationMessage}${Number.isInteger(attempts) ? `（已自動修正 ${attempts} 次）` : ""}${candidatePrompt ? " 候選提示詞已保留，可直接編輯。" : ""}`);
+        }
         throw new Error(apiErrorMessage(payload, `${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 沒有回應`));
       }
       if (payload.prompt) setPrompt(payload.prompt);
@@ -1849,7 +1916,7 @@ export default function Home() {
       if (!codexSkillAvailable) throw new Error("找不到 h3-prompt-writing skill。");
     } else {
       if (!ollamaOnline) throw new Error("Ollama 尚未連線。");
-      if (!visibleModels.includes(ollamaModel)) throw new Error(`模型 ${ollamaModel} 尚未安裝。`);
+      if (!visibleModels.includes(effectiveOllamaModel)) throw new Error(`模型 ${effectiveOllamaModel} 尚未安裝。`);
     }
     if (longTimelineMode === "manual" && !longTimeline.trim()) throw new Error("手動時間軸模式需要至少兩段分鏡。");
     const submittedDuration = normalizedLongDuration(longDuration);
@@ -1878,7 +1945,7 @@ export default function Home() {
           segmentDurationHint: submittedSegmentDurationHint,
           timelineText: longTimelineMode === "manual" ? longTimeline : undefined,
           promptProvider,
-          ollamaModel,
+          ollamaModel: effectiveOllamaModel,
           codexModel: effectiveCodexModel,
           reasoningEffort: effectiveCodexReasoningEffort,
           negativePrompt: longNegativePrompt,
@@ -1982,7 +2049,7 @@ export default function Home() {
         height: height === "" ? 416 : height,
         steps: submittedSteps,
         seed: submittedSeed,
-        ollamaModel,
+        ollamaModel: effectiveOllamaModel,
         promptProvider,
         codexModel: effectiveCodexModel,
         codexReasoningEffort: effectiveCodexReasoningEffort,
@@ -2058,6 +2125,9 @@ export default function Home() {
   const codexSkillAvailable = Boolean(health?.codex?.skill);
   const comfyOnline = Boolean(health?.comfy.online);
   const visibleModels = health?.ollama.models || [];
+  const effectiveOllamaModel = visibleModels.includes(ollamaModel)
+    ? ollamaModel
+    : visibleModels[0] || ollamaModel;
   const catalogValues = new Set(promptModelCatalog.map((model) => model.value));
   const installedCatalogModels = promptModelCatalog.filter((model) => visibleModels.includes(model.value));
   const installedExtras = visibleModels
@@ -2176,6 +2246,8 @@ export default function Home() {
     ? `${upscaleJob.status === "completed" ? "已完成" : upscaleJob.status === "failed" ? "升頻失敗" : upscaleJob.status === "cancelled" ? "已取消" : upscaleJob.status === "running" ? "正在升頻" : "等待處理"}${upscaleJob.stage ? ` · ${upscaleJob.stage}` : ""}`
     : "尚未開始升頻";
   const upscaleSubmitDisabled = !upscaleSource || upscaleUploading || upscaleSubmitting || upscaleActive;
+  const runtimeMode = health?.runtime?.mode || (health?.comfy.remote ? "remote" : "local");
+  const runtimeSwitchDisabled = runtimeSwitchBusy || renderBusy || renderSubmitting || longBusy || longJobActive || upscaleSubmitting || upscaleActive;
 
   return (
     <main className="studio-shell">
@@ -2557,7 +2629,7 @@ export default function Home() {
               ) : (
                 <div className="ollama-select long-ollama-select">
                   <span className="ollama-badge">O</span>
-                  <select value={ollamaModel} onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Ollama 模型">
+                  <select value={effectiveOllamaModel} onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }} aria-label="長影片 Ollama 模型">
                     {promptModels.map((model) => {
                       const isInstalled = visibleModels.includes(model.value);
                       const status = ollamaOnline ? (isInstalled ? "已安裝" : "未安裝") : "待檢查";
@@ -2738,7 +2810,7 @@ export default function Home() {
                 <div className="ollama-select" hidden={promptProvider !== "ollama"}>
                   <span className="ollama-badge">O</span>
                   <select
-                    value={ollamaModel}
+                    value={effectiveOllamaModel}
                     onChange={(event) => { setOllamaModel(event.target.value); if (longPlan) setLongPlanDirty(true); }}
                     aria-label="Ollama 模型"
                   >
@@ -2806,10 +2878,16 @@ export default function Home() {
                 id="prompt"
                 className="text-input prompt-input"
                 value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
+                onChange={(event) => { setPrompt(event.target.value); setPromptGenerationError(""); }}
                 maxLength={isH3PromptMode(mode) ? H3_PROMPT_MAX_CHARS : undefined}
                 placeholder="輸入要送給 MiniMax H3 的提示詞…"
               />
+              {promptGenerationError && (
+                <div className="prompt-validation-error" role="alert">
+                  <strong>提示詞格式仍需修正</strong>
+                  <span>{promptGenerationError}</span>
+                </div>
+              )}
               <div className="prompt-footer">
                 <label className="field-label compact-label" htmlFor="negative-prompt">
                   負面提示詞
@@ -2831,6 +2909,42 @@ export default function Home() {
                   <h2>生成設定</h2>
                 </div>
                 <span className="panel-mark panel-mark-number">H3</span>
+              </div>
+
+              <div className="runtime-mode-card" aria-live="polite">
+                <div className="runtime-mode-copy">
+                  <span className="section-code">MODEL RUNTIME</span>
+                  <strong>{runtimeMode === "remote" ? "Vast RTX 5090" : "本機 GPU"}</strong>
+                  <small>
+                    {runtimeMode === "remote"
+                      ? "ComfyUI 18188 · Ollama 11435 · SSH loopback"
+                      : "ComfyUI 8188 · Ollama 11434"}
+                  </small>
+                </div>
+                <div className="runtime-mode-switch" role="group" aria-label="模型執行位置">
+                  <button
+                    type="button"
+                    className={runtimeMode === "local" ? "is-active" : ""}
+                    onClick={() => void selectRuntimeMode("local")}
+                    disabled={runtimeSwitchDisabled}
+                    aria-pressed={runtimeMode === "local"}
+                  >
+                    本機
+                  </button>
+                  <button
+                    type="button"
+                    className={runtimeMode === "remote" ? "is-active" : ""}
+                    onClick={() => void selectRuntimeMode("remote")}
+                    disabled={runtimeSwitchDisabled}
+                    aria-pressed={runtimeMode === "remote"}
+                  >
+                    {runtimeSwitchBusy ? "切換中…" : "Vast 5090"}
+                  </button>
+                </div>
+                <span className={"runtime-mode-health " + (comfyOnline && ollamaOnline ? "is-online" : "is-offline")}>
+                  <span className="status-dot" />
+                  {comfyOnline && ollamaOnline ? "ComfyUI／Ollama 在線" : "目標服務未就緒"}
+                </span>
               </div>
 
               <div className="field-label">生成模式</div>

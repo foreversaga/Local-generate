@@ -42,7 +42,7 @@ test("renders the H3 Studio interface without promotional shell copy", async () 
 });
 
 test("uses the same-origin API on the web service", async () => {
-  const [page, vite, packageJson, readme, bridge, h3Instruction, h3Validator, restartScript] = await Promise.all([
+  const [page, vite, packageJson, readme, bridge, h3Instruction, h3Validator, restartScript, longVideoApi] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -51,6 +51,7 @@ test("uses the same-origin API on the web service", async () => {
     readFile(new URL("../server/h3-prompt/instruction.mjs", import.meta.url), "utf8"),
     readFile(new URL("../server/h3-prompt/validator.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/restart-web.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../server/long-video/api.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /const BRIDGE_URL = "\/app"/);
@@ -248,6 +249,21 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /內部銜接影格不在 ComfyUI\/input 內/);
   assert.match(bridge, /generation\.input\.cleanup/);
   assert.match(bridge, /req\.method === "DELETE" && pathname === "\/api\/assets"/);
+  assert.match(bridge, /pathname === "\/api\/runtime"/);
+  assert.match(bridge, /switchRuntimeMode/);
+  assert.match(page, /MODEL RUNTIME/);
+  assert.match(page, /selectRuntimeMode\("remote"\)/);
+  assert.match(page, /effectiveOllamaModel/);
+  assert.match(page, /Gemma 4 26B-A4B Uncensored/);
+  assert.match(page, /HauhauCS\/Gemma4-26B-A4B-QAT-Uncensored/);
+  assert.match(page, /const DEFAULT_OLLAMA_MODEL = GEMMA4_OLLAMA_MODEL/);
+  assert.match(page, /promptGenerationError/);
+  assert.match(page, /candidatePrompt/);
+  assert.match(page, /prompt-validation-error/);
+  assert.match(bridge, /promptErrorPayload/);
+  assert.match(bridge, /normalizeDeterministicH3Prompt\(submittedPrompt, \{ mode \}\)/);
+  assert.doesNotMatch(page, /if \(latest\.ollamaModel\) setOllamaModel/);
+  assert.doesNotMatch(longVideoApi, /gemma4:12b/);
   assert.doesNotMatch(bridge, /STUDIO_OUTPUT_ROOT/);
   assert.match(bridge, /job\.status === "running" && Number\.isFinite\(job\.executionStartedMs\)/);
   assert.match(bridge, /job\.elapsedMs = Number\.isFinite\(job\.executionStartedMs\)/);

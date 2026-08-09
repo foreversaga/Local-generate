@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
-import test from "node:test";
+import test, { after } from "node:test";
 
-import { route } from "../local-bridge.mjs";
+const bridgeLogRoot = await mkdtemp(path.join(os.tmpdir(), "h3-prompt-bridge-logs-"));
+process.env.MINIMAX_H3_LOGS_ROOT = bridgeLogRoot;
+const { route } = await import("../local-bridge.mjs");
+
+after(async () => {
+  await rm(bridgeLogRoot, { recursive: true, force: true });
+});
 
 const VALID_T2V = [
   "integrated_multimodal_description: [Shot 1] Live-action subject enters the room.",
@@ -85,4 +94,68 @@ test("invalid prompt modes return 400 for prompt and generation routes", async (
   const generation = await invoke("/api/generate", { prompt: VALID_T2V, mode: "unknown" });
   assert.equal(generation.status, 400);
   assert.equal(generation.body.code, "PROMPT_MODE_INVALID");
+});
+
+test("runtime endpoint switches atomically between local and Vast targets", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    urls.push(value);
+    if (value.endsWith("/system_stats")) return new Response(JSON.stringify({ devices: [] }), { status: 200 });
+    if (value.endsWith("/api/tags")) return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    if (value.endsWith("/api/ps")) return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    if (value.endsWith("/free")) return new Response("{}", { status: 200 });
+    throw new Error(`unexpected runtime URL: ${value}`);
+  };
+  try {
+    const remote = await invoke("/api/runtime", { mode: "remote" });
+    assert.equal(remote.status, 200);
+    assert.equal(remote.body.health.runtime.mode, "remote");
+    assert.equal(remote.body.health.comfy.remote, true);
+    assert.match(remote.body.health.comfy.url, /18188$/);
+    assert.match(remote.body.health.ollama.url, /11435$/);
+
+    const local = await invoke("/api/runtime", { mode: "local" });
+    assert.equal(local.status, 200);
+    assert.equal(local.body.health.runtime.mode, "local");
+    assert.equal(local.body.health.comfy.remote, false);
+    assert.match(local.body.health.comfy.url, /8188$/);
+    assert.match(local.body.health.ollama.url, /11434$/);
+    assert.ok(urls.some((url) => url.endsWith(":18188/system_stats")));
+    assert.ok(urls.some((url) => url.endsWith(":11435/api/tags")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("failed Ollama repairs return the last candidate and validation details", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const invalid = "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A";
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ response: invalid }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 5 });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, "PROMPT_REPAIR_FAILED");
+    assert.equal(result.body.candidatePrompt, invalid);
+    assert.equal(result.body.details.candidatePrompt, invalid);
+    assert.equal(result.body.details.repairAttempts, 2);
+    assert.equal(result.body.details.finalValidation.code, "PROMPT_SHOT1_REQUIRED");
+    assert.equal(path.dirname(result.body.errorLog), bridgeLogRoot);
+    const saved = (await readFile(result.body.errorLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .at(-1);
+    assert.equal(saved.stage, "prompt_generation");
+    assert.equal(saved.prompts.candidate, invalid);
+    assert.equal(saved.error.code, "PROMPT_REPAIR_FAILED");
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
