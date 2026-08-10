@@ -9,6 +9,7 @@ import {
 } from "../../lib/single-render-request.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
+import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
 import styles from "./SingleCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
@@ -59,6 +60,7 @@ const MODEL_OPTIONS: readonly ModelOption[] = [
 export function SingleCreateForm() {
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [assetsReady, setAssetsReady] = useState(false);
   const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false });
   const [mode, setMode] = useState<Mode>("t2v");
   const [prompt, setPrompt] = useState("");
@@ -118,19 +120,65 @@ export function SingleCreateForm() {
   const previewAsset = referenceImage || referenceImages[0] || lastFrameImage || sourceVideo;
   const isUploading = uploadingTarget !== null;
   const canSubmit = validationIssues.length === 0 && !submitting && !isUploading;
+  const draftValue = useMemo(() => ({
+    mode,
+    prompt,
+    negativePrompt,
+    modelProfile,
+    width,
+    height,
+    duration,
+    steps,
+    seed,
+    renderCount,
+    outputName,
+    referenceImageKey: referenceImage ? assetKey(referenceImage) : null,
+    referenceImageKeys: referenceImages.map(assetKey),
+    lastFrameImageKey: lastFrameImage ? assetKey(lastFrameImage) : null,
+    sourceVideoKey: sourceVideo ? assetKey(sourceVideo) : null,
+  }), [
+    duration,
+    height,
+    lastFrameImage,
+    mode,
+    modelProfile,
+    negativePrompt,
+    outputName,
+    prompt,
+    referenceImage,
+    referenceImages,
+    renderCount,
+    seed,
+    sourceVideo,
+    steps,
+    width,
+  ]);
+  const { clearDraft, status: draftStatus } = useSingleCreateDraft({
+    ready: assetsReady,
+    value: draftValue,
+    onHydrate: hydrateSingleCreateDraft,
+  });
 
   useEffect(() => {
-    void Promise.all([refreshAssets(), refreshHealth()]);
+    void initializeSingleCreate();
   }, []);
 
-  async function refreshAssets() {
+  async function initializeSingleCreate() {
+    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth()]);
+    setAssetsReady(assetsLoaded);
+  }
+
+  async function refreshAssets(): Promise<boolean> {
     try {
       const response = await fetch(`${BRIDGE_URL}/api/assets?root=all`);
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const payload = (await response.json()) as { assets?: Asset[] };
       setAssets(payload.assets || []);
+      setAssetsReady(true);
+      return true;
     } catch {
       setAssets([]);
+      return false;
     }
   }
 
@@ -143,6 +191,46 @@ export function SingleCreateForm() {
     } catch {
       setServiceState({ bridge: false, comfy: false });
     }
+  }
+
+  function hydrateSingleCreateDraft(draft: SingleCreateDraft) {
+    const draftMode = MODE_OPTIONS.some((option) => option.value === draft.mode)
+      ? draft.mode as Mode
+      : "t2v";
+    const modelOptions = modelOptionsForMode(draftMode);
+    const nextModelProfile = modelOptions.some((option) => option.value === draft.modelProfile)
+      ? draft.modelProfile
+      : modelOptions[0]?.value || "nvfp4_blackwell";
+    const assetByKey = new Map(inputAssets.map((asset) => [assetKey(asset), asset]));
+    const imageByKey = (key: string | null) => {
+      const asset = key ? assetByKey.get(key) : null;
+      return asset?.kind === "image" ? asset : null;
+    };
+    const videoByKey = (key: string | null) => {
+      const asset = key ? assetByKey.get(key) : null;
+      return asset?.kind === "video" ? asset : null;
+    };
+
+    setMode(draftMode);
+    setPrompt(draft.prompt);
+    setNegativePrompt(draft.negativePrompt);
+    setModelProfile(nextModelProfile);
+    setWidth(draft.width);
+    setHeight(draft.height);
+    setDuration(draft.duration);
+    setSteps(draft.steps);
+    setSeed(draft.seed);
+    setRenderCount(draft.renderCount);
+    setOutputName(draft.outputName);
+    setReferenceImage(imageByKey(draft.referenceImageKey));
+    setReferenceImages(draft.referenceImageKeys
+      .map((key) => imageByKey(key))
+      .filter((asset): asset is Asset => Boolean(asset))
+      .slice(0, MAX_REF2V_IMAGES));
+    setLastFrameImage(imageByKey(draft.lastFrameImageKey));
+    setSourceVideo(videoByKey(draft.sourceVideoKey));
+    setSubmitAttempted(false);
+    setTouchedFields(new Set());
   }
 
   function markTouched(field: string) {
@@ -314,6 +402,7 @@ export function SingleCreateForm() {
       const destination = createdJobs[0]?.id
         ? `/app/jobs/${encodeURIComponent(createdJobs[0].id)}`
         : "/app/jobs";
+      clearDraft();
       router.push(destination);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "生成服務未連線。");
@@ -324,8 +413,15 @@ export function SingleCreateForm() {
 
   return (
     <div className={styles.layout}>
+      <nav className={styles.sectionNav} aria-label="Single Create sections">
+        <a href="#single-source-section">來源</a>
+        <a href="#single-prompt-section">Prompt</a>
+        <a href="#single-setup-section">設定</a>
+        <a href="#single-review-section">檢查</a>
+      </nav>
+
       <div className={styles.formColumn}>
-        <FormSection code="01 / SOURCE" title="來源與模式" icon="layers">
+        <FormSection id="single-source-section" code="01 / SOURCE" title="來源與模式" icon="layers">
           <div className={styles.fieldStack}>
             <div>
               <div className={styles.fieldLabel}>生成模式</div>
@@ -370,7 +466,7 @@ export function SingleCreateForm() {
           </div>
         </FormSection>
 
-        <FormSection code="02 / PROMPT" title="Prompt" icon="spark">
+        <FormSection id="single-prompt-section" code="02 / PROMPT" title="Prompt" icon="spark">
           <div className={styles.fieldStack}>
             <SinglePromptAssistant
               mode={mode}
@@ -418,7 +514,7 @@ export function SingleCreateForm() {
           </div>
         </FormSection>
 
-        <FormSection code="03 / RENDER SETUP" title="生成設定" icon="frames">
+        <FormSection id="single-setup-section" code="03 / RENDER SETUP" title="生成設定" icon="frames">
           <div className={styles.fieldStack}>
             <div className={styles.fieldGrid}>
               <label className={styles.field}>
@@ -552,7 +648,7 @@ export function SingleCreateForm() {
         </FormSection>
       </div>
 
-      <aside className={styles.summary} aria-label="生成摘要">
+      <aside id="single-review-section" className={styles.summary} aria-label="生成摘要">
         <section className={styles.summaryCard}>
           <div className={styles.summaryLabel}>Review</div>
           <h2 className={styles.summaryTitle}>Single render</h2>
@@ -587,6 +683,10 @@ export function SingleCreateForm() {
             <span className={`${styles.statusDot} ${serviceState.bridge && serviceState.comfy ? styles.statusDotOnline : ""}`} aria-hidden="true" />
             <span>{serviceState.bridge && serviceState.comfy ? "Bridge / ComfyUI 在線" : "Bridge 或 ComfyUI 尚未就緒；提交時仍由既有 API 回報錯誤。"}</span>
           </div>
+          <div className={`${styles.draftState} ${draftStatus === "error" ? styles.draftStateError : ""}`} role="status" aria-live="polite">
+            <Icon name={draftStatus === "error" ? "close" : "check"} />
+            <span>{draftStatusLabel(draftStatus)}</span>
+          </div>
           {submitError && <div className={styles.submitError} role="alert">{submitError}</div>}
           <div className={styles.desktopGenerate}>
             <GenerateButton canSubmit={canSubmit} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
@@ -601,9 +701,9 @@ export function SingleCreateForm() {
   );
 }
 
-function FormSection({ code, title, icon, children }: { code: string; title: string; icon: IconName; children: ReactNode }) {
+function FormSection({ id, code, title, icon, children }: { id?: string; code: string; title: string; icon: IconName; children: ReactNode }) {
   return (
-    <fieldset className={styles.section}>
+    <fieldset id={id} className={styles.section}>
       <legend className="sr-only">{title}</legend>
       <div className={styles.sectionHeader}>
         <div>
@@ -911,6 +1011,14 @@ function Icon({ name }: { name: IconName }) {
     folder: <><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></>,
   };
   return <svg className={styles.icon} viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function draftStatusLabel(status: "loading" | "idle" | "saving" | "saved" | "error") {
+  if (status === "loading") return "等待資源庫後載入 Single 草稿…";
+  if (status === "saving") return "正在自動儲存草稿…";
+  if (status === "saved") return "Single 草稿已自動儲存";
+  if (status === "error") return "無法儲存 Single 草稿；離開前請保留目前頁面。";
+  return "Single 草稿會自動儲存在此瀏覽器";
 }
 
 function modelOptionsForMode(mode: Mode) {
