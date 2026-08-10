@@ -4,13 +4,15 @@ on:
   push:
     branches:
       - agent/document-webui-redesign-plan
+    paths-ignore:
+      - .ci/webui-ci-result.json
   pull_request:
     branches:
       - agent/document-webui-redesign-plan
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -28,8 +30,30 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install, build, and run tests
+        id: validate
+        continue-on-error: true
+        run: npm ci && npm test
 
-      - name: Build and run tests
-        run: npm test
+      - name: Record CI result
+        if: always() && github.event_name == 'push'
+        env:
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+        run: |
+          mkdir -p .ci
+          printf '{\n  "commit": "%s",\n  "runId": "%s",\n  "runAttempt": "%s",\n  "outcome": "%s"\n}\n' \
+            "$GITHUB_SHA" \
+            "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" \
+            "$VALIDATION_OUTCOME" > .ci/webui-ci-result.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/webui-ci-result.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record WebUI CI result [skip ci]"
+            git push
+          fi
+
+      - name: Enforce validation result
+        if: steps.validate.outcome != 'success'
+        run: exit 1
