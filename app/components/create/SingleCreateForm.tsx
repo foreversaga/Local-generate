@@ -8,6 +8,7 @@ import {
   buildSingleRenderRequest,
 } from "../../lib/single-render-request.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
+import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import styles from "./SingleCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
@@ -371,6 +372,17 @@ export function SingleCreateForm() {
 
         <FormSection code="02 / PROMPT" title="Prompt" icon="spark">
           <div className={styles.fieldStack}>
+            <SinglePromptAssistant
+              mode={mode}
+              duration={duration}
+              negativePrompt={negativePrompt}
+              referenceImage={referenceImage}
+              referenceImages={referenceImages}
+              lastFrameImage={lastFrameImage}
+              sourceVideo={sourceVideo}
+              onPromptGenerated={setPrompt}
+              onNegativePromptGenerated={setNegativePrompt}
+            />
             <label className={`${styles.field} ${visibleFieldError("prompt") ? styles.fieldInvalid : ""}`}>
               <span className={styles.fieldLabel}>H3 Prompt</span>
               <textarea

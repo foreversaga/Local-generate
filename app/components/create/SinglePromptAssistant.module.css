@@ -1,0 +1,259 @@
+.assistant {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
+  padding: 16px;
+}
+
+.header,
+.providerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.header {
+  align-items: flex-start;
+}
+
+.eyebrow {
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.brief,
+.select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.brief {
+  min-height: 88px;
+  padding: 11px 12px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.select {
+  min-height: 44px;
+  padding: 0 11px;
+}
+
+.brief:hover,
+.select:hover {
+  border-color: color-mix(in srgb, var(--muted) 55%, var(--line));
+}
+
+.invalid .brief {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--line));
+}
+
+.helper {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.providerSwitch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 220px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--bg);
+  padding: 3px;
+}
+
+.providerSwitch button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.providerSwitch button:hover {
+  color: var(--text);
+}
+
+.providerSwitch .providerActive {
+  background: color-mix(in srgb, var(--lime) 10%, var(--panel-soft));
+  color: var(--lime);
+}
+
+.status {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-2);
+  font-size: 11px;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.statusReady {
+  color: var(--muted);
+}
+
+.statusReady .statusDot {
+  background: var(--lime);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lime) 9%, transparent);
+}
+
+.providerFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.45fr);
+  gap: 10px;
+}
+
+.refreshButton,
+.generateButton {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.refreshButton {
+  width: 44px;
+  flex: 0 0 44px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.generateButton {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--lime) 35%, var(--line));
+  background: color-mix(in srgb, var(--lime) 9%, var(--bg-elevated));
+  color: var(--lime);
+  padding: 0 14px;
+}
+
+.refreshButton:hover,
+.generateButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--lime) 48%, var(--line));
+  background: color-mix(in srgb, var(--lime) 13%, var(--panel-soft));
+  color: var(--text);
+}
+
+.generateButton:disabled,
+.refreshButton:disabled,
+.select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.error,
+.errorBox,
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.error,
+.errorBox {
+  color: var(--danger);
+}
+
+.errorBox,
+.notice {
+  border-radius: 9px;
+  padding: 9px 10px;
+}
+
+.errorBox {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+
+.notice {
+  background: color-mix(in srgb, var(--lime) 7%, transparent);
+  color: var(--lime);
+}
+
+.icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+@media (max-width: 620px) {
+  .providerRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .providerSwitch {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .status {
+    min-height: 24px;
+  }
+
+  .providerFields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brief,
+  .select,
+  .refreshButton,
+  .generateButton {
+    transition: none;
+  }
+}

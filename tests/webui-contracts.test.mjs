@@ -13,6 +13,9 @@ import {
   batchSeed,
   buildSingleRenderRequest,
 } from "../app/lib/single-render-request.mjs";
+import {
+  buildSinglePromptRequest,
+} from "../app/lib/single-prompt-request.mjs";
 
 const ASSET = { name: "asset.png" };
 
@@ -235,4 +238,69 @@ test("batch request helpers keep legacy seed and filename behavior", () => {
   assert.equal(batchOutputName("clip.mp4", 0, 3), "clip-1");
   assert.equal(batchOutputName("", 1, 3), "h3-render-2");
   assert.equal(batchOutputName("clip", 0, 1), "clip");
+});
+
+
+test("single prompt request keeps legacy provider and media payload shape", () => {
+  assert.deepEqual(
+    buildSinglePromptRequest({
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      codexModel: "gpt-5.6-luna",
+      reasoningEffort: "medium",
+      brief: "A person waits on a windy platform.",
+      negativePrompt: "flicker",
+      mode: "fl2v",
+      duration: 5,
+      referenceImageName: "first.png",
+      referenceImageNames: [],
+      lastFrameName: "last.png",
+      sourceVideoName: "",
+      images: [
+        { role: "first_frame", data: "first-base64" },
+        { role: "last_frame", data: "last-base64" },
+      ],
+    }),
+    {
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      codexModel: "gpt-5.6-luna",
+      reasoningEffort: "medium",
+      brief: "A person waits on a windy platform.",
+      negativePrompt: "flicker",
+      mode: "fl2v",
+      duration: 5,
+      referenceImageName: "first.png",
+      firstFrameName: "first.png",
+      lastFrameName: "last.png",
+      sourceVideoName: "",
+      images: [
+        { role: "first_frame", data: "first-base64" },
+        { role: "last_frame", data: "last-base64" },
+      ],
+    },
+  );
+});
+
+test("ref2v prompt request caps references and uses Picture 1 as primary reference", () => {
+  const referenceImageNames = Array.from({ length: 12 }, (_, index) => `ref-${index + 1}.png`);
+  const payload = buildSinglePromptRequest({
+    provider: "ollama",
+    model: "vision-model",
+    codexModel: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    brief: "Keep the same character identity.",
+    negativePrompt: "",
+    mode: "ref2v",
+    duration: 5,
+    referenceImageName: "stale.png",
+    referenceImageNames,
+    lastFrameName: "",
+    sourceVideoName: "motion.mp4",
+    images: [],
+  });
+
+  assert.equal(payload.referenceImageName, "ref-1.png");
+  assert.deepEqual(payload.referenceImageNames, referenceImageNames.slice(0, 9));
+  assert.equal(payload.sourceVideoName, "motion.mp4");
 });

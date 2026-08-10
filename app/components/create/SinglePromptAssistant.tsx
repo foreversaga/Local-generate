@@ -1,0 +1,500 @@
+"use client";
+
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
+import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
+import styles from "./SinglePromptAssistant.module.css";
+
+const BRIDGE_URL = "/app";
+const MAX_REF2V_IMAGES = 9;
+const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
+const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+const H3_IMAGE_PROMPT_MODES = new Set<Mode>(["i2v", "fl2v", "l2v", "ref2v"]);
+
+type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
+type PromptProvider = "ollama" | "codex";
+type Asset = {
+  name: string;
+  root: "input" | "output";
+  kind: "image" | "video";
+  mime: string;
+  size: number;
+  modified: string;
+  url: string;
+};
+type CodexModelOption = {
+  value: string;
+  label: string;
+  note: string;
+  reasoningEfforts?: readonly string[];
+};
+type Health = {
+  ollama?: {
+    online?: boolean;
+    models?: string[];
+  };
+  codex?: {
+    online?: boolean;
+    skill?: boolean;
+    models?: Array<{
+      value: string;
+      label?: string;
+      note?: string;
+      reasoningEfforts?: string[];
+    }>;
+  };
+};
+type ApiErrorPayload = {
+  error?: string | { code?: string; message?: string };
+  code?: string;
+  candidatePrompt?: string;
+  details?: {
+    candidatePrompt?: string;
+    repairAttempts?: number;
+    finalValidation?: { code?: string; message?: string };
+    secondValidation?: { code?: string; message?: string };
+  };
+};
+type Props = {
+  mode: Mode;
+  duration: number;
+  negativePrompt: string;
+  referenceImage: Asset | null;
+  referenceImages: Asset[];
+  lastFrameImage: Asset | null;
+  sourceVideo: Asset | null;
+  onPromptGenerated: (value: string) => void;
+  onNegativePromptGenerated: (value: string) => void;
+};
+
+type IconName = "spark" | "refresh" | "check" | "close";
+
+const PROMPT_MODEL_CATALOG = [
+  {
+    value: GEMMA4_OLLAMA_MODEL,
+    label: "Gemma 4 26B-A4B Uncensored",
+    note: "Remote RTX 5090 · text + image",
+  },
+  {
+    value: QWEN_OLLAMA_MODEL,
+    label: "Qwen3-VL Abliterated 32B",
+    note: "Remote RTX 5090 · text + image",
+  },
+] as const;
+
+const CODEX_MODEL_CATALOG: readonly CodexModelOption[] = [
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", note: "最高品質", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", note: "品質／速度平衡", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", note: "較快、低成本", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "gpt-5.5", label: "GPT-5.5", note: "通用 Codex", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+  { value: "gpt-5.4", label: "GPT-5.4", note: "日常 Codex", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", note: "較快、低成本", reasoningEfforts: ["low", "medium", "high", "xhigh"] },
+] as const;
+
+const REASONING_OPTIONS = [
+  { value: "low", label: "Low", note: "最快" },
+  { value: "medium", label: "Medium", note: "平衡" },
+  { value: "high", label: "High", note: "更完整" },
+  { value: "xhigh", label: "XHigh", note: "深度" },
+  { value: "max", label: "Max", note: "最高" },
+  { value: "ultra", label: "Ultra", note: "自動分工" },
+] as const;
+
+export function SinglePromptAssistant({
+  mode,
+  duration,
+  negativePrompt,
+  referenceImage,
+  referenceImages,
+  lastFrameImage,
+  sourceVideo,
+  onPromptGenerated,
+  onNegativePromptGenerated,
+}: Props) {
+  const [health, setHealth] = useState<Health | null>(null);
+  const [brief, setBrief] = useState("");
+  const [provider, setProvider] = useState<PromptProvider>("ollama");
+  const [ollamaModel, setOllamaModel] = useState(GEMMA4_OLLAMA_MODEL);
+  const [codexModel, setCodexModel] = useState("gpt-5.6-luna");
+  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const [busy, setBusy] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    void refreshHealth();
+  }, []);
+
+  const visibleModels = health?.ollama?.models || [];
+  const effectiveOllamaModel = visibleModels.includes(ollamaModel)
+    ? ollamaModel
+    : visibleModels[0] || ollamaModel;
+  const ollamaOptions = useMemo(() => {
+    const catalogByValue = new Map(PROMPT_MODEL_CATALOG.map((model) => [model.value, model]));
+    return visibleModels.map((model) => {
+      const known = catalogByValue.get(model);
+      return {
+        value: model,
+        label: known?.label || model,
+        note: known?.note || (modelSupportsPromptImages(model) ? "已安裝 · 支援圖片" : "已安裝"),
+      };
+    });
+  }, [visibleModels]);
+  const codexOptions: readonly CodexModelOption[] = health?.codex?.models?.length
+    ? health.codex.models.map((model) => ({
+      value: model.value,
+      label: model.label || model.value,
+      note: model.note || "Codex model",
+      reasoningEfforts: model.reasoningEfforts,
+    }))
+    : CODEX_MODEL_CATALOG;
+  const selectedCodexModel = codexOptions.find((model) => model.value === codexModel) || codexOptions[0];
+  const supportedReasoning = selectedCodexModel?.reasoningEfforts?.length
+    ? selectedCodexModel.reasoningEfforts
+    : REASONING_OPTIONS.map((option) => option.value);
+  const effectiveReasoning = supportedReasoning.includes(reasoningEffort)
+    ? reasoningEffort
+    : supportedReasoning.includes("medium") ? "medium" : supportedReasoning[0] || "medium";
+  const effectiveCodexModel = selectedCodexModel?.value || codexModel;
+  const formatLabel = promptFormatLabel(mode);
+  const briefError = attempted && !brief.trim() ? "請先輸入提示詞描述。" : "";
+  const providerReady = provider === "ollama"
+    ? Boolean(health?.ollama?.online && visibleModels.length)
+    : Boolean(health?.codex?.online && health?.codex?.skill);
+
+  async function refreshHealth() {
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/health`);
+      if (!response.ok) throw new Error("prompt provider unavailable");
+      const payload = (await response.json()) as Health;
+      setHealth(payload);
+      const installedModels = payload.ollama?.models || [];
+      if (installedModels.length) {
+        setOllamaModel((current) => installedModels.includes(current) ? current : installedModels[0]);
+      }
+    } catch {
+      setHealth(null);
+    }
+  }
+
+  function selectCodexModel(value: string) {
+    setCodexModel(value);
+    const nextModel = codexOptions.find((model) => model.value === value);
+    const efforts = nextModel?.reasoningEfforts?.length
+      ? nextModel.reasoningEfforts
+      : REASONING_OPTIONS.map((option) => option.value);
+    if (!efforts.includes(reasoningEffort)) {
+      setReasoningEffort(efforts.includes("medium") ? "medium" : efforts[0] || "medium");
+    }
+  }
+
+  async function generatePrompt() {
+    setAttempted(true);
+    setError("");
+    setNotice("");
+
+    if (!brief.trim()) return;
+
+    const assetIssues = validateSingleRenderAssets({
+      mode,
+      referenceImage,
+      referenceImages,
+      lastFrameImage,
+      sourceVideo,
+    }) as Array<{ field: string; message: string }>;
+    if (assetIssues.length) {
+      setError(assetIssues[0].message);
+      return;
+    }
+
+    if (provider === "ollama") {
+      if (!health?.ollama?.online) {
+        setError("Ollama 尚未連線。");
+        return;
+      }
+      if (!visibleModels.includes(effectiveOllamaModel)) {
+        setError(`模型 ${effectiveOllamaModel} 尚未安裝。`);
+        return;
+      }
+      if (H3_IMAGE_PROMPT_MODES.has(mode) && !modelSupportsPromptImages(effectiveOllamaModel)) {
+        setError(`模型 ${effectiveOllamaModel} 不支援圖片理解，請改用 vision 模型或 Codex CLI。`);
+        return;
+      }
+    } else {
+      if (!health?.codex?.online) {
+        setError("Codex CLI 尚未安裝或無法執行。");
+        return;
+      }
+      if (!health?.codex?.skill) {
+        setError("找不到 h3-prompt-writing skill。");
+        return;
+      }
+    }
+
+    setBusy(true);
+    try {
+      const images = await buildPromptImages({
+        provider,
+        ollamaModel: effectiveOllamaModel,
+        mode,
+        referenceImage,
+        referenceImages,
+        lastFrameImage,
+        sourceVideo,
+      });
+      const response = await fetch(`${BRIDGE_URL}/api/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildSinglePromptRequest({
+          provider,
+          model: provider === "codex" ? effectiveCodexModel : effectiveOllamaModel,
+          codexModel: effectiveCodexModel,
+          reasoningEffort: effectiveReasoning,
+          brief: brief.trim(),
+          negativePrompt,
+          mode,
+          duration,
+          referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
+          referenceImageNames: referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES),
+          lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
+          sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
+          images,
+        })),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload & {
+        prompt?: string;
+        negativePrompt?: string;
+      };
+
+      if (!response.ok) {
+        const candidatePrompt = payload.candidatePrompt || payload.details?.candidatePrompt || "";
+        const validation = payload.details?.finalValidation || payload.details?.secondValidation;
+        if (candidatePrompt) onPromptGenerated(candidatePrompt);
+        const validationMessage = [validation?.code, validation?.message].filter(Boolean).join(": ");
+        const attempts = payload.details?.repairAttempts;
+        const repairNote = Number.isInteger(attempts) ? `（已自動修正 ${attempts} 次）` : "";
+        const candidateNote = candidatePrompt ? " 候選提示詞已保留，可直接編輯。" : "";
+        throw new Error(
+          validationMessage
+            ? `${validationMessage}${repairNote}${candidateNote}`
+            : apiErrorMessage(payload, `${providerLabel(provider)} 沒有回應`),
+        );
+      }
+
+      if (payload.prompt) onPromptGenerated(payload.prompt);
+      if (payload.negativePrompt) onNegativePromptGenerated(payload.negativePrompt);
+      setNotice(`${providerLabel(provider)} 已產生 ${formatLabel} 提示詞。`);
+    } catch (promptError) {
+      setError(promptError instanceof Error ? promptError.message : `${providerLabel(provider)} 連線失敗。`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className={styles.assistant} aria-labelledby="single-prompt-assistant-title">
+      <div className={styles.header}>
+        <div>
+          <span className={styles.eyebrow}>Prompt Assistant</span>
+          <h3 id="single-prompt-assistant-title" className={styles.title}>從描述產生 {formatLabel} Prompt</h3>
+        </div>
+        <button type="button" className={styles.refreshButton} onClick={() => void refreshHealth()} aria-label="重新檢查 Prompt provider 狀態" title="重新檢查 provider">
+          <Icon name="refresh" />
+        </button>
+      </div>
+
+      <label className={`${styles.field} ${briefError ? styles.invalid : ""}`}>
+        <span className={styles.label}>提示詞描述</span>
+        <textarea
+          className={styles.brief}
+          value={brief}
+          aria-invalid={Boolean(briefError)}
+          aria-describedby="single-prompt-brief-helper single-prompt-brief-error"
+          placeholder="例如：一個人在月台等待，風吹動他的外套…"
+          onChange={(event) => {
+            setBrief(event.target.value);
+            if (attempted) setError("");
+          }}
+        />
+        <span id="single-prompt-brief-helper" className={styles.helper}>可用中文描述；產出後仍可直接編輯下方 H3 Prompt。</span>
+        {briefError && <p id="single-prompt-brief-error" className={styles.error} role="alert"><Icon name="close" />{briefError}</p>}
+      </label>
+
+      <div className={styles.providerRow}>
+        <div className={styles.providerSwitch} role="group" aria-label="Prompt 生成來源">
+          <button type="button" className={provider === "ollama" ? styles.providerActive : ""} aria-pressed={provider === "ollama"} onClick={() => { setProvider("ollama"); setError(""); }}>
+            Ollama
+          </button>
+          <button type="button" className={provider === "codex" ? styles.providerActive : ""} aria-pressed={provider === "codex"} onClick={() => { setProvider("codex"); setError(""); }}>
+            Codex CLI
+          </button>
+        </div>
+        <span className={`${styles.status} ${providerReady ? styles.statusReady : ""}`}>
+          <span className={styles.statusDot} aria-hidden="true" />
+          {providerReady ? "Ready" : "Unavailable"}
+        </span>
+      </div>
+
+      {provider === "ollama" ? (
+        <label className={styles.field}>
+          <span className={styles.label}>Ollama 模型</span>
+          <select className={styles.select} value={visibleModels.length ? effectiveOllamaModel : ""} disabled={!visibleModels.length || busy} onChange={(event) => setOllamaModel(event.target.value)}>
+            {!visibleModels.length && <option value="">沒有可用模型</option>}
+            {ollamaOptions.map((model) => <option key={model.value} value={model.value}>{model.label} · {model.note}</option>)}
+          </select>
+        </label>
+      ) : (
+        <div className={styles.providerFields}>
+          <label className={styles.field}>
+            <span className={styles.label}>Codex 模型</span>
+            <select className={styles.select} value={effectiveCodexModel} disabled={busy} onChange={(event) => selectCodexModel(event.target.value)}>
+              {codexOptions.map((model) => <option key={model.value} value={model.value}>{model.label} · {model.note}</option>)}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span className={styles.label}>Reasoning</span>
+            <select className={styles.select} value={effectiveReasoning} disabled={busy} onChange={(event) => setReasoningEffort(event.target.value)}>
+              {REASONING_OPTIONS.filter((option) => supportedReasoning.includes(option.value)).map((option) => (
+                <option key={option.value} value={option.value}>{option.label} · {option.note}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
+      <button type="button" className={styles.generateButton} disabled={busy || !providerReady} onClick={() => void generatePrompt()}>
+        <Icon name="spark" />
+        <span>{busy ? `${providerLabel(provider)} 生成中…` : `產生 ${formatLabel} 提示詞`}</span>
+      </button>
+
+      {error && <p className={styles.errorBox} role="alert"><Icon name="close" />{error}</p>}
+      {notice && <p className={styles.notice} role="status"><Icon name="check" />{notice}</p>}
+    </section>
+  );
+}
+
+async function buildPromptImages({
+  provider,
+  ollamaModel,
+  mode,
+  referenceImage,
+  referenceImages,
+  lastFrameImage,
+  sourceVideo,
+}: {
+  provider: PromptProvider;
+  ollamaModel: string;
+  mode: Mode;
+  referenceImage: Asset | null;
+  referenceImages: Asset[];
+  lastFrameImage: Asset | null;
+  sourceVideo: Asset | null;
+}) {
+  if (provider === "ollama" && !modelSupportsPromptImages(ollamaModel)) return [];
+
+  const images: Array<{ role: string; data: string }> = [];
+  if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
+    images.push({ role: "reference_image", data: await assetToPromptImage(referenceImage) });
+  }
+  if (mode === "ref2v") {
+    for (const [index, asset] of referenceImages.slice(0, MAX_REF2V_IMAGES).entries()) {
+      images.push({ role: `picture_${index + 1}`, data: await assetToPromptImage(asset) });
+    }
+  }
+  if (mode === "fl2v" && referenceImage?.kind === "image") {
+    images.push({ role: "first_frame", data: await assetToPromptImage(referenceImage) });
+  }
+  if ((mode === "fl2v" || mode === "l2v") && lastFrameImage?.kind === "image") {
+    images.push({ role: "last_frame", data: await assetToPromptImage(lastFrameImage) });
+  }
+  if (mode === "replace" && sourceVideo?.kind === "video") {
+    images.push({ role: "source_video_first_frame", data: await assetToPromptImage(sourceVideo) });
+  }
+  if (mode === "ref2v" && sourceVideo?.kind === "video") {
+    images.push({ role: "video_1_preview_frame", data: await assetToPromptImage(sourceVideo) });
+  }
+  return images;
+}
+
+async function assetToPromptImage(asset: Asset) {
+  const response = await fetch(assetUrl(asset));
+  if (!response.ok) throw new Error("無法讀取參考素材。");
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const canvas = document.createElement("canvas");
+    const maxDimension = 1024;
+    if (asset.kind === "image") {
+      const image = new Image();
+      image.src = objectUrl;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("無法解碼參考圖片。"));
+      });
+      const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+    } else {
+      const video = document.createElement("video");
+      video.src = objectUrl;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      await new Promise<void>((resolve, reject) => {
+        video.onloadeddata = () => resolve();
+        video.onerror = () => reject(new Error("無法讀取來源影片首幀。"));
+      });
+      const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      video.removeAttribute("src");
+      video.load();
+    }
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
+    return dataUrl.slice(dataUrl.indexOf(",") + 1);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function modelSupportsPromptImages(model: string) {
+  const normalized = model.toLowerCase();
+  if (normalized === "gemma3:1b") return false;
+  return normalized.includes("-vl") || normalized.includes("gemma3") || normalized.includes("gemma4") || normalized.includes("gemma3n");
+}
+
+function promptFormatLabel(mode: Mode) {
+  if (mode === "t2v") return "T2VA";
+  if (mode === "i2v") return "I2VA";
+  if (mode === "fl2v") return "FL2VA";
+  if (mode === "l2v") return "L2VA";
+  if (mode === "ref2v") return "Ref2VA";
+  return "Wan Animate";
+}
+
+function providerLabel(provider: PromptProvider) {
+  return provider === "codex" ? "Codex CLI" : "Ollama";
+}
+
+function assetUrl(asset: Asset) {
+  return `${BRIDGE_URL}${asset.url}`;
+}
+
+function apiErrorMessage(payload: ApiErrorPayload, fallback: string) {
+  const message = typeof payload.error === "string" ? payload.error : payload.error?.message || fallback;
+  const code = payload.code || (typeof payload.error === "object" ? payload.error?.code : "");
+  return code ? `${code}: ${message}` : message;
+}
+
+function Icon({ name }: { name: IconName }) {
+  const paths: Record<IconName, ReactNode> = {
+    spark: <><path d="M12 2.8 13.5 8l5.2 1.5-5.2 1.5L12 16.2 10.5 11 5.3 9.5 10.5 8 12 2.8Z" /><path d="m18.5 15 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /></>,
+    refresh: <><path d="M20 7v5h-5" /><path d="M4 17v-5h5" /><path d="M6.1 8.5A7 7 0 0 1 18.7 7L20 12" /><path d="M17.9 15.5A7 7 0 0 1 5.3 17L4 12" /></>,
+    check: <path d="m5 12 4 4L19 6" />,
+    close: <><path d="m7 7 10 10" /><path d="M17 7 7 17" /></>,
+  };
+  return <svg className={styles.icon} viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}

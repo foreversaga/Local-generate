@@ -7,6 +7,15 @@
 /**
  * @typedef {{
  *   mode: string;
+ *   referenceImage: SingleRenderAssetRef | null;
+ *   referenceImages: SingleRenderAssetRef[];
+ *   lastFrameImage: SingleRenderAssetRef | null;
+ *   sourceVideo: SingleRenderAssetRef | null;
+ * }} SingleRenderAssetValidationInput
+ */
+
+/**
+ * @typedef {SingleRenderAssetValidationInput & {
  *   prompt: string;
  *   promptMaxChars?: number;
  *   enforcePromptMaxChars?: boolean;
@@ -15,10 +24,6 @@
  *   steps: NumberDraft;
  *   seed: NumberDraft;
  *   renderCount: NumberDraft;
- *   referenceImage: SingleRenderAssetRef | null;
- *   referenceImages: SingleRenderAssetRef[];
- *   lastFrameImage: SingleRenderAssetRef | null;
- *   sourceVideo: SingleRenderAssetRef | null;
  * }} SingleRenderValidationInput
  */
 
@@ -55,7 +60,7 @@ export function validateSingleRender(input) {
     ));
   }
 
-  issues.push(...validateRequiredAssets(input));
+  issues.push(...validateSingleRenderAssets(input));
 
   const dimensionGrid = input.mode === "replace" ? 16 : 32;
   issues.push(...validateDimension(input.width, "width", "影片寬度", dimensionGrid));
@@ -83,10 +88,10 @@ export function validateSingleRender(input) {
 }
 
 /**
- * @param {SingleRenderValidationInput} input
+ * @param {SingleRenderAssetValidationInput} input
  * @returns {ValidationIssue[]}
  */
-function validateRequiredAssets(input) {
+export function validateSingleRenderAssets(input) {
   const issues = [];
 
   if (input.mode === "ref2v" && input.referenceImages.length === 0 && !input.sourceVideo) {
