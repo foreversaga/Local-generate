@@ -87,27 +87,39 @@ export function validateSingleRender(input) {
  * @returns {ValidationIssue[]}
  */
 function validateRequiredAssets(input) {
+  const issues = [];
+
   if (input.mode === "ref2v" && input.referenceImages.length === 0 && !input.sourceVideo) {
-    return [issue("referenceImages", "Ref2VA 至少需要一個參考圖片或參考影片。")];
+    issues.push(issue("referenceImages", "Ref2VA 至少需要一個參考圖片或參考影片。"));
   }
 
   if (input.mode === "i2v" && !input.referenceImage) {
-    return [issue("referenceImage", "I2VA 需要參考圖片。")];
+    issues.push(issue("referenceImage", "I2VA 需要參考圖片。"));
   }
 
-  if (input.mode === "fl2v" && (!input.referenceImage || !input.lastFrameImage)) {
-    return [issue("referenceImage", "FL2VA 需要首幀與尾幀圖片。")];
+  if (input.mode === "fl2v") {
+    if (!input.referenceImage) {
+      issues.push(issue("referenceImage", "FL2VA 需要首幀圖片。"));
+    }
+    if (!input.lastFrameImage) {
+      issues.push(issue("lastFrameImage", "FL2VA 需要尾幀圖片。"));
+    }
   }
 
   if (input.mode === "l2v" && !input.lastFrameImage) {
-    return [issue("lastFrameImage", "L2VA 需要尾幀圖片。")];
+    issues.push(issue("lastFrameImage", "L2VA 需要尾幀圖片。"));
   }
 
-  if (input.mode === "replace" && (!input.referenceImage || !input.sourceVideo)) {
-    return [issue("sourceVideo", "影片替換需要參考圖片與來源影片。")];
+  if (input.mode === "replace") {
+    if (!input.referenceImage) {
+      issues.push(issue("referenceImage", "影片替換需要參考圖片。"));
+    }
+    if (!input.sourceVideo) {
+      issues.push(issue("sourceVideo", "影片替換需要來源影片。"));
+    }
   }
 
-  return [];
+  return issues;
 }
 
 /**
