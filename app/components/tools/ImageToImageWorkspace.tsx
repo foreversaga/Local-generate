@@ -4,6 +4,11 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { assetKey, assetUrl, type StudioAsset, uploadAssets } from "../library/asset-client";
 import {
+    STUDIO_SETTINGS_DEFAULTS,
+    loadStudioSettings,
+    reconcileStudioSettings,
+} from "../../lib/studio-settings.mjs";
+import {
     fetchImg2ImgHealth,
     fetchImg2ImgJob,
     fetchImg2ImgRuntime,
@@ -59,6 +64,20 @@ const IMG2IMG_MODELS = [
 
 type ModelValue = typeof IMG2IMG_MODELS[number]["value"];
 
+type PromptHealth = {
+    ollama?: {
+        online?: boolean;
+        models?: string[];
+    };
+};
+
+type PromptApiPayload = {
+    prompt?: string;
+    negativePrompt?: string;
+    error?: string | { code?: string; message?: string };
+    code?: string;
+};
+
 const DEFAULT_IMG2IMG_MODEL = IMG2IMG_MODELS[0];
 
 function modelOption(value: string) {
@@ -68,6 +87,22 @@ function modelOption(value: string) {
 function modelAllowedForRuntime(value: string, runtimeMode: Img2ImgRuntimeMode | null) {
     const option = modelOption(value);
     return !option?.localOnly || runtimeMode === "local";
+}
+
+async function fetchPromptHealth(): Promise<PromptHealth | null> {
+    try {
+        const response = await fetch("/app/api/health", { cache: "no-store" });
+        if (!response.ok) return null;
+        return await response.json() as PromptHealth;
+    } catch {
+        return null;
+    }
+}
+
+function modelSupportsPromptImages(model: string) {
+    const normalized = model.toLowerCase();
+    if (normalized === "gemma3:1b") return false;
+    return normalized.includes("-vl") || normalized.includes("gemma3") || normalized.includes("gemma4") || normalized.includes("gemma3n");
 }
 
 const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機 runtime。";
@@ -83,6 +118,14 @@ function parseNumberDraft(raw: string, label: string, min: number, max: number, 
 
 function errorMessage(reason: unknown, fallback: string) {
     return reason instanceof Error ? reason.message : fallback;
+}
+
+function apiErrorMessage(payload: PromptApiPayload, fallback: string) {
+    const message = typeof payload.error === "string"
+        ? payload.error
+        : payload.error?.message || fallback;
+    const code = payload.code || (typeof payload.error === "object" ? payload.error?.code : "");
+    return code ? `${code}: ${message}` : message;
 }
 
 function statusLabel(job: Img2ImgJob | null) {
@@ -101,8 +144,12 @@ function statusLabel(job: Img2ImgJob | null) {
 
 export function ImageToImageWorkspace() {
     const [source, setSource] = useState<StudioAsset | null>(null);
+    const [promptDescription, setPromptDescription] = useState("");
     const [prompt, setPrompt] = useState("");
     const [negativePrompt, setNegativePrompt] = useState("");
+    const [promptModel, setPromptModel] = useState(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+    const [promptHealth, setPromptHealth] = useState<PromptHealth | null>(null);
+    const [promptBusy, setPromptBusy] = useState(false);
     const [model, setModel] = useState<ModelValue>(IMG2IMG_MODELS[0].value);
     const [denoise, setDenoise] = useState(0.65);
     const [steps, setSteps] = useState("4");
@@ -121,7 +168,11 @@ export function ImageToImageWorkspace() {
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
-        const [readinessResult, runtimeResult] = await Promise.allSettled([fetchImg2ImgHealth(), fetchImg2ImgRuntime()]);
+        const [readinessResult, runtimeResult, promptResult] = await Promise.allSettled([
+            fetchImg2ImgHealth(),
+            fetchImg2ImgRuntime(),
+            fetchPromptHealth(),
+        ]);
         if (readinessResult.status === "fulfilled") {
             setHealth(readinessResult.value);
             setHealthError("");
@@ -146,6 +197,7 @@ export function ImageToImageWorkspace() {
                 setCfg(DEFAULT_IMG2IMG_MODEL.cfg);
             }
         }
+        if (promptResult.status === "fulfilled") setPromptHealth(promptResult.value);
         setHealthLoading(false);
     }, [model]);
 
@@ -157,6 +209,14 @@ export function ImageToImageWorkspace() {
             window.clearInterval(timer);
         };
     }, [refreshHealth]);
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            const stored = reconcileStudioSettings(loadStudioSettings());
+            setPromptModel(stored.ollamaModel);
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, []);
 
     const trackedJobId = job?.id;
     const trackedJobStatus = job?.status;
@@ -187,6 +247,11 @@ export function ImageToImageWorkspace() {
         ? IMG2IMG_MODELS
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
     const selectedModel = modelOption(model);
+    const visiblePromptModels = promptHealth?.ollama?.models || [];
+    const effectivePromptModel = visiblePromptModels.includes(promptModel)
+        ? promptModel
+        : visiblePromptModels[0] || promptModel;
+    const promptProviderReady = Boolean(promptHealth?.ollama?.online && visiblePromptModels.includes(effectivePromptModel));
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
     const optionAvailable = (value: string) => {
         if (healthLoading) return true;
@@ -200,7 +265,7 @@ export function ImageToImageWorkspace() {
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
-    const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(job?.model || "", runtimeMode);
+    const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(model, runtimeMode);
     const sourceReady = Boolean(source && source.kind === "image");
     const promptReady = Boolean(prompt.trim());
     const readinessReady = !healthLoading && health?.ready === true && modelReady;
@@ -240,6 +305,66 @@ export function ImageToImageWorkspace() {
         setCfg(next.cfg);
     }
 
+    async function generatePrompt() {
+        if (!source || source.kind !== "image") {
+            setError("Please choose a source image first.");
+            return;
+        }
+        if (!promptDescription.trim()) {
+            setError("Enter an image transformation description first.");
+            return;
+        }
+        if (!promptProviderReady) {
+            setError("Ollama is unavailable or has no installed prompt model.");
+            return;
+        }
+        if (!modelSupportsPromptImages(effectivePromptModel)) {
+            setError(`Prompt model ${effectivePromptModel} does not support image understanding; choose a vision model.`);
+            return;
+        }
+        if (promptBusy || uploading || submitting || retrying || active) return;
+
+        setPromptBusy(true);
+        setError("");
+        try {
+            const response = await fetch("/app/api/prompt", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    provider: "ollama",
+                    model: effectivePromptModel,
+                    mode: "img2img",
+                    brief: promptDescription.trim(),
+                    images: [{
+                        role: "source_image",
+                        data: await assetToPromptImage(source),
+                    }],
+                }),
+            });
+            const payload = await response.json().catch(() => ({})) as PromptApiPayload;
+            if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama did not return a prompt."));
+            if (!payload.prompt?.trim() || !payload.negativePrompt?.trim()) {
+                throw new Error("Ollama returned an invalid response; both positive and negative prompts are required.");
+            }
+            setPrompt(payload.prompt.trim());
+            setNegativePrompt(payload.negativePrompt.trim());
+        } catch (reason) {
+            setError(errorMessage(reason, "Unable to generate an image-to-image prompt."));
+        } finally {
+            setPromptBusy(false);
+        }
+    }
+
+    function randomizeSeed() {
+        const values = new Uint32Array(1);
+        if (globalThis.crypto?.getRandomValues) {
+            globalThis.crypto.getRandomValues(values);
+            setSeed(String(values[0] % 2147483648));
+            return;
+        }
+        setSeed(String(Math.floor(Math.random() * 2147483648)));
+    }
+
     function validateForm() {
         if (!source || source.kind !== "image") return "請先選擇來源圖片。";
         if (!prompt.trim()) return "請輸入希望圖片呈現的內容。";
@@ -256,18 +381,17 @@ export function ImageToImageWorkspace() {
         return parseNumberDraft(seed, "Seed", 0, 2147483647, true);
     }
 
-    function requestBody(jobOverride?: Img2ImgJob) {
-        const current = jobOverride || job;
+    function requestBody() {
         return {
-            sourceName: current?.sourceName || source?.name || "",
-            sourceRoot: current?.sourceRoot || source?.root || "input",
-            prompt: current?.prompt || prompt.trim(),
-            negativePrompt: current?.negativePrompt ?? negativePrompt.trim(),
-            model: current?.model ?? model,
-            denoise: current?.denoise ?? Number(denoise),
-            steps: current?.steps ?? Number(steps),
-            cfg: current?.cfg ?? Number(cfg),
-            seed: current?.seed ?? Number(seed),
+            sourceName: source?.name || "",
+            sourceRoot: source?.root || "input",
+            prompt: prompt.trim(),
+            negativePrompt: negativePrompt.trim(),
+            model,
+            denoise: Number(denoise),
+            steps: Number(steps),
+            cfg: Number(cfg),
+            seed: Number(seed),
         } as const;
     }
 
@@ -293,14 +417,15 @@ export function ImageToImageWorkspace() {
 
     async function retry() {
         if (!job || !canRetry) return;
-        if (!modelAllowedForRuntime(job.model, runtimeMode)) {
-            setError(LOCAL_ONLY_MODEL_MESSAGE);
+        const validationError = validateForm();
+        if (validationError) {
+            setError(validationError);
             return;
         }
         setRetrying(true);
         setError("");
         try {
-            const next = await submitImg2Img(requestBody(job));
+            const next = await submitImg2Img(requestBody());
             setJob(next);
             if (next.status === "failed") setError(next.error || "以圖生圖失敗。 ");
         } catch (reason) {
@@ -376,6 +501,31 @@ export function ImageToImageWorkspace() {
                 </div>
                 <div className={styles.formGrid}>
                     <label className={styles.fieldWide}>
+                        <span>Prompt description for Ollama</span>
+                        <textarea
+                            id="img2img-description"
+                            value={promptDescription}
+                            maxLength={4000}
+                            rows={3}
+                            placeholder="Describe how the source image should be transformed."
+                            aria-describedby="img2img-description-help"
+                            onChange={(event) => { setPromptDescription(event.target.value); if (error) setError(""); }}
+                        />
+                        <small id="img2img-description-help">
+                            Ollama will inspect the source image and write positive and negative prompts.
+                            {promptProviderReady ? ` Model: ${effectivePromptModel}` : " Vision model unavailable."}
+                        </small>
+                    </label>
+                    <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        onClick={() => void generatePrompt()}
+                        disabled={promptBusy || uploading || submitting || retrying || active}
+                        aria-busy={promptBusy}
+                    >
+                        {promptBusy ? "Generating prompt…" : "Use Ollama to generate prompt"}
+                    </button>
+                    <label className={styles.fieldWide}>
                         <span>正向提示詞 <em>*</em></span>
                         <textarea value={prompt} maxLength={4000} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
                         <small>{prompt.length}/4000</small>
@@ -411,6 +561,16 @@ export function ImageToImageWorkspace() {
                     <label className={styles.field}>
                         <span>Seed</span>
                         <input type="number" min="0" max="2147483647" value={seed} disabled={active} onChange={(event) => setSeed(event.target.value)} />
+                        <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            onClick={randomizeSeed}
+                            disabled={active}
+                            aria-label="Randomize Seed"
+                            title="Randomize Seed"
+                        >
+                            ↻ Random Seed
+                        </button>
                     </label>
                 </div>
                 <div className={styles.submitRow}>
@@ -460,4 +620,29 @@ export function ImageToImageWorkspace() {
             )}
         </div>
     );
+}
+
+async function assetToPromptImage(asset: StudioAsset) {
+    const response = await fetch(assetUrl(asset));
+    if (!response.ok) throw new Error("Unable to read the source image.");
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+        const image = new Image();
+        image.src = objectUrl;
+        await new Promise<void>((resolve, reject) => {
+            image.onload = () => resolve();
+            image.onerror = () => reject(new Error("Unable to decode the source image."));
+        });
+        const maxDimension = 1024;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
+        return dataUrl.slice(dataUrl.indexOf(",") + 1);
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
 }

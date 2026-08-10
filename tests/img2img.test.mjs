@@ -132,6 +132,8 @@ test("builds the Z-Image Turbo image-conditioned workflow from local blueprint n
   assert.deepEqual(graph["8"], { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3 } });
   assert.equal(graph["9"].inputs.steps, 9);
   assert.equal(graph["9"].inputs.cfg, 1);
+  assert.equal(graph["9"].inputs.seed, 42);
+  assert.equal(graph["9"].inputs.denoise, 0.33);
   assert.equal(graph["9"].inputs.sampler_name, "dpmpp_2m_sde");
   assert.equal(graph["9"].inputs.scheduler, "beta");
   assert.deepEqual(graph["9"].inputs.latent_image, ["5", 0]);
