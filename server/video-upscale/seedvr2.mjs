@@ -29,6 +29,13 @@ export const SEEDVR2_REQUIRED_NODES = Object.freeze([
 ]);
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
+const VIDEO_MIME_TYPES = Object.freeze({
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+});
 const ARTIFACT_KEYS = ["images", "videos", "files", "gifs"];
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
@@ -210,11 +217,15 @@ function historyRecord(payload, promptId) {
 }
 
 function artifactFromValue(value) {
-  if (typeof value === "string") return { filename: value, subfolder: "" };
+  if (typeof value === "string") return { filename: value, subfolder: "", type: "output" };
   if (!value || typeof value !== "object") return null;
   const filename = value.filename || value.name || value.file;
   if (typeof filename !== "string" || !filename) return null;
-  return { filename, subfolder: typeof value.subfolder === "string" ? value.subfolder : "" };
+  return {
+    filename,
+    subfolder: typeof value.subfolder === "string" ? value.subfolder : "",
+    type: typeof value.type === "string" ? value.type : "output",
+  };
 }
 
 function artifactRelativeName(candidate) {
@@ -226,6 +237,26 @@ function artifactRelativeName(candidate) {
   if (pieces.some((part) => !part || part === "." || part === "..")) return null;
   const relativeName = pieces.join("/");
   return VIDEO_EXTENSIONS.has(path.posix.extname(relativeName).toLowerCase()) ? relativeName : null;
+}
+
+function historyArtifact(payload, promptId) {
+  const record = historyRecord(payload, promptId);
+  if (!record) return null;
+  const outputs = record.outputs && typeof record.outputs === "object" ? record.outputs : {};
+  const orderedNodes = ["15", ...Object.keys(outputs).filter((key) => key !== "15")];
+  for (const nodeId of orderedNodes) {
+    const output = outputs[nodeId];
+    if (!output || typeof output !== "object") continue;
+    for (const key of ARTIFACT_KEYS) {
+      const values = Array.isArray(output[key]) ? output[key] : [];
+      for (const value of values) {
+        const parsed = artifactFromValue(value);
+        const relativeName = artifactRelativeName(parsed);
+        if (relativeName) return { ...parsed, relativeName };
+      }
+    }
+  }
+  return null;
 }
 
 export function parseSeedVR2History(payload, promptId = "") {
@@ -244,19 +275,8 @@ export function parseSeedVR2History(payload, promptId = "") {
     return { state: "failed", error: asErrorMessage(errorMessage || record.error || statusText || "ComfyUI reported an execution error.") };
   }
 
-  const outputs = record.outputs && typeof record.outputs === "object" ? record.outputs : {};
-  const orderedNodes = ["15", ...Object.keys(outputs).filter((key) => key !== "15")];
-  for (const nodeId of orderedNodes) {
-    const output = outputs[nodeId];
-    if (!output || typeof output !== "object") continue;
-    for (const key of ARTIFACT_KEYS) {
-      const values = Array.isArray(output[key]) ? output[key] : [];
-      for (const value of values) {
-        const artifact = artifactRelativeName(artifactFromValue(value));
-        if (artifact) return { state: "completed", artifact };
-      }
-    }
-  }
+  const artifact = historyArtifact(payload, promptId);
+  if (artifact) return { state: "completed", artifact: artifact.relativeName };
 
   if (status.completed === true || TERMINAL_STAGES.has(statusText)) return { state: "completed" };
   return { state: "running" };
@@ -308,6 +328,7 @@ function uniqueId() {
 
 export function createSeedVR2Controller({
   comfyUrl = (process.env.COMFY_URL || "http://127.0.0.1:8188").replace(/\/$/, ""),
+  remote = false,
   comfyRoot,
   inputRoot,
   outputRoot,
@@ -331,7 +352,7 @@ export function createSeedVR2Controller({
   const queue = [];
   let active = null;
 
-  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
+  async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
     if (typeof fetchImpl !== "function") throw makeError("ComfyUI transport is unavailable.", 503, "COMFY_UNAVAILABLE");
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -343,6 +364,11 @@ export function createSeedVR2Controller({
     } finally {
       if (timer) clearTimeout(timer);
     }
+    return response;
+  }
+
+  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
+    const response = await request(endpoint, init, timeoutMs);
     const text = typeof response?.text === "function" ? await response.text() : undefined;
     const payload = await responsePayload(response, text);
     if (!response?.ok) {
@@ -400,6 +426,32 @@ export function createSeedVR2Controller({
     return { loadName: relativeName, path: createdPath, created: true };
   }
 
+  async function uploadRemoteInput(job, source) {
+    if (typeof FormData !== "function" || typeof Blob !== "function") {
+      throw makeError("Remote video upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
+    }
+    const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
+    const uploadName = `seedvr2_temp_${sanitizeFilenamePrefix(job.id)}${extension}`;
+    let bytes;
+    try {
+      bytes = await fsApi.readFile(source.path);
+    } catch (error) {
+      throw makeError(`Unable to read source video for remote upload: ${asErrorMessage(error)}`, 502, "SOURCE_READ_FAILED");
+    }
+    const form = new FormData();
+    form.append("image", new Blob([bytes], { type: VIDEO_MIME_TYPES[extension] || "application/octet-stream" }), uploadName);
+    form.append("subfolder", "h3-studio-seedvr2");
+    form.append("type", "input");
+    form.append("overwrite", "true");
+    const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000);
+    const uploaded = artifactRelativeName({
+      filename: payload?.name || uploadName,
+      subfolder: typeof payload?.subfolder === "string" ? payload.subfolder : "h3-studio-seedvr2",
+    });
+    if (!uploaded) throw makeError("ComfyUI returned an invalid uploaded video path.", 502, "UPLOAD_RESPONSE_INVALID");
+    return { loadName: uploaded, created: false };
+  }
+
   async function cleanupStagedTemp(staged, job) {
     if (!staged?.created) return;
     try {
@@ -437,13 +489,49 @@ export function createSeedVR2Controller({
     return { name: clean, root: "output", kind: "video" };
   }
 
+  async function downloadRemoteArtifact(job, artifact) {
+    const metadata = artifact && typeof artifact === "object"
+      ? artifact
+      : { filename: artifact, subfolder: "", type: "output" };
+    const relativeName = artifactRelativeName(metadata);
+    if (!relativeName) throw makeError("ComfyUI returned an unsafe output artifact.", 502, "OUTPUT_ARTIFACT_INVALID");
+    if (metadata.type && metadata.type !== "output") throw makeError("ComfyUI returned a non-output artifact.", 502, "OUTPUT_ARTIFACT_INVALID");
+    const filename = String(metadata.filename).replaceAll("\\", "/");
+    const subfolder = String(metadata.subfolder || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+    const query = new URLSearchParams({
+      filename,
+      subfolder,
+      type: "output",
+    });
+    const response = await request(`/view?${query.toString()}`, {}, 60_000);
+    if (!response?.ok) throw makeError(`Unable to download generated video: HTTP ${response?.status || 0}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
+    if (typeof response.arrayBuffer !== "function") throw makeError("ComfyUI returned an unreadable video artifact.", 502, "OUTPUT_DOWNLOAD_FAILED");
+
+    const extension = path.posix.extname(relativeName).toLowerCase();
+    const localName = `seedvr2/${outputPrefix(job)}${extension}`;
+    const candidate = path.resolve(outputRoot, localName);
+    if (!isInside(outputRoot, candidate)) throw makeError("Downloaded video path is unsafe.", 500, "OUTPUT_PATH_INVALID");
+    const outputReal = await realPathOrResolved(outputRoot, fsApi);
+    await fsApi.mkdir(path.dirname(candidate), { recursive: true });
+    const parentReal = await realPathOrResolved(path.dirname(candidate), fsApi);
+    if (!isInside(outputReal, parentReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    const existingReal = await fsApi.realpath(candidate).catch(() => null);
+    if (existingReal && !isInside(outputReal, existingReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
+    const createdReal = await fsApi.realpath(candidate).catch(() => null);
+    if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    if (typeof toAsset === "function") return await toAsset("output", localName);
+    return { name: localName, root: "output", kind: "video" };
+  }
+
   async function waitForHistory(job, promptId) {
     const started = Date.now();
     while (true) {
       const payload = await requestJson(`/history/${encodeURIComponent(promptId)}`);
       const parsed = parseSeedVR2History(payload, promptId);
       if (parsed.state === "failed") throw makeError(parsed.error || "ComfyUI reported an execution error.", 502, "COMFY_EXECUTION_FAILED");
-      if (parsed.state === "completed" && parsed.artifact) return parsed.artifact;
+      const artifact = parsed.state === "completed" ? historyArtifact(payload, promptId) : null;
+      if (artifact) return artifact;
       if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveVideo artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
       const elapsed = Date.now() - started;
       if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out while waiting for ComfyUI output.", 504, "COMFY_POLL_TIMEOUT");
@@ -468,7 +556,12 @@ export function createSeedVR2Controller({
       job.stage = "Validating source video";
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
       let loadName = source.cleanName;
-      if (job.sourceRoot === "output") {
+      if (remote) {
+        job.progress = 16;
+        job.stage = "Uploading source video";
+        staged = await uploadRemoteInput(job, source);
+        loadName = staged.loadName;
+      } else if (job.sourceRoot === "output") {
         job.progress = 16;
         job.stage = "Staging source video";
         staged = await stageOutputSource(job, source);
@@ -492,8 +585,8 @@ export function createSeedVR2Controller({
       job.stage = "Processing SeedVR2";
       const artifact = await waitForHistory(job, String(promptId));
       job.progress = 92;
-      job.stage = "Registering output video";
-      job.output = await artifactAsset(artifact);
+      job.stage = remote ? "Downloading output video" : "Registering output video";
+      job.output = remote ? await downloadRemoteArtifact(job, artifact) : await artifactAsset(artifact.relativeName || artifact);
       job.progress = 100;
       succeeded = true;
     } catch (error) {

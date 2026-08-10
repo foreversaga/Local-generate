@@ -732,7 +732,7 @@ async function health() {
 function cleanPromptText(value) {
   return String(value || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/^```(?:text|markdown)?\s*/i, "")
+    .replace(/^```(?:json|text|markdown)?\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
 }
@@ -904,6 +904,89 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] })
   return cleanPromptText(result.response || result.message?.content);
 }
 
+function parseImg2ImgPromptResponse(value) {
+  const raw = cleanPromptText(value);
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new LongVideoError(
+      "IMG2IMG_PROMPT_FORMAT_INVALID",
+      "Ollama 圖生圖提示詞必須回傳只含 prompt 與 negativePrompt 的 JSON。",
+      502,
+      { candidatePrompt: raw.slice(0, 4000) },
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new LongVideoError(
+      "IMG2IMG_PROMPT_FORMAT_INVALID",
+      "Ollama 圖生圖提示詞必須回傳 JSON 物件。",
+      502,
+    );
+  }
+  const keys = Object.keys(parsed);
+  if (keys.length !== 2 || !keys.includes("prompt") || !keys.includes("negativePrompt")) {
+    throw new LongVideoError(
+      "IMG2IMG_PROMPT_FIELDS_INVALID",
+      "Ollama 圖生圖提示詞 JSON 必須只包含 prompt 與 negativePrompt 兩個欄位。",
+      502,
+      { keys },
+    );
+  }
+  const prompt = typeof parsed.prompt === "string" ? parsed.prompt.trim() : "";
+  const negativePrompt = typeof parsed.negativePrompt === "string" ? parsed.negativePrompt.trim() : "";
+  if (!prompt || !negativePrompt) {
+    throw new LongVideoError(
+      "IMG2IMG_PROMPT_FIELDS_INVALID",
+      "Ollama 圖生圖提示詞 JSON 的 prompt 與 negativePrompt 都必須是非空文字。",
+      502,
+    );
+  }
+  if (prompt.length > 4000 || negativePrompt.length > 4000) {
+    throw new LongVideoError(
+      "IMG2IMG_PROMPT_TOO_LONG",
+      "Ollama 圖生圖提示詞的 prompt 與 negativePrompt 不可超過 4000 字元。",
+      502,
+    );
+  }
+  return { prompt, negativePrompt };
+}
+
+async function createImg2ImgPrompt(payload = {}) {
+  const provider = promptProvider(payload.provider);
+  if (provider !== "ollama") {
+    throw new LongVideoError("IMG2IMG_PROVIDER_UNSUPPORTED", "以圖生圖提示詞目前僅支援 Ollama。", 400);
+  }
+  const brief = String(payload.brief || "").trim();
+  if (!brief) throw new LongVideoError("IMG2IMG_PROMPT_INPUT_REQUIRED", "請先輸入以圖生圖描述。", 400);
+  if (brief.length > 4000) throw new LongVideoError("IMG2IMG_PROMPT_INPUT_TOO_LONG", "以圖生圖描述不可超過 4000 字元。", 400);
+  if (!Array.isArray(payload.images) || payload.images.length !== 1) {
+    throw new LongVideoError("IMG2IMG_VISUAL_INPUT_REQUIRED", "以圖生圖提示詞需要一張來源圖片。", 400);
+  }
+  const imageInput = payload.images[0];
+  if (!imageInput || typeof imageInput !== "object" || typeof imageInput.data !== "string") {
+    throw new LongVideoError("IMG2IMG_IMAGE_INVALID", "以圖生圖來源圖片資料無效。", 400);
+  }
+  const visualInputs = [{
+    role: String(imageInput.role || "source_image").trim() || "source_image",
+    data: normalizeBase64ImageData(imageInput.data, 0, "IMG2IMG_IMAGE"),
+  }];
+  const model = String(payload.model || defaultOllamaModel());
+  const response = await requestOllamaPrompt({
+    model,
+    system: [
+      "You are an expert Stable Diffusion image-to-image prompt writer.",
+      "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
+      "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
+      "Both values must be non-empty English strings suitable for Stable Diffusion; negativePrompt should list unwanted artifacts and details to avoid.",
+      "Do not return markdown, code fences, explanations, or any additional keys.",
+    ].join(" "),
+    prompt: `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
+    visualInputs,
+  });
+  return parseImg2ImgPromptResponse(response);
+}
+
 async function createPrompt(payload) {
   const brief = String(payload.brief || "").trim();
   const provider = promptProvider(payload.provider);
@@ -913,6 +996,8 @@ async function createPrompt(payload) {
   const reasoningEffort = provider === "codex"
     ? codexReasoningEffort(payload.reasoningEffort || payload.codexReasoningEffort)
     : null;
+  const requestedMode = String(payload.mode || "").trim().toLowerCase();
+  if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const mode = promptMode(payload.mode);
   const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
@@ -1619,6 +1704,8 @@ async function pumpGenerationQueue() {
 
 async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
+  const requestedMode = String(payload.mode || "").trim().toLowerCase();
+  if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const mode = promptMode(payload.mode);
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
   const submittedPrompt = String(payload.prompt || "").trim();
@@ -1797,7 +1884,9 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       COMFY_URL,
     ];
-    if (COMFY_REMOTE) args.push("--remote-comfy");
+    if (COMFY_REMOTE) {
+      args.push("--remote-comfy", "--sage-attention", "sageattn3");
+    }
     if (inputImagePath && mode !== "ref2v") args.push("--input-image", inputImagePath);
     if (lastImagePath) args.push("--last-frame", lastImagePath);
     if (mode === "ref2v") {
@@ -2390,6 +2479,7 @@ async function deleteMediaAsset(rootName, relativeName, {
 function createSeedVR2ControllerForRuntime() {
   return createSeedVR2Controller({
     comfyUrl: COMFY_URL,
+    remote: COMFY_REMOTE,
     comfyRoot: COMFY_ROOT,
     inputRoot: INPUT_ROOT,
     outputRoot: OUTPUT_ROOT,

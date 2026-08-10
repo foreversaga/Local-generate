@@ -93,6 +93,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /selectAssetForUpscale/);
   assert.match(page, /SeedVR2 3B Int8/);
   assert.match(page, /BRIDGE_URL \+ "\/api\/img2img"/);
+  assert.match(page, /id="img2img-description"/);
+  assert.match(page, /generateImg2ImgPrompt/);
+  assert.match(page, /mode: "img2img"/);
+  assert.match(page, /使用 Ollama 產生提示詞/);
   assert.match(page, /\/api\/img2img\/jobs\/\$\{encodeURIComponent\(trackedJobId\)\}/);
   assert.match(page, /sourceRoot: img2imgSource\.root/);
   assert.match(page, /selectAssetForImg2Img/);
@@ -247,6 +251,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /--task", "ref2v"/);
   assert.match(bridge, /--reference-image/);
   assert.match(bridge, /--reference-video/);
+  assert.match(bridge, /if \(COMFY_REMOTE\) \{\s*args\.push\("--remote-comfy", "--sage-attention", "sageattn3"\);\s*\}/);
+  assert.match(bridge, /if \(mode === "replace"\)[\s\S]*?if \(COMFY_REMOTE\) args\.push\("--remote-comfy"\);/);
   assert.doesNotMatch(bridge, /目前本機生成器尚未接入原生 Ref2VA/);
   assert.match(bridge, /identity drift, face drift, costume drift/);
   assert.match(bridge, /source-video preview frame/);
@@ -261,6 +267,8 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(bridge, /pathname === "\/api\/runtime"/);
   assert.match(bridge, /switchRuntimeMode/);
   assert.match(bridge, /createImg2ImgController/);
+  assert.match(bridge, /createImg2ImgPrompt/);
+  assert.match(bridge, /IMG2IMG_PROMPT_FORMAT_INVALID/);
   assert.match(bridge, /pathname === "\/api\/img2img"/);
   assert.match(page, /MODEL RUNTIME/);
   assert.match(page, /selectRuntimeMode\("remote"\)/);

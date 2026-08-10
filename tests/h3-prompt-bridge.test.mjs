@@ -86,6 +86,58 @@ test("Ollama image modes reject requests without an actual visual input", async 
   }
 });
 
+test("Ollama img2img prompt generation returns strict positive and negative fields", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return new Response(JSON.stringify({
+      response: JSON.stringify({
+        prompt: "cinematic portrait, rain-soaked neon street, detailed skin texture",
+        negativePrompt: "blurry, low quality, watermark, distorted hands",
+      }),
+    }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      provider: "ollama",
+      model: "qwen3-vl",
+      mode: "img2img",
+      brief: "Turn the source into a cinematic rainy-night portrait.",
+      images: [{ role: "source_image", data: "data:image/png;base64,aGVsbG8=" }],
+    });
+    assert.equal(result.status, 200);
+    assert.match(result.body.prompt, /cinematic portrait/);
+    assert.match(result.body.negativePrompt, /watermark/);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].images, ["aGVsbG8="]);
+    assert.match(calls[0].system, /exactly these two keys: prompt and negativePrompt/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Ollama img2img rejects malformed model output without a fallback negative prompt", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ response: "not valid JSON" }), { status: 200 });
+  try {
+    const result = await invoke("/api/prompt", {
+      provider: "ollama",
+      model: "qwen3-vl",
+      mode: "img2img",
+      brief: "Make the source image look cinematic.",
+      images: [{ role: "source_image", data: "aGVsbG8=" }],
+    });
+    assert.equal(result.status, 502);
+    assert.equal(result.body.code, "IMG2IMG_PROMPT_FORMAT_INVALID");
+    assert.match(result.body.error, /JSON/);
+    assert.equal(Object.prototype.hasOwnProperty.call(result.body, "negativePrompt"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("invalid prompt modes return 400 for prompt and generation routes", async () => {
   const prompt = await invoke("/api/prompt", { brief: "A scene", mode: "unknown" });
   assert.equal(prompt.status, 400);

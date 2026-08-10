@@ -727,6 +727,7 @@ export default function Home() {
   const [upscaleUploading, setUpscaleUploading] = useState(false);
   const [upscaleError, setUpscaleError] = useState("");
   const [img2imgSource, setImg2ImgSource] = useState<Asset | null>(null);
+  const [img2imgDescription, setImg2ImgDescription] = useState("");
   const [img2imgPrompt, setImg2ImgPrompt] = useState("");
   const [img2imgNegativePrompt, setImg2ImgNegativePrompt] = useState("");
   const [img2imgModel, setImg2ImgModel] = useState(IMG2IMG_MODELS[0].value as string);
@@ -736,6 +737,7 @@ export default function Home() {
   const [img2imgSeed, setImg2ImgSeed] = useState(12345);
   const [img2imgJob, setImg2ImgJob] = useState<Img2ImgJob | null>(null);
   const [img2imgSubmitting, setImg2ImgSubmitting] = useState(false);
+  const [img2imgPromptBusy, setImg2ImgPromptBusy] = useState(false);
   const [img2imgUploading, setImg2ImgUploading] = useState(false);
   const [img2imgError, setImg2ImgError] = useState("");
   const longErrorDialogKeyRef = useRef("");
@@ -1638,6 +1640,65 @@ export default function Home() {
     }
   }
 
+  async function generateImg2ImgPrompt() {
+    if (!img2imgSource || img2imgSource.kind !== "image") {
+      setImg2ImgError("請先選擇來源圖片。 ");
+      return;
+    }
+    if (!img2imgDescription.trim()) {
+      setImg2ImgError("請先輸入以圖生圖描述。 ");
+      return;
+    }
+    if (!ollamaOnline) {
+      setImg2ImgError("Ollama 尚未連線。 ");
+      return;
+    }
+    if (!visibleModels.includes(effectiveOllamaModel)) {
+      setImg2ImgError(`模型 ${effectiveOllamaModel} 尚未安裝。 `);
+      return;
+    }
+    if (!modelSupportsPromptImages(effectiveOllamaModel)) {
+      setImg2ImgError(`模型 ${effectiveOllamaModel} 不支援圖片理解，請改用 vision 模型。 `);
+      return;
+    }
+    if (img2imgPromptBusy || img2imgUploading || img2imgSubmitting || img2imgActive) return;
+    setImg2ImgPromptBusy(true);
+    setImg2ImgError("");
+    try {
+      const response = await fetch(BRIDGE_URL + "/api/prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "ollama",
+          model: effectiveOllamaModel,
+          mode: "img2img",
+          brief: img2imgDescription.trim(),
+          images: [{
+            role: "source_image",
+            data: await assetToPromptImage(img2imgSource),
+          }],
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload & {
+        prompt?: string;
+        negativePrompt?: string;
+      };
+      if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama 沒有回應。 "));
+      if (!payload.prompt?.trim() || !payload.negativePrompt?.trim()) {
+        throw new Error("Ollama 回傳的圖生圖提示詞格式無效，必須同時包含正向與負向提示詞。 ");
+      }
+      setImg2ImgPrompt(payload.prompt.trim());
+      setImg2ImgNegativePrompt(payload.negativePrompt.trim());
+      showToast("Ollama 已產生以圖生圖提示詞與負向提示詞。", "success");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ollama 圖生圖提示詞生成失敗。 ";
+      setImg2ImgError(message);
+      showToast(message, "error");
+    } finally {
+      setImg2ImgPromptBusy(false);
+    }
+  }
+
   async function startImg2Img() {
     if (!img2imgSource || img2imgSource.kind !== "image") {
       setImg2ImgError("請先選擇來源圖片。");
@@ -1647,7 +1708,7 @@ export default function Home() {
       setImg2ImgError("請輸入希望圖片呈現的內容。");
       return;
     }
-    if (img2imgSubmitting || img2imgUploading || (img2imgJob && IMG2IMG_POLL_STATUSES.has(img2imgJob.status))) return;
+    if (img2imgPromptBusy || img2imgSubmitting || img2imgUploading || (img2imgJob && IMG2IMG_POLL_STATUSES.has(img2imgJob.status))) return;
     setImg2ImgSubmitting(true);
     setImg2ImgError("");
     try {
@@ -2421,9 +2482,9 @@ export default function Home() {
   const img2imgStatusLabel = img2imgJob
     ? `${img2imgJob.status === "completed" ? "已完成" : img2imgJob.status === "failed" ? "生成失敗" : img2imgJob.status === "cancelled" ? "已取消" : img2imgJob.status === "running" ? "正在生成" : "等待處理"}${img2imgJob.stage ? ` · ${img2imgJob.stage}` : ""}`
     : "尚未開始生成";
-  const img2imgSubmitDisabled = !img2imgSource || !img2imgPrompt.trim() || img2imgUploading || img2imgSubmitting || img2imgActive;
+  const img2imgSubmitDisabled = !img2imgSource || !img2imgPrompt.trim() || img2imgUploading || img2imgSubmitting || img2imgPromptBusy || img2imgActive;
   const runtimeMode = health?.runtime?.mode || (health?.comfy.remote ? "remote" : "local");
-  const runtimeSwitchDisabled = runtimeSwitchBusy || renderBusy || renderSubmitting || longBusy || longJobActive || upscaleSubmitting || upscaleActive || img2imgSubmitting || img2imgActive;
+  const runtimeSwitchDisabled = runtimeSwitchBusy || renderBusy || renderSubmitting || longBusy || longJobActive || upscaleSubmitting || upscaleActive || img2imgSubmitting || img2imgPromptBusy || img2imgActive;
 
   return (
     <main className="studio-shell">
@@ -2751,6 +2812,30 @@ export default function Home() {
                 </div>
 
                 <div className="img2img-form">
+                  <label className="img2img-field" htmlFor="img2img-description">
+                    <span>描述（給 Ollama）</span>
+                    <textarea
+                      id="img2img-description"
+                      value={img2imgDescription}
+                      onChange={(event) => { setImg2ImgDescription(event.target.value); if (img2imgError) setImg2ImgError(""); }}
+                      placeholder="例如：將人物改成雨夜霓虹街頭的電影感肖像，保留臉部特徵與構圖"
+                      maxLength={4000}
+                      rows={3}
+                      aria-describedby="img2img-description-help"
+                    />
+                    <small id="img2img-description-help">輸入希望如何改圖；Ollama 會讀取來源圖片並產生正向與負向提示詞。</small>
+                  </label>
+                  <button
+                    type="button"
+                    className="outline-button img2img-prompt-button"
+                    onClick={() => void generateImg2ImgPrompt()}
+                    disabled={img2imgPromptBusy || img2imgUploading || img2imgSubmitting || img2imgActive}
+                    aria-busy={img2imgPromptBusy}
+                  >
+                    <Icon name="spark" />
+                    {img2imgPromptBusy ? "Ollama 生成提示詞中…" : "使用 Ollama 產生提示詞"}
+                  </button>
+
                   <label className="img2img-field" htmlFor="img2img-model">
                     <span>模型</span>
                     <select id="img2img-model" value={img2imgModel} onChange={(event) => updateImg2ImgModel(event.target.value)} disabled={img2imgActive}>
@@ -2825,7 +2910,7 @@ export default function Home() {
                   type="button"
                   className="upscale-submit-button"
                   onClick={() => void startImg2Img()}
-                  disabled={img2imgSubmitDisabled}
+                  disabled={img2imgSubmitDisabled || img2imgPromptBusy}
                   aria-busy={img2imgSubmitting || img2imgUploading}
                 >
                   <Icon name="spark" />

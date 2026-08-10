@@ -24,6 +24,17 @@ function response(payload, status = 200) {
   };
 }
 
+function binaryResponse(bytes, status = 200) {
+  const body = Buffer.from(bytes);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    async text() { return body.toString("utf8"); },
+    async arrayBuffer() { return body; },
+  };
+}
+
 function objectInfo() {
   const info = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
@@ -140,6 +151,83 @@ test("controller queues one active job, preserves public shape, and cleans outpu
   assert.equal(await fs.stat(path.join(inputRoot, "seedvr2_temp_job-output.mp4")).catch(() => null), null);
   assert.equal(promptSeen.prompt["5"].inputs.vae_name, SEEDVR2_VAE_NAME);
   assert.equal(promptSeen.prompt["7"].inputs.unet_name, SEEDVR2_UNET_NAME);
+});
+
+test("remote controller uploads source video and downloads the ComfyUI artifact", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-remote-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
+  await fs.mkdir(inputRoot, { recursive: true });
+  await fs.mkdir(outputRoot, { recursive: true });
+  await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_UNET_NAME), "model");
+  await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
+  await fs.writeFile(path.join(outputRoot, "source.mp4"), "source-video");
+
+  let uploadSeen = null;
+  let promptSeen = null;
+  let viewSeen = null;
+  const fetchImpl = async (url, init = {}) => {
+    if (url.endsWith("/system_stats")) return response({ devices: [] });
+    if (url.endsWith("/object_info")) return response(objectInfo());
+    if (url.endsWith("/upload/image")) {
+      uploadSeen = init;
+      assert.equal(init.method, "POST");
+      assert.equal(init.body.get("subfolder"), "h3-studio-seedvr2");
+      assert.equal(init.body.get("type"), "input");
+      assert.equal(init.body.get("overwrite"), "true");
+      assert.equal(typeof init.body.get("image").arrayBuffer, "function");
+      return response({ name: "remote-source.mp4", subfolder: "h3-studio-seedvr2", type: "input" });
+    }
+    if (url.endsWith("/prompt")) {
+      promptSeen = JSON.parse(init.body);
+      return response({ prompt_id: "prompt-remote" });
+    }
+    if (url.includes("/history/prompt-remote")) {
+      return response({ "prompt-remote": {
+        status: { completed: true },
+        outputs: { "15": { videos: [{ filename: "remote-result.mp4", subfolder: "seedvr2-out", type: "output" }] } },
+      } });
+    }
+    if (url.includes("/view?")) {
+      const requestUrl = new URL(url);
+      viewSeen = requestUrl;
+      assert.equal(requestUrl.searchParams.get("filename"), "remote-result.mp4");
+      assert.equal(requestUrl.searchParams.get("subfolder"), "seedvr2-out");
+      assert.equal(requestUrl.searchParams.get("type"), "output");
+      return binaryResponse("remote-result");
+    }
+    throw new Error(`unexpected endpoint ${url}`);
+  };
+  const controller = createSeedVR2Controller({
+    comfyUrl: "http://remote.test",
+    remote: true,
+    comfyRoot: root,
+    inputRoot,
+    outputRoot,
+    fetchImpl,
+    pollIntervalMs: 1,
+    toAsset: async (_root, name) => ({ name, root: "output", kind: "video" }),
+    idFactory: () => "remote-job",
+  });
+  const queued = await controller.enqueue({ sourceName: "source.mp4", sourceRoot: "output", scale: 2 });
+  assert.equal(queued.status, "queued");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const current = await controller.getJob("remote-job");
+    if (current?.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const completed = await controller.getJob("remote-job");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.output.root, "output");
+  assert.equal(completed.output.kind, "video");
+  assert.match(completed.output.name, /^seedvr2\/seedvr2_source_remote-/);
+  assert.equal(await fs.readFile(path.join(outputRoot, completed.output.name), "utf8"), "remote-result");
+  assert.equal(promptSeen.prompt["1"].inputs.file, "h3-studio-seedvr2/remote-source.mp4");
+  assert.ok(uploadSeen);
+  assert.ok(viewSeen);
+  assert.equal(await fs.stat(path.join(inputRoot, "seedvr2_temp_remote-job.mp4")).catch(() => null), null);
 });
 
 test("controller route reports 503 when ComfyUI readiness is false", async () => {

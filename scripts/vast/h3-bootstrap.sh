@@ -134,6 +134,24 @@ download_model \
   605254808 \
   8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48
 
+download_model \
+  seedvr2_3b_int8 \
+  Comfy-Org/SeedVR2 \
+  0ef637b0cfd0543a4843d5d49231da2ca35a306f \
+  diffusion_models/seedvr2_3b_int8_convrot.safetensors \
+  "$MODEL_ROOT/diffusion_models/seedvr2_3b_int8_convrot.safetensors" \
+  3458259704 \
+  c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157
+
+download_model \
+  seedvr2_ema_vae \
+  Comfy-Org/SeedVR2 \
+  0ef637b0cfd0543a4843d5d49231da2ca35a306f \
+  vae/seedvr2_ema_vae_fp16.safetensors \
+  "$MODEL_ROOT/vae/seedvr2_ema_vae_fp16.safetensors" \
+  501324814 \
+  20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1
+
 log 'restarting ComfyUI so model selectors refresh'
 supervisorctl restart comfyui
 
