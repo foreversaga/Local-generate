@@ -58,7 +58,7 @@ export function validateSingleRender(input: SingleRenderValidationInput): Valida
     issues.push(...validateDimension(input.height, "height", "影片高度", dimensionGrid));
     issues.push(...validateNumber(input.steps, "steps", { label: "Steps", min: 1, max: 80, integer: true }));
     issues.push(...validateNumber(input.seed, "seed", { label: "Seed", min: 0, max: 2147483647, integer: true }));
-    issues.push(...validateNumber(input.renderCount, "renderCount", { label: "生成數量", min: 1, max: 8, integer: true }));
+    issues.push(...validateNumber(input.renderCount, "renderCount", { label: "影片數量", min: 1, max: 20, integer: true }));
 
     return issues;
 }
