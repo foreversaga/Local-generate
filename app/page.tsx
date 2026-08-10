@@ -416,24 +416,28 @@ function numberInputDraft(value: string): NumberDraft {
   return Number.isFinite(parsed) ? parsed : "";
 }
 
-function normalizedSteps(value: NumberDraft, fallback = 20) {
-  const parsed = value === "" ? fallback : value;
-  return Math.min(80, Math.max(1, Math.round(parsed)));
+type NumberDraftRule = {
+  label: string;
+  min: number;
+  max: number;
+  integer?: boolean;
+};
+
+type NumberDraftValidation = { value: number } | { error: string };
+
+function validateNumberDraft(value: NumberDraft, rule: NumberDraftRule): NumberDraftValidation {
+  if (value === "") return { error: `${rule.label} 必須填寫。` };
+  if (!Number.isFinite(value)) return { error: `${rule.label} 必須是有效數字。` };
+  if (rule.integer && !Number.isInteger(value)) return { error: `${rule.label} 必須是整數。` };
+  if (value < rule.min || value > rule.max) return { error: `${rule.label} 必須介於 ${rule.min}–${rule.max}。` };
+  return { value };
 }
 
-function normalizedSeed(value: NumberDraft) {
-  const parsed = value === "" ? 12345 : value;
-  return Math.min(2147483647, Math.max(0, Math.round(parsed)));
-}
-
-function normalizedLongDuration(value: NumberDraft) {
-  const parsed = value === "" ? 10 : value;
-  return Math.min(3600, Math.max(1, Number(parsed.toFixed(3))));
-}
-
-function normalizedSegmentDurationHint(value: NumberDraft) {
-  const parsed = value === "" ? 5 : value;
-  return Math.min(60, Math.max(0.5, Number(parsed.toFixed(3))));
+function validateDimensionDraft(value: NumberDraft, label: string, grid = 32): NumberDraftValidation {
+  const validation = validateNumberDraft(value, { label, min: 32, max: 2048, integer: true });
+  if ("error" in validation) return validation;
+  if (validation.value % grid !== 0) return { error: `${label} 必須是 ${grid} 的倍數。` };
+  return validation;
 }
 
 function parseLongTimeValue(value: string) {
@@ -507,9 +511,8 @@ function longSegmentStatusLabel(status?: string) {
   return labels[status || ""] || status || "等待中";
 }
 
-function batchSeed(baseSeed: NumberDraft, index: number) {
-  const normalized = normalizedSeed(baseSeed);
-  return (normalized + index) % 2147483648;
+function batchSeed(baseSeed: number, index: number) {
+  return (baseSeed + index) % 2147483648;
 }
 
 function batchOutputName(value: string, index: number, total: number) {
@@ -720,7 +723,7 @@ export default function Home() {
   const [duration, setDuration] = useState(5);
   const [steps, setSteps] = useState<NumberDraft>(20);
   const [seed, setSeed] = useState<NumberDraft>(12345);
-  const [renderCount, setRenderCount] = useState(1);
+  const [renderCount, setRenderCount] = useState<NumberDraft>(1);
   const [outputName, setOutputName] = useState("");
   const [promptBusy, setPromptBusy] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
@@ -760,9 +763,9 @@ export default function Home() {
   const [img2imgNegativePrompt, setImg2ImgNegativePrompt] = useState("");
   const [img2imgModel, setImg2ImgModel] = useState(IMG2IMG_MODELS[0].value as string);
   const [img2imgDenoise, setImg2ImgDenoise] = useState(0.65);
-  const [img2imgSteps, setImg2ImgSteps] = useState(4);
-  const [img2imgCfg, setImg2ImgCfg] = useState(1);
-  const [img2imgSeed, setImg2ImgSeed] = useState(12345);
+  const [img2imgSteps, setImg2ImgSteps] = useState<NumberDraft>(4);
+  const [img2imgCfg, setImg2ImgCfg] = useState<NumberDraft>(1);
+  const [img2imgSeed, setImg2ImgSeed] = useState<NumberDraft>(12345);
   const [img2imgJob, setImg2ImgJob] = useState<Img2ImgJob | null>(null);
   const [img2imgSubmitting, setImg2ImgSubmitting] = useState(false);
   const [img2imgPromptBusy, setImg2ImgPromptBusy] = useState(false);
@@ -1736,6 +1739,26 @@ export default function Home() {
       setImg2ImgError("請輸入希望圖片呈現的內容。");
       return;
     }
+    const img2imgDenoiseValidation = validateNumberDraft(img2imgDenoise, { label: "重繪強度", min: 0.01, max: 1 });
+    if ("error" in img2imgDenoiseValidation) {
+      setImg2ImgError(img2imgDenoiseValidation.error);
+      return;
+    }
+    const img2imgStepsValidation = validateNumberDraft(img2imgSteps, { label: "Steps", min: 1, max: 50, integer: true });
+    if ("error" in img2imgStepsValidation) {
+      setImg2ImgError(img2imgStepsValidation.error);
+      return;
+    }
+    const img2imgCfgValidation = validateNumberDraft(img2imgCfg, { label: "CFG", min: 0, max: 20 });
+    if ("error" in img2imgCfgValidation) {
+      setImg2ImgError(img2imgCfgValidation.error);
+      return;
+    }
+    const img2imgSeedValidation = validateNumberDraft(img2imgSeed, { label: "Seed", min: 0, max: 2147483647, integer: true });
+    if ("error" in img2imgSeedValidation) {
+      setImg2ImgError(img2imgSeedValidation.error);
+      return;
+    }
     if (img2imgPromptBusy || img2imgSubmitting || img2imgUploading || (img2imgJob && IMG2IMG_POLL_STATUSES.has(img2imgJob.status))) return;
     setImg2ImgSubmitting(true);
     setImg2ImgError("");
@@ -1749,10 +1772,10 @@ export default function Home() {
           prompt: img2imgPrompt.trim(),
           negativePrompt: img2imgNegativePrompt.trim(),
           model: img2imgModel,
-          denoise: img2imgDenoise,
-          steps: img2imgSteps,
-          cfg: img2imgCfg,
-          seed: img2imgSeed,
+          denoise: img2imgDenoiseValidation.value,
+          steps: img2imgStepsValidation.value,
+          cfg: img2imgCfgValidation.value,
+          seed: img2imgSeedValidation.value,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as { job?: Img2ImgJob; error?: string; code?: string; health?: Img2ImgHealth };
@@ -1979,21 +2002,36 @@ export default function Home() {
       return;
     }
     const dimensionGrid = mode === "replace" ? 16 : 32;
-    const validDimension = (value: number | "") =>
-      value !== "" &&
-      Number.isInteger(value) &&
-      value >= 32 &&
-      value <= 2048 &&
-      value % dimensionGrid === 0;
-    if (!validDimension(width) || !validDimension(height)) {
-      showToast(`影片寬度與高度必須是 ${dimensionGrid} 的倍數，範圍為 32–2048 px。`, "error");
+    const widthValidation = validateDimensionDraft(width, "影片寬度", dimensionGrid);
+    if ("error" in widthValidation) {
+      showToast(widthValidation.error, "error");
       return;
     }
-    const submittedSteps = normalizedSteps(steps, mode === "replace" ? 6 : 20);
-    const submittedSeed = normalizedSeed(seed);
-    if (steps !== submittedSteps) setSteps(submittedSteps);
-    if (seed !== submittedSeed) setSeed(submittedSeed);
-    const count = Math.min(20, Math.max(1, Math.round(renderCount || 1)));
+    const heightValidation = validateDimensionDraft(height, "影片高度", dimensionGrid);
+    if ("error" in heightValidation) {
+      showToast(heightValidation.error, "error");
+      return;
+    }
+    const stepsValidation = validateNumberDraft(steps, { label: "Steps", min: 1, max: 80, integer: true });
+    if ("error" in stepsValidation) {
+      showToast(stepsValidation.error, "error");
+      return;
+    }
+    const seedValidation = validateNumberDraft(seed, { label: "Seed", min: 0, max: 2147483647, integer: true });
+    if ("error" in seedValidation) {
+      showToast(seedValidation.error, "error");
+      return;
+    }
+    const renderCountValidation = validateNumberDraft(renderCount, { label: "影片數量", min: 1, max: 20, integer: true });
+    if ("error" in renderCountValidation) {
+      showToast(renderCountValidation.error, "error");
+      return;
+    }
+    const submittedWidth = widthValidation.value;
+    const submittedHeight = heightValidation.value;
+    const submittedSteps = stepsValidation.value;
+    const submittedSeed = seedValidation.value;
+    const count = renderCountValidation.value;
     const firstFrameName = referenceImage?.kind === "image" ? referenceImage.name : "";
     const referenceImageNames = referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
     const lastFrameName = lastFrameImage?.kind === "image" ? lastFrameImage.name : "";
@@ -2022,11 +2060,11 @@ export default function Home() {
                 referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
                 ...(mode === "ref2v" ? { referenceImageNames } : {}),
                 modelProfile,
-                width,
-                height,
+                width: submittedWidth,
+                height: submittedHeight,
                 duration,
                 steps: submittedSteps,
-                seed: batchSeed(seed, index),
+                seed: batchSeed(submittedSeed, index),
                 outputName: batchOutputName(outputName, index, count),
                 batchId,
                 batchIndex: index + 1,
@@ -2073,8 +2111,8 @@ export default function Home() {
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
           ...(mode === "ref2v" ? { referenceImageNames } : {}),
           modelProfile,
-          width,
-          height,
+          width: submittedWidth,
+          height: submittedHeight,
           duration,
           steps: submittedSteps,
           seed: submittedSeed,
@@ -2168,10 +2206,15 @@ export default function Home() {
       if (!visibleModels.includes(effectiveOllamaModel)) throw new Error(`模型 ${effectiveOllamaModel} 尚未安裝。`);
     }
     if (longTimelineMode === "manual" && !longTimeline.trim()) throw new Error("手動時間軸模式需要至少兩段分鏡。");
-    const submittedDuration = normalizedLongDuration(longDuration);
-    const submittedSegmentDurationHint = normalizedSegmentDurationHint(longSegmentDurationHint);
-    if (longDuration !== submittedDuration) setLongDuration(submittedDuration);
-    if (longSegmentDurationHint !== submittedSegmentDurationHint) setLongSegmentDurationHint(submittedSegmentDurationHint);
+    let submittedDuration: number | undefined;
+    if (longTimelineMode === "auto") {
+      const durationValidation = validateNumberDraft(longDuration, { label: "目標總長", min: 1, max: 3600 });
+      if ("error" in durationValidation) throw new Error(durationValidation.error);
+      submittedDuration = durationValidation.value;
+    }
+    const segmentDurationValidation = validateNumberDraft(longSegmentDurationHint, { label: "目標單段長度", min: 0.5, max: 60 });
+    if ("error" in segmentDurationValidation) throw new Error(segmentDurationValidation.error);
+    const submittedSegmentDurationHint = segmentDurationValidation.value;
     setLongPlanningElapsedMs(0);
     setLongPlanning(true);
     setLongPlannerNotice(`已送出規劃要求，正在等待本機 ${plannerLabel} 回應…`);
@@ -2234,7 +2277,7 @@ export default function Home() {
       setLongReferenceAssets(plannedReferences);
       setLongReferenceImage(plannedReferences[0] || null);
       setLongTimeline(plan.segments.map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
-      setLongDuration(plan.duration || submittedDuration);
+      setLongDuration(plan.duration || submittedDuration || "");
       setLongSegmentDurationHint(plan.planningSettings?.segmentDurationHint || submittedSegmentDurationHint);
       setLongNegativePrompt(plan.negativePrompt || longNegativePrompt);
       setLongPlanDirty(false);
@@ -2270,6 +2313,14 @@ export default function Home() {
     if (!plan) throw new Error("Plan the sequence before saving.");
     if (longPlanDirty && !planOverride) throw new Error(`規劃輸入已變更，請先重新執行 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 規劃。`);
     if (!longFolder.trim()) throw new Error("Output folder is required.");
+    const longWidthValidation = validateDimensionDraft(width, "長影片寬度");
+    if ("error" in longWidthValidation) throw new Error(longWidthValidation.error);
+    const longHeightValidation = validateDimensionDraft(height, "長影片高度");
+    if ("error" in longHeightValidation) throw new Error(longHeightValidation.error);
+    const longStepsValidation = validateNumberDraft(steps, { label: "Steps", min: 1, max: 80, integer: true });
+    if ("error" in longStepsValidation) throw new Error(longStepsValidation.error);
+    const longSeedValidation = validateNumberDraft(seed, { label: "Seed", min: 0, max: 2147483647, integer: true });
+    if ("error" in longSeedValidation) throw new Error(longSeedValidation.error);
     const parsedTimes = parseLongTimelineDraft(longTimeline, plan.segments);
     const segments = parsedTimes.map((item, index) => ({
       ...(plan.segments[index] || {}),
@@ -2279,10 +2330,10 @@ export default function Home() {
       duration: item.end - item.start,
       description: item.description || plan.segments[index]?.description,
     }));
-    const submittedSteps = normalizedSteps(steps);
-    const submittedSeed = normalizedSeed(seed);
-    if (steps !== submittedSteps) setSteps(submittedSteps);
-    if (seed !== submittedSeed) setSeed(submittedSeed);
+    const submittedWidth = longWidthValidation.value;
+    const submittedHeight = longHeightValidation.value;
+    const submittedSteps = longStepsValidation.value;
+    const submittedSeed = longSeedValidation.value;
     const selectedLongReferences = currentLongReferenceSelection();
     const existing = longJob && ["draft", "ready", "interrupted", "failed"].includes(longJob.status) ? longJob : null;
     const response = await fetch(existing ? `${BRIDGE_URL}/api/sequences/${encodeURIComponent(existing.id)}` : BRIDGE_URL + "/api/sequences", {
@@ -2305,8 +2356,8 @@ export default function Home() {
         duration: segments[segments.length - 1].end,
         outputFolder: longFolder.trim(),
         modelProfile,
-        width: width === "" ? 736 : width,
-        height: height === "" ? 416 : height,
+        width: submittedWidth,
+        height: submittedHeight,
         steps: submittedSteps,
         seed: submittedSeed,
         ollamaModel: effectiveOllamaModel,
@@ -2916,15 +2967,15 @@ export default function Home() {
                     </label>
                     <label className="img2img-field" htmlFor="img2img-steps">
                       <span>Steps</span>
-                      <input id="img2img-steps" type="number" min="1" max="50" value={img2imgSteps} onChange={(event) => setImg2ImgSteps(Math.min(50, Math.max(1, Number(event.target.value) || 1)))} />
+                      <input id="img2img-steps" type="number" min="1" max="50" value={img2imgSteps} onChange={(event) => setImg2ImgSteps(numberInputDraft(event.target.value))} />
                     </label>
                     <label className="img2img-field" htmlFor="img2img-cfg">
                       <span>CFG</span>
-                      <input id="img2img-cfg" type="number" min="0" max="20" step="0.5" value={img2imgCfg} onChange={(event) => setImg2ImgCfg(Math.min(20, Math.max(0, Number(event.target.value) || 0)))} />
+                      <input id="img2img-cfg" type="number" min="0" max="20" step="0.5" value={img2imgCfg} onChange={(event) => setImg2ImgCfg(numberInputDraft(event.target.value))} />
                     </label>
                     <label className="img2img-field" htmlFor="img2img-seed">
                       <span>Seed</span>
-                      <input id="img2img-seed" type="number" min="0" max="2147483647" value={img2imgSeed} onChange={(event) => setImg2ImgSeed(Math.min(2147483647, Math.max(0, Number(event.target.value) || 0)))} />
+                      <input id="img2img-seed" type="number" min="0" max="2147483647" value={img2imgSeed} onChange={(event) => setImg2ImgSeed(numberInputDraft(event.target.value))} />
                     </label>
                   </div>
 
@@ -3634,7 +3685,7 @@ export default function Home() {
                     min="1"
                     max="20"
                     value={renderCount}
-                    onChange={(event) => setRenderCount(Math.min(20, Math.max(1, Number(event.target.value) || 1)))}
+                    onChange={(event) => setRenderCount(numberInputDraft(event.target.value))}
                   />
                 </label>
               </div>
