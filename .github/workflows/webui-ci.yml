@@ -4,15 +4,14 @@ on:
   push:
     branches:
       - agent/document-webui-redesign-plan
-    paths-ignore:
-      - .ci/webui-ci-result.json
   pull_request:
     branches:
       - agent/document-webui-redesign-plan
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  statuses: write
 
 jobs:
   test:
@@ -35,24 +34,33 @@ jobs:
         continue-on-error: true
         run: npm ci && npm test
 
-      - name: Record CI result
+      - name: Publish commit status
         if: always() && github.event_name == 'push'
         env:
+          GH_TOKEN: ${{ github.token }}
           VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
         run: |
-          mkdir -p .ci
-          printf '{\n  "commit": "%s",\n  "runId": "%s",\n  "runAttempt": "%s",\n  "outcome": "%s"\n}\n' \
-            "$GITHUB_SHA" \
-            "$GITHUB_RUN_ID" \
-            "$GITHUB_RUN_ATTEMPT" \
-            "$VALIDATION_OUTCOME" > .ci/webui-ci-result.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .ci/webui-ci-result.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: record WebUI CI result [skip ci]"
-            git push
+          if [ "$VALIDATION_OUTCOME" = "success" ]; then
+            STATE="success"
+            DESCRIPTION="WebUI build and tests passed"
+          else
+            STATE="failure"
+            DESCRIPTION="WebUI build or tests failed"
           fi
+          TARGET_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          PAYLOAD="$(jq -n \
+            --arg state "$STATE" \
+            --arg context "WebUI CI" \
+            --arg description "$DESCRIPTION" \
+            --arg target_url "$TARGET_URL" \
+            '{state:$state, context:$context, description:$description, target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "$PAYLOAD"
 
       - name: Enforce validation result
         if: steps.validate.outcome != 'success'
