@@ -56,10 +56,12 @@ test("Ollama prompt output is validated and repaired once with low randomness", 
     const result = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 5 });
     assert.equal(result.status, 200);
     assert.equal(result.body.prompt, VALID_T2V);
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].options.temperature, 0.2);
-    assert.equal(calls[1].options.temperature, 0.2);
-    assert.match(calls[1].prompt, /VALIDATION_CONTRACT_START/);
+    const generationCalls = calls.filter((body) => body.prompt);
+    assert.equal(generationCalls.length, 2);
+    assert.equal(generationCalls[0].options.temperature, 0.2);
+    assert.equal(generationCalls[1].options.temperature, 0.2);
+    assert.match(generationCalls[1].prompt, /VALIDATION_CONTRACT_START/);
+    assert.equal(calls.filter((body) => body.prompt === "").length, 2);
     assert.match(result.body.negativePrompt, /unwanted random text/);
     assert.doesNotMatch(result.body.negativePrompt, /, text,/);
   } finally {
@@ -110,9 +112,11 @@ test("Ollama img2img prompt generation returns strict positive and negative fiel
     assert.equal(result.status, 200);
     assert.match(result.body.prompt, /cinematic portrait/);
     assert.match(result.body.negativePrompt, /watermark/);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].images, ["aGVsbG8="]);
-    assert.match(calls[0].system, /exactly these two keys: prompt and negativePrompt/);
+    const generationCalls = calls.filter((body) => body.prompt);
+    assert.equal(generationCalls.length, 1);
+    assert.deepEqual(generationCalls[0].images, ["aGVsbG8="]);
+    assert.match(generationCalls[0].system, /exactly these two keys: prompt and negativePrompt/);
+    assert.equal(calls.filter((body) => body.prompt === "").length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -183,10 +187,10 @@ test("runtime endpoint switches atomically between local and Vast targets", asyn
 
 test("failed Ollama repairs return the last candidate and validation details", async () => {
   const originalFetch = globalThis.fetch;
-  let calls = 0;
+  const calls = [];
   const invalid = "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A";
-  globalThis.fetch = async () => {
-    calls += 1;
+  globalThis.fetch = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
     return new Response(JSON.stringify({ response: invalid }), { status: 200 });
   };
   try {
@@ -206,7 +210,8 @@ test("failed Ollama repairs return the last candidate and validation details", a
     assert.equal(saved.stage, "prompt_generation");
     assert.equal(saved.prompts.candidate, invalid);
     assert.equal(saved.error.code, "PROMPT_REPAIR_FAILED");
-    assert.equal(calls, 3);
+    assert.equal(calls.filter((body) => body.prompt).length, 3);
+    assert.equal(calls.filter((body) => body.prompt === "").length, 3);
   } finally {
     globalThis.fetch = originalFetch;
   }

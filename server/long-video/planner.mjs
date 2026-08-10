@@ -2,9 +2,25 @@ import { parseTimeline } from "./timeline-parser.mjs";
 import { LongVideoError, sanitizeAssetRef, validateContinuityBible, validateSequenceInput, validateTimeline } from "./schema.mjs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
+import { createOllamaCoordinator } from "../ollama-coordinator.mjs";
 
 const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
 export const DEFAULT_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+
+async function releasePlannerComfy(target = {}) {
+  if (!target.remoteComfy || !target.comfyUrl) return;
+  const requestFetch = target.requestFetch || ((...args) => globalThis.fetch(...args));
+  const response = await requestFetch(`${String(target.comfyUrl).replace(/\/$/, "")}/free`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ unload_models: true, free_memory: true }),
+    signal: AbortSignal.timeout(30000),
+  });
+  const body = typeof response?.text === "function" ? await response.text() : "";
+  if (!response?.ok) throw new Error(`remote ComfyUI refused GPU release (${response?.status || "unknown"})${body ? `: ${body.slice(-500)}` : ""}`);
+}
+
+const defaultOllamaCoordinator = createOllamaCoordinator({ beforeRequest: releasePlannerComfy });
 
 function stripJsonFence(value) {
   return String(value || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
@@ -243,26 +259,12 @@ function repairPlannerPrompt(basePrompt, raw, error, { duration, timelineMode })
   ].join("\n");
 }
 
-async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt }) {
+async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator }) {
   const provider = plannerProvider(requestInput);
   const label = provider === "codex" ? "Codex CLI" : "Ollama";
   try {
     if (request) return await request({ input: requestInput, model, prompt, attempt, repair: attempt > 1 });
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
-    if (comfyUrl && remoteComfy) {
-      const freeResponse = await fetchImpl(`${String(comfyUrl).replace(/\/$/, "")}/free`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unload_models: true, free_memory: true }),
-        signal: AbortSignal.timeout(30000),
-      }).catch((error) => {
-        if (remoteComfy) throw error;
-        return null;
-      });
-      if (remoteComfy && freeResponse && !freeResponse.ok) {
-        throw new Error(`remote ComfyUI refused GPU release (${freeResponse.status})`);
-      }
-    }
     const plannerImages = normalizePlannerImages(requestInput?.plannerImages || requestInput?.images);
     const requestBody = {
       model,
@@ -274,23 +276,17 @@ async function requestPlannerModel({ request, requestInput, model, prompt, fetch
       options: { temperature: 0.2, top_p: attempt > 1 ? 0.75 : 0.85, num_ctx: 8192 },
       ...(plannerImages.length ? { images: plannerImages.map((image) => image.data) } : {}),
     };
-    const response = await fetchImpl(`${String(ollamaUrl).replace(/\/$/, "")}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(timeoutMs),
+    const coordinator = ollamaCoordinator || defaultOllamaCoordinator;
+    const coordinated = await coordinator.generate({
+      ollamaUrl,
+      comfyUrl,
+      remoteComfy,
+      model,
+      body: requestBody,
+      timeoutMs,
+      requestFetch: fetchImpl,
     });
-    const text = typeof response.text === "function"
-      ? await response.text()
-      : JSON.stringify(await response.json());
-    if (!response.ok) throw new LongVideoError("OLLAMA_REQUEST_FAILED", `Ollama planning failed (${response.status}).`, 502, { body: text.slice(-2000) });
-    try {
-      return JSON.parse(text || "{}");
-    } catch {
-      // Pass the raw response to the plan parser so a malformed first reply
-      // can be included in one bounded correction request.
-      return text;
-    }
+    return coordinated.payload ?? coordinated.text;
   } catch (error) {
     if (error instanceof LongVideoError) throw error;
     throw new LongVideoError(plannerErrorCode(provider, "UNAVAILABLE"), `Unable to reach ${label}: ${error.message}`, 502);
@@ -357,6 +353,7 @@ export async function planSequence(input, options = {}) {
   const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
+  const ollamaCoordinator = options.ollamaCoordinator || null;
   const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
   const normalizedInput = validateSequenceInput(input || {});
   const normalizedReferenceAssets = effectiveReferenceAssets(normalizedInput);
@@ -400,7 +397,7 @@ export async function planSequence(input, options = {}) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     let raw;
     try {
-      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt });
+      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator });
       const candidate = parseResponse(raw, provider);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
         const label = provider === "codex" ? "Codex CLI" : "Ollama";

@@ -120,7 +120,7 @@ test("continuity bible preserves explicit face identity anchors and prompt build
 
 test("planner normalizes attached reference image bytes and forwards them only to Ollama images", async () => {
   assert.deepEqual(normalizePlannerImages([{ role: "hero", data: "data:image/png;base64, aGVsbG8=" }]), [{ role: "hero", data: "aGVsbG8=" }]);
-  let bodyWithImage;
+  const requestBodies = [];
   const plan = await planSequence({
     inputType: "image",
     imagePurpose: "first_frame",
@@ -131,15 +131,20 @@ test("planner normalizes attached reference image bytes and forwards them only t
     duration: 10,
   }, {
     fetchImpl: async (_url, init) => {
-      bodyWithImage = JSON.parse(init.body);
+      requestBodies.push(JSON.parse(init.body));
       return { ok: true, text: async () => JSON.stringify({ continuityBible: {}, segments: [{ start: 0, end: 5, description: "waits" }, { start: 5, end: 10, description: "boards" }] }) };
     },
   });
   assert.equal(plan.segments.length, 2);
+  assert.equal(requestBodies.length, 2);
+  const [bodyWithImage, unloadBody] = requestBodies;
   assert.deepEqual(bodyWithImage.images, ["aGVsbG8="]);
   assert.equal(bodyWithImage.options.temperature, 0.2);
   assert.equal(bodyWithImage.options.top_p, 0.85);
+  assert.equal(bodyWithImage.stream, false);
+  assert.equal(bodyWithImage.keep_alive, 0);
   assert.match(bodyWithImage.prompt, /Actual reference image bytes are attached/);
+  assert.deepEqual(unloadBody, { model: bodyWithImage.model, prompt: "", stream: false, keep_alive: 0 });
 });
 
 test("tail extraction selects the PNG encoder on FFmpeg 9", async () => {

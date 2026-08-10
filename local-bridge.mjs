@@ -14,6 +14,7 @@ import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
 import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
+import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
 import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
 import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
 import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
@@ -81,6 +82,9 @@ const timingSampleWindow = 5;
 let timingSamples = [];
 let timingHistoryWrite = Promise.resolve();
 let generatorSupportsLastImage;
+const ollamaCoordinator = createOllamaCoordinator({
+  beforeRequest: (target) => releaseComfyForOllama(target),
+});
 const timingHistoryReady = fs
   .readFile(TIMING_HISTORY_FILE, "utf8")
   .then((text) => {
@@ -597,21 +601,12 @@ async function runtimeBusyReason() {
 }
 
 async function releaseRuntimeGpu(target) {
+  await ollamaCoordinator.waitForIdle();
   await fetchJson(target.comfyUrl + "/free", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ unload_models: true, free_memory: true }),
   }, 15000).catch(() => null);
-  const running = await fetchJson(target.ollamaUrl + "/api/ps", {}, 5000).catch(() => null);
-  for (const item of Array.isArray(running?.models) ? running.models : []) {
-    const model = String(item?.name || item?.model || "").trim();
-    if (!model) continue;
-    await fetchJson(target.ollamaUrl + "/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt: "", stream: false, keep_alive: 0 }),
-    }, 30000).catch(() => null);
-  }
 }
 
 async function switchRuntimeMode(mode) {
@@ -660,10 +655,12 @@ async function withRuntimeOperation(operation) {
   }
 }
 
-async function releaseComfyForOllama() {
-  if (!COMFY_REMOTE) return;
+async function releaseComfyForOllama(target = {}) {
+  const remoteComfy = target.remoteComfy ?? COMFY_REMOTE;
+  const comfyUrl = String(target.comfyUrl || COMFY_URL).replace(/\/$/, "");
+  if (!remoteComfy) return;
   try {
-    await fetchJson(COMFY_URL + "/free", {
+    await fetchJson(comfyUrl + "/free", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ unload_models: true, free_memory: true }),
@@ -674,18 +671,7 @@ async function releaseComfyForOllama() {
 }
 
 async function releaseOllamaForComfy() {
-  if (!COMFY_REMOTE) return;
-  const running = await fetchJson(OLLAMA_URL + "/api/ps", {}, 10000).catch(() => null);
-  const loaded = Array.isArray(running?.models) ? running.models : [];
-  for (const item of loaded) {
-    const model = String(item?.name || item?.model || "").trim();
-    if (!model) continue;
-    await fetchJson(OLLAMA_URL + "/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, prompt: "", stream: false, keep_alive: 0 }),
-    }, 30000);
-  }
+  await ollamaCoordinator.waitForIdle();
 }
 
 async function health() {
@@ -882,25 +868,23 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
 }
 
 async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] }) {
-  await releaseComfyForOllama();
-  const result = await fetchJson(
-    OLLAMA_URL + "/api/generate",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        system,
-        prompt,
-        stream: false,
-        think: false,
-        keep_alive: 0,
-        options: { temperature: 0.2, top_p: 0.9, num_ctx: 8192 },
-        ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
-      }),
+  const response = await ollamaCoordinator.generate({
+    ollamaUrl: OLLAMA_URL,
+    comfyUrl: COMFY_URL,
+    remoteComfy: COMFY_REMOTE,
+    model,
+    body: {
+      system,
+      prompt,
+      think: false,
+      options: { temperature: 0.2, top_p: 0.9, num_ctx: 8192 },
+      ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
     },
-    120000,
-  );
+    timeoutMs: 120000,
+  });
+  const result = response.payload && typeof response.payload === "object"
+    ? response.payload
+    : { raw: response.text };
   return cleanPromptText(result.response || result.message?.content);
 }
 
@@ -1672,11 +1656,19 @@ async function pumpGenerationQueue() {
   entry.job.stage = "正在啟動生成…";
   entry.job.connectionState = "starting";
   touchJob(entry.job);
+  let generationLease = null;
+  let leaseReleased = false;
+  const releaseGenerationLease = () => {
+    if (leaseReleased) return;
+    leaseReleased = true;
+    generationLease?.release();
+  };
   try {
-    entry.job.stage = "Releasing Ollama GPU memory";
+    entry.job.stage = "Waiting for Ollama cleanup";
     touchJob(entry.job);
-    await releaseOllamaForComfy();
+    generationLease = await ollamaCoordinator.acquireGenerationBarrier();
     if (entry.child.cancelled) {
+      releaseGenerationLease();
       activeGenerationId = null;
       queueMicrotask(() => entry.child.emit("close", null));
       queueMicrotask(pumpGenerationQueue);
@@ -1692,10 +1684,12 @@ async function pumpGenerationQueue() {
     actualChild.on("error", (error) => entry.child.emit("error", error));
     actualChild.on("close", (code) => {
       entry.job.exitCode = Number.isInteger(code) ? code : null;
+      releaseGenerationLease();
       activeGenerationId = null;
       entry.child.emit("close", code);
     });
   } catch (error) {
+    releaseGenerationLease();
     activeGenerationId = null;
     entry.child.emit("error", error);
     entry.child.emit("close", null);
@@ -2548,7 +2542,7 @@ async function route(req, res) {
   if (pathname === "/api/sequences" || pathname.startsWith("/api/sequences/")) {
     const dispatch = () => handleLongVideoRoute(req, res, {
       plan: planSequenceWithPromptProvider,
-      planOptions: { ollamaUrl: OLLAMA_URL, comfyUrl: COMFY_URL, remoteComfy: COMFY_REMOTE },
+      planOptions: { ollamaUrl: OLLAMA_URL, comfyUrl: COMFY_URL, remoteComfy: COMFY_REMOTE, ollamaCoordinator },
       outputOptions: { root: OUTPUT_ROOT },
       preflight: () => checkMediaTools(),
       runJob: (job, deps) => runSequence(job, {
