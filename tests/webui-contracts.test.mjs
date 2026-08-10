@@ -8,6 +8,11 @@ import {
 import {
   validateSingleRender,
 } from "../app/lib/single-render-validation.mjs";
+import {
+  batchOutputName,
+  batchSeed,
+  buildSingleRenderRequest,
+} from "../app/lib/single-render-request.mjs";
 
 const ASSET = { name: "asset.png" };
 
@@ -26,6 +31,29 @@ function validSingleInput(overrides = {}) {
     referenceImages: [],
     lastFrameImage: null,
     sourceVideo: null,
+    ...overrides,
+  };
+}
+
+function validRequestInput(overrides = {}) {
+  return {
+    mode: "t2v",
+    prompt: "A cinematic tracking shot.",
+    negativePrompt: "flicker, watermark",
+    referenceImageName: "",
+    referenceImageNames: [],
+    lastFrameName: "",
+    sourceVideoName: "",
+    modelProfile: "nvfp4_blackwell",
+    width: 736,
+    height: 416,
+    duration: 5,
+    steps: 20,
+    seed: 12345,
+    outputName: "h3-render",
+    batchId: "",
+    batchIndex: 1,
+    batchTotal: 1,
     ...overrides,
   };
 }
@@ -133,4 +161,58 @@ test("single render validates steps seed and render count limits", () => {
   assert.match(messages(validSingleInput({ seed: 2147483648 }))[0], /2147483647/);
   assert.match(messages(validSingleInput({ renderCount: 0 }))[0], /影片數量/);
   assert.match(messages(validSingleInput({ renderCount: 21 }))[0], /20/);
+});
+
+test("single render request keeps the legacy generate payload shape", () => {
+  assert.deepEqual(
+    buildSingleRenderRequest(validRequestInput({
+      mode: "fl2v",
+      referenceImageName: "first.png",
+      lastFrameName: "last.png",
+      sourceVideoName: "stale.mp4",
+    })),
+    {
+      mode: "fl2v",
+      prompt: "A cinematic tracking shot.",
+      negativePrompt: "flicker, watermark",
+      inputImageName: "first.png",
+      lastImageName: "last.png",
+      inputVideoName: "stale.mp4",
+      referenceImageName: "first.png",
+      modelProfile: "nvfp4_blackwell",
+      width: 736,
+      height: 416,
+      duration: 5,
+      steps: 20,
+      seed: 12345,
+      outputName: "h3-render",
+      batchId: "",
+      batchIndex: 1,
+      batchTotal: 1,
+    },
+  );
+});
+
+test("ref2v request preserves video input and caps reference images at nine", () => {
+  const referenceImageNames = Array.from({ length: 12 }, (_, index) => `ref-${index + 1}.png`);
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "ref2v",
+    referenceImageName: "ref-1.png",
+    referenceImageNames,
+    sourceVideoName: "motion.mp4",
+    modelProfile: "ref2va_pruned_nvfp4",
+  }));
+
+  assert.equal(payload.inputImageName, "");
+  assert.equal(payload.inputVideoName, "motion.mp4");
+  assert.equal(payload.referenceImageName, "ref-1.png");
+  assert.deepEqual(payload.referenceImageNames, referenceImageNames.slice(0, 9));
+});
+
+test("batch request helpers keep legacy seed and filename behavior", () => {
+  assert.equal(batchSeed(2147483647, 1), 0);
+  assert.equal(batchSeed(12345, 2), 12347);
+  assert.equal(batchOutputName("clip.mp4", 0, 3), "clip-1");
+  assert.equal(batchOutputName("", 1, 3), "h3-render-2");
+  assert.equal(batchOutputName("clip", 0, 1), "clip");
 });
