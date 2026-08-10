@@ -13,6 +13,25 @@ import {
   parseImg2ImgHistory,
 } from "../server/image-generation/img2img.mjs";
 
+function response(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    async text() { return JSON.stringify(payload); },
+  };
+}
+
+function apiResponse() {
+  return {
+    headersSent: false,
+    status: 0,
+    body: null,
+    writeHead(status) { this.status = status; this.headersSent = true; },
+    end(value) { this.body = value ? JSON.parse(value) : null; },
+  };
+}
+
 const requiredObjectInfo = {
   CheckpointLoaderSimple: { input: { required: { ckpt_name: [[...IMG2IMG_MODELS]] } } },
   LoadImage: {},
@@ -21,6 +40,11 @@ const requiredObjectInfo = {
   KSampler: {},
   VAEDecode: {},
   SaveImage: {},
+};
+
+const currentObjectInfo = {
+  ...requiredObjectInfo,
+  CheckpointLoaderSimple: { input: { required: { ckpt_name: [{ value: [...IMG2IMG_MODELS] }, { tooltip: "Checkpoint" }] } } },
 };
 
 test("builds an eight-node native img2img workflow", () => {
@@ -50,6 +74,46 @@ test("readiness requires standard nodes and at least one approved checkpoint", (
   assert.equal(ready.models[IMG2IMG_MODELS[0]], true);
   const missing = evaluateImg2ImgReadiness({ ...requiredObjectInfo, VAEEncode: undefined });
   assert.equal(missing.ready, false);
+});
+
+test("readiness parses the current ComfyUI checkpoint combo schema", () => {
+  const readiness = evaluateImg2ImgReadiness(currentObjectInfo);
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.models[IMG2IMG_MODELS[0]], true);
+  assert.equal(readiness.models[IMG2IMG_MODELS[1]], true);
+});
+
+test("readiness ignores unrelated current-schema checkpoints", () => {
+  const readiness = evaluateImg2ImgReadiness({
+    ...requiredObjectInfo,
+    CheckpointLoaderSimple: { input: { required: { ckpt_name: [{ value: ["sam3.1_multiplex_fp16.safetensors"] }, {}] } } },
+  });
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.models[IMG2IMG_MODELS[0]], false);
+  assert.equal(readiness.models[IMG2IMG_MODELS[1]], false);
+});
+
+test("POST readiness 503 keeps health details for actionable diagnostics", async () => {
+  const controller = createImg2ImgController({
+    inputRoot: path.join(os.tmpdir(), "h3-img2img-input-missing"),
+    outputRoot: path.join(os.tmpdir(), "h3-img2img-output-missing"),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/system_stats")) throw new Error("offline");
+      if (String(url).endsWith("/object_info")) return response(currentObjectInfo);
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+  });
+  const res = apiResponse();
+  const handled = await controller.handleRoute({ method: "POST", url: "/api/img2img" }, res, {
+    readJson: async () => ({ sourceName: "source.png", prompt: "restyle" }),
+    sendJson: (_target, status, body) => { res.status = status; res.body = body; },
+    sendError: (_target, status, message, code) => { res.status = status; res.body = { error: message, code }; },
+  });
+  assert.equal(handled, true);
+  assert.equal(res.status, 503);
+  assert.equal(res.body.error, "Image-to-image is not ready.");
+  assert.equal(res.body.health.comfyUi, false);
+  assert.equal(res.body.health.models[IMG2IMG_MODELS[0]], true);
 });
 
 test("normalizes safe image names and parses SaveImage history", () => {
@@ -128,4 +192,3 @@ test("remote controller uploads, generates, downloads, and registers an image", 
     await rm(root, { recursive: true, force: true });
   }
 });
-

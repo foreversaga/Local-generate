@@ -129,7 +129,10 @@ export function buildImg2ImgPrompt({
 
 function comboValues(nodeInfo, key) {
   const spec = nodeInfo?.input?.required?.[key];
-  return Array.isArray(spec?.[0]) ? spec[0].map(String) : [];
+  const choices = Array.isArray(spec) ? spec[0] : spec;
+  if (Array.isArray(choices)) return choices.map(String);
+  if (choices && typeof choices === "object" && Array.isArray(choices.value)) return choices.value.map(String);
+  return [];
 }
 
 export function evaluateImg2ImgReadiness(objectInfo, { comfyUi = true } = {}) {
@@ -478,4 +481,3 @@ export function createImg2ImgController({
     active: () => active ? publicJob(active) : null,
   };
 }
-

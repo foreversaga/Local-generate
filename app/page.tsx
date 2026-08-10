@@ -60,6 +60,13 @@ type Img2ImgJob = {
   error?: string;
 };
 
+type Img2ImgHealth = {
+  ready?: boolean;
+  comfyUi?: boolean;
+  nodes?: Record<string, boolean>;
+  models?: Record<string, boolean>;
+};
+
 const IMG2IMG_POLL_STATUSES = new Set<Img2ImgJobStatus>(["queued", "running"]);
 const IMG2IMG_TERMINAL_STATUSES = new Set<Img2ImgJobStatus>(["completed", "failed", "cancelled"]);
 const IMG2IMG_MODELS = [
@@ -171,6 +178,27 @@ function apiErrorMessage(payload: ApiErrorPayload, fallback: string) {
     : payload.error?.message || fallback;
   const code = payload.code || (typeof payload.error === "object" ? payload.error?.code : "");
   return code ? `${code}: ${message}` : message;
+}
+
+function img2ImgReadinessMessage(health: Img2ImgHealth | undefined, selectedModel: string) {
+  if (!health) return "";
+  if (health.comfyUi === false) {
+    return "ComfyUI 未連線。請啟動 ComfyUI（127.0.0.1:8188）後再試。";
+  }
+  const missingNodes = Object.entries(health.nodes || {})
+    .filter(([, available]) => !available)
+    .map(([name]) => name);
+  if (missingNodes.length) {
+    return `ComfyUI 缺少必要節點：${missingNodes.join("、")}。請安裝或啟用這些節點後再試。`;
+  }
+  const models = health.models || {};
+  if (Object.prototype.hasOwnProperty.call(models, selectedModel) && !models[selectedModel]) {
+    return `未安裝所選 checkpoint：${selectedModel}。請將檔案放入 ComfyUI/models/checkpoints，重新整理後再試。`;
+  }
+  if (Object.keys(models).length && !Object.values(models).some(Boolean)) {
+    return `ComfyUI 未找到支援的圖生圖 checkpoint。請將 ${selectedModel} 或其他支援模型放入 ComfyUI/models/checkpoints 後再試。`;
+  }
+  return "圖生圖尚未就緒。請檢查 ComfyUI 連線、必要節點與 checkpoint 後再試。";
 }
 
 type LongErrorDialog = {
@@ -1727,9 +1755,10 @@ export default function Home() {
           seed: img2imgSeed,
         }),
       });
-      const payload = (await response.json().catch(() => ({}))) as { job?: Img2ImgJob; error?: string; code?: string };
+      const payload = (await response.json().catch(() => ({}))) as { job?: Img2ImgJob; error?: string; code?: string; health?: Img2ImgHealth };
       if (!response.ok || !payload.job) {
-        throw new Error(payload.code ? `${payload.code}: ${payload.error || "無法啟動以圖生圖。"}` : payload.error || "無法啟動以圖生圖。");
+        const readinessMessage = img2ImgReadinessMessage(payload.health, img2imgModel);
+        throw new Error(readinessMessage || (payload.code ? `${payload.code}: ${payload.error || "無法啟動以圖生圖。"}` : payload.error || "無法啟動以圖生圖。"));
       }
       setImg2ImgJob(payload.job);
       if (payload.job.status === "completed") void refreshAssets();

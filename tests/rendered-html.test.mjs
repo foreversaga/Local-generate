@@ -95,6 +95,11 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /BRIDGE_URL \+ "\/api\/img2img"/);
   assert.match(page, /id="img2img-description"/);
   assert.match(page, /generateImg2ImgPrompt/);
+  assert.match(page, /type Img2ImgHealth/);
+  assert.match(page, /function img2ImgReadinessMessage/);
+  assert.match(page, /payload\.health/);
+  assert.match(page, /ComfyUI 未連線/);
+  assert.match(page, /ComfyUI\/models\/checkpoints/);
   assert.match(page, /mode: "img2img"/);
   assert.match(page, /使用 Ollama 產生提示詞/);
   assert.match(page, /\/api\/img2img\/jobs\/\$\{encodeURIComponent\(trackedJobId\)\}/);
