@@ -1,0 +1,707 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  align-items: start;
+  gap: 20px;
+}
+
+.formColumn {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+
+.section {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(145deg, var(--panel), var(--bg-elevated));
+  padding: 22px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.sectionCode,
+.summaryLabel,
+.assetMeta,
+.helper,
+.counter,
+.validationLabel {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sectionCode,
+.summaryLabel,
+.validationLabel {
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sectionTitle {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.sectionIcon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--lime) 8%, transparent);
+  color: var(--lime);
+}
+
+.icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.modeGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.modeButton {
+  display: flex;
+  min-width: 0;
+  min-height: 74px;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  padding: 12px;
+  color: var(--muted);
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.modeButton:hover {
+  border-color: color-mix(in srgb, var(--lime) 30%, var(--line));
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.modeButtonSelected {
+  border-color: color-mix(in srgb, var(--lime) 48%, var(--line));
+  background: color-mix(in srgb, var(--lime) 9%, var(--bg-elevated));
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime) 8%, transparent);
+}
+
+.modeIcon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--panel-soft);
+  color: var(--lime);
+}
+
+.modeCopy {
+  min-width: 0;
+}
+
+.modeCopy strong,
+.modeCopy span {
+  display: block;
+}
+
+.modeCopy strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modeCopy span {
+  margin-top: 3px;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.fieldStack {
+  display: grid;
+  gap: 16px;
+}
+
+.fieldGrid,
+.compactGrid {
+  display: grid;
+  gap: 14px;
+}
+
+.fieldGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compactGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.fieldLabel {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.optional {
+  margin-left: 5px;
+  color: var(--muted-2);
+  font-weight: 500;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.input,
+.select {
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.textarea {
+  min-height: 132px;
+  padding: 12px 13px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.negativeTextarea {
+  min-height: 94px;
+}
+
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: color-mix(in srgb, var(--muted) 55%, var(--line));
+}
+
+.fieldInvalid .input,
+.fieldInvalid .select,
+.fieldInvalid .textarea {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--line));
+}
+
+.fieldError {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.counterRow,
+.rangeHeader,
+.assetHeader,
+.summaryRow,
+.validationItem,
+.serviceState {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.counterWarning {
+  color: var(--orange);
+}
+
+.range {
+  width: 100%;
+  accent-color: var(--lime);
+}
+
+.rangeValue {
+  color: var(--lime);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.resolutionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.iconButton,
+.secondaryButton,
+.uploadButton,
+.primaryButton {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 750;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease, opacity 180ms ease;
+}
+
+.iconButton {
+  width: 44px;
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  color: var(--muted);
+}
+
+.iconButton:hover,
+.secondaryButton:hover,
+.uploadButton:hover {
+  border-color: color-mix(in srgb, var(--lime) 32%, var(--line));
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.secondaryButton,
+.uploadButton {
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  padding: 0 13px;
+  color: var(--text);
+}
+
+.primaryButton {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--lime) 76%, var(--line));
+  background: var(--lime);
+  padding: 0 16px;
+  color: var(--bg);
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--lime) 88%, white);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.uploadButton:disabled,
+.iconButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.assetList {
+  display: grid;
+  gap: 12px;
+}
+
+.assetCard {
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  padding: 13px;
+}
+
+.assetControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.assetSelection {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.assetThumb {
+  position: relative;
+  width: 56px;
+  height: 42px;
+  flex: 0 0 56px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.assetThumb img,
+.assetThumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.assetName {
+  min-width: 0;
+  flex: 1;
+}
+
+.assetName strong,
+.assetName span {
+  display: block;
+}
+
+.assetName strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assetName span {
+  margin-top: 3px;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.removeButton {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.removeButton:hover {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+}
+
+.referenceChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.referenceChip {
+  display: inline-flex;
+  min-height: 36px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  padding: 0 8px 0 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.referenceChip span {
+  overflow: hidden;
+  max-width: 190px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.referenceChip button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+
+.summary {
+  position: sticky;
+  top: 88px;
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.summaryCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.summaryTitle {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.preview {
+  display: grid;
+  min-height: 164px;
+  place-items: center;
+  overflow: hidden;
+  margin-top: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.preview img,
+.preview video {
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+}
+
+.previewEmpty {
+  max-width: 220px;
+  padding: 24px;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.summaryRows {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.summaryRow {
+  align-items: flex-start;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summaryRow strong {
+  max-width: 58%;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 650;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.validationList {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.validationItem {
+  justify-content: flex-start;
+  min-height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  padding: 7px 9px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.validationReady {
+  background: color-mix(in srgb, var(--lime) 7%, transparent);
+  color: var(--lime);
+}
+
+.validationIcon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  place-items: center;
+}
+
+.serviceState {
+  justify-content: flex-start;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.statusDotOnline {
+  background: var(--lime);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lime) 9%, transparent);
+}
+
+.submitError {
+  margin: 12px 0 0;
+  border-left: 2px solid var(--danger);
+  padding-left: 10px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.desktopGenerate {
+  margin-top: 14px;
+}
+
+.mobileCta {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  }
+
+  .modeGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .compactGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .summary {
+    position: static;
+  }
+}
+
+@media (max-width: 768px) {
+  .layout {
+    padding-bottom: 70px;
+  }
+
+  .section,
+  .summaryCard {
+    padding: 17px;
+  }
+
+  .fieldGrid,
+  .compactGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .modeGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modeButton {
+    min-height: 78px;
+    align-items: flex-start;
+  }
+
+  .modeCopy strong {
+    white-space: normal;
+  }
+
+  .assetControls {
+    grid-template-columns: 1fr;
+  }
+
+  .uploadButton {
+    width: 100%;
+  }
+
+  .desktopGenerate {
+    display: none;
+  }
+
+  .mobileCta {
+    position: fixed;
+    right: 12px;
+    bottom: calc(70px + env(safe-area-inset-bottom));
+    left: 12px;
+    z-index: 24;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    padding: 8px;
+    box-shadow: 0 -10px 32px color-mix(in srgb, var(--bg) 55%, transparent);
+    backdrop-filter: blur(16px);
+  }
+}
+
+@media (max-width: 420px) {
+  .modeGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .resolutionRow {
+    grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr);
+  }
+
+  .sectionHeader {
+    gap: 10px;
+  }
+
+  .referenceChip span {
+    max-width: 150px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modeButton,
+  .input,
+  .select,
+  .textarea,
+  .iconButton,
+  .secondaryButton,
+  .uploadButton,
+  .primaryButton {
+    transition: none;
+  }
+}
