@@ -44,7 +44,8 @@ export function validateSingleRender(input) {
   if (!prompt) {
     issues.push(issue("prompt", "請先填入提示詞。"));
   } else if (
-    input.enforcePromptMaxChars
+    input.mode !== "replace"
+    && input.enforcePromptMaxChars
     && Number.isFinite(input.promptMaxChars)
     && input.prompt.length > input.promptMaxChars
   ) {
