@@ -446,9 +446,11 @@ export function SingleCreateForm() {
                       value={width}
                       aria-label="影片寬度"
                       aria-invalid={Boolean(visibleFieldError("width"))}
+                      aria-describedby={visibleFieldError("width") ? "single-width-error" : undefined}
                       onBlur={() => markTouched("width")}
                       onChange={(event) => setWidth(numberDraft(event.target.value))}
                     />
+                    <FieldError id="single-width-error" message={visibleFieldError("width")} />
                   </label>
                   <button type="button" className={styles.iconButton} onClick={swapResolution} aria-label="交換影片寬度與高度" title="交換寬高">
                     <Icon name="shuffle" />
@@ -466,13 +468,14 @@ export function SingleCreateForm() {
                       value={height}
                       aria-label="影片高度"
                       aria-invalid={Boolean(visibleFieldError("height"))}
+                      aria-describedby={visibleFieldError("height") ? "single-height-error" : undefined}
                       onBlur={() => markTouched("height")}
                       onChange={(event) => setHeight(numberDraft(event.target.value))}
                     />
+                    <FieldError id="single-height-error" message={visibleFieldError("height")} />
                   </label>
                 </div>
                 <span className={styles.helper}>{mode === "replace" ? "16" : "32"} 的倍數，範圍 32–2048 px。</span>
-                <FieldError message={visibleFieldError("width") || visibleFieldError("height")} />
               </div>
             </div>
 
@@ -496,10 +499,11 @@ export function SingleCreateForm() {
                   max={80}
                   value={steps}
                   aria-invalid={Boolean(visibleFieldError("steps"))}
+                  aria-describedby={visibleFieldError("steps") ? "single-steps-error" : undefined}
                   onBlur={() => markTouched("steps")}
                   onChange={(event) => setSteps(numberDraft(event.target.value))}
                 />
-                <FieldError message={visibleFieldError("steps")} />
+                <FieldError id="single-steps-error" message={visibleFieldError("steps")} />
               </label>
 
               <label className={`${styles.field} ${visibleFieldError("seed") ? styles.fieldInvalid : ""}`}>
@@ -512,11 +516,12 @@ export function SingleCreateForm() {
                   max={2147483647}
                   value={seed}
                   aria-invalid={Boolean(visibleFieldError("seed"))}
+                  aria-describedby={visibleFieldError("seed") ? "single-seed-error" : undefined}
                   onBlur={() => markTouched("seed")}
                   onChange={(event) => setSeed(numberDraft(event.target.value))}
                 />
                 <button type="button" className={styles.secondaryButton} onClick={randomizeSeed}><Icon name="shuffle" />隨機 Seed</button>
-                <FieldError message={visibleFieldError("seed")} />
+                <FieldError id="single-seed-error" message={visibleFieldError("seed")} />
               </label>
 
               <label className={`${styles.field} ${visibleFieldError("renderCount") ? styles.fieldInvalid : ""}`}>
@@ -529,11 +534,12 @@ export function SingleCreateForm() {
                   max={20}
                   value={renderCount}
                   aria-invalid={Boolean(visibleFieldError("renderCount"))}
+                  aria-describedby={visibleFieldError("renderCount") ? "single-render-count-error" : undefined}
                   onBlur={() => markTouched("renderCount")}
                   onChange={(event) => setRenderCount(numberDraft(event.target.value))}
                 />
                 <span className={styles.helper}>批次會沿用既有 seed + index 規則。</span>
-                <FieldError message={visibleFieldError("renderCount")} />
+                <FieldError id="single-render-count-error" message={visibleFieldError("renderCount")} />
               </label>
             </div>
 
@@ -697,6 +703,7 @@ function SourceFields({
               className={styles.select}
               value=""
               aria-invalid={Boolean(errorFor("referenceImages"))}
+              aria-describedby={errorFor("referenceImages") ? "single-reference-images-error" : undefined}
               onChange={(event) => {
                 onAddReference(event.target.value);
                 event.target.value = "";
@@ -725,7 +732,7 @@ function SourceFields({
               ))}
             </div>
           )}
-          <FieldError message={errorFor("referenceImages")} />
+          <FieldError id="single-reference-images-error" message={errorFor("referenceImages")} />
         </div>
       )}
 
@@ -736,7 +743,7 @@ function SourceFields({
           kind="image"
           assets={imageAssets}
           selected={lastFrameImage}
-          error={errorFor("referenceImage") ? "" : errorFor("lastFrameImage")}
+          error={errorFor("lastFrameImage")}
           uploading={uploadingTarget === "lastFrameImage"}
           onSelect={(key) => onSelectSingle("lastFrameImage", key)}
           onClear={onClearLastFrame}
@@ -796,7 +803,14 @@ function SingleAssetPicker({
         </div>
       </div>
       <div className={styles.assetControls}>
-        <select id={id} className={styles.select} value={selected ? assetKey(selected) : ""} aria-invalid={Boolean(error)} onChange={(event) => onSelect(event.target.value)}>
+        <select
+          id={id}
+          className={styles.select}
+          value={selected ? assetKey(selected) : ""}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? `${id}-error` : undefined}
+          onChange={(event) => onSelect(event.target.value)}
+        >
           <option value="">從資源庫選擇…</option>
           {assets.map((asset) => <option key={assetKey(asset)} value={assetKey(asset)}>{asset.name}</option>)}
         </select>
@@ -812,7 +826,7 @@ function SingleAssetPicker({
           <button type="button" className={styles.removeButton} onClick={onClear} aria-label={`移除 ${label}`}><Icon name="close" /></button>
         </div>
       )}
-      <FieldError message={error} />
+      <FieldError id={`${id}-error`} message={error} />
     </div>
   );
 }
@@ -823,7 +837,7 @@ function UploadButton({ kind, busy, multiple = false, disabled = false, onFiles 
       <Icon name="upload" />
       <span>{busy ? "上傳中…" : "上傳"}</span>
       <input
-        hidden
+        className={styles.fileInput}
         type="file"
         multiple={multiple}
         disabled={busy || disabled}
