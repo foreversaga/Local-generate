@@ -79,6 +79,10 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /ultra/);
   assert.match(page, /BRIDGE_URL \+ "\/api\/prompt"/);
   assert.match(page, /const H3_PROMPT_MAX_CHARS = 7000/);
+  assert.match(page, /import \{ validateSingleRender \} from "\.\/lib\/single-render-validation\.mjs"/);
+  assert.match(page, /const singleRenderValidationIssues = useMemo\(\(\) => validateSingleRender\(\{/);
+  assert.match(page, /if \(singleRenderValidationIssues\.length\) \{[\s\S]*showToast\(singleRenderValidationIssues\[0\]\.message, "error"\)/);
+  assert.match(page, /disabled=\{renderBusy \|\| singleRenderValidationIssues\.length > 0\}/);
   assert.match(page, /H3_IMAGE_PROMPT_MODES\.has\(mode\)/);
   assert.match(page, /I2VA 提示詞需要參考圖片/);
   assert.match(page, /FL2VA 提示詞需要首幀與尾幀圖片/);
@@ -106,7 +110,6 @@ test("uses the same-origin API on the web service", async () => {
   assert.match(page, /id="img2img-steps"[\s\S]*numberInputDraft\(event\.target\.value\)/);
   assert.match(page, /id="img2img-cfg"[\s\S]*numberInputDraft\(event\.target\.value\)/);
   assert.match(page, /id="img2img-seed"[\s\S]*numberInputDraft\(event\.target\.value\)/);
-  assert.match(page, /const renderCountValidation = validateNumberDraft\(renderCount/);
   assert.match(page, /const img2imgStepsValidation = validateNumberDraft\(img2imgSteps/);
   assert.match(page, /const longWidthValidation = validateDimensionDraft\(width/);
   assert.match(page, /const durationValidation = validateNumberDraft\(longDuration/);

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { validateSingleRender } from "./lib/single-render-validation.mjs";
 
 const BRIDGE_URL = "/app";
 const VIDEO_PAGE_SIZE = 10;
@@ -821,6 +822,33 @@ export default function Home() {
   const selectedDeletableAssets = assets.filter((asset) => isDeletableAsset(asset) && selectedAssetKeySet.has(assetKey(asset)));
   const visibleDeletableAssets = filteredAssets.filter(isDeletableAsset);
   const allVisibleDeletableAssetsSelected = visibleDeletableAssets.length > 0 && visibleDeletableAssets.every((asset) => selectedAssetKeySet.has(assetKey(asset)));
+  const singleRenderValidationIssues = useMemo(() => validateSingleRender({
+    mode,
+    prompt,
+    promptMaxChars: H3_PROMPT_MAX_CHARS,
+    enforcePromptMaxChars: true,
+    width,
+    height,
+    steps,
+    seed,
+    renderCount,
+    referenceImage,
+    referenceImages,
+    lastFrameImage,
+    sourceVideo,
+  }), [
+    mode,
+    prompt,
+    width,
+    height,
+    steps,
+    seed,
+    renderCount,
+    referenceImage,
+    referenceImages,
+    lastFrameImage,
+    sourceVideo,
+  ]);
   const assetGroups = [
     {
       root: "input" as const,
@@ -1973,65 +2001,15 @@ export default function Home() {
   }
 
   async function startRender() {
-    if (!prompt.trim()) {
-      showToast("請先填入提示詞。", "error");
+    if (singleRenderValidationIssues.length) {
+      showToast(singleRenderValidationIssues[0].message, "error");
       return;
     }
-    if (isH3PromptMode(mode) && prompt.length > H3_PROMPT_MAX_CHARS) {
-      showToast(`H3 提示詞不可超過 ${H3_PROMPT_MAX_CHARS} 字元，目前為 ${prompt.length} 字元。`, "error");
-      return;
-    }
-    if (mode === "ref2v" && !referenceImages.length && !sourceVideo) {
-      showToast("Ref2VA 至少需要一個參考圖片或參考影片。", "error");
-      return;
-    }
-    if (mode === "i2v" && !referenceImage) {
-      showToast("I2VA 需要參考圖片。", "error");
-      return;
-    }
-    if (mode === "fl2v" && (!referenceImage || !lastFrameImage)) {
-      showToast("FL2VA 需要首幀與尾幀圖片。", "error");
-      return;
-    }
-    if (mode === "l2v" && !lastFrameImage) {
-      showToast("L2VA 需要尾幀圖片。", "error");
-      return;
-    }
-    if (mode === "replace" && (!referenceImage || !sourceVideo)) {
-      showToast("影片替換需要參考圖片與來源影片。", "error");
-      return;
-    }
-    const dimensionGrid = mode === "replace" ? 16 : 32;
-    const widthValidation = validateDimensionDraft(width, "影片寬度", dimensionGrid);
-    if ("error" in widthValidation) {
-      showToast(widthValidation.error, "error");
-      return;
-    }
-    const heightValidation = validateDimensionDraft(height, "影片高度", dimensionGrid);
-    if ("error" in heightValidation) {
-      showToast(heightValidation.error, "error");
-      return;
-    }
-    const stepsValidation = validateNumberDraft(steps, { label: "Steps", min: 1, max: 80, integer: true });
-    if ("error" in stepsValidation) {
-      showToast(stepsValidation.error, "error");
-      return;
-    }
-    const seedValidation = validateNumberDraft(seed, { label: "Seed", min: 0, max: 2147483647, integer: true });
-    if ("error" in seedValidation) {
-      showToast(seedValidation.error, "error");
-      return;
-    }
-    const renderCountValidation = validateNumberDraft(renderCount, { label: "影片數量", min: 1, max: 20, integer: true });
-    if ("error" in renderCountValidation) {
-      showToast(renderCountValidation.error, "error");
-      return;
-    }
-    const submittedWidth = widthValidation.value;
-    const submittedHeight = heightValidation.value;
-    const submittedSteps = stepsValidation.value;
-    const submittedSeed = seedValidation.value;
-    const count = renderCountValidation.value;
+    const submittedWidth = Number(width);
+    const submittedHeight = Number(height);
+    const submittedSteps = Number(steps);
+    const submittedSeed = Number(seed);
+    const count = Number(renderCount);
     const firstFrameName = referenceImage?.kind === "image" ? referenceImage.name : "";
     const referenceImageNames = referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
     const lastFrameName = lastFrameImage?.kind === "image" ? lastFrameImage.name : "";
@@ -3707,7 +3685,7 @@ export default function Home() {
                 type="button"
                 className="generate-button"
                 onClick={() => void startRender()}
-                disabled={renderBusy}
+                disabled={renderBusy || singleRenderValidationIssues.length > 0}
               >
                 <span>{renderBusy ? "正在排隊…" : "開始生成影片"}</span>
                 <span className="generate-arrow"><Icon name="arrow" /></span>
