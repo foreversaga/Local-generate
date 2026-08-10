@@ -2,6 +2,43 @@
 
 > 狀態：2026-08-10 已取得實作授權。決策來源為 `docs/webui-layout-redesign-spec.md` 的 D1–D7。
 
+## 0. 目前實作進度（2026-08-10）
+
+正式工作分支：`agent/document-webui-redesign-plan`。
+
+- **Phase 1 — Contracts / validation / route foundation：完成**
+  - `/app` 相容與 nested route contract 已建立並有測試。
+  - Single render 使用 shared `validateSingleRender()`；legacy CTA 與 submit defensive validation 共用規則。
+  - generate / prompt request payload 以 pure contract 鎖定，bridge API semantics 未改。
+- **Phase 2 — App shell / Create：完成**
+  - AppShell、desktop sidebar、top bar、mobile bottom navigation 已建立。
+  - `/app/create` landing 已完成。
+  - `/app/create/single` 已完成：六種模式、素材、Prompt Assistant、sticky summary/CTA、draft autosave、route render/a11y tests。
+  - `/app/create/long` 已完成：story/source、references、planner/timeline、segment review、render setup，保留既有 sequence/draft contract。
+- **Phase 3 — Jobs：完成**
+  - 五狀態 adapter、recent jobs drawer、`/app/jobs`、`/app/jobs/[id]` 已完成。
+  - cancel / retry / pause / resume / output 行為由既有 backend API 提供，不改 API semantics。
+- **Phase 4 — Library / Tools：進行中**
+  - `/app/library` 完整管理頁與 Create Asset Picker 已完成。
+  - Create landing 可從 Library input 素材開始，透過既有 Single draft contract 做 image→I2V、video→Ref2V role mapping。
+  - **尚未完成：`/app/tools/upscale` 與 `/app/tools/image-to-image` 的完整 migration。**
+- **Phase 5 — Responsive / a11y：部分完成**
+  - Shell、Single、Long、Jobs、Library/Picker 已套用 44px target、focus/keyboard、dialog focus trap、reduced motion 等規則。
+  - **尚未完成：375 / 768 / 1024 / 1440 全域驗收與 horizontal-overflow sweep。**
+- **Phase 6 — Moderate visual refresh / cleanup：尚未最終收尾**
+  - 新 route 已使用一致 dark/lime 視覺與 semantic states。
+  - **尚未完成：Tools / Settings 完成後的全域視覺一致化與 legacy placeholder/cleanup。**
+
+最新已驗證功能 checkpoint：`8bf1631f8beb8d9ebcb749d409d219f38b740514`；GitHub Actions `WebUI CI` run `31378491826` = **success**。交接細節以根目錄 `CONTINUATION_STATUS.md` 為準。
+
+### 下一個新對話直接開始
+
+1. 完成 `/app/tools/upscale`。
+2. 完成 `/app/tools/image-to-image`。
+3. 完成 `/app/settings`：runtime/provider/model defaults/service status；不可把生成表單塞進 Settings。
+4. 跑 Phase 5 四斷點 responsive/a11y 驗收。
+5. 完成 Phase 6 visual/legacy cleanup，確認 parity 前不要刪 legacy 能力。
+
 ## 1. 不可破壞邊界
 
 - 保持 `/app` base path。
@@ -126,3 +163,10 @@ Phase 1 拆成小 commit：
 4. `feat: gate single render submission`
 
 之後每個 route/功能維持可 build、可測試、可回退的 commit 邊界。
+
+## 7. GitHub / CI 操作注意事項
+
+- 正式來源只看 `agent/document-webui-redesign-plan`；暫存 branch 不作為新對話續作基準。
+- 每個功能 checkpoint 必須先通過 GitHub Actions `npm ci && npm test` 才能合回正式 branch。
+- 多檔修改優先使用 Git 原生 `blob → tree → commit`；不要再用 `.tmp` 壓縮檔、CI 解壓/套 patch 的方式傳輸程式碼。
+- 建 commit 前用 `compare_commits` 檢查 diff，不能把 `.tmp`、驗證用 workflow 或不相干 Phase 帶進正式 branch。
