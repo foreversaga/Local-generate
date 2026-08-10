@@ -1,25 +1,31 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   primaryRouteForPath,
   routeTitle,
   WEB_UI_ROUTES,
 } from "../../lib/webui-routes.mjs";
+import { RecentJobsDrawer } from "../jobs/RecentJobsDrawer";
+import { ServiceStatusLink } from "./ServiceStatusLink";
 import styles from "./AppShell.module.css";
 
 type AppShellProps = {
   children: ReactNode;
 };
 
-const NAV_ICONS: Record<string, string> = {
-  create: "+",
-  jobs: "▤",
-  library: "▦",
-  tools: "◇",
-  settings: "⚙",
+const NAV_ICONS: Record<string, ReactNode> = {
+  create: <><path d="M12 5v14"/><path d="M5 12h14"/></>,
+  jobs: <><path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></>,
+  library: <><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></>,
+  tools: <><path d="m14 6 4-4 4 4-4 4"/><path d="m18 6-8.5 8.5"/><path d="M6.5 12.5 2 17l5 5 4.5-4.5"/></>,
+  settings: <><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.3-2.6h-4L10.5 6A7 7 0 0 0 9 7.1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1A7 7 0 0 0 10.5 18l.3 2.6h4L15 18a7 7 0 0 0 1.5-1.1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></>,
 };
+
+function NavIcon({ id }: { id: string }) {
+  return <svg className={styles.navSvg} viewBox="0 0 24 24" aria-hidden="true">{NAV_ICONS[id]}</svg>;
+}
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname() || "/app/create";
@@ -49,7 +55,7 @@ export function AppShell({ children }: AppShellProps) {
                 href={route.href}
                 aria-current={active ? "page" : undefined}
               >
-                <span className={styles.navIcon} aria-hidden="true">{NAV_ICONS[route.id]}</span>
+                <span className={styles.navIcon}><NavIcon id={route.id} /></span>
                 <span>{route.label}</span>
               </a>
             );
@@ -68,9 +74,9 @@ export function AppShell({ children }: AppShellProps) {
             <span className={styles.localLabel}>LOCAL /</span>
             <span className={styles.pageTitle}>{title}</span>
           </div>
-          <div className={styles.localState}>
-            <span className={styles.statusDot} aria-hidden="true" />
-            <span>Local</span>
+          <div className={styles.topActions}>
+            <RecentJobsDrawer />
+            <ServiceStatusLink />
           </div>
         </header>
 
@@ -87,7 +93,7 @@ export function AppShell({ children }: AppShellProps) {
               href={route.href}
               aria-current={active ? "page" : undefined}
             >
-              <span className={styles.mobileNavIcon} aria-hidden="true">{NAV_ICONS[route.id]}</span>
+              <span className={styles.mobileNavIcon}><NavIcon id={route.id} /></span>
               <span>{route.label}</span>
             </a>
           );

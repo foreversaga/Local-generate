@@ -1,21 +1,5 @@
-import { MigrationPanel, RoutePage } from "../../../components/shell/RoutePage";
+import { JobDetailWorkspace } from "../../../components/jobs/JobDetailWorkspace";
+import { RoutePage } from "../../../components/shell/RoutePage";
 
-type JobDetailPageProps = {
-  params: Promise<{ id: string }>;
-};
-
-export default async function JobDetailPage({ params }: JobDetailPageProps) {
-  const { id } = await params;
-
-  return (
-    <RoutePage
-      eyebrow="Jobs / Detail"
-      title={`Job ${id}`}
-      description="Job detail 將顯示階段、進度、ETA、輸出，以及 Cancel / Retry / Resume；Create 頁不再嵌入完整 job history。"
-    >
-      <MigrationPanel title="Job detail 遷移中">
-        目前 job polling 與 action 還在 legacy workspace。Phase 3 會用 adapter 保持既有 backend status 與 API payload 不變。
-      </MigrationPanel>
-    </RoutePage>
-  );
-}
+type Props={params:Promise<{id:string}>;searchParams:Promise<{source?:string}>};
+export default async function JobDetailPage({params,searchParams}:Props){const {id}=await params;const {source}=await searchParams;return <RoutePage eyebrow="Jobs / Detail" title={`Job ${id}`} description="查看階段、進度、ETA、輸出與既有 backend 支援的工作動作。"><JobDetailWorkspace jobId={id} sourceHint={source}/></RoutePage>}

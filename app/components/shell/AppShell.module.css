@@ -284,3 +284,4 @@
     transition: none;
   }
 }
+.topActions{display:flex;align-items:center;gap:8px}.navSvg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}@media(max-width:520px){.topActions{gap:5px}.topActions>a span:last-child{display:none}}
