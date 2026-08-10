@@ -127,6 +127,26 @@ test("single render validates required assets per mode", () => {
   assert.deepEqual(validateSingleRender(validSingleInput({ mode: "replace", referenceImage: ASSET, sourceVideo: { name: "source.mp4" } })), []);
 });
 
+test("asset validation issues point at the exact missing Single Create fields", () => {
+  assert.deepEqual(
+    validateSingleRender(validSingleInput({ mode: "fl2v" }))
+      .filter((issue) => ["referenceImage", "lastFrameImage"].includes(issue.field))
+      .map((issue) => issue.field),
+    ["referenceImage", "lastFrameImage"],
+  );
+  assert.deepEqual(
+    validateSingleRender(validSingleInput({ mode: "replace" }))
+      .filter((issue) => ["referenceImage", "sourceVideo"].includes(issue.field))
+      .map((issue) => issue.field),
+    ["referenceImage", "sourceVideo"],
+  );
+  assert.equal(
+    validateSingleRender(validSingleInput({ mode: "fl2v", referenceImage: ASSET }))
+      .find((issue) => issue.field === "lastFrameImage")?.message,
+    "FL2VA 需要尾幀圖片。",
+  );
+});
+
 test("single render validates dimension bounds and mode-specific grid", () => {
   assert.match(messages(validSingleInput({ width: "" }))[0], /影片寬度/);
   assert.match(messages(validSingleInput({ width: 16 }))[0], /32/);
