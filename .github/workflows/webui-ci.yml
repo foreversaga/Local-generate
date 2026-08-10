@@ -23,6 +23,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Archive source snapshot
+        run: git archive --format=tar.gz --output=source-snapshot.tar.gz HEAD
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ github.sha }}
+          path: source-snapshot.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
