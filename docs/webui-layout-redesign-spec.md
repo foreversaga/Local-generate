@@ -1,6 +1,6 @@
-# H3 Studio WebUI 改版計畫（決策進行中）
+# H3 Studio WebUI 改版計畫（決策完成）
 
-> 狀態：改版草案，非最終計畫。D1–D6 已確認；D7 未決。全部決策確認後才執行；現在不實作。
+> 狀態：D1–D7 已全部確認。決策階段完成；下一步為產出最終實作計畫。尚未授權開始改版實作。
 
 ## 1. 改版目標與邊界
 
@@ -96,24 +96,41 @@ Desktop shell：sidebar + topbar + two-pane；左 fieldsets 全展開，右 stic
 - Bottom Navigation 只負責 primary navigation；頁面內 action、Generate CTA、Job action 不放入此導覽列。
 - 頂部保留頁名與 service/runtime status，不重複放 primary navigation。
 
-## 7. 驗證與 a11y
+## 7. 視覺刷新（D7 已確認）
+
+採 **中度視覺刷新**。保留目前 H3 Studio 的品牌辨識與主要視覺語言，不重新設計整套品牌，也不要求全面 design-token 重寫。
+
+本次統一與改善：
+
+- 卡片層級、border、radius、surface 表現。
+- input/select/textarea、label、helper、error 狀態。
+- primary／secondary／destructive button 規格與互動狀態。
+- 頁面、section、field group 的間距與密度。
+- heading、body、helper、metadata 的字級與層級。
+- queued／running／complete／error／cancelled 的狀態色與 badge。
+- sidebar、top bar、Bottom Navigation 的 active/inactive 視覺一致性。
+- focus、hover、disabled、loading 等互動狀態。
+
+保持現有品牌 accent 與整體基調；只有在統一上述元件所需時才新增有限的 semantic tokens，不以全面 design-system 重建為本次目標。
+
+## 8. 驗證與 a11y
 
 空 prompt、缺素材、尺寸無效或不相容 mode 不可提交，欄位與右 gating 說明。Job 統一 queued／running／complete／error／cancelled，顯示進度／ETA、Cancel、Retry，不能只 spinner。表單/draft autosave，離開確認未存。互動 ≥44px、8px、對比 ≥4.5:1、2px focus；heading/label、ARIA、focus trap、鍵盤、reduced motion、無 horizontal scroll。
 
-## 8. 分階段草案（非最終計畫）
+## 9. 分階段草案（非最終計畫）
 
-目前只剩 D7 影響最終實作計畫；D7 未確認前仍不得開始改版實作。
+D1–D7 已全部確認。下列階段可作為最終實作計畫的基礎，但正式實作前仍需另產最終執行計畫。
 
 1. **Contracts／routes／state**：盤點 API、polling、adapter、domain；交付 mapping，驗收拓撲／draft 不變。
 2. **Create**：landing、Single、Long、summary/gating；驗收骨架與必填。
 3. **Jobs**：badge/drawer、歷史、detail、取消／重試／恢復；驗收五狀態。
 4. **Library／Tools**：picker、Library、Upscale、I2I、回寫；驗收角色化選取。
 5. **Responsive／a11y**：四斷點、鍵盤、ARIA、reduced motion、Bottom Navigation；驗收無溢出／44px。
-6. **Visual tokens**：D7 確認後定義是否及如何調整色彩、字體、間距與狀態 tokens。
+6. **Moderate visual refresh**：在既有品牌基礎上統一卡片、表單、按鈕、間距、字級、狀態與互動視覺；不做全面品牌或 design-system 重製。
 
-## 9. 決策
+## 10. 決策
 
-| ID | 決策／目前選擇 | 替代或未決項 | 狀態 |
+| ID | 決策／目前選擇 | 替代項 | 狀態 |
 |---|---|---|---|
 | D1 路由 | 五區獨立 page/route | 單頁錨點 | 已確認 |
 | D2 分流 | Single、Long 獨立入口／流程 | 同頁 toggle | 已確認 |
@@ -121,8 +138,8 @@ Desktop shell：sidebar + topbar + two-pane；左 fieldsets 全展開，右 stic
 | D4 Jobs | top badge/drawer＋Jobs 頁 | 只留其一 | 已確認 |
 | D5 工具/資源 | Create picker、Library 獨立、Tools 含 Upscale＋I2I（不進 Create） | 全塞工作台 | 已確認 |
 | D6 mobile nav | 固定 Bottom Navigation；Create / Jobs / Library / Tools / Settings；icon + label；active accent 淡底 | 漢堡／頂部橫向 | 已確認 |
-| D7 visual | 刷新範圍待定；視覺稿已取消 | 只改 IA／中度刷新／全面 tokens | 待確認 |
+| D7 visual | 中度視覺刷新；保留品牌，統一卡片／表單／按鈕／間距／字級／狀態 | 只改 IA／全面 tokens | 已確認 |
 
-## 10. 成功指標／保持不變
+## 11. 成功指標／保持不變
 
-桌面首屏可達 Prompt/右 CTA；mobile Bottom Navigation 無水平溢出、控件 ≥44px；一主 CTA；空 prompt／缺素材不可提交；Jobs 可恢復；picker 回傳 input/output；Tools 輸出在 Library。保持 `/app`、API payload／polling、long draft hydration（`app/page.tsx:1144–1200`）與本機拓撲。D7 確認後才另產最終實作計畫與執行授權。
+桌面首屏可達 Prompt/右 CTA；mobile Bottom Navigation 無水平溢出、控件 ≥44px；一主 CTA；空 prompt／缺素材不可提交；Jobs 可恢復；picker 回傳 input/output；Tools 輸出在 Library。視覺上保留 H3 Studio 品牌基調，但主要元件與狀態需一致。保持 `/app`、API payload／polling、long draft hydration（`app/page.tsx:1144–1200`）與本機拓撲。下一步為另產最終實作計畫，再取得執行授權。
