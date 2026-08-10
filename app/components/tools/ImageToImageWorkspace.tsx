@@ -6,6 +6,7 @@ import { assetKey, assetUrl, type StudioAsset, uploadAssets } from "../library/a
 import {
     fetchImg2ImgHealth,
     fetchImg2ImgJob,
+    fetchImg2ImgRuntime,
     img2ImgReadinessMessage,
     isImg2ImgActive,
     isImg2ImgRetryable,
@@ -13,6 +14,7 @@ import {
     submitImg2Img,
     type Img2ImgHealth,
     type Img2ImgJob,
+    type Img2ImgRuntimeMode,
 } from "./img2img-client";
 import styles from "./ImageToImageWorkspace.module.css";
 
@@ -23,6 +25,8 @@ const IMG2IMG_MODELS = [
         note: "快速預覽 · 建議 4 steps / CFG 1",
         steps: "4",
         cfg: "1",
+        denoise: 0.65,
+        localOnly: false,
     },
     {
         value: "v1-5-pruned-emaonly-fp16.safetensors",
@@ -30,10 +34,43 @@ const IMG2IMG_MODELS = [
         note: "細節調整 · 建議 20 steps / CFG 7",
         steps: "20",
         cfg: "7",
+        denoise: 0.65,
+        localOnly: false,
+    },
+    {
+        value: "z_image_turbo_bf16.safetensors",
+        label: "Z-Image Turbo／真人",
+        note: "真人寫實 · 建議 9 steps / CFG 1 · 僅限本機",
+        steps: "9",
+        cfg: "1",
+        denoise: 0.33,
+        localOnly: true,
+    },
+    {
+        value: "waiIllustriousSDXL_v170.safetensors",
+        label: "WAI Illustrious SDXL／動漫",
+        note: "動漫插畫 · 建議 20 steps / CFG 7 · 僅限本機",
+        steps: "20",
+        cfg: "7",
+        denoise: 0.65,
+        localOnly: true,
     },
 ] as const;
 
 type ModelValue = typeof IMG2IMG_MODELS[number]["value"];
+
+const DEFAULT_IMG2IMG_MODEL = IMG2IMG_MODELS[0];
+
+function modelOption(value: string) {
+    return IMG2IMG_MODELS.find((item) => item.value === value);
+}
+
+function modelAllowedForRuntime(value: string, runtimeMode: Img2ImgRuntimeMode | null) {
+    const option = modelOption(value);
+    return !option?.localOnly || runtimeMode === "local";
+}
+
+const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機 runtime。";
 
 function parseNumberDraft(raw: string, label: string, min: number, max: number, integer = false) {
     if (!raw.trim()) return `${label} 必須填寫。`;
@@ -73,6 +110,7 @@ export function ImageToImageWorkspace() {
     const [seed, setSeed] = useState("12345");
     const [job, setJob] = useState<Img2ImgJob | null>(null);
     const [health, setHealth] = useState<Img2ImgHealth | null>(null);
+    const [runtimeMode, setRuntimeMode] = useState<Img2ImgRuntimeMode | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
     const [uploading, setUploading] = useState(false);
@@ -83,15 +121,33 @@ export function ImageToImageWorkspace() {
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
-        try {
-            setHealth(await fetchImg2ImgHealth());
+        const [readinessResult, runtimeResult] = await Promise.allSettled([fetchImg2ImgHealth(), fetchImg2ImgRuntime()]);
+        if (readinessResult.status === "fulfilled") {
+            setHealth(readinessResult.value);
             setHealthError("");
-        } catch (reason) {
-            setHealthError(errorMessage(reason, "無法取得 ComfyUI readiness。"));
-        } finally {
-            setHealthLoading(false);
+        } else {
+            setHealthError(errorMessage(readinessResult.reason, "無法取得 ComfyUI readiness。"));
         }
-    }, []);
+        if (runtimeResult.status === "fulfilled") {
+            setRuntimeMode(runtimeResult.value);
+            if (runtimeResult.value !== "local" && modelOption(model)?.localOnly) {
+                setModel(DEFAULT_IMG2IMG_MODEL.value);
+                setDenoise(DEFAULT_IMG2IMG_MODEL.denoise);
+                setSteps(DEFAULT_IMG2IMG_MODEL.steps);
+                setCfg(DEFAULT_IMG2IMG_MODEL.cfg);
+            }
+        } else {
+            // Keep local-only checkpoints hidden until runtime can be proven local.
+            setRuntimeMode(null);
+            if (modelOption(model)?.localOnly) {
+                setModel(DEFAULT_IMG2IMG_MODEL.value);
+                setDenoise(DEFAULT_IMG2IMG_MODEL.denoise);
+                setSteps(DEFAULT_IMG2IMG_MODEL.steps);
+                setCfg(DEFAULT_IMG2IMG_MODEL.cfg);
+            }
+        }
+        setHealthLoading(false);
+    }, [model]);
 
     useEffect(() => {
         const initialTimer = window.setTimeout(() => void refreshHealth(), 0);
@@ -127,13 +183,20 @@ export function ImageToImageWorkspace() {
     }, [trackedJobId, trackedJobStatus]);
 
     const selectedKey = useMemo(() => (source ? [assetKey(source)] : []), [source]);
-    const readinessBlockingMessage = health ? img2ImgReadinessMessage(health, model) : "";
+    const visibleModels = runtimeMode === "local"
+        ? IMG2IMG_MODELS
+        : IMG2IMG_MODELS.filter((item) => !item.localOnly);
+    const selectedModel = modelOption(model);
+    const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
+    const readinessBlockingMessage = !modelRuntimeReady
+        ? LOCAL_ONLY_MODEL_MESSAGE
+        : health ? img2ImgReadinessMessage(health, model) : "";
     const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選 checkpoint 均可用。" : "尚未取得 ComfyUI readiness；提交時會再次檢查。 ");
-    const modelReady = health?.models ? health.models[model] !== false : true;
+    const modelReady = modelRuntimeReady && (health ? (health.models ? health.models[model] === true : false) : true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
-    const canRetry = isImg2ImgRetryable(job) && !retrying;
+    const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(job?.model || "", runtimeMode);
 
     function selectSource(assets: StudioAsset[]) {
         const next = assets.find((asset) => asset.kind === "image");
@@ -162,8 +225,9 @@ export function ImageToImageWorkspace() {
     }
 
     function updateModel(value: ModelValue) {
-        const next = IMG2IMG_MODELS.find((item) => item.value === value) || IMG2IMG_MODELS[0];
+        const next = modelOption(value) || DEFAULT_IMG2IMG_MODEL;
         setModel(next.value);
+        setDenoise(next.denoise);
         setSteps(next.steps);
         setCfg(next.cfg);
     }
@@ -172,6 +236,7 @@ export function ImageToImageWorkspace() {
         if (!source || source.kind !== "image") return "請先選擇來源圖片。";
         if (!prompt.trim()) return "請輸入希望圖片呈現的內容。";
         if (prompt.trim().length > 4000 || negativePrompt.length > 4000) return "提示詞不可超過 4000 字元。";
+        if (!modelRuntimeReady) return LOCAL_ONLY_MODEL_MESSAGE;
         if (readinessBlockingMessage) return readinessBlockingMessage;
         const denoiseError = parseNumberDraft(String(denoise), "重繪強度", 0.01, 1);
         if (denoiseError) return denoiseError;
@@ -219,6 +284,10 @@ export function ImageToImageWorkspace() {
 
     async function retry() {
         if (!job || !canRetry) return;
+        if (!modelAllowedForRuntime(job.model, runtimeMode)) {
+            setError(LOCAL_ONLY_MODEL_MESSAGE);
+            return;
+        }
         setRetrying(true);
         setError("");
         try {
@@ -309,9 +378,10 @@ export function ImageToImageWorkspace() {
                     <label className={styles.field}>
                         <span>模型</span>
                         <select value={model} disabled={active} onChange={(event) => updateModel(event.target.value as ModelValue)}>
-                            {IMG2IMG_MODELS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                            {visibleModels.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                         </select>
-                        <small>{IMG2IMG_MODELS.find((item) => item.value === model)?.note}</small>
+                        <small>{selectedModel?.note || "尚未選擇可用模型。"}</small>
+                        {runtimeMode !== "local" && <small>本機限定模型會在 local runtime 就緒後顯示。</small>}
                     </label>
                     <label className={styles.field}>
                         <span>重繪強度 <strong>{denoise.toFixed(2)}</strong></span>
@@ -336,7 +406,7 @@ export function ImageToImageWorkspace() {
                         <p className={styles.helper}>提示詞可手動輸入；生成工作會交由 Jobs 追蹤。</p>
                         {error && <p className={styles.error} role="alert">{error}</p>}
                     </div>
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={submitting || retrying || uploading || active} aria-busy={submitting || retrying || uploading}>
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={submitting || retrying || uploading || active || !modelRuntimeReady} aria-busy={submitting || retrying || uploading}>
                         {uploading ? "上傳圖片中…" : submitting ? "正在排程…" : active ? "圖片生成中…" : "開始以圖生圖"}
                     </button>
                 </div>

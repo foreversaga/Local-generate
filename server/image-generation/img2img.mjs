@@ -2,11 +2,6 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const IMG2IMG_MODELS = Object.freeze([
-  "sd_xl_turbo_1.0_fp16.safetensors",
-  "v1-5-pruned-emaonly-fp16.safetensors",
-]);
-
 export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "CheckpointLoaderSimple",
   "LoadImage",
@@ -16,6 +11,84 @@ export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "VAEDecode",
   "SaveImage",
 ]);
+
+const IMG2IMG_COMMON_NODES = Object.freeze([
+  "LoadImage",
+  "VAEEncode",
+  "CLIPTextEncode",
+  "KSampler",
+  "VAEDecode",
+  "SaveImage",
+]);
+
+const Z_IMAGE_REQUIRED_NODES = Object.freeze([
+  "UNETLoader",
+  "CLIPLoader",
+  "VAELoader",
+  ...IMG2IMG_COMMON_NODES,
+  "ModelSamplingAuraFlow",
+]);
+
+const IMG2IMG_PROFILE_DEFINITIONS = {
+  "sd_xl_turbo_1.0_fp16.safetensors": {
+    model: "sd_xl_turbo_1.0_fp16.safetensors",
+    workflow: "checkpoint",
+    loader: "CheckpointLoaderSimple",
+    localOnly: false,
+    requiredNodes: IMG2IMG_REQUIRED_NODES,
+    defaults: { steps: 4, cfg: 1, denoise: 0.65 },
+  },
+  "v1-5-pruned-emaonly-fp16.safetensors": {
+    model: "v1-5-pruned-emaonly-fp16.safetensors",
+    workflow: "checkpoint",
+    loader: "CheckpointLoaderSimple",
+    localOnly: false,
+    requiredNodes: IMG2IMG_REQUIRED_NODES,
+    defaults: { steps: 20, cfg: 7, denoise: 0.65 },
+  },
+  "waiIllustriousSDXL_v170.safetensors": {
+    model: "waiIllustriousSDXL_v170.safetensors",
+    workflow: "checkpoint",
+    loader: "CheckpointLoaderSimple",
+    localOnly: true,
+    requiredNodes: IMG2IMG_REQUIRED_NODES,
+    defaults: { steps: 20, cfg: 7, denoise: 0.65 },
+  },
+  "z_image_turbo_bf16.safetensors": {
+    model: "z_image_turbo_bf16.safetensors",
+    workflow: "z-image",
+    loader: "UNETLoader",
+    localOnly: true,
+    requiredNodes: Z_IMAGE_REQUIRED_NODES,
+    companions: {
+      clipName: "qwen_3_4b.safetensors",
+      clipType: "lumina2",
+      vaeName: "ae.safetensors",
+    },
+    defaults: { steps: 9, cfg: 1, denoise: 0.33 },
+    sampling: {
+      shift: 3,
+      samplerName: "dpmpp_2m_sde",
+      scheduler: "beta",
+    },
+  },
+};
+
+function freezeProfile(profile) {
+  return Object.freeze({
+    ...profile,
+    requiredNodes: Object.freeze([...profile.requiredNodes]),
+    ...(profile.companions ? { companions: Object.freeze({ ...profile.companions }) } : {}),
+    defaults: Object.freeze({ ...profile.defaults }),
+    ...(profile.sampling ? { sampling: Object.freeze({ ...profile.sampling }) } : {}),
+  });
+}
+
+export const IMG2IMG_MODEL_PROFILES = Object.freeze(
+  Object.fromEntries(Object.entries(IMG2IMG_PROFILE_DEFINITIONS).map(([model, profile]) => [model, freezeProfile(profile)])),
+);
+
+export const IMG2IMG_MODELS = Object.freeze(Object.keys(IMG2IMG_MODEL_PROFILES));
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
@@ -83,14 +156,55 @@ function link(node, output = 0) {
   return [String(node), output];
 }
 
+function modelProfile(model) {
+  return IMG2IMG_MODEL_PROFILES[String(model)] || null;
+}
+
+function unsupportedModelError(model) {
+  return makeError(
+    `Unsupported image model: ${String(model || "(empty)")}.`,
+    400,
+    "MODEL_UNSUPPORTED",
+  );
+}
+
+function localOnlyModelError(model) {
+  return makeError(
+    `Image model ${String(model)} is available only on the local runtime.`,
+    400,
+    "MODEL_RUNTIME_UNSUPPORTED",
+  );
+}
+
+function assertModelForRuntime(model, { remote = false } = {}) {
+  const profile = modelProfile(model);
+  if (!profile) throw unsupportedModelError(model);
+  if (remote && profile.localOnly) throw localOnlyModelError(model);
+  return profile;
+}
+
+function modelDefaults(profile) {
+  return profile?.defaults || { steps: 20, cfg: 7, denoise: 0.65 };
+}
+
+function boundedModelParameters(profile, { denoise, steps, cfg, seed } = {}) {
+  const defaults = modelDefaults(profile);
+  return {
+    denoise: boundedNumber(denoise, defaults.denoise, 0.01, 1),
+    steps: boundedInteger(steps, defaults.steps, 1, 50),
+    cfg: boundedNumber(cfg, defaults.cfg, 0, 20),
+    seed: boundedInteger(seed, 12345, 0, 2_147_483_647),
+  };
+}
+
 export function buildImg2ImgPrompt({
   sourceName,
   prompt,
   negativePrompt = "",
   model = IMG2IMG_MODELS[0],
-  denoise = 0.65,
-  steps = 4,
-  cfg = 1,
+  denoise,
+  steps,
+  cfg,
   seed = 12345,
   filenamePrefix = "img2img/h3_img2img",
 } = {}) {
@@ -100,31 +214,75 @@ export function buildImg2ImgPrompt({
   if (positive.length > 4000 || String(negativePrompt || "").length > 4000) {
     throw makeError("Image prompts must be no more than 4000 characters.", 400, "PROMPT_TOO_LONG");
   }
-  if (!IMG2IMG_MODELS.includes(model)) throw makeError("Unsupported image checkpoint.", 400, "MODEL_UNSUPPORTED");
-  return {
-    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: model } },
-    "2": { class_type: "LoadImage", inputs: { image } },
-    "3": { class_type: "VAEEncode", inputs: { pixels: link(2), vae: link(1, 2) } },
-    "4": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(1, 1) } },
-    "5": { class_type: "CLIPTextEncode", inputs: { text: String(negativePrompt || "").trim(), clip: link(1, 1) } },
-    "6": {
-      class_type: "KSampler",
-      inputs: {
-        model: link(1),
-        seed: boundedInteger(seed, 12345, 0, 2_147_483_647),
-        steps: boundedInteger(steps, model === IMG2IMG_MODELS[0] ? 4 : 20, 1, 50),
-        cfg: boundedNumber(cfg, model === IMG2IMG_MODELS[0] ? 1 : 7, 0, 20),
-        sampler_name: "euler_ancestral",
-        scheduler: "normal",
-        positive: link(4),
-        negative: link(5),
-        latent_image: link(3),
-        denoise: boundedNumber(denoise, 0.65, 0.01, 1),
+  const profile = modelProfile(model);
+  if (!profile) throw unsupportedModelError(model);
+  const parameters = boundedModelParameters(profile, { denoise, steps, cfg, seed });
+  const cleanNegative = String(negativePrompt || "").trim();
+  const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
+
+  if (profile.workflow === "checkpoint") {
+    return {
+      "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: profile.model } },
+      "2": { class_type: "LoadImage", inputs: { image } },
+      "3": { class_type: "VAEEncode", inputs: { pixels: link(2), vae: link(1, 2) } },
+      "4": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(1, 1) } },
+      "5": { class_type: "CLIPTextEncode", inputs: { text: cleanNegative, clip: link(1, 1) } },
+      "6": {
+        class_type: "KSampler",
+        inputs: {
+          model: link(1),
+          seed: parameters.seed,
+          steps: parameters.steps,
+          cfg: parameters.cfg,
+          sampler_name: "euler_ancestral",
+          scheduler: "normal",
+          positive: link(4),
+          negative: link(5),
+          latent_image: link(3),
+          denoise: parameters.denoise,
+        },
       },
-    },
-    "7": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
-    "8": { class_type: "SaveImage", inputs: { images: link(7), filename_prefix: String(filenamePrefix || "img2img/h3_img2img") } },
-  };
+      "7": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
+      "8": { class_type: "SaveImage", inputs: { images: link(7), filename_prefix: cleanPrefix } },
+    };
+  }
+
+  if (profile.workflow === "z-image") {
+    const companions = profile.companions;
+    const sampling = profile.sampling;
+    return {
+      "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
+      "2": {
+        class_type: "CLIPLoader",
+        inputs: { clip_name: companions.clipName, type: companions.clipType, device: "default" },
+      },
+      "3": { class_type: "VAELoader", inputs: { vae_name: companions.vaeName } },
+      "4": { class_type: "LoadImage", inputs: { image } },
+      "5": { class_type: "VAEEncode", inputs: { pixels: link(4), vae: link(3) } },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(2) } },
+      "7": { class_type: "CLIPTextEncode", inputs: { text: cleanNegative, clip: link(2) } },
+      "8": { class_type: "ModelSamplingAuraFlow", inputs: { model: link(1), shift: sampling.shift } },
+      "9": {
+        class_type: "KSampler",
+        inputs: {
+          model: link(8),
+          seed: parameters.seed,
+          steps: parameters.steps,
+          cfg: parameters.cfg,
+          sampler_name: sampling.samplerName,
+          scheduler: sampling.scheduler,
+          positive: link(6),
+          negative: link(7),
+          latent_image: link(5),
+          denoise: parameters.denoise,
+        },
+      },
+      "10": { class_type: "VAEDecode", inputs: { samples: link(9), vae: link(3) } },
+      "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: cleanPrefix } },
+    };
+  }
+
+  throw makeError(`Image model ${String(model)} has no workflow implementation.`, 500, "MODEL_WORKFLOW_UNSUPPORTED");
 }
 
 function comboValues(nodeInfo, key) {
@@ -135,15 +293,65 @@ function comboValues(nodeInfo, key) {
   return [];
 }
 
-export function evaluateImg2ImgReadiness(objectInfo, { comfyUi = true } = {}) {
-  const nodes = Object.fromEntries(IMG2IMG_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
-  const listed = comboValues(objectInfo?.CheckpointLoaderSimple, "ckpt_name");
-  const models = Object.fromEntries(IMG2IMG_MODELS.map((name) => [name, listed.includes(name)]));
+function nodeAvailability(objectInfo, requiredNodes) {
+  return Object.fromEntries(requiredNodes.map((name) => [name, Boolean(objectInfo?.[name])]));
+}
+
+function checkpointModelAvailability(objectInfo, profile) {
+  return comboValues(objectInfo?.CheckpointLoaderSimple, "ckpt_name").includes(profile.model);
+}
+
+function zImageModelAvailability(objectInfo, profile) {
+  const companions = profile.companions;
+  const clipNames = comboValues(objectInfo?.CLIPLoader, "clip_name");
+  const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
+  const vaeNames = comboValues(objectInfo?.VAELoader, "vae_name");
   return {
-    ready: Boolean(comfyUi) && Object.values(nodes).every(Boolean) && Object.values(models).some(Boolean),
+    model: comboValues(objectInfo?.UNETLoader, "unet_name").includes(profile.model),
+    clip: clipNames.includes(companions.clipName) && clipTypes.includes(companions.clipType),
+    vae: vaeNames.includes(companions.vaeName),
+  };
+}
+
+function evaluateModelProfile(objectInfo, profile, { remote = false } = {}) {
+  const nodes = nodeAvailability(objectInfo, profile.requiredNodes);
+  const companionAvailability = profile.workflow === "z-image"
+    ? zImageModelAvailability(objectInfo, profile)
+    : { model: checkpointModelAvailability(objectInfo, profile) };
+  const localOnly = Boolean(profile.localOnly);
+  const runtimeSupported = !(remote && localOnly);
+  const nodesReady = Object.values(nodes).every(Boolean);
+  const companionsReady = Object.values(companionAvailability).every(Boolean);
+  const available = runtimeSupported && nodesReady && companionsReady;
+  let reason = "";
+  if (!runtimeSupported) reason = "LOCAL_ONLY_MODEL";
+  else if (!nodesReady) reason = "REQUIRED_NODE_MISSING";
+  else if (!companionsReady) reason = "MODEL_OR_COMPANION_MISSING";
+  return {
+    available,
+    localOnly,
+    workflow: profile.workflow,
+    loader: profile.loader,
+    nodes,
+    companions: companionAvailability,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+export function evaluateImg2ImgReadiness(objectInfo, { comfyUi = true, remote = false } = {}) {
+  const nodes = Object.fromEntries(IMG2IMG_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
+  const profiles = Object.fromEntries(IMG2IMG_MODELS.map((name) => [
+    name,
+    evaluateModelProfile(objectInfo, IMG2IMG_MODEL_PROFILES[name], { remote }),
+  ]));
+  const models = Object.fromEntries(IMG2IMG_MODELS.map((name) => [name, profiles[name].available]));
+  return {
+    ready: Boolean(comfyUi) && Object.values(models).some(Boolean),
     comfyUi: Boolean(comfyUi),
+    remote: Boolean(remote),
     nodes,
     models,
+    profiles,
   };
 }
 
@@ -262,7 +470,7 @@ export function createImg2ImgController({
       requestJson("/system_stats").then(() => true).catch(() => false),
       requestJson("/object_info").catch(() => null),
     ]);
-    return evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats });
+    return evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats, remote });
   }
 
   async function resolveAsset(rootName, sourceName) {
@@ -356,9 +564,15 @@ export function createImg2ImgController({
       job.startedAt = isoNow(now());
       job.progress = 4;
       job.stage = "Preparing GPU";
+      const profile = assertModelForRuntime(job.model, { remote });
       if (typeof beforeRun === "function") await beforeRun(job);
       const readiness = await checkReadiness();
-      if (!readiness.ready || !readiness.models[job.model]) throw makeError("Selected image checkpoint or required ComfyUI nodes are unavailable.", 503, "IMG2IMG_NOT_READY");
+      if (!readiness.ready || !readiness.models[job.model]) {
+        const detail = readiness.profiles?.[job.model]?.reason === "REQUIRED_NODE_MISSING"
+          ? `Required ComfyUI nodes for ${profile.workflow} are unavailable.`
+          : `Selected image model ${job.model} or its companion files are unavailable.`;
+        throw makeError(detail, 503, "IMG2IMG_NOT_READY");
+      }
       job.progress = 12;
       job.stage = "Preparing source image";
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
@@ -407,7 +621,7 @@ export function createImg2ImgController({
 
   async function enqueue(input = {}) {
     const model = String(input.model || IMG2IMG_MODELS[0]);
-    if (!IMG2IMG_MODELS.includes(model)) throw makeError("Unsupported image checkpoint.", 400, "MODEL_UNSUPPORTED");
+    const profile = assertModelForRuntime(model, { remote });
     const sourceRoot = String(input.sourceRoot || "input");
     const sourceName = normalizeImageAssetName(input.sourceName);
     await resolveAsset(sourceRoot, sourceName);
@@ -423,9 +637,9 @@ export function createImg2ImgController({
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
-      denoise: boundedNumber(input.denoise, 0.65, 0.01, 1),
-      steps: boundedInteger(input.steps, model === IMG2IMG_MODELS[0] ? 4 : 20, 1, 50),
-      cfg: boundedNumber(input.cfg, model === IMG2IMG_MODELS[0] ? 1 : 7, 0, 20),
+      denoise: boundedNumber(input.denoise, profile.defaults.denoise, 0.01, 1),
+      steps: boundedInteger(input.steps, profile.defaults.steps, 1, 50),
+      cfg: boundedNumber(input.cfg, profile.defaults.cfg, 0, 20),
       seed: boundedInteger(input.seed, Math.floor(Math.random() * 2_147_483_647), 0, 2_147_483_647),
       createdAt: isoNow(now()),
       startedAt: null,
@@ -447,9 +661,16 @@ export function createImg2ImgController({
     if (req.method === "POST" && pathname === "/api/img2img") {
       try {
         const body = await readJson(req);
+        const requestedModel = String(body?.model || IMG2IMG_MODELS[0]);
+        assertModelForRuntime(requestedModel, { remote });
         const readiness = await checkReadiness();
-        if (!readiness.ready) {
-          sendJson(res, 503, { error: "Image-to-image is not ready.", health: readiness });
+        if (!readiness.ready || !readiness.models[requestedModel]) {
+          sendJson(res, 503, {
+            error: !readiness.ready
+              ? "Image-to-image is not ready."
+              : `Image model ${requestedModel} is not ready on this runtime.`,
+            health: readiness,
+          });
           return true;
         }
         sendJson(res, 202, { job: await enqueue(body) });

@@ -4,11 +4,25 @@ const BRIDGE_URL = "/app";
 
 export type Img2ImgStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+export type Img2ImgRuntimeMode = "local" | "remote";
+
+export type Img2ImgRuntime = {
+    mode?: Img2ImgRuntimeMode;
+    remote?: boolean;
+};
+
 export type Img2ImgHealth = {
     ready?: boolean;
     comfyUi?: boolean;
     nodes?: Record<string, boolean>;
     models?: Record<string, boolean>;
+};
+
+type Img2ImgRuntimePayload = {
+    runtime?: Img2ImgRuntime;
+    comfy?: { remote?: boolean };
+    error?: string | { code?: string; message?: string };
+    code?: string;
 };
 
 export type Img2ImgJob = {
@@ -75,11 +89,28 @@ async function readPayload(response: Response) {
     return await response.json().catch(() => ({})) as Img2ImgApiPayload;
 }
 
+async function readRuntimePayload(response: Response) {
+    return await response.json().catch(() => ({})) as Img2ImgRuntimePayload;
+}
+
 export async function fetchImg2ImgHealth() {
     const response = await fetch(`${BRIDGE_URL}/api/img2img/health`, { cache: "no-store" });
     const payload = await readPayload(response);
     if (!response.ok) throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to check image-to-image readiness."), response.status, payload);
     return payload as Img2ImgHealth;
+}
+
+export async function fetchImg2ImgRuntime() {
+    const response = await fetch(`${BRIDGE_URL}/api/health`, { cache: "no-store" });
+    const payload = await readRuntimePayload(response);
+    if (!response.ok) {
+        const errorPayload = payload as Img2ImgApiPayload;
+        throw new Img2ImgApiError(apiErrorMessage(errorPayload, "Unable to load model runtime."), response.status, errorPayload);
+    }
+    const mode = payload.runtime?.mode;
+    if (mode === "local" || mode === "remote") return mode;
+    if (typeof payload.comfy?.remote === "boolean") return payload.comfy.remote ? "remote" : "local";
+    return null;
 }
 
 export async function submitImg2Img(input: Img2ImgSubmitInput) {
@@ -119,7 +150,7 @@ export function img2ImgReadinessMessage(health: Img2ImgHealth | undefined, selec
         .filter(([, available]) => !available)
         .map(([name]) => name);
     if (missingNodes.length) return `ComfyUI 缺少必要節點：${missingNodes.join("、")}。`;
-    if (health.models && health.models[selectedModel] === false) return `未安裝所選 checkpoint：${selectedModel}。`;
+    if (health.models && Object.keys(health.models).length && health.models[selectedModel] !== true) return `未安裝所選 checkpoint：${selectedModel}。`;
     if (health.models && Object.keys(health.models).length && !Object.values(health.models).some(Boolean)) {
         return "ComfyUI 未找到支援的圖生圖 checkpoint。";
     }
