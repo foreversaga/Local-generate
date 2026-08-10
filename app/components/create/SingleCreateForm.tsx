@@ -159,15 +159,6 @@ export function SingleCreateForm() {
     onHydrate: hydrateSingleCreateDraft,
   });
 
-  useEffect(() => {
-    void initializeSingleCreate();
-  }, []);
-
-  async function initializeSingleCreate() {
-    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth()]);
-    setAssetsReady(assetsLoaded);
-  }
-
   async function refreshAssets(): Promise<boolean> {
     try {
       const response = await fetch(`${BRIDGE_URL}/api/assets?root=all`);
@@ -192,6 +183,17 @@ export function SingleCreateForm() {
       setServiceState({ bridge: false, comfy: false });
     }
   }
+
+  async function initializeSingleCreate() {
+    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth()]);
+    setAssetsReady(assetsLoaded);
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void initializeSingleCreate(); }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- The bridge bootstrap intentionally runs once on mount.
+  }, []);
 
   function hydrateSingleCreateDraft(draft: SingleCreateDraft) {
     const draftMode = MODE_OPTIONS.some((option) => option.value === draft.mode)
@@ -792,7 +794,7 @@ function SourceFields({
         <div className={styles.assetCard}>
           <div className={styles.assetHeader}>
             <div>
-              <div className={styles.fieldLabel}>參考圖片</div>
+              <label htmlFor="single-reference-images" className={styles.fieldLabel}>參考圖片</label>
               <div className={styles.assetMeta}>至少一張圖片或一段參考影片；最多 {MAX_REF2V_IMAGES} 張圖片。</div>
             </div>
             <span className={styles.assetMeta}>{referenceImages.length} / {MAX_REF2V_IMAGES}</span>
@@ -898,7 +900,7 @@ function SingleAssetPicker({
     <div className={styles.assetCard}>
       <div className={styles.assetHeader}>
         <div>
-          <div className={styles.fieldLabel}>{label}</div>
+            <label htmlFor={id} className={styles.fieldLabel}>{label}</label>
           <div className={styles.assetMeta}>{kind === "image" ? "PNG / JPG / WEBP" : "MP4 / MOV / WEBM"}</div>
         </div>
       </div>

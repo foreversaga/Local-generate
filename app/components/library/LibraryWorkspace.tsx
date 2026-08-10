@@ -71,7 +71,8 @@ export function LibraryWorkspace() {
         const key = assetKey(asset);
         setSelected((current) => {
             const next = new Set(current);
-            next.has(key) ? next.delete(key) : next.add(key);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
             return next;
         });
     }
@@ -174,8 +175,13 @@ export function LibraryWorkspace() {
                                 aria-label={`Preview ${asset.name}`}
                             >
                                 {asset.kind === "image"
-                                    ? <img src={assetUrl(asset)} alt="" />
-                                    : <video src={assetUrl(asset)} muted playsInline preload="metadata" />}
+                                    ? <>
+                                        {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
+                                        <img src={assetUrl(asset)} alt="" />
+                                    </>
+                                    : <video src={assetUrl(asset)} muted playsInline preload="metadata">
+                                        <track kind="captions" />
+                                    </video>}
                             </button>
                             <div className={styles.copy}>
                                 <label className={styles.checkbox}>
@@ -197,12 +203,17 @@ export function LibraryWorkspace() {
             </div>
 
             {preview && (
-                <div className={styles.backdrop} onMouseDown={(event) => event.target === event.currentTarget && closePreview()}>
+                <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closePreview()}>
                     <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label={`Preview ${preview.name}`}>
                         <button type="button" onClick={closePreview} aria-label="Close preview">×</button>
                         {preview.kind === "image"
-                            ? <img src={assetUrl(preview)} alt={preview.name} />
-                            : <video src={assetUrl(preview)} controls autoPlay playsInline tabIndex={0} />}
+                            ? <>
+                                {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
+                                <img src={assetUrl(preview)} alt={preview.name} />
+                            </>
+                            : <video src={assetUrl(preview)} controls autoPlay playsInline tabIndex={0}>
+                                <track kind="captions" />
+                            </video>}
                         <strong>{preview.name}</strong>
                         <div className={styles.previewActions}>
                             <a href={assetUrl(preview)} download>Download</a>

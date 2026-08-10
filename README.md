@@ -26,6 +26,8 @@ Continuation prompt finalization has an injectable `finalizePrompt` seam in the 
 
 本機 MiniMax H3 影片控制介面。網頁服務同時處理 Ollama、ComfyUI、檔案資源與影片生成，直接使用已開放的 `8787` port。
 
+公開入口 `/app` 直接顯示新版 Create landing，Single、Long、Jobs、Library、Tools 與 Settings 由同一個 Studio shell 提供；所有流程共用既有 `/app/api/...` bridge contract。
+
 ## 啟動
 
 先確認 Ollama 與 ComfyUI 已在本機執行，再啟動網頁：

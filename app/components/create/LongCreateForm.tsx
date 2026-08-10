@@ -9,11 +9,15 @@ import {
   selectHydratableLongJob,
   validateLongCreate,
 } from "../../lib/long-create-contract.mjs";
+import {
+  STUDIO_SETTINGS_DEFAULTS,
+  loadStudioSettings,
+  reconcileStudioSettings,
+} from "../../lib/studio-settings.mjs";
 import styles from "./LongCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
 const MAX_LONG_REFERENCE_IMAGES = 8;
-const DEFAULT_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 
 type NumberDraft = number | "";
 type PromptProvider = "ollama" | "codex";
@@ -114,10 +118,11 @@ export function LongCreateForm() {
   const [duration, setDuration] = useState<NumberDraft>(10);
   const [segmentDurationHint, setSegmentDurationHint] = useState<NumberDraft>(5);
   const [timeline, setTimeline] = useState("");
-  const [promptProvider, setPromptProvider] = useState<PromptProvider>("ollama");
-  const [ollamaModel, setOllamaModel] = useState(DEFAULT_OLLAMA_MODEL);
-  const [codexModel, setCodexModel] = useState("gpt-5.6-luna");
-  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const [promptProvider, setPromptProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
+  const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+  const [codexModel, setCodexModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexModel);
+  const [reasoningEffort, setReasoningEffort] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexReasoningEffort);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
   const [width, setWidth] = useState<NumberDraft>(736);
   const [height, setHeight] = useState<NumberDraft>(416);
@@ -139,7 +144,7 @@ export function LongCreateForm() {
   const effectiveOllamaModel = visibleOllamaModels.includes(ollamaModel) ? ollamaModel : visibleOllamaModels[0] || ollamaModel;
   const codexModels = health?.codex?.models?.length ? health.codex.models : CODEX_FALLBACK;
   const selectedCodex = codexModels.find((model) => model.value === codexModel) || codexModels[0];
-  const reasoningOptions = selectedCodex?.reasoningEfforts?.length ? selectedCodex.reasoningEfforts : [...REASONING];
+  const reasoningOptions: readonly string[] = selectedCodex?.reasoningEfforts?.length ? selectedCodex.reasoningEfforts : [...REASONING];
   const effectiveReasoning = reasoningOptions.includes(reasoningEffort) ? reasoningEffort : reasoningOptions.includes("medium") ? "medium" : reasoningOptions[0] || "medium";
   const effectiveCodexModel = selectedCodex?.value || codexModel;
   const providerReady = promptProvider === "ollama"
@@ -175,40 +180,12 @@ export function LongCreateForm() {
     plan,
     planDirty,
     outputFolder,
-  }) as ValidationIssue[], [baseIssues, outputFolder, plan, planDirty]);
+  }) as ValidationIssue[], [brief, duration, height, inputType, references, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
   const issuesByField = useMemo(() => new Map(submitIssues.map((issue) => [issue.field, issue.message])), [submitIssues]);
   const activeJob = Boolean(job && longJobIsActive(job.status));
   const canPlan = baseIssues.length === 0 && providerReady && !planning && !saving && !uploading;
   const canStart = baseIssues.length === 0 && Boolean(outputFolder.trim()) && providerReady && !planning && !saving && !uploading && !activeJob;
   const canSave = Boolean(plan && !planDirty && outputFolder.trim() && submitIssues.length === 0 && !saving && !activeJob);
-
-  useEffect(() => {
-    void initialize();
-  }, []);
-
-  useEffect(() => {
-    if (!job?.id || !longJobIsActive(job.status)) return;
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}`);
-        if (!response.ok) return;
-        const payload = (await response.json()) as { job?: LongJob };
-        if (!payload.job) return;
-        setJob(payload.job);
-        if (longJobIsActive(payload.job.status)) setPlan(payload.job);
-        if (!longJobIsActive(payload.job.status)) void refreshAssets();
-      } catch {
-        // Polling recovers on the next interval.
-      }
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [job?.id, job?.status]);
-
-  async function initialize() {
-    const [nextAssets, nextHealth] = await Promise.all([refreshAssets(), refreshHealth()]);
-    setHealth(nextHealth);
-    await refreshSequences(nextAssets);
-  }
 
   async function refreshAssets(): Promise<Asset[]> {
     try {
@@ -228,22 +205,9 @@ export function LongCreateForm() {
       const response = await fetch(`${BRIDGE_URL}/api/health`);
       if (!response.ok) return null;
       const next = (await response.json()) as Health;
-      if (next.ollama?.models?.length) setOllamaModel((current) => next.ollama!.models!.includes(current) ? current : next.ollama!.models![0]);
       return next;
     } catch {
       return null;
-    }
-  }
-
-  async function refreshSequences(assetList = assets) {
-    try {
-      const response = await fetch(`${BRIDGE_URL}/api/sequences`);
-      if (!response.ok) return;
-      const payload = (await response.json()) as { jobs?: LongJob[] };
-      const latest = selectHydratableLongJob(payload.jobs) as LongJob | null;
-      if (latest) hydrateFromJob(latest, assetList);
-    } catch {
-      // Preserve local editing if the bridge is offline.
     }
   }
 
@@ -279,6 +243,77 @@ export function LongCreateForm() {
     if (next.seam) setSeam(next.seam);
     setPlanDirty(false);
   }
+
+  async function refreshSequences(assetList = assets) {
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/sequences`);
+      if (!response.ok) return;
+      const payload = (await response.json()) as { jobs?: LongJob[] };
+      const latest = selectHydratableLongJob(payload.jobs) as LongJob | null;
+      if (latest) hydrateFromJob(latest, assetList);
+    } catch {
+      // Preserve local editing if the bridge is offline.
+    }
+  }
+
+  async function initialize() {
+    const [nextAssets, nextHealth] = await Promise.all([refreshAssets(), refreshHealth()]);
+    setHealth(nextHealth);
+    await refreshSequences(nextAssets);
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void initialize(); }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- The bridge bootstrap intentionally runs once on mount.
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = reconcileStudioSettings(loadStudioSettings());
+      setPromptProvider(stored.promptProvider as PromptProvider);
+      setOllamaModel(stored.ollamaModel);
+      setCodexModel(stored.codexModel);
+      setReasoningEffort(stored.codexReasoningEffort);
+      setSettingsHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydrated || !health) return;
+    const timer = window.setTimeout(() => {
+      const next = reconcileStudioSettings({
+        promptProvider,
+        ollamaModel,
+        codexModel,
+        codexReasoningEffort: reasoningEffort,
+      }, health);
+      setPromptProvider(next.promptProvider as PromptProvider);
+      setOllamaModel(next.ollamaModel);
+      setCodexModel(next.codexModel);
+      setReasoningEffort(next.codexReasoningEffort);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [codexModel, health, ollamaModel, promptProvider, reasoningEffort, settingsHydrated]);
+
+  useEffect(() => {
+    if (!job?.id || !longJobIsActive(job.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { job?: LongJob };
+        if (!payload.job) return;
+        setJob(payload.job);
+        if (longJobIsActive(payload.job.status)) setPlan(payload.job);
+        if (!longJobIsActive(payload.job.status)) void refreshAssets();
+      } catch {
+        // Polling recovers on the next interval.
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [job?.id, job?.status]);
 
   function markPlanDirty() {
     if (plan) setPlanDirty(true);
@@ -502,14 +537,14 @@ export function LongCreateForm() {
             <Field label="輸出資料夾" error={attempted ? issuesByField.get("outputFolder") : ""}><input className={styles.input} value={outputFolder} onChange={(event) => setOutputFolder(event.target.value)} placeholder="my-sequence-001" /></Field>
           </div>
           <div className={styles.segmented} role="group" aria-label="Long-video input type">
-            <button type="button" className={inputType === "text" ? styles.active : ""} onClick={() => { setInputType("text"); markPlanDirty(); }}>文字起點</button>
-            <button type="button" className={inputType === "image" ? styles.active : ""} onClick={() => { setInputType("image"); markPlanDirty(); }}>圖片起點 / first_frame</button>
+            <button type="button" className={inputType === "text" ? styles.active : ""} aria-pressed={inputType === "text"} onClick={() => { setInputType("text"); markPlanDirty(); }}>文字起點</button>
+            <button type="button" className={inputType === "image" ? styles.active : ""} aria-pressed={inputType === "image"} onClick={() => { setInputType("image"); markPlanDirty(); }}>圖片起點 / first_frame</button>
           </div>
           {inputType === "image" && (
             <div className={styles.referencePanel}>
               <div className={styles.segmented} role="group" aria-label="參考模式">
-                <button type="button" className={referenceMode === "continuity" ? styles.active : ""} onClick={() => updateReferenceMode("continuity")}>連續首幀</button>
-                <button type="button" className={referenceMode === "multi_reference" ? styles.active : ""} onClick={() => updateReferenceMode("multi_reference")}>多參考</button>
+                <button type="button" className={referenceMode === "continuity" ? styles.active : ""} aria-pressed={referenceMode === "continuity"} onClick={() => updateReferenceMode("continuity")}>連續首幀</button>
+                <button type="button" className={referenceMode === "multi_reference" ? styles.active : ""} aria-pressed={referenceMode === "multi_reference"} onClick={() => updateReferenceMode("multi_reference")}>多參考</button>
               </div>
               <div className={styles.assetControls}>
                 <select className={styles.select} value="" aria-label="加入長片參考圖片" onChange={(event) => { addReference(event.target.value); event.target.value = ""; }}>
@@ -534,13 +569,13 @@ export function LongCreateForm() {
         <LongSection id="long-planner" code="02 / PLANNER + TIMELINE" title="Planner 與時間軸">
           <div className={styles.providerRow}>
             <div className={styles.segmented} role="group" aria-label="長影片規劃 provider">
-              <button type="button" className={promptProvider === "ollama" ? styles.active : ""} onClick={() => { setPromptProvider("ollama"); markPlanDirty(); }}>Ollama</button>
-              <button type="button" className={promptProvider === "codex" ? styles.active : ""} onClick={() => { setPromptProvider("codex"); markPlanDirty(); }}>Codex CLI</button>
+              <button type="button" className={promptProvider === "ollama" ? styles.active : ""} aria-pressed={promptProvider === "ollama"} onClick={() => { setPromptProvider("ollama"); markPlanDirty(); }}>Ollama</button>
+              <button type="button" className={promptProvider === "codex" ? styles.active : ""} aria-pressed={promptProvider === "codex"} onClick={() => { setPromptProvider("codex"); markPlanDirty(); }}>Codex CLI</button>
             </div>
             <span className={`${styles.providerStatus} ${providerReady ? styles.ready : ""}`}><i />{providerReady ? "Ready" : "Unavailable"}</span>
           </div>
           {promptProvider === "ollama" ? <Field label="Ollama 模型"><select className={styles.select} value={effectiveOllamaModel} disabled={!visibleOllamaModels.length} onChange={(event) => { setOllamaModel(event.target.value); markPlanDirty(); }}>{visibleOllamaModels.length ? visibleOllamaModels.map((model) => <option key={model} value={model}>{model}</option>) : <option value={ollamaModel}>沒有可用模型</option>}</select></Field> : <div className={styles.twoColumns}><Field label="Codex 模型"><select className={styles.select} value={effectiveCodexModel} onChange={(event) => { setCodexModel(event.target.value); markPlanDirty(); }}>{codexModels.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}</option>)}</select></Field><Field label="Reasoning"><select className={styles.select} value={effectiveReasoning} onChange={(event) => { setReasoningEffort(event.target.value); markPlanDirty(); }}>{reasoningOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field></div>}
-          <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
+          <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} aria-pressed={timelineMode === "auto"} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} aria-pressed={timelineMode === "manual"} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
           <div className={styles.twoColumns}>
             {timelineMode === "auto" && <Field label="目標總長（秒）" error={attempted ? issuesByField.get("duration") : ""}><input className={styles.input} type="number" min={1} max={3600} value={duration} onChange={(event) => { setDuration(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>}
             <Field label="目標單段長度（秒）" error={attempted ? issuesByField.get("segmentDurationHint") : ""}><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationHint} onChange={(event) => { setSegmentDurationHint(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
@@ -602,7 +637,14 @@ function UploadButton({ busy, multiple, onFiles }: { busy: boolean; multiple: bo
   return <label className={styles.uploadButton}><span>{busy ? "上傳中…" : "上傳圖片"}</span><input className={styles.fileInput} type="file" accept="image/png,image/jpeg,image/webp" multiple={multiple} disabled={busy} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) void onFiles(files); event.target.value = ""; }} /></label>;
 }
 
-function AssetThumb({ asset }: { asset: Asset }) { return <span className={styles.thumb}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={`${BRIDGE_URL}${asset.url}`} alt="" /></span>; }
+function AssetThumb({ asset }: { asset: Asset }) {
+  return (
+    <span className={styles.thumb}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
+      <img src={`${BRIDGE_URL}${asset.url}`} alt="" />
+    </span>
+  );
+}
 function assetKey(asset: Pick<Asset, "root" | "name">) { return `${asset.root}:${asset.name}`; }
 function uniqueAssets(values: Asset[], limit: number) { const map = new Map<string, Asset>(); for (const asset of values) if (asset?.name) map.set(assetKey(asset), asset); return [...map.values()].slice(0, limit); }
 function numberDraft(value: string): NumberDraft { return value === "" ? "" : Number(value); }

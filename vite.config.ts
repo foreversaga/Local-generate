@@ -1,5 +1,6 @@
 import vinext from "vinext";
 import { defineConfig, type Connect, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import type { ServerResponse } from "node:http";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 import { route as h3ApiRoute } from "./local-bridge.mjs";
@@ -34,7 +35,11 @@ function isH3ApiRequest(url = "/") {
 
 function normalizeWebRequestUrl(url = "/") {
   const parsed = new URL(stripWebBasePath(url), "http://localhost");
-  if (["/globals.css", "/page.tsx", "/layout.tsx"].includes(parsed.pathname)) {
+  if (
+    ["/globals.css", "/page.tsx", "/layout.tsx"].includes(parsed.pathname) ||
+    parsed.pathname.startsWith("/components/") ||
+    parsed.pathname.startsWith("/lib/")
+  ) {
     parsed.pathname = webBasePath + parsed.pathname;
   }
   return parsed.pathname + parsed.search;
@@ -66,10 +71,8 @@ function prefixWebModulePaths(source: string) {
       /createHotContext\("\/(?!app(?:\/|"))/g,
       `createHotContext("${webBasePath}/`,
     )
-    .replace(
-      /"BASE_URL": "\//g,
-      `"BASE_URL": "${webBasePath}/`,
-    )
+    // Keep Vite's root BASE_URL: the dev RSC loader prepends it to client
+    // reference IDs that already include /app via the router base path.
     .replace(
       /process\.env\.__NEXT_ROUTER_BASEPATH \?\? ""/g,
       JSON.stringify(webBasePath),
@@ -117,10 +120,26 @@ function disableRemoteDevHmr(): Plugin {
   };
 }
 
-function disableWebCache(res: Connect.ServerResponse) {
+function disableWebCache(res: ServerResponse) {
   if (res.headersSent) return;
   res.setHeader("Cache-Control", "no-store");
   res.removeHeader("ETag");
+}
+
+type WriteCallback = (error: Error | null | undefined) => void;
+type EndCallback = () => void;
+type ResponseChunk = string | Uint8Array;
+
+function isWriteCallback(value: unknown): value is WriteCallback {
+  return typeof value === "function";
+}
+
+function isEndCallback(value: unknown): value is EndCallback {
+  return typeof value === "function";
+}
+
+function responseChunkToString(chunk: ResponseChunk): string {
+  return typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
 }
 
 function h3ApiPlugin(): Plugin {
@@ -134,7 +153,13 @@ function h3ApiPlugin(): Plugin {
       const contentType = String(res.getHeader("content-type") || "");
       const kind = webResponseKind(contentType);
       if (!kind) {
-        return originalWrite(...args);
+        const [chunk, encoding, callback] = args;
+        if (typeof encoding === "string") {
+          return originalWrite(chunk, encoding, isWriteCallback(callback) ? callback : undefined);
+        }
+        if (isWriteCallback(encoding)) return originalWrite(chunk, encoding);
+        if (isWriteCallback(callback)) return originalWrite(chunk, callback);
+        return originalWrite(chunk);
       }
       disableWebCache(res);
       capturedKind = kind;
@@ -144,22 +169,40 @@ function h3ApiPlugin(): Plugin {
       }
       return true;
     };
-    const captureEnd: typeof res.end = (...args) => {
+    function captureEnd(callback?: EndCallback): ServerResponse;
+    function captureEnd(chunk: ResponseChunk, callback?: EndCallback): ServerResponse;
+    function captureEnd(chunk: ResponseChunk, encoding: BufferEncoding, callback?: EndCallback): ServerResponse;
+    function captureEnd(
+      chunk?: ResponseChunk | EndCallback,
+      encodingOrCallback?: BufferEncoding | EndCallback,
+      callback?: EndCallback,
+    ): ServerResponse {
       const contentType = String(res.getHeader("content-type") || "");
       const kind = capturedKind || webResponseKind(contentType);
       if (!kind) {
-        return originalEnd(...args);
+        if (typeof encodingOrCallback === "string") {
+          return originalEnd(chunk, encodingOrCallback, callback);
+        }
+        if (isEndCallback(encodingOrCallback)) return originalEnd(chunk, encodingOrCallback);
+        if (isEndCallback(callback)) return originalEnd(chunk, callback);
+        if (isEndCallback(chunk)) return originalEnd(chunk);
+        if (chunk === undefined) return originalEnd();
+        return originalEnd(chunk);
       }
       disableWebCache(res);
-      const [chunk] = args;
-      if (chunk !== undefined && chunk !== null) {
-        responseChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      if (chunk !== undefined && !isEndCallback(chunk)) {
+        responseChunks.push(responseChunkToString(chunk));
       }
       const source = responseChunks.join("");
       const body = kind === "html" ? prefixWebAssetPaths(source) : prefixWebModulePaths(source);
-      args[0] = body;
-      return originalEnd(...args);
-    };
+      if (typeof encodingOrCallback === "string") {
+        return originalEnd(body, encodingOrCallback, callback);
+      }
+      if (isEndCallback(encodingOrCallback)) return originalEnd(body, encodingOrCallback);
+      if (isEndCallback(callback)) return originalEnd(body, callback);
+      if (isEndCallback(chunk)) return originalEnd(body, chunk);
+      return originalEnd(body);
+    }
     res.write = captureWrite;
     res.end = captureEnd;
     if (!isH3ApiRequest(req.url)) {
@@ -231,7 +274,7 @@ export default defineConfig(async () => {
       strictPort: true,
       allowedHosts: [tailscaleHost],
       hmr: false,
-      ws: false,
+      ws: false as const,
       forwardConsole: false,
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }

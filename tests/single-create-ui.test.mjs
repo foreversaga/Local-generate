@@ -41,6 +41,20 @@ test("routed Single Create autosaves drafts and exposes mobile section anchors",
   assert.match(form, /setAssetsReady\(assetsLoaded\)/);
   assert.match(draftHook, /try \{[\s\S]*localStorage\.getItem\(SINGLE_CREATE_DRAFT_STORAGE_KEY\)/);
   assert.match(draftHook, /localStorage\.setItem\(SINGLE_CREATE_DRAFT_STORAGE_KEY/);
+  assert.match(draftHook, /parseSingleCreateDraft\(JSON\.stringify\(\{ version: 1, \.\.\.value \}\)\)/);
   assert.match(draftHook, /try \{[\s\S]*localStorage\.removeItem\(SINGLE_CREATE_DRAFT_STORAGE_KEY\)/);
   assert.match(draftHook, /addEventListener\("beforeunload", handleBeforeUnload\)/);
+});
+
+test("Single Create asset selectors and compact controls expose usable targets", async () => {
+  const [form, styles, assistantStyles] = await Promise.all([
+    readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/create/SingleCreateForm.module.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/create/SinglePromptAssistant.module.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(form, /<label htmlFor="single-reference-images" className=\{styles\.fieldLabel\}>/);
+  assert.match(form, /<label htmlFor=\{id\} className=\{styles\.fieldLabel\}>\{label\}<\/label>/);
+  assert.match(styles, /\.range \{[\s\S]*min-height: 44px;[\s\S]*padding: 18px 0;/);
+  assert.match(styles, /\.referenceChip button \{[\s\S]*width: 44px;[\s\S]*height: 44px;/);
+  assert.match(assistantStyles, /\.providerSwitch button \{[\s\S]*min-height: 44px;/);
 });

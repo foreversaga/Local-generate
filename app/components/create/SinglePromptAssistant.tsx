@@ -3,6 +3,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
 import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
+import {
+  STUDIO_SETTINGS_DEFAULTS,
+  loadStudioSettings,
+  reconcileStudioSettings,
+} from "../../lib/studio-settings.mjs";
 import styles from "./SinglePromptAssistant.module.css";
 
 const BRIDGE_URL = "/app";
@@ -113,10 +118,11 @@ export function SinglePromptAssistant({
 }: Props) {
   const [health, setHealth] = useState<Health | null>(null);
   const [brief, setBrief] = useState("");
-  const [provider, setProvider] = useState<PromptProvider>("ollama");
-  const [ollamaModel, setOllamaModel] = useState(GEMMA4_OLLAMA_MODEL);
-  const [codexModel, setCodexModel] = useState("gpt-5.6-luna");
-  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const [provider, setProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
+  const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+  const [codexModel, setCodexModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexModel);
+  const [reasoningEffort, setReasoningEffort] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexReasoningEffort);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [busy, setBusy] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState("");
@@ -126,12 +132,44 @@ export function SinglePromptAssistant({
     void refreshHealth();
   }, []);
 
-  const visibleModels = health?.ollama?.models || [];
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = reconcileStudioSettings(loadStudioSettings());
+      setProvider(stored.promptProvider as PromptProvider);
+      setOllamaModel(stored.ollamaModel);
+      setCodexModel(stored.codexModel);
+      setReasoningEffort(stored.codexReasoningEffort);
+      setSettingsHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydrated || !health) return;
+    const timer = window.setTimeout(() => {
+      const next = reconcileStudioSettings({
+        promptProvider: provider,
+        ollamaModel,
+        codexModel,
+        codexReasoningEffort: reasoningEffort,
+      }, health);
+      setProvider(next.promptProvider as PromptProvider);
+      setOllamaModel(next.ollamaModel);
+      setCodexModel(next.codexModel);
+      setReasoningEffort(next.codexReasoningEffort);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [codexModel, health, ollamaModel, provider, reasoningEffort, settingsHydrated]);
+
+  const ollamaModels = health?.ollama?.models;
+  const visibleModels = useMemo(() => ollamaModels || [], [ollamaModels]);
   const effectiveOllamaModel = visibleModels.includes(ollamaModel)
     ? ollamaModel
     : visibleModels[0] || ollamaModel;
   const ollamaOptions = useMemo(() => {
-    const catalogByValue = new Map(PROMPT_MODEL_CATALOG.map((model) => [model.value, model]));
+    const catalogByValue = new Map<string, (typeof PROMPT_MODEL_CATALOG)[number]>(
+      PROMPT_MODEL_CATALOG.map((model) => [model.value, model] as const),
+    );
     return visibleModels.map((model) => {
       const known = catalogByValue.get(model);
       return {
@@ -169,10 +207,6 @@ export function SinglePromptAssistant({
       if (!response.ok) throw new Error("prompt provider unavailable");
       const payload = (await response.json()) as Health;
       setHealth(payload);
-      const installedModels = payload.ollama?.models || [];
-      if (installedModels.length) {
-        setOllamaModel((current) => installedModels.includes(current) ? current : installedModels[0]);
-      }
     } catch {
       setHealth(null);
     }

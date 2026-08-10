@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchUnifiedJobs, jobOutputHref, performJobAction, type UnifiedJob } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import styles from "./JobsWorkspace.module.css";
@@ -11,11 +11,11 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const jobs = await fetchUnifiedJobs();
     const next = jobs.find((item) => item.id === jobId && (!sourceHint || item.source === sourceHint)) || jobs.find((item) => item.id === jobId) || null;
     setJob(next); setLoading(false);
-  }
+  }, [jobId, sourceHint]);
 
   useEffect(() => {
     let active = true;
@@ -23,7 +23,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     void poll();
     const timer = window.setInterval(poll, 2500);
     return () => { active = false; window.clearInterval(timer); };
-  }, [jobId, sourceHint]);
+  }, [refresh]);
 
   async function action(name: "cancel" | "pause" | "resume" | "retry") {
     if (!job || busy) return;
@@ -36,6 +36,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   if (loading) return <div className={styles.empty}>Loading job…</div>;
   if (!job) return <div className={styles.error} role="alert">Job not found.</div>;
   const outputHref = jobOutputHref(job);
+  const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
@@ -45,10 +46,10 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         <dl className={styles.metaGrid}>
           <div><dt>ID</dt><dd>{job.id}</dd></div>
           <div><dt>Stage</dt><dd>{job.stage}</dd></div>
-          <div><dt>Progress</dt><dd>{job.progress}%</dd></div>
+          <div><dt>Progress</dt><dd>{progress}%</dd></div>
           <div><dt>Updated</dt><dd>{job.updatedAt || "—"}</dd></div>
         </dl>
-        {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack}><span style={{ width: `${job.progress}%` }} /></div>}
+        {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% complete`}><span style={{ width: `${progress}%` }} /></div>}
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
         {error && <div className={styles.error} role="alert">{error}</div>}
       </section>

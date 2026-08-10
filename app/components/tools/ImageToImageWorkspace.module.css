@@ -1,0 +1,395 @@
+.workspace {
+  display: grid;
+  gap: 18px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.panel,
+.outputCard {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 22px;
+}
+
+.outputCard {
+  background: linear-gradient(145deg, var(--panel), var(--bg-elevated));
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 18px;
+}
+
+.sectionHeader h2 {
+  margin: 7px 0 0;
+  color: var(--text);
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.eyebrow,
+.sectionCode {
+  color: var(--muted-2);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.sectionCode {
+  white-space: nowrap;
+}
+
+.sourcePreview {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.65fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  padding: 12px;
+}
+
+.sourcePreview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1.2;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.sourceMeta {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sourceMeta strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceMeta span,
+.helper,
+.field small,
+.fieldWide small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.emptySource {
+  display: grid;
+  min-height: 150px;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.emptySource strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.sourceActions,
+.outputActions,
+.submitRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.sourceActions :global(button),
+.secondaryButton,
+.primaryButton,
+.textButton {
+  min-height: 44px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  padding: 0 14px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.primaryButton {
+  border: 0;
+  background: var(--lime);
+  padding: 0 20px;
+  color: #10150c;
+}
+
+.textButton {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--lime);
+}
+
+.secondaryButton:hover,
+.textButton:hover {
+  border-color: var(--lime);
+  color: var(--lime);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.textButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.statusChip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ready {
+  background: rgba(200, 241, 105, 0.13);
+  color: var(--lime);
+}
+
+.blocked {
+  background: rgba(255, 124, 104, 0.12);
+  color: #ff9b8a;
+}
+
+.checking {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+}
+
+.readinessList {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.readinessList div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  padding: 10px;
+}
+
+.readinessList dt {
+  color: var(--muted-2);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.readinessList dd {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px;
+}
+
+.field,
+.fieldWide {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.fieldWide {
+  grid-column: 1 / -1;
+}
+
+.field > span,
+.fieldWide > span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field em,
+.fieldWide em {
+  color: #ff9b8a;
+  font-style: normal;
+}
+
+.field input,
+.field select,
+.fieldWide textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  padding: 11px 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.fieldWide textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.field input[type="range"] {
+  accent-color: var(--lime);
+  padding: 8px 0;
+}
+
+.field input:focus-visible,
+.field select:focus-visible,
+.fieldWide textarea:focus-visible,
+.secondaryButton:focus-visible,
+.primaryButton:focus-visible,
+.textButton:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+
+.submitRow {
+  justify-content: space-between;
+}
+
+.submitRow .helper {
+  margin: 0;
+}
+
+.error {
+  margin: 8px 0 0;
+  color: #ff9b8a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.statusLine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.statusLine span {
+  color: var(--lime);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.progressTrack {
+  height: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+}
+
+.progressTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--lime);
+  transition: width 180ms ease;
+}
+
+.outputImage {
+  display: block;
+  width: min(100%, 620px);
+  max-height: 560px;
+  margin: 0 auto;
+  border-radius: 12px;
+  object-fit: contain;
+  background: var(--bg-elevated);
+}
+
+.outputActions {
+  justify-content: center;
+}
+
+@media (max-width: 860px) {
+  .layout,
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldWide {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .panel,
+  .outputCard {
+    padding: 17px;
+  }
+
+  .sourcePreview {
+    grid-template-columns: 1fr;
+  }
+
+  .readinessList {
+    grid-template-columns: 1fr;
+  }
+
+  .submitRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .primaryButton {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressTrack span {
+    transition: none;
+  }
+}

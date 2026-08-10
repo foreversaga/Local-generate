@@ -258,6 +258,8 @@
 
 .range {
   width: 100%;
+  min-height: 44px;
+  padding: 18px 0;
   accent-color: var(--lime);
 }
 
@@ -444,7 +446,7 @@
 
 .referenceChip {
   display: inline-flex;
-  min-height: 36px;
+  min-height: 44px;
   max-width: 100%;
   align-items: center;
   gap: 6px;
@@ -465,8 +467,8 @@
 
 .referenceChip button {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border: 0;
   border-radius: 50%;

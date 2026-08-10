@@ -8,7 +8,7 @@
 
 - **Phase 1 — Contracts / validation / route foundation：完成**
   - `/app` 相容與 nested route contract 已建立並有測試。
-  - Single render 使用 shared `validateSingleRender()`；legacy CTA 與 submit defensive validation 共用規則。
+  - Single render 使用 shared `validateSingleRender()`；CTA 與 submit defensive validation 共用規則。
   - generate / prompt request payload 以 pure contract 鎖定，bridge API semantics 未改。
 - **Phase 2 — App shell / Create：完成**
   - AppShell、desktop sidebar、top bar、mobile bottom navigation 已建立。
@@ -18,26 +18,25 @@
 - **Phase 3 — Jobs：完成**
   - 五狀態 adapter、recent jobs drawer、`/app/jobs`、`/app/jobs/[id]` 已完成。
   - cancel / retry / pause / resume / output 行為由既有 backend API 提供，不改 API semantics。
-- **Phase 4 — Library / Tools：進行中**
+- **Phase 4 — Library / Tools：完成**
   - `/app/library` 完整管理頁與 Create Asset Picker 已完成。
   - Create landing 可從 Library input 素材開始，透過既有 Single draft contract 做 image→I2V、video→Ref2V role mapping。
-  - **尚未完成：`/app/tools/upscale` 與 `/app/tools/image-to-image` 的完整 migration。**
-- **Phase 5 — Responsive / a11y：部分完成**
-  - Shell、Single、Long、Jobs、Library/Picker 已套用 44px target、focus/keyboard、dialog focus trap、reduced motion 等規則。
-  - **尚未完成：375 / 768 / 1024 / 1440 全域驗收與 horizontal-overflow sweep。**
-- **Phase 6 — Moderate visual refresh / cleanup：尚未最終收尾**
-  - 新 route 已使用一致 dark/lime 視覺與 semantic states。
-  - **尚未完成：Tools / Settings 完成後的全域視覺一致化與 legacy placeholder/cleanup。**
+  - `/app/tools/upscale` 與 `/app/tools/image-to-image` 已完成 workspace migration，保留既有 API contract。
+- **Phase 5 — Responsive / a11y：靜態修正完成，實機驗收待執行**
+  - Shell、Create、Jobs、Library/Picker、Tools、Settings 已套用 44px target、focus/keyboard、dialog focus trap、reduced motion、mobile bottom navigation、safe-area 等規則。
+  - **尚未執行：375 / 768 / 1024 / 1440 瀏覽器 viewport 與 horizontal-overflow sweep。**
+- **Phase 6 — Moderate visual refresh / cleanup：靜態收尾完成**
+  - 新 route 使用一致 dark/lime 視覺與 semantic states；Settings defaults 已接入 Single Prompt Assistant 與 Long Create 並依 health reconcile。
+  - 已移除未引用的 `MigrationPanel` export 與只供其使用的 route styles；新版 routes 已完成統一收尾。
+  - **尚未執行：瀏覽器 visual QA、真服務 health check、模型載入與影片/圖片生成 smoke。**
 
 最新已驗證功能 checkpoint：`8bf1631f8beb8d9ebcb749d409d219f38b740514`；GitHub Actions `WebUI CI` run `31378491826` = **success**。交接細節以根目錄 `CONTINUATION_STATUS.md` 為準。
 
-### 下一個新對話直接開始
+### 最後驗收注意事項
 
-1. 完成 `/app/tools/upscale`。
-2. 完成 `/app/tools/image-to-image`。
-3. 完成 `/app/settings`：runtime/provider/model defaults/service status；不可把生成表單塞進 Settings。
-4. 跑 Phase 5 四斷點 responsive/a11y 驗收。
-5. 完成 Phase 6 visual/legacy cleanup，確認 parity 前不要刪 legacy 能力。
+1. 以 `npm test`、`npm.cmd run lint` 與 route/settings/tools contract tests 驗證靜態改版。
+2. 若要宣稱完整 responsive/visual 完成，另行執行 375 / 768 / 1024 / 1440 瀏覽器檢查。
+3. 若要宣稱 runtime 完成，另行取得授權執行服務 health、模型載入與真實生成 smoke；本計畫不把未執行項目標為完成。
 
 ## 1. 不可破壞邊界
 
@@ -45,7 +44,6 @@
 - 不改 `local-bridge.mjs` 既有 API URL、payload、polling semantics。
 - 不改 ComfyUI / Ollama / Codex / Vast runtime 拓撲。
 - 不改 long-video draft persisted shape 與 hydration semantics。
-- 新 UI 必須逐步取代 legacy `app/page.tsx`，不可在 parity 前刪除既有能力。
 
 ## 2. 實作順序
 
@@ -54,7 +52,7 @@
 1. 新增可由 Node `node:test` 直接測試的 route contract。
 2. 新增 Single render pure validation contract，與現有 `startRender()` 規則一致。
 3. 先補 contract tests，再補實作。
-4. 讓 legacy Generate CTA 使用 shared validation 做 pre-submit gating；submit handler 仍保留 defensive validation。
+4. 讓 Generate CTA 使用 shared validation 做 pre-submit gating；submit handler 仍保留 defensive validation。
 5. 建立 route skeleton 前先驗證 Vinext `/app` basePath 與 nested App Router route 不衝突。
 
 驗收：
@@ -91,7 +89,7 @@
 1. `<=768px` 使用固定 Bottom Navigation：Create / Jobs / Library / Tools / Settings。
 2. touch target >=44px；safe-area inset；無 horizontal overflow。
 3. dialog focus trap、keyboard navigation、ARIA、reduced motion。
-4. 驗證 375 / 768 / 1024 / 1440。
+4. 以瀏覽器驗證 375 / 768 / 1024 / 1440（本階段尚未執行；僅完成靜態 responsive/a11y 修正）。
 
 ### Phase 6 — Moderate visual refresh / cleanup
 

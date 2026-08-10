@@ -16,13 +16,6 @@ type RouteCardProps = {
   actionLabel?: string;
 };
 
-type MigrationPanelProps = {
-  title: string;
-  children: ReactNode;
-  legacyHref?: string;
-  legacyLabel?: string;
-};
-
 export function RoutePage({ eyebrow, title, description, children }: RoutePageProps) {
   return (
     <section className={styles.page}>
@@ -60,24 +53,4 @@ export function RouteCard({
 
 export function RouteGrid({ children }: { children: ReactNode }) {
   return <div className={styles.grid}>{children}</div>;
-}
-
-export function MigrationPanel({
-  title,
-  children,
-  legacyHref = "/app",
-  legacyLabel = "開啟既有工作台",
-}: MigrationPanelProps) {
-  return (
-    <section className={styles.panel}>
-      <div className={styles.panelHeader}>
-        <h2 className={styles.panelTitle}>{title}</h2>
-        <span className={styles.badge}>Migration</span>
-      </div>
-      <div className={styles.note}>{children}</div>
-      <div className={styles.actions}>
-        <a className={styles.secondaryLink} href={legacyHref}>{legacyLabel}</a>
-      </div>
-    </section>
-  );
 }

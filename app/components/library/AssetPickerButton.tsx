@@ -32,15 +32,18 @@ export function AssetPickerButton({
     const [error, setError] = useState("");
     const triggerRef = useRef<HTMLButtonElement>(null);
     const dialogRef = useRef<HTMLDivElement>(null);
+    const selectedKeysSignature = JSON.stringify(selectedKeys);
 
     useEffect(() => {
-        setSelected(new Set(selectedKeys));
-    }, [selectedKeys.join("|")]);
+        const timer = window.setTimeout(() => {
+            setSelected(new Set(JSON.parse(selectedKeysSignature) as string[]));
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [selectedKeysSignature]);
 
     useEffect(() => {
         if (!open) return;
 
-        setLoading(true);
         void fetchAssets()
             .then((next) => { setAssets(next); setError(""); })
             .catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load assets."))
@@ -75,6 +78,11 @@ export function AssetPickerButton({
             .sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
     }, [assets, kind, query, root]);
 
+    function openDialog() {
+        setLoading(true);
+        setOpen(true);
+    }
+
     function closeDialog() {
         setPreview(null);
         setOpen(false);
@@ -108,11 +116,11 @@ export function AssetPickerButton({
 
     return (
         <>
-            <button ref={triggerRef} type="button" className={styles.trigger} onClick={() => setOpen(true)}>
+            <button ref={triggerRef} type="button" className={styles.trigger} aria-haspopup="dialog" aria-expanded={open} onClick={openDialog}>
                 {label}
             </button>
             {open && (
-                <div className={styles.backdrop} onMouseDown={(event) => event.target === event.currentTarget && closeDialog()}>
+                <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closeDialog()}>
                     <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label="Asset picker">
                         <header>
                             <div>
@@ -143,8 +151,13 @@ export function AssetPickerButton({
                                             >
                                                 <span className={styles.thumb}>
                                                     {asset.kind === "image"
-                                                        ? <img src={assetUrl(asset)} alt="" />
-                                                        : <video src={assetUrl(asset)} muted playsInline preload="metadata" />}
+                                                        ? <>
+                                                            {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
+                                                            <img src={assetUrl(asset)} alt="" />
+                                                        </>
+                                                        : <video src={assetUrl(asset)} muted playsInline preload="metadata">
+                                                            <track kind="captions" />
+                                                        </video>}
                                                 </span>
                                                 <span className={styles.copy}>
                                                     <strong title={asset.name}>{asset.name}</strong>
@@ -169,8 +182,13 @@ export function AssetPickerButton({
                                 <aside className={styles.preview} aria-label={`Preview ${preview.name}`}>
                                     <button type="button" onClick={() => setPreview(null)}>Close preview</button>
                                     {preview.kind === "image"
-                                        ? <img src={assetUrl(preview)} alt={preview.name} />
-                                        : <video src={assetUrl(preview)} controls playsInline />}
+                                        ? <>
+                                            {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
+                                            <img src={assetUrl(preview)} alt={preview.name} />
+                                        </>
+                                        : <video src={assetUrl(preview)} controls playsInline>
+                                            <track kind="captions" />
+                                        </video>}
                                     <strong>{preview.name}</strong>
                                 </aside>
                             )}

@@ -64,6 +64,7 @@ export function JobsWorkspace() {
 }
 
 function JobRow({ job }: { job: UnifiedJob }) {
+  const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   return (
     <article className={styles.jobCard}>
       <div className={styles.jobMain}>
@@ -75,9 +76,11 @@ function JobRow({ job }: { job: UnifiedJob }) {
         <h2>{job.title}</h2>
         <p>{job.subtitle || job.stage}</p>
         {(job.status === "queued" || job.status === "running") && (
-          <div className={styles.progressWrap} aria-label={`${job.progress}% complete`}>
-            <div className={styles.progressTrack}><span style={{ width: `${job.progress}%` }} /></div>
-            <span>{job.progress}%{job.etaMs ? ` · ETA ${formatDuration(job.etaMs)}` : ""}</span>
+          <div className={styles.progressWrap}>
+            <div className={styles.progressTrack} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% complete`}>
+              <span style={{ width: `${progress}%` }} />
+            </div>
+            <span>{progress}%{job.etaMs ? ` · ETA ${formatDuration(job.etaMs)}` : ""}</span>
           </div>
         )}
         {job.error && <p className={styles.jobError}>{job.error}</p>}

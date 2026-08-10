@@ -1,15 +1,14 @@
-import { MigrationPanel, RoutePage } from "../../components/shell/RoutePage";
+import { RoutePage } from "../../components/shell/RoutePage";
+import { SettingsWorkspace } from "../../components/settings/SettingsWorkspace";
 
 export default function SettingsPage() {
   return (
     <RoutePage
       eyebrow="Settings"
       title="系統設定"
-      description="Runtime、Prompt provider、模型預設與服務狀態會集中到 Settings；生成表單不再承擔系統設定責任。"
+      description="切換本機或 Vast runtime、查看服務狀態，並儲存 Prompt provider 與模型預設。生成表單仍留在 Create。"
     >
-      <MigrationPanel title="Settings 遷移中">
-        目前 runtime switch 與 provider/model controls 仍在 legacy workspace。正式搬移時會沿用既有 API，不改 ComfyUI、Ollama、Codex 或 Vast 拓撲。
-      </MigrationPanel>
+      <SettingsWorkspace />
     </RoutePage>
   );
 }

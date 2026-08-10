@@ -13,6 +13,7 @@ import { runSequence, sequenceProgressForSegment } from "../server/long-video/ru
 import { normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
+import { longJobIsActive } from "../app/lib/long-create-contract.mjs";
 
 function apiRequest(method, url, value = {}) {
   return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
@@ -521,10 +522,12 @@ test("retry and prompt edits stale dependent segments", async () => {
 });
 
 test("long-video polling is source-limited to active statuses", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /const LONG_VIDEO_POLL_STATUSES = new Set\(\["queued", "running", "paused", "assembling", "planning"\]\)/);
-  assert.match(page, /if \(!trackedJobId \|\| !LONG_VIDEO_POLL_STATUSES\.has\(trackedStatus \|\| ""\)\) return/);
-  assert.match(page, /const terminalTransition = LONG_VIDEO_TERMINAL_STATUSES\.has\(nextJob\.status\)/);
+  for (const status of ["queued", "running", "paused", "assembling", "planning"]) {
+    assert.equal(longJobIsActive(status), true);
+  }
+  for (const status of ["draft", "ready", "completed", "failed", "cancelled", "interrupted", ""]) {
+    assert.equal(longJobIsActive(status), false);
+  }
 });
 
 test("legacy generation retains bounded stderr and exit code diagnostics", async () => {

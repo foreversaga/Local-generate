@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  createSingleCreateDraft,
   parseSingleCreateDraft,
   SINGLE_CREATE_DRAFT_STORAGE_KEY,
 } from "../../lib/single-create-draft.mjs";
@@ -53,25 +52,33 @@ export function useSingleCreateDraft({
   useEffect(() => {
     if (!ready || hydrated) return;
 
-    try {
-      const draft = parseSingleCreateDraft(window.localStorage.getItem(SINGLE_CREATE_DRAFT_STORAGE_KEY)) as SingleCreateDraft | null;
-      if (draft) hydrateRef.current(draft);
-      setHydrated(true);
-      setStatus(draft ? "saved" : "idle");
-    } catch {
-      setHydrated(true);
-      setStatus("error");
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        const draft = parseSingleCreateDraft(window.localStorage.getItem(SINGLE_CREATE_DRAFT_STORAGE_KEY)) as SingleCreateDraft | null;
+        if (draft) hydrateRef.current(draft);
+        setHydrated(true);
+        setStatus(draft ? "saved" : "idle");
+      } catch {
+        setHydrated(true);
+        setStatus("error");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [ready, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
 
-    setDirty(true);
-    setStatus("saving");
-    const timer = window.setTimeout(() => {
+    const markSavingTimer = window.setTimeout(() => {
+      setDirty(true);
+      setStatus("saving");
+    }, 0);
+    const saveTimer = window.setTimeout(() => {
       try {
-        const draft = createSingleCreateDraft(value);
+        // The JS parser owns runtime normalization; round-tripping through its
+        // public boundary also keeps this hook's broad form-state type honest.
+        const draft = parseSingleCreateDraft(JSON.stringify({ version: 1, ...value }));
+        if (!draft) throw new Error("Unable to normalize Single Create draft.");
         window.localStorage.setItem(SINGLE_CREATE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
         setDirty(false);
         setStatus("saved");
@@ -80,7 +87,10 @@ export function useSingleCreateDraft({
       }
     }, delayMs);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(markSavingTimer);
+      window.clearTimeout(saveTimer);
+    };
   }, [delayMs, hydrated, value]);
 
   useEffect(() => {

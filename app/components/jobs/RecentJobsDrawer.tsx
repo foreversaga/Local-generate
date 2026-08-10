@@ -43,7 +43,7 @@ export function RecentJobsDrawer() {
         <span className={styles.pulse} aria-hidden="true" /> Jobs {active > 0 && <span className={styles.count}>{active}</span>}
       </button>
       {open && (
-        <div className={styles.backdrop} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+        <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
           <div ref={panelRef} className={styles.panel} role="dialog" aria-modal="true" aria-label="Recent jobs">
             <div className={styles.header}><div><span>Recent jobs</span><strong>{active} active</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close recent jobs">×</button></div>
             <div className={styles.list}>

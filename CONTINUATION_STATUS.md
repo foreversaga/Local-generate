@@ -14,7 +14,7 @@ Repository：`foreversaga/Local-generate`
 2. `docs/webui-implementation-plan.md`
 3. `docs/webui-layout-redesign-spec.md`
 
-目前 WebUI 改版已完成到 **Phase 4 的 Library + Create Asset Picker**；下一步直接做 **Tools / Upscale**，不要重新規劃前面 Phase。
+目前 WebUI 改版已完成到 **Phase 6 的靜態收尾**：Tools、Settings、defaults integration、responsive/a11y 靜態規則與 cleanup 均已完成；不要重新規劃前面 Phase。
 
 ## 最新已驗證 checkpoint
 
@@ -31,14 +31,18 @@ Repository：`foreversaga/Local-generate`
 - Phase 2：AppShell、Create landing、Single Create、Long Create。
 - Phase 3：Jobs adapter、recent jobs drawer、Jobs list、Job detail、cancel/retry/pause/resume/output。
 - Phase 4 前半：Library 完整管理頁、Create Asset Picker、Create landing 從 input 素材開始。
+- Phase 4 後半：`/app/tools/upscale` 與 `/app/tools/image-to-image` 已掛載實際 workspace，保留既有 API contract。
+- Settings：`/app/settings` 已提供 runtime local/Vast、provider/model defaults、service status；defaults 已接入 Single Prompt Assistant 與 Long Create 並依 health reconcile。
+- Phase 5 靜態：44px targets、focus/keyboard、dialog focus trap、ARIA、reduced motion、mobile bottom navigation、safe-area spacing 已覆蓋主要 routes。
+- Phase 6 靜態：已移除未引用 `MigrationPanel` export 與 route-only styles；新版 routes 已完成統一收尾。
 
 ### Single Create
 
 - `/app/create/single`
 - T2V / I2V / FL2V / L2V / Ref2V / Replace。
 - Prompt Assistant：Ollama / Codex CLI。
-- shared `validateSingleRender()`，legacy 與新 route 不維護兩套規則。
-- request payload contract 保持 legacy `/app/api/generate` semantics。
+- shared `validateSingleRender()`，各新 route 共用同一套規則。
+- request payload contract 保持既有 `/app/api/generate` semantics。
 - draft local autosave / hydration / successful-submit cleanup。
 - sticky summary / validation / desktop CTA、mobile sticky CTA。
 - field-level ARIA、keyboard file upload、reduced motion。
@@ -72,27 +76,11 @@ Repository：`foreversaga/Local-generate`
   - input video → Single Ref2V source video。
   - 既有 prompt 等 draft 狀態保留。
 
-## 尚未完成
+## 尚未執行／已知風險
 
-依 `docs/webui-implementation-plan.md`，新對話按以下順序繼續：
-
-1. **Phase 4 — Tools / Upscale**
-   - 完成 `/app/tools/upscale`。
-   - 搬移 legacy Upscale progress / retry / output 行為。
-   - output 回到 Library；不可改既有 `/app/api/upscale` contract。
-2. **Phase 4 — Tools / Image to Image**
-   - 完成 `/app/tools/image-to-image`。
-   - 搬移完整 I2I prompt/settings/readiness/progress 行為。
-   - I2I 只存在 Tools，不塞回 Create。
-3. **Settings**
-   - `/app/settings`：runtime local/Vast、provider、model defaults、service status。
-   - 不承擔生成表單；不改 runtime topology。
-4. **Phase 5 — Responsive / a11y 全域驗收**
-   - 375 / 768 / 1024 / 1440。
-   - horizontal overflow、safe-area、44px touch target、focus trap、keyboard、ARIA、reduced motion。
-5. **Phase 6 — Moderate visual refresh / cleanup**
-   - 統一卡片、表單、按鈕、spacing、typography、status badges、focus/hover/disabled/loading。
-   - Tools / Settings parity 完成前，不刪 legacy `app/page.tsx` 的能力。
+1. 尚未執行 375 / 768 / 1024 / 1440 瀏覽器 viewport 與 horizontal-overflow sweep；CSS 已有 mobile nav、safe-area 與 reduced-motion 規則，但不可把靜態檢查當成實機驗收。
+2. 尚未啟動 ComfyUI/Ollama、執行 runtime health、模型載入或真實影片/圖片生成 smoke；本交接文件不宣稱這些項目已完成。
+3. Upscale 與 Image to Image 既有 API 不提供 cancellation；UI 明確提示限制，不偽造取消能力。
 
 ## GitHub / CI 工作規則
 
@@ -110,7 +98,6 @@ Repository：`foreversaga/Local-generate`
 - 不改 `local-bridge.mjs` 既有 API URL、payload、polling semantics。
 - 不改 ComfyUI / Ollama / Codex / Vast runtime 拓撲。
 - 不改 long-video draft persisted shape 與 hydration semantics。
-- parity 前不要刪除 legacy `app/page.tsx` 仍在提供的能力。
 - 不修改使用者的 Tailscale Serve 設定。
 - 不把 ComfyUI 或 Ollama 改成對外監聽所有介面。
 
@@ -134,4 +121,4 @@ Repository：`foreversaga/Local-generate`
 - `app/lib/job-adapter.mjs`：Jobs normalized domain adapter。
 - `app/components/library/LibraryWorkspace.tsx`：Library 管理頁。
 - `app/components/library/AssetPickerButton.tsx`：Create 精簡 picker。
-- `app/page.tsx`：legacy workspace；目前仍需保留作 parity fallback。
+- `app/page.tsx`：新版 root Create landing。
