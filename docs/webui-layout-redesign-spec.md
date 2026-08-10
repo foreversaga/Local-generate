@@ -1,6 +1,6 @@
 # H3 Studio WebUI 改版計畫（決策進行中）
 
-> 狀態：改版草案，非最終計畫。D1–D5 已確認；D6、D7 未決。確認後才執行；現在不實作
+> 狀態：改版草案，非最終計畫。D1–D6 已確認；D7 未決。全部決策確認後才執行；現在不實作。
 
 ## 1. 改版目標與邊界
 
@@ -29,11 +29,11 @@ H3 Studio
 └─ Settings
 ```
 
-建議 route（細節待實作計畫）：
+建議 route（細節待最終實作計畫）：
 
 `/app/create`、`/app/create/single`、`/app/create/long`、`/app/jobs`、`/app/jobs/[id]`、`/app/library`、`/app/tools/upscale`、`/app/tools/image-to-image`、`/app/settings`。
 
-D1/D2 已確認獨立頁／入口，桌面用 sidebar；D6 導覽待選。狀態收進 top bar popover。
+D1/D2 已確認獨立頁／入口，桌面用 sidebar；手機主導覽依 D6 採固定底部導覽。系統狀態收進 top bar popover。
 
 ## 4. 頁面規格
 
@@ -80,9 +80,21 @@ Desktop shell：sidebar + topbar + two-pane；左 fieldsets 全展開，右 stic
 
 這是欄位分區，不是 stepper；Advanced 不折疊，主 CTA 只在右 summary。
 
-## 6. Mobile 共同底線
+## 6. Mobile 設計（D6 已確認）
 
-375／768px 單欄、安全 padding、section anchor、sticky CTA；fieldset 仍可見。Picker 用 bottom sheet/dialog，禁止溢出。主導覽（底部／漢堡／頂部橫向）待 D6。
+375／768px 採單欄、安全 padding、section anchor、sticky CTA；fieldset 仍可見。Picker 用 bottom sheet/dialog，禁止水平溢出。
+
+主導覽採 **固定底部 Bottom Navigation**，使用已確認的視覺稿：
+
+- 五個固定入口：`Create`、`Jobs`、`Library`、`Tools`、`Settings`。
+- 每個入口使用 icon + label，保持清楚可辨識，不使用只顯示 icon 的模式。
+- active item 使用 accent 色文字與淡色背景區塊；inactive item 使用次要文字色。
+- 導覽列固定在內容底部，主內容需預留 bottom nav 空間與 safe-area inset。
+- 各 item touch target 至少 44px，視覺稿以約 56px 高度為基準。
+- `Tools` 的 Upscale / Image to Image 為 Tools 內部子頁，不新增第六個底部入口。
+- 進入子頁時仍保持對應 primary item active，例如 `/app/tools/upscale` 仍高亮 `Tools`。
+- Bottom Navigation 只負責 primary navigation；頁面內 action、Generate CTA、Job action 不放入此導覽列。
+- 頂部保留頁名與 service/runtime status，不重複放 primary navigation。
 
 ## 7. 驗證與 a11y
 
@@ -90,14 +102,14 @@ Desktop shell：sidebar + topbar + two-pane；左 fieldsets 全展開，右 stic
 
 ## 8. 分階段草案（非最終計畫）
 
-受 D6／D7 影響，僅供討論，不得據此開始實作。
+目前只剩 D7 影響最終實作計畫；D7 未確認前仍不得開始改版實作。
 
 1. **Contracts／routes／state**：盤點 API、polling、adapter、domain；交付 mapping，驗收拓撲／draft 不變。
 2. **Create**：landing、Single、Long、summary/gating；驗收骨架與必填。
 3. **Jobs**：badge/drawer、歷史、detail、取消／重試／恢復；驗收五狀態。
 4. **Library／Tools**：picker、Library、Upscale、I2I、回寫；驗收角色化選取。
-5. **Responsive／a11y**：四斷點、鍵盤、ARIA、reduced motion；驗收無溢出／44px。
-6. **Visual tokens**：D7 確認後定義色彩、字體、間距、狀態；未決不得實作。
+5. **Responsive／a11y**：四斷點、鍵盤、ARIA、reduced motion、Bottom Navigation；驗收無溢出／44px。
+6. **Visual tokens**：D7 確認後定義是否及如何調整色彩、字體、間距與狀態 tokens。
 
 ## 9. 決策
 
@@ -108,9 +120,9 @@ Desktop shell：sidebar + topbar + two-pane；左 fieldsets 全展開，右 stic
 | D3 密度 | 欄位常駐、fieldset/helper、左表單＋右 summary/CTA | stepper／折疊 | 已確認 |
 | D4 Jobs | top badge/drawer＋Jobs 頁 | 只留其一 | 已確認 |
 | D5 工具/資源 | Create picker、Library 獨立、Tools 含 Upscale＋I2I（不進 Create） | 全塞工作台 | 已確認 |
-| D6 mobile nav | 底部／漢堡／頂部橫向待選 | — | 待確認 |
-| D7 visual | 刷新範圍待定；視覺稿已取消 | 只改 IA 或全面 tokens | 待確認 |
+| D6 mobile nav | 固定 Bottom Navigation；Create / Jobs / Library / Tools / Settings；icon + label；active accent 淡底 | 漢堡／頂部橫向 | 已確認 |
+| D7 visual | 刷新範圍待定；視覺稿已取消 | 只改 IA／中度刷新／全面 tokens | 待確認 |
 
 ## 10. 成功指標／保持不變
 
-桌面首屏可達 Prompt/右 CTA；mobile 無溢出、控件 ≥44px；一主 CTA；空 prompt／缺素材不可提交；Jobs 可恢復；picker 回傳 input/output；Tools 輸出在 Library。保持 `/app`、API payload／polling、long draft hydration（`app/page.tsx:1144–1200`）與本機拓撲。D1–D7 確認後才另產實作計畫與授權
+桌面首屏可達 Prompt/右 CTA；mobile Bottom Navigation 無水平溢出、控件 ≥44px；一主 CTA；空 prompt／缺素材不可提交；Jobs 可恢復；picker 回傳 input/output；Tools 輸出在 Library。保持 `/app`、API payload／polling、long draft hydration（`app/page.tsx:1144–1200`）與本機拓撲。D7 確認後才另產最終實作計畫與執行授權。
