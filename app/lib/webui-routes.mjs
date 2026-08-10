@@ -67,5 +67,8 @@ function normalizePath(pathname) {
     ? pathWithoutQuery.replace(/\/+$/, "")
     : pathWithoutQuery;
 
-  return trimmedPath === "/app" ? "/app/create" : trimmedPath;
+  if (trimmedPath === "/" || trimmedPath === "/app") return "/app/create";
+  if (trimmedPath.startsWith("/app/")) return trimmedPath;
+  if (trimmedPath.startsWith("/")) return `/app${trimmedPath}`;
+  return `/app/${trimmedPath}`;
 }
