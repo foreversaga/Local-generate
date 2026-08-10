@@ -44,6 +44,24 @@ export function CreateLanding() {
                 />
             </section>
 
+            <section className={styles.assetStart} aria-labelledby="tools-heading">
+                <div>
+                    <span>TOOLS</span>
+                    <h2 id="tools-heading">Image-to-Image 與 Video Upscale</h2>
+                    <p>直接進入工具工作台；以圖生圖可從 Library 選取圖片，Video Upscale 可選取影片或上傳來源。</p>
+                </div>
+                <div className={styles.toolLinks}>
+                    <a className={styles.toolLink} href="/app/tools/image-to-image">
+                        <span><strong>Image to Image</strong><small>以圖生圖</small></span>
+                        <span>Open tool →</span>
+                    </a>
+                    <a className={styles.toolLink} href="/app/tools/upscale">
+                        <span><strong>Video Upscale</strong><small>影片升頻</small></span>
+                        <span>Open tool →</span>
+                    </a>
+                </div>
+            </section>
+
             <section className={styles.assetStart}>
                 <div>
                     <span>START FROM ASSET</span>

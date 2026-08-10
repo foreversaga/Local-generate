@@ -10,6 +10,8 @@ test("route contract accepts both external /app paths and internal base-path-fre
   assert.equal(primaryRouteForPath("/create/single"), "create");
   assert.equal(primaryRouteForPath("/jobs/job-123"), "jobs");
   assert.equal(primaryRouteForPath("/tools/image-to-image"), "tools");
+  assert.equal(primaryRouteForPath("/tools"), "tools");
+  assert.equal(routeTitle("/tools"), "Tools");
   assert.equal(routeTitle("/create/long"), "Create / Long");
   assert.equal(routeTitle("/tools/upscale"), "Upscale");
 });

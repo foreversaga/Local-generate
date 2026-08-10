@@ -72,7 +72,7 @@ test("primary WebUI routes match the approved navigation", () => {
       { id: "create", label: "Create", href: "/app/create" },
       { id: "jobs", label: "Jobs", href: "/app/jobs" },
       { id: "library", label: "Library", href: "/app/library" },
-      { id: "tools", label: "Tools", href: "/app/tools/upscale" },
+      { id: "tools", label: "Tools", href: "/app/tools" },
       { id: "settings", label: "Settings", href: "/app/settings" },
     ],
   );
@@ -84,6 +84,7 @@ test("route mapping keeps nested routes on the correct primary navigation item",
   assert.equal(primaryRouteForPath("/app/create/long?draft=abc"), "create");
   assert.equal(primaryRouteForPath("/app/jobs/job-123"), "jobs");
   assert.equal(primaryRouteForPath("/app/library/"), "library");
+  assert.equal(primaryRouteForPath("/app/tools"), "tools");
   assert.equal(primaryRouteForPath("/app/tools/image-to-image"), "tools");
   assert.equal(primaryRouteForPath("/app/settings#runtime"), "settings");
 });
@@ -93,6 +94,7 @@ test("route titles identify important child pages", () => {
   assert.equal(routeTitle("/app/create/single"), "Create / Single");
   assert.equal(routeTitle("/app/create/long"), "Create / Long");
   assert.equal(routeTitle("/app/jobs/job-123"), "Job Detail");
+  assert.equal(routeTitle("/app/tools"), "Tools");
   assert.equal(routeTitle("/app/tools/upscale"), "Upscale");
   assert.equal(routeTitle("/app/tools/image-to-image"), "Image to Image");
 });

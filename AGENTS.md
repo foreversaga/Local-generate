@@ -96,3 +96,14 @@ Invoke-WebRequest -Uri http://127.0.0.1:8787/app/api/health -UseBasicParsing -Ti
 ```
 
 只有當任務要求模型或生成流程驗證時，才使用 `C:\Users\forev\minimax-h3-local\scripts\run-smoke-test.ps1`；執行前先確認使用者允許模型運算與輸出檔案變更。
+
+## Luna 重用與低延遲
+
+- Closely related follow-up work should reuse the same Luna via `followup_task`; do not repeatedly create a new Luna for a single-point query.
+- When safe and ownership does not conflict, delegate exploration, implementation, and targeted verification to the same Luna in one assignment.
+- Run Browser and the complete quality gate once after feature completion, unless irreplaceable prerequisite runtime evidence is required; keep any prerequisite check minimal.
+- Within one parent task, run a complete `npm run build` (or equivalent production build) at most once, only by the final integration verifier after all module changes are complete. Child tasks and parallel Lunas must not run their own build unless the user explicitly requests it or that task is the sole final integrator; never run builds in parallel.
+- Child tasks should prefer targeted tests and lint; TypeScript checks may be centralized according to cost, but the production build remains a single final integration check.
+- Create a new Luna only for truly independent work with non-overlapping ownership and parallel acceptance; check whether an existing agent can be reused first.
+- Do not start Browser or the full test suite merely for formality for a simple status check or short answer.
+- These rules do not override the core rule that all exploration and operations must still be performed by an `agent_type=luna_max` Luna.

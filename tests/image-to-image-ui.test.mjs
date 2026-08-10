@@ -42,6 +42,17 @@ test("Image to Image UI preserves readiness, submit, poll and retry contracts", 
   assert.match(workspace, /runtimeMode === "local"/);
   assert.match(workspace, /modelAllowedForRuntime/);
   assert.match(workspace, /setDenoise\(next\.denoise\)/);
-  assert.match(workspace, /health\.models\[model\] === true/);
+  assert.match(workspace, /health\.models\?\.\[model\] === true/);
+  assert.match(workspace, /const sourceReady = Boolean\(source && source\.kind === "image"\)/);
+  assert.match(workspace, /const promptReady = Boolean\(prompt\.trim\(\)\)/);
+  assert.match(workspace, /const readinessReady = !healthLoading && health\?\.ready === true && modelReady/);
+  assert.match(workspace, /const canStart = !active && !submitting && !retrying && !uploading && sourceReady && promptReady && modelRuntimeReady && readinessReady/);
+  assert.match(workspace, /if \(!source \|\| source\.kind !== "image"\)/);
+  assert.match(workspace, /if \(!prompt\.trim\(\)\)/);
+  assert.match(workspace, /if \(!readinessReady\) return readinessBlockingMessage/);
+  assert.match(workspace, /health\?\.models\?\.\[value\] === true/);
+  assert.match(workspace, /disabled=\{!available\}/);
+  assert.match(workspace, /Unavailable/);
+  assert.match(workspace, /disabled=\{!canStart\}/);
   assert.doesNotMatch(client, /img2img\/jobs\/.*cancel/);
 });

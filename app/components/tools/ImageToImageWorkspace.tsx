@@ -188,15 +188,23 @@ export function ImageToImageWorkspace() {
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
     const selectedModel = modelOption(model);
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
+    const optionAvailable = (value: string) => {
+        if (healthLoading) return true;
+        return health?.models?.[value] === true;
+    };
     const readinessBlockingMessage = !modelRuntimeReady
         ? LOCAL_ONLY_MODEL_MESSAGE
         : health ? img2ImgReadinessMessage(health, model) : "";
     const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選 checkpoint 均可用。" : "尚未取得 ComfyUI readiness；提交時會再次檢查。 ");
-    const modelReady = modelRuntimeReady && (health ? (health.models ? health.models[model] === true : false) : true);
+    const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
     const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(job?.model || "", runtimeMode);
+    const sourceReady = Boolean(source && source.kind === "image");
+    const promptReady = Boolean(prompt.trim());
+    const readinessReady = !healthLoading && health?.ready === true && modelReady;
+    const canStart = !active && !submitting && !retrying && !uploading && sourceReady && promptReady && modelRuntimeReady && readinessReady;
 
     function selectSource(assets: StudioAsset[]) {
         const next = assets.find((asset) => asset.kind === "image");
@@ -237,6 +245,7 @@ export function ImageToImageWorkspace() {
         if (!prompt.trim()) return "請輸入希望圖片呈現的內容。";
         if (prompt.trim().length > 4000 || negativePrompt.length > 4000) return "提示詞不可超過 4000 字元。";
         if (!modelRuntimeReady) return LOCAL_ONLY_MODEL_MESSAGE;
+        if (!readinessReady) return readinessBlockingMessage || "尚未取得可用的 ComfyUI readiness 或所選 checkpoint。";
         if (readinessBlockingMessage) return readinessBlockingMessage;
         const denoiseError = parseNumberDraft(String(denoise), "重繪強度", 0.01, 1);
         if (denoiseError) return denoiseError;
@@ -378,7 +387,10 @@ export function ImageToImageWorkspace() {
                     <label className={styles.field}>
                         <span>模型</span>
                         <select value={model} disabled={active} onChange={(event) => updateModel(event.target.value as ModelValue)}>
-                            {visibleModels.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                            {visibleModels.map((item) => {
+                                const available = optionAvailable(item.value);
+                                return <option key={item.value} value={item.value} disabled={!available}>{item.label}{available ? "" : " · Unavailable"}</option>;
+                            })}
                         </select>
                         <small>{selectedModel?.note || "尚未選擇可用模型。"}</small>
                         {runtimeMode !== "local" && <small>本機限定模型會在 local runtime 就緒後顯示。</small>}
@@ -406,7 +418,7 @@ export function ImageToImageWorkspace() {
                         <p className={styles.helper}>提示詞可手動輸入；生成工作會交由 Jobs 追蹤。</p>
                         {error && <p className={styles.error} role="alert">{error}</p>}
                     </div>
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={submitting || retrying || uploading || active || !modelRuntimeReady} aria-busy={submitting || retrying || uploading}>
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canStart} aria-busy={submitting || retrying || uploading}>
                         {uploading ? "上傳圖片中…" : submitting ? "正在排程…" : active ? "圖片生成中…" : "開始以圖生圖"}
                     </button>
                 </div>

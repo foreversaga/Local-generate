@@ -25,7 +25,13 @@ export type StudioHealth = {
     online?: boolean;
     url?: string;
     remote?: boolean;
-    devices?: Array<{ name?: string; vram_total?: number; vram_free?: number }>;
+    devices?: Array<{
+      name?: string;
+      vram_total?: number;
+      vram_free?: number;
+      total_memory?: number;
+      free_memory?: number;
+    }>;
   };
   runtime?: {
     mode?: "local" | "remote";

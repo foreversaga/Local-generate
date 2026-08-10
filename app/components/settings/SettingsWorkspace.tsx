@@ -17,6 +17,7 @@ import {
   type RuntimeProbe,
   type StudioHealth,
 } from "./settings-client";
+import { formatVram } from "./vram.mjs";
 import styles from "./SettingsWorkspace.module.css";
 
 const REASONING_OPTIONS = [
@@ -60,11 +61,6 @@ function sameSettings(left: SettingsModel, right: SettingsModel) {
 function StatusBadge({ value, pending = false }: { value?: boolean; pending?: boolean }) {
   const label = pending ? "Checking" : value ? "Online" : "Offline";
   return <span className={`${styles.statusBadge} ${pending ? styles.pending : value ? styles.online : styles.offline}`}>{label}</span>;
-}
-
-function formatVram(value?: number) {
-  if (!Number.isFinite(value)) return "—";
-  return `${(Number(value) / 1024).toFixed(1)} GB`;
 }
 
 export function SettingsWorkspace() {
@@ -221,7 +217,7 @@ export function SettingsWorkspace() {
         </dl>
         <div className={styles.deviceList}>
           <strong>ComfyUI devices</strong>
-          {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `Device ${index + 1}`} · free {formatVram(device.vram_free)} / total {formatVram(device.vram_total)}</span>) : <span>尚未回報 GPU 資訊</span>}
+          {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `Device ${index + 1}`} · free {formatVram(device.vram_free ?? device.free_memory)} / total {formatVram(device.vram_total ?? device.total_memory)}</span>) : <span>尚未回報 GPU 資訊</span>}
         </div>
       </section>
 

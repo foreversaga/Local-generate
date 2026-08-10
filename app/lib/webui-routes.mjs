@@ -15,7 +15,7 @@ export const WEB_UI_ROUTES = Object.freeze([
   Object.freeze({ id: "create", label: "Create", href: "/app/create" }),
   Object.freeze({ id: "jobs", label: "Jobs", href: "/app/jobs" }),
   Object.freeze({ id: "library", label: "Library", href: "/app/library" }),
-  Object.freeze({ id: "tools", label: "Tools", href: "/app/tools/upscale" }),
+  Object.freeze({ id: "tools", label: "Tools", href: "/app/tools" }),
   Object.freeze({ id: "settings", label: "Settings", href: "/app/settings" }),
 ]);
 
