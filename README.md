@@ -1,5 +1,7 @@
 # H3 Studio
 
+- [WebUI 功能說明](docs/webui-functions.md)
+
 ## Vast RTX 5090 remote mode
 
 The current Vast instance is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet.
