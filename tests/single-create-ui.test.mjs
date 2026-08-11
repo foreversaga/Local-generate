@@ -70,3 +70,18 @@ test("Replace exposes optional character LoRA controls with accessible guidance"
   assert.match(form, /0\.7–0\.9/);
   assert.match(form, /LightX2V/);
 });
+
+test("Single Create derives final output resolution from the current image and rejects stale reads", async () => {
+  const form = await readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8");
+  assert.match(form, /readImageDimensions\(resolutionAssetUrl\)/);
+  assert.match(form, /normalizeImageResolution\(dimensions\.width, dimensions\.height, mode\)/);
+  assert.match(form, /resolutionRequestRef\.current !== requestId/);
+  assert.match(form, /setWidth\(""\);\s*setHeight\(""\);/);
+  assert.match(form, /data-resolution-status=\{resolutionStatus\}/);
+  assert.match(form, /Manual output resolution; the values shown here will be submitted/);
+  assert.match(form, /Unable to read dimensions for/);
+  assert.match(form, /onChange=\{\(event\) => \{\s*markManualResolution\(\);\s*setWidth/);
+  assert.match(form, /onChange=\{\(event\) => \{\s*markManualResolution\(\);\s*setHeight/);
+  assert.match(form, /onClearReference=\{\(\) => \{\s*setReferenceImage\(null\);\s*resetResolutionToDefault\(\);/);
+  assert.match(form, /onClearLastFrame=\{\(\) => \{\s*setLastFrameImage\(null\);\s*resetResolutionToDefault\(\);/);
+});

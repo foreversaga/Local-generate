@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   batchOutputName,
   batchSeed,
   buildSingleRenderRequest,
 } from "../../lib/single-render-request.mjs";
+import {
+  normalizeImageResolution,
+  readImageDimensions,
+} from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
@@ -19,6 +23,16 @@ const MAX_REF2V_IMAGES = 9;
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type NumberDraft = number | "";
 type AssetKind = "image" | "video";
+type ResolutionStatus = "default" | "loading" | "auto" | "adjusted" | "manual" | "error";
+type ResolutionInfo = {
+  originalWidth: number;
+  originalHeight: number;
+  width: number;
+  height: number;
+  grid: number;
+  scaled: boolean;
+  adjusted: boolean;
+};
 type Asset = {
   name: string;
   root: "input" | "output";
@@ -68,6 +82,10 @@ export function SingleCreateForm() {
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
   const [width, setWidth] = useState<NumberDraft>(736);
   const [height, setHeight] = useState<NumberDraft>(416);
+  const [resolutionStatus, setResolutionStatus] = useState<ResolutionStatus>("default");
+  const [resolutionInfo, setResolutionInfo] = useState<ResolutionInfo | null>(null);
+  const [resolutionError, setResolutionError] = useState("");
+  const resolutionRequestRef = useRef(0);
   const [duration, setDuration] = useState(5);
   const [steps, setSteps] = useState<NumberDraft>(20);
   const [seed, setSeed] = useState<NumberDraft>(12345);
@@ -92,6 +110,57 @@ export function SingleCreateForm() {
   const availableModels = useMemo(() => modelOptionsForMode(mode), [mode]);
   const modeOption = MODE_OPTIONS.find((option) => option.value === mode) || MODE_OPTIONS[0];
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
+  const resolutionAsset = useMemo(
+    () => resolutionAssetForMode(mode, referenceImage, referenceImages, lastFrameImage),
+    [lastFrameImage, mode, referenceImage, referenceImages],
+  );
+  const resolutionAssetKey = resolutionAsset ? assetKey(resolutionAsset) : "";
+  const resolutionAssetUrl = resolutionAsset ? assetUrl(resolutionAsset) : "";
+  const resolutionAssetName = resolutionAsset?.name || "";
+
+  useEffect(() => {
+    const requestId = resolutionRequestRef.current + 1;
+    resolutionRequestRef.current = requestId;
+
+    if (!resolutionAssetName) {
+      return () => {
+        if (resolutionRequestRef.current === requestId) resolutionRequestRef.current += 1;
+      };
+    }
+
+    queueMicrotask(() => {
+      if (resolutionRequestRef.current !== requestId) return;
+      setWidth("");
+      setHeight("");
+      setResolutionInfo(null);
+      setResolutionError("");
+      setResolutionStatus("loading");
+    });
+
+    void readImageDimensions(resolutionAssetUrl)
+      .then((dimensions) => {
+        if (resolutionRequestRef.current !== requestId) return;
+        const normalized = normalizeImageResolution(dimensions.width, dimensions.height, mode) as ResolutionInfo;
+        setWidth(normalized.width);
+        setHeight(normalized.height);
+        setResolutionInfo(normalized);
+        setResolutionStatus(normalized.adjusted ? "adjusted" : "auto");
+      })
+      .catch((error: unknown) => {
+        if (resolutionRequestRef.current !== requestId) return;
+        const reason = error instanceof Error ? error.message : "The image dimensions could not be read.";
+        setWidth("");
+        setHeight("");
+        setResolutionInfo(null);
+        setResolutionStatus("error");
+        setResolutionError(`Unable to read dimensions for ${resolutionAssetName}. ${reason} Choose another image or enter a manual output size.`);
+      });
+
+    return () => {
+      if (resolutionRequestRef.current === requestId) resolutionRequestRef.current += 1;
+    };
+  }, [mode, resolutionAssetKey, resolutionAssetName, resolutionAssetUrl]);
+
   const validationIssues = useMemo(() => validateSingleRender({
     mode,
     prompt,
@@ -280,8 +349,10 @@ export function SingleCreateForm() {
   }
 
   function updateMode(nextMode: Mode) {
-    setMode(nextMode);
     setSubmitError("");
+    if (nextMode === mode) return;
+    resetResolutionToDefault(nextMode);
+    setMode(nextMode);
     if (nextMode === "replace") {
       setModelProfile("wan22_animate_fp8");
       setWidth(832);
@@ -315,8 +386,26 @@ export function SingleCreateForm() {
   }
 
   function swapResolution() {
+    markManualResolution();
     setWidth(height);
     setHeight(width);
+  }
+
+  function resetResolutionToDefault(nextMode: Mode = mode) {
+    resolutionRequestRef.current += 1;
+    const fallback = defaultResolutionForMode(nextMode);
+    setWidth(fallback.width);
+    setHeight(fallback.height);
+    setResolutionInfo(null);
+    setResolutionError("");
+    setResolutionStatus("default");
+  }
+
+  function markManualResolution() {
+    resolutionRequestRef.current += 1;
+    setResolutionStatus("manual");
+    setResolutionInfo(null);
+    setResolutionError("");
   }
 
   function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, key: string) {
@@ -324,6 +413,7 @@ export function SingleCreateForm() {
     if (target === "referenceImage") setReferenceImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "lastFrameImage") setLastFrameImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "sourceVideo") setSourceVideo(nextAsset?.kind === "video" ? nextAsset : null);
+    if ((target === "referenceImage" || target === "lastFrameImage") && !nextAsset) resetResolutionToDefault();
     markTouched(target);
   }
 
@@ -336,6 +426,7 @@ export function SingleCreateForm() {
 
   function removeReferenceImage(asset: Asset) {
     setReferenceImages((current) => current.filter((item) => assetKey(item) !== assetKey(asset)));
+    if (referenceImages.length === 1) resetResolutionToDefault();
     markTouched("referenceImages");
   }
 
@@ -492,8 +583,14 @@ export function SingleCreateForm() {
               onSelectSingle={selectSingleAsset}
               onAddReference={addReferenceImage}
               onRemoveReference={removeReferenceImage}
-              onClearReference={() => setReferenceImage(null)}
-              onClearLastFrame={() => setLastFrameImage(null)}
+              onClearReference={() => {
+                setReferenceImage(null);
+                resetResolutionToDefault();
+              }}
+              onClearLastFrame={() => {
+                setLastFrameImage(null);
+                resetResolutionToDefault();
+              }}
               onClearVideo={() => setSourceVideo(null)}
               onUpload={uploadFiles}
             />
@@ -623,7 +720,10 @@ export function SingleCreateForm() {
                       aria-invalid={Boolean(visibleFieldError("width"))}
                       aria-describedby={visibleFieldError("width") ? "single-width-error" : undefined}
                       onBlur={() => markTouched("width")}
-                      onChange={(event) => setWidth(numberDraft(event.target.value))}
+                      onChange={(event) => {
+                        markManualResolution();
+                        setWidth(numberDraft(event.target.value));
+                      }}
                     />
                     <FieldError id="single-width-error" message={visibleFieldError("width")} />
                   </label>
@@ -645,11 +745,24 @@ export function SingleCreateForm() {
                       aria-invalid={Boolean(visibleFieldError("height"))}
                       aria-describedby={visibleFieldError("height") ? "single-height-error" : undefined}
                       onBlur={() => markTouched("height")}
-                      onChange={(event) => setHeight(numberDraft(event.target.value))}
+                      onChange={(event) => {
+                        markManualResolution();
+                        setHeight(numberDraft(event.target.value));
+                      }}
                     />
                     <FieldError id="single-height-error" message={visibleFieldError("height")} />
                   </label>
                 </div>
+                <span
+                  id="single-resolution-status"
+                  className={styles.helper}
+                  role="status"
+                  aria-live="polite"
+                  data-resolution-status={resolutionStatus}
+                >
+                  {resolutionStatusText(resolutionStatus, resolutionInfo)}
+                </span>
+                <FieldError id="single-resolution-error" message={resolutionError} />
                 <span className={styles.helper}>{mode === "replace" ? "16" : "32"} 的倍數，範圍 32–2048 px。</span>
               </div>
             </div>
@@ -1109,6 +1222,30 @@ function modelOptionsForMode(mode: Mode) {
     if (mode === "ref2v") return option.value === "ref2va_pruned_nvfp4";
     return option.value !== "wan22_animate_fp8" && option.value !== "ref2va_pruned_nvfp4";
   });
+}
+
+function resolutionAssetForMode(mode: Mode, referenceImage: Asset | null, referenceImages: Asset[], lastFrameImage: Asset | null) {
+  if (mode === "l2v") return lastFrameImage;
+  if (mode === "ref2v") return referenceImages[0] || null;
+  if (mode === "i2v" || mode === "fl2v" || mode === "replace") return referenceImage;
+  return null;
+}
+
+function defaultResolutionForMode(mode: Mode) {
+  return mode === "replace" ? { width: 832, height: 480 } : { width: 736, height: 416 };
+}
+
+function resolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | null) {
+  if (status === "loading") return "Reading source image dimensions…";
+  if (status === "error") return "Image dimensions unavailable; output dimensions were cleared.";
+  if (status === "manual") return "Manual output resolution; the values shown here will be submitted.";
+  if (status === "adjusted" && info) {
+    return `Auto from ${info.originalWidth} × ${info.originalHeight}; final ${info.width} × ${info.height} preserves aspect ratio on the ${info.grid}px model grid.`;
+  }
+  if (status === "auto" && info) {
+    return `Auto from source image; final ${info.width} × ${info.height}.`;
+  }
+  return "Default output resolution; select an image to calculate the final size.";
 }
 
 function assetKey(asset: Asset) {

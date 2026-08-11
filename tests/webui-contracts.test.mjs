@@ -13,6 +13,7 @@ import {
   batchSeed,
   buildSingleRenderRequest,
 } from "../app/lib/single-render-request.mjs";
+import { normalizeImageResolution } from "../app/lib/single-image-resolution.mjs";
 import {
   buildSinglePromptRequest,
 } from "../app/lib/single-prompt-request.mjs";
@@ -256,6 +257,19 @@ test("single render request keeps the legacy generate payload shape", () => {
       batchTotal: 1,
     },
   );
+});
+
+test("the request forwards the normalized resolution that the UI displays", () => {
+  const finalResolution = normalizeImageResolution(4000, 3000, "i2v");
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "i2v",
+    width: finalResolution.width,
+    height: finalResolution.height,
+  }));
+  assert.equal(payload.width, finalResolution.width);
+  assert.equal(payload.height, finalResolution.height);
+  assert.equal(payload.width, 2048);
+  assert.equal(payload.height, 1536);
 });
 
 test("ref2v request preserves video input and caps reference images at nine", () => {
