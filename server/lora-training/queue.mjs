@@ -12,6 +12,7 @@ export function createTrainingQueue({
   execute,
   onStateChange = async () => {},
   onRecovery = async () => {},
+  onBackgroundError = async () => {},
   now = () => new Date().toISOString(),
   ownerId = randomUUID(),
   progressIntervalMs = 500,
@@ -29,6 +30,25 @@ export function createTrainingQueue({
 
   const persist = async () => saveState(clone(state));
   const notify = async (jobId, status, details = {}) => onStateChange({ jobId, status, at: now(), ...clone(details) });
+
+  // Queue execution is intentionally fire-and-forget for HTTP callers.  Keep
+  // every rejection observable without allowing it to become an unhandled
+  // promise rejection that takes down the web process.
+  const reportBackgroundError = async (error, details = {}) => {
+    try {
+      await onBackgroundError({ error, ...clone(details) });
+    } catch {
+      // Error reporting must never create a second unhandled rejection.
+    }
+  };
+
+  const safeNotify = async (jobId, status, details = {}) => {
+    try {
+      await notify(jobId, status, details);
+    } catch (error) {
+      await reportBackgroundError(error, { phase: `notify:${status}`, jobId });
+    }
+  };
 
   async function initialize() {
     if (initialized) return snapshot();
@@ -62,14 +82,14 @@ export function createTrainingQueue({
     return index < 0 ? null : index + 1;
   }
 
-  async function enqueue(jobId, payload = {}) {
+  async function enqueue(jobId, payload = {}, { autoDrain = true } = {}) {
     await initialize();
     if (typeof jobId !== 'string' || !jobId) throw new TypeError('jobId is required');
     if (state.active?.jobId === jobId || state.pending.some((entry) => entry.jobId === jobId)) throw new Error('job is already queued');
     state.pending.push({ jobId, payload: clone(payload), enqueuedAt: now() });
     await persist();
     await notify(jobId, 'queued', { queuePosition: position(jobId) });
-    void drain();
+    if (autoDrain) start();
     return position(jobId);
   }
 
@@ -97,46 +117,73 @@ export function createTrainingQueue({
     draining = (async () => {
       while (!state.active && state.pending.length) {
         const next = state.pending[0];
-        const lease = await acquireGpuLease({ ownerId, jobId: next.jobId });
+        let lease;
+        try {
+          lease = await acquireGpuLease({ ownerId, jobId: next.jobId });
+        } catch (error) {
+          await reportBackgroundError(error, { phase: 'acquire', jobId: next.jobId });
+          break;
+        }
         if (!lease) break;
         state.pending.shift();
         state.active = { ...next, ownerId, lease, startedAt: now(), cancelRequested: false };
+        let outcome = 'failed';
+        let failure;
         try { await persist(); }
         catch (error) {
           state.pending.unshift(next);
           state.active = null;
-          await releaseGpuLease({ ownerId, jobId: next.jobId, lease });
-          throw error;
+          try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease }); }
+          catch (releaseError) { await reportBackgroundError(releaseError, { phase: 'release', jobId: next.jobId }); }
+          await reportBackgroundError(error, { phase: 'persist-active', jobId: next.jobId });
+          break;
         }
-        await notify(next.jobId, 'running');
-        activeAbort = new AbortController();
-        const reportProgress = async (progress) => {
-          const timestamp = Date.now();
-          if (timestamp - lastProgressAt < progressIntervalMs) return;
-          lastProgressAt = timestamp;
-          await notify(next.jobId, 'running', { progress });
-        };
-        let outcome = 'failed';
-        let failure;
         try {
-          const result = await execute(clone(next), { signal: activeAbort.signal, lease: clone(lease), reportProgress });
-          outcome = state.active.cancelRequested || activeAbort.signal.aborted ? 'canceled' : (result?.status ?? 'succeeded');
-          if (!['succeeded', 'failed', 'canceled'].includes(outcome)) throw new Error('execute returned an invalid terminal status');
+          await notify(next.jobId, 'running');
         } catch (error) {
-          outcome = activeAbort.signal.aborted ? 'canceled' : 'failed';
           failure = error;
-        } finally {
-          const finished = state.active;
-          state.active = null;
-          activeAbort = null;
-          await persist();
-          try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: finished.lease }); }
-          finally { await notify(next.jobId, outcome, failure ? { error: failure.message } : {}); }
+          await reportBackgroundError(error, { phase: 'notify:running', jobId: next.jobId });
         }
+        if (!failure) {
+          activeAbort = new AbortController();
+          const reportProgress = async (progress) => {
+            const timestamp = Date.now();
+            if (timestamp - lastProgressAt < progressIntervalMs) return;
+            lastProgressAt = timestamp;
+            await safeNotify(next.jobId, 'running', { progress });
+          };
+          try {
+            const result = await execute(clone(next), { signal: activeAbort.signal, lease: clone(lease), reportProgress });
+            outcome = state.active.cancelRequested || activeAbort.signal.aborted ? 'canceled' : (result?.status ?? 'succeeded');
+            if (!['succeeded', 'failed', 'canceled'].includes(outcome)) throw new Error('execute returned an invalid terminal status');
+          } catch (error) {
+            outcome = activeAbort.signal.aborted ? 'canceled' : 'failed';
+            failure = error;
+          }
+        }
+        const finished = state.active;
+        state.active = null;
+        activeAbort = null;
+        try { await persist(); }
+        catch (error) { await reportBackgroundError(error, { phase: 'persist-final', jobId: next.jobId }); }
+        try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: finished?.lease ?? lease }); }
+        catch (error) { await reportBackgroundError(error, { phase: 'release', jobId: next.jobId }); }
+        await safeNotify(next.jobId, outcome, failure ? { error: failure.message } : {});
       }
     })().finally(() => { draining = null; });
     return draining;
   }
 
-  return Object.freeze({ initialize, enqueue, cancel, drain, position, snapshot });
+  function start() {
+    let promise;
+    try { promise = drain(); }
+    catch (error) {
+      void reportBackgroundError(error, { phase: 'start' });
+      return Promise.resolve();
+    }
+    void Promise.resolve(promise).catch((error) => reportBackgroundError(error, { phase: 'drain' }));
+    return promise;
+  }
+
+  return Object.freeze({ initialize, enqueue, cancel, drain, start, position, snapshot });
 }

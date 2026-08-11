@@ -219,6 +219,18 @@ export function createLoraTrainingService(options = {}) {
     releaseGpuLease,
     execute: executeTraining,
     onStateChange: async (event) => controller?.onQueueStateChange(event),
+    onBackgroundError: async ({ error, jobId, phase }) => {
+      if (!jobId || !controller) return;
+      try {
+        const current = await store.readJob(jobId);
+        if (['succeeded', 'failed', 'canceled'].includes(current.status)) return;
+        const message = `training queue ${phase || 'background'} failed: ${error?.message || 'unknown error'}`;
+        await controller.onQueueStateChange({ jobId, status: 'failed', error: message });
+      } catch {
+        // Queue cleanup has already happened; a status update failure must not
+        // turn the original background error into an unhandled rejection.
+      }
+    },
     now,
     ownerId: options.ownerId,
     progressIntervalMs: options.progressIntervalMs,
@@ -232,17 +244,30 @@ export function createLoraTrainingService(options = {}) {
   async function recoverInterrupted() {
     const state = await loadQueueState();
     const interrupted = state.active;
-    if (interrupted?.jobId) {
-      await saveQueueState({ pending: state.pending.filter((item) => item.jobId !== interrupted.jobId), active: null });
-      try {
-        await controller.onQueueStateChange({ jobId: interrupted.jobId, status: 'failed', error: 'training interrupted during service restart' });
-      } catch (error) {
-        if (error?.code !== API_ERROR_CODES.NOT_FOUND) throw error;
-      }
-    }
     const lease = await readJsonOr(leasePath, { schemaVersion: 1, lease: null });
-    if (lease.lease) await unlink(leasePath);
-    return interrupted ? { recoveredJobId: interrupted.jobId, automaticRetry: false } : { recoveredJobId: null, automaticRetry: false };
+    try {
+      if (interrupted) {
+        await saveQueueState({ pending: state.pending.filter((item) => item.jobId !== interrupted.jobId), active: null });
+        if (interrupted.jobId) {
+          try {
+            const current = await store.readJob(interrupted.jobId);
+            if (!['succeeded', 'failed', 'canceled'].includes(current.status)) {
+              await controller.onQueueStateChange({ jobId: interrupted.jobId, status: 'failed', error: 'training interrupted during service restart' });
+            }
+          } catch (error) {
+            if (![API_ERROR_CODES.NOT_FOUND, API_ERROR_CODES.INVALID_IDENTIFIER].includes(error?.code)) throw error;
+          }
+        }
+      }
+    } finally {
+      // No process survives service restart, so any lease left on disk is stale.
+      // Clear it even when scheduler.active is already null; otherwise a stale
+      // lease can block every subsequent retry indefinitely.
+      if (lease.lease) await unlink(leasePath).catch((error) => {
+        if (error?.code !== 'ENOENT') throw error;
+      });
+    }
+    return interrupted ? { recoveredJobId: interrupted.jobId ?? null, automaticRetry: false } : { recoveredJobId: null, automaticRetry: false };
   }
 
   async function initialize() {

@@ -100,12 +100,28 @@ export function createLoraTrainingController({
     if (!report || report.status === 'fail' || (preflightToken && report.token !== preflightToken)) throw new LoraTrainingError('PREFLIGHT_REQUIRED', 'a passing preflight result is required', { status: 422, details: { retryable: true } });
     job = await mutate(job.id, 'queued', { status: 'queued', queuedAt: now().toISOString(), error: null });
     try {
-      const position = await queue.enqueue(job.id, { revision: job.revision, config: job.config });
+      // Delay queue execution until the final queue-position mutation has
+      // committed.  Otherwise the background running notification can read
+      // the same revision and race this write.
+      const position = await queue.enqueue(job.id, { revision: job.revision, config: job.config }, { autoDrain: false });
       await mutate(job.id, 'queued', { queuePosition: position });
+      startQueueDrain();
       return get(job.id);
     } catch (error) {
       await mutate(job.id, 'failed', { status: 'failed', error: { code: 'QUEUE_FAILED', message: error.message, retryable: true } });
       throw apiError(error, 'QUEUE_FAILED');
+    }
+  }
+
+  function startQueueDrain() {
+    const starter = typeof queue?.start === 'function' ? queue.start.bind(queue) : typeof queue?.drain === 'function' ? queue.drain.bind(queue) : null;
+    if (!starter) return;
+    try {
+      const pending = starter();
+      if (pending && typeof pending.catch === 'function') void pending.catch(() => {});
+    } catch {
+      // The queue owns background error reporting.  Keep HTTP enqueue success
+      // independent from a later drain scheduling failure.
     }
   }
 
