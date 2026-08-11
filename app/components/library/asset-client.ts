@@ -1,9 +1,12 @@
 export type StudioAsset={name:string;root:"input"|"output"|"training";kind:"image"|"video";mime:string;size:number;modified:string;url:string};
 export type AssetSource="library"|"training";
+export type StudioAssetFolder={root:StudioAsset["root"];path:string;count:number;imageCount:number;videoCount:number};
+export type StudioAssetLibrary={assets:StudioAsset[];folders:StudioAssetFolder[]};
 const BRIDGE_URL="/app";
 export function assetKey(asset:Pick<StudioAsset,"root"|"name">){return `${asset.root}:${asset.name}`}
 export function assetUrl(asset:StudioAsset){return `${BRIDGE_URL}${asset.url}`}
-export async function fetchAssets(source:AssetSource="library"){const endpoint=source==="training"?`${BRIDGE_URL}/api/lora-training/assets`:`${BRIDGE_URL}/api/assets?root=all`;const response=await fetch(endpoint,{cache:"no-store"});if(!response.ok)throw new Error("Unable to load assets.");const payload=await response.json() as {assets?:StudioAsset[]};return payload.assets||[]}
+export async function fetchAssetLibrary(source:AssetSource="library"){const endpoint=source==="training"?`${BRIDGE_URL}/api/lora-training/assets`:`${BRIDGE_URL}/api/assets?root=all`;const response=await fetch(endpoint,{cache:"no-store"});if(!response.ok)throw new Error("Unable to load assets.");const payload=await response.json() as {assets?:StudioAsset[];folders?:StudioAssetFolder[]};return {assets:payload.assets||[],folders:payload.folders||[]} satisfies StudioAssetLibrary}
+export async function fetchAssets(source:AssetSource="library"){return (await fetchAssetLibrary(source)).assets}
 export async function fetchTrainingAssets(){return fetchAssets("training")}
 export async function uploadAssets(files:File[]){const assets:StudioAsset[]=[];for(const file of files){const response=await fetch(`${BRIDGE_URL}/api/assets/upload`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:file.name,mimeType:file.type,data:await fileToBase64(file)})});const payload=await response.json().catch(()=>({})) as {asset?:StudioAsset;error?:string};if(!response.ok||!payload.asset)throw new Error(payload.error||`Unable to upload ${file.name}.`);assets.push(payload.asset)}return assets}
 export async function deleteAsset(asset:StudioAsset){const response=await fetch(`${BRIDGE_URL}/api/assets?root=${encodeURIComponent(asset.root)}&name=${encodeURIComponent(asset.name)}`,{method:"DELETE"});const payload=await response.json().catch(()=>({})) as {error?:string};if(!response.ok)throw new Error(payload.error||`Unable to delete ${asset.name}.`)}

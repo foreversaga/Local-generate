@@ -453,25 +453,40 @@ function mediaContentDisposition(rootName, relativeName, download) {
   return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
-async function walkMedia(root, prefix = "") {
+async function walkMedia(root, prefix = "", rootReal = null) {
+  const rootAbsolute = path.resolve(root);
+  const boundary = rootReal || await fs.realpath(rootAbsolute).catch(() => null);
+  const rootIsInsideBoundary = boundary && pathContained(boundary, rootAbsolute);
+  const rootMatchesBoundary = !rootReal && boundary && pathContained(rootAbsolute, boundary) && rootIsInsideBoundary;
+  if (!boundary || (!rootReal && !rootMatchesBoundary) || (rootReal && !rootIsInsideBoundary)) {
+    return { files: [], folders: [] };
+  }
   let entries = [];
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch {
-    return [];
+    return { files: [], folders: [] };
   }
   const files = [];
+  const folders = [];
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
     const relativeName = prefix ? prefix + "/" + entry.name : entry.name;
     const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await walkMedia(fullPath, relativeName)));
+    const segmentStat = await fs.lstat(fullPath).catch(() => null);
+    if (!segmentStat || segmentStat.isSymbolicLink()) continue;
+    const segmentReal = await fs.realpath(fullPath).catch(() => null);
+    if (!segmentReal || !pathContained(boundary, segmentReal)) continue;
+    if (segmentStat.isDirectory()) {
+      folders.push({ relativeName });
+      const nested = await walkMedia(fullPath, relativeName, boundary);
+      files.push(...nested.files);
+      folders.push(...nested.folders);
       continue;
     }
-    if (classifyFile(entry.name)) files.push({ relativeName, fullPath });
+    if (segmentStat.isFile() && classifyFile(entry.name)) files.push({ relativeName, fullPath });
   }
-  return files;
+  return { files, folders };
 }
 
 function canonicalTrainingAssetName(value) {
@@ -595,14 +610,40 @@ async function toAsset(rootName, relativeName) {
   };
 }
 
-async function listAssets(rootName) {
+function summarizeMediaFolders(rootName, folders, files) {
+  const summaries = new Map(folders.map(({ relativeName }) => [relativeName, {
+    root: rootName,
+    path: relativeName,
+    count: 0,
+    imageCount: 0,
+    videoCount: 0,
+  }]));
+
+  for (const file of files) {
+    const segments = file.relativeName.split("/");
+    for (let index = 1; index < segments.length; index += 1) {
+      const summary = summaries.get(segments.slice(0, index).join("/"));
+      if (!summary) continue;
+      summary.count += 1;
+      const kind = classifyFile(file.relativeName);
+      if (kind === "image") summary.imageCount += 1;
+      if (kind === "video") summary.videoCount += 1;
+    }
+  }
+
+  return [...summaries.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function listAssetLibrary(rootName) {
   const roots = rootName === "all" ? ["input", "output"] : [rootName];
   const all = [];
+  const folders = [];
   const seen = new Set();
   for (const currentRoot of roots) {
     for (const root of mediaRoots(currentRoot)) {
-      const files = await walkMedia(root);
-      for (const file of files) {
+      const tree = await walkMedia(root);
+      folders.push(...summarizeMediaFolders(currentRoot, tree.folders, tree.files));
+      for (const file of tree.files) {
         const key = currentRoot + ":" + file.relativeName;
         if (seen.has(key)) continue;
         try {
@@ -614,7 +655,10 @@ async function listAssets(rootName) {
       }
     }
   }
-  return all.sort((left, right) => right.modified.localeCompare(left.modified)).slice(0, 100);
+  return {
+    assets: all.sort((left, right) => right.modified.localeCompare(left.modified)).slice(0, 100),
+    folders,
+  };
 }
 
 async function listTrainingAssets() {
@@ -642,7 +686,8 @@ async function resolveMediaPath(rootName, relativeName) {
   const cleanName = String(relativeName || "").replaceAll("\\", "/").replace(/^\/+/, "");
   if (!cleanName) throw new Error("缺少媒體檔名。");
   for (const root of mediaRoots(rootName)) {
-    const fullPath = safePath(root, cleanName);
+    const fullPath = await resolveSafeMediaPath(root, cleanName);
+    if (!fullPath) continue;
     try {
       const stat = await fs.stat(fullPath);
       if (stat.isFile()) return fullPath;
@@ -651,6 +696,37 @@ async function resolveMediaPath(rootName, relativeName) {
     }
   }
   throw new Error("找不到媒體檔案：" + cleanName);
+}
+
+async function resolveSafeMediaPath(root, cleanName) {
+  const rootAbsolute = path.resolve(root);
+  const rootReal = await fs.realpath(rootAbsolute).catch(() => null);
+  if (!rootReal || !pathContained(rootAbsolute, rootReal) || !pathContained(rootReal, rootAbsolute)) return null;
+
+  const candidate = safePath(rootAbsolute, cleanName);
+  const segments = cleanName.split("/").filter(Boolean);
+  let current = rootAbsolute;
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const segmentStat = await fs.lstat(current).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!segmentStat || segmentStat.isSymbolicLink()) return null;
+    if (index < segments.length - 1 && !segmentStat.isDirectory()) return null;
+    const segmentReal = await fs.realpath(current).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!segmentReal || !pathContained(rootReal, segmentReal)) return null;
+  }
+
+  const candidateReal = await fs.realpath(candidate).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!candidateReal || !pathContained(rootReal, candidateReal)) return null;
+  return candidate;
 }
 
 async function resolveInputMedia(name, expectedKind) {
@@ -663,7 +739,8 @@ async function resolveInputMedia(name, expectedKind) {
     ...mediaRoots("output").map((root) => ({ root, name: cleanName })),
   ];
   for (const candidate of candidates) {
-    const fullPath = safePath(candidate.root, candidate.name);
+    const fullPath = await resolveSafeMediaPath(candidate.root, candidate.name);
+    if (!fullPath) continue;
     try {
       const stat = await fs.stat(fullPath);
       const kind = classifyFile(candidate.name);
@@ -3466,7 +3543,7 @@ async function route(req, res) {
       sendError(res, 400, "不支援的資源資料夾。");
       return;
     }
-    sendJson(res, 200, { assets: await listAssets(root) });
+    sendJson(res, 200, await listAssetLibrary(root));
     return;
   }
   if (req.method === "DELETE" && pathname === "/api/assets") {
@@ -3645,6 +3722,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
 export {
   route,
+  walkMedia,
+  summarizeMediaFolders,
+  listAssetLibrary,
   canonicalInputAssetName,
   canonicalTrainingAssetName,
   mediaContentDisposition,

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { assetKey, assetUrl, fetchAssets, fetchTrainingAssets, type AssetSource, type StudioAsset } from "./asset-client";
+import { assetKey, assetUrl, fetchAssetLibrary, type AssetSource, type StudioAsset, type StudioAssetFolder } from "./asset-client";
+import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./AssetPickerButton.module.css";
 
 type Props = {
@@ -27,6 +28,7 @@ export function AssetPickerButton({
 }: Props) {
     const [open, setOpen] = useState(false);
     const [assets, setAssets] = useState<StudioAsset[]>([]);
+    const [folderRecords, setFolderRecords] = useState<StudioAssetFolder[]>([]);
     const [query, setQuery] = useState("");
     const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set(selectedKeys));
@@ -50,8 +52,8 @@ export function AssetPickerButton({
     useEffect(() => {
         if (!open) return;
 
-        void (assetSource === "training" ? fetchTrainingAssets() : fetchAssets())
-            .then((next) => { setAssets(next); setError(""); })
+        void fetchAssetLibrary(assetSource)
+            .then((next) => { setAssets(next.assets); setFolderRecords(next.folders); setError(""); })
             .catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load assets."))
             .finally(() => setLoading(false));
 
@@ -78,34 +80,8 @@ export function AssetPickerButton({
     }, [assetSource, open]);
 
     const scopedAssets = useMemo(() => assets.filter((asset) => (!root || asset.root === root) && (!kind || asset.kind === kind)), [assets, kind, root]);
-
-    const navigation = useMemo(() => {
-        const directAssets: StudioAsset[] = [];
-        const folders = new Map<string, FolderNode>();
-
-        for (const asset of scopedAssets) {
-            const segments = pathSegments(asset.name);
-            if (!isPathWithin(segments, currentPath)) continue;
-            const remainder = segments.slice(currentPath.length);
-            if (remainder.length === 1) {
-                directAssets.push(asset);
-                continue;
-            }
-            if (remainder.length < 2) continue;
-
-            const folderPath = [...currentPath, remainder[0]];
-            const key = folderPath.join("/");
-            const folder = folders.get(key) ?? { path: folderPath, count: 0, roots: new Set<StudioAsset["root"]>() };
-            folder.count += 1;
-            folder.roots.add(asset.root);
-            folders.set(key, folder);
-        }
-
-        return {
-            directAssets: sortAssets(directAssets),
-            folders: [...folders.values()].sort((a, b) => a.path.join("/").localeCompare(b.path.join("/"))),
-        };
-    }, [currentPath, scopedAssets]);
+    const scopedFolders = useMemo(() => folderRecords.filter((folder) => !root || folder.root === root), [folderRecords, root]);
+    const navigation = useMemo(() => buildAssetNavigation(scopedAssets, currentPath, scopedFolders, kind), [currentPath, kind, scopedAssets, scopedFolders]);
 
     const visibleAssets = useMemo(() => {
         const needle = query.trim().toLowerCase();
@@ -347,24 +323,6 @@ export function AssetPickerButton({
             )}
         </>
     );
-}
-
-type FolderNode = {
-    path: string[];
-    count: number;
-    roots: Set<StudioAsset["root"]>;
-};
-
-function pathSegments(name: string) {
-    return name.split("/").filter(Boolean);
-}
-
-function isPathWithin(segments: string[], path: string[]) {
-    return path.every((segment, index) => segments[index] === segment);
-}
-
-function sortAssets(items: StudioAsset[]) {
-    return [...items].sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
 }
 
 function trapFocus(event: KeyboardEvent, container: HTMLElement | null) {

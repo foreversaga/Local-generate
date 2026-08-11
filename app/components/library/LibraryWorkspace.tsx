@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { assetKey, assetUrl, deleteAsset, fetchAssets, uploadAssets, type StudioAsset } from "./asset-client";
+import { assetKey, assetUrl, deleteAsset, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
+import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./LibraryWorkspace.module.css";
 
 export function LibraryWorkspace() {
     const [assets, setAssets] = useState<StudioAsset[]>([]);
+    const [folderRecords, setFolderRecords] = useState<StudioAssetFolder[]>([]);
     const [root, setRoot] = useState<"all" | "input" | "output">("all");
     const [query, setQuery] = useState("");
+    const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [preview, setPreview] = useState<StudioAsset | null>(null);
     const [busy, setBusy] = useState(false);
@@ -42,16 +45,21 @@ export function LibraryWorkspace() {
         };
     }, [preview]);
 
+    const scopedAssets = useMemo(() => assets.filter((asset) => root === "all" || asset.root === root), [assets, root]);
+    const scopedFolders = useMemo(() => folderRecords.filter((folder) => root === "all" || folder.root === root), [folderRecords, root]);
+    const navigation = useMemo(() => buildAssetNavigation(scopedAssets, currentPath, scopedFolders), [currentPath, scopedAssets, scopedFolders]);
+
     const visibleAssets = useMemo(() => {
         const needle = query.trim().toLowerCase();
-        return assets
-            .filter((asset) => (root === "all" || asset.root === root) && (!needle || asset.name.toLowerCase().includes(needle)))
-            .sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
-    }, [assets, query, root]);
+        const candidates = needle ? scopedAssets : navigation.directAssets;
+        return sortAssets(candidates.filter((asset) => !needle || asset.name.toLowerCase().includes(needle)));
+    }, [navigation.directAssets, query, scopedAssets]);
 
     async function refresh() {
         try {
-            setAssets(await fetchAssets());
+            const library = await fetchAssetLibrary();
+            setAssets(library.assets);
+            setFolderRecords(library.folders);
             setError("");
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "Unable to load assets.");
@@ -132,7 +140,7 @@ export function LibraryWorkspace() {
             <section className={styles.toolbar}>
                 <div className={styles.tabs} role="group" aria-label="Asset root">
                     {(["all", "input", "output"] as const).map((item) => (
-                        <button key={item} type="button" className={root === item ? styles.active : ""} aria-pressed={root === item} onClick={() => setRoot(item)}>
+                        <button key={item} type="button" className={root === item ? styles.active : ""} aria-pressed={root === item} onClick={() => { setRoot(item); setCurrentPath([]); setQuery(""); }}>
                             {item}
                         </button>
                     ))}
@@ -161,9 +169,55 @@ export function LibraryWorkspace() {
             </section>
 
             {error && <div className={styles.error} role="alert">{error}</div>}
-            <div className={styles.meta}>{visibleAssets.length} assets</div>
+            <div className={styles.navigation}>
+                <button
+                    type="button"
+                    className={styles.backButton}
+                    onClick={() => setCurrentPath((path) => path.slice(0, -1))}
+                    disabled={!currentPath.length || Boolean(query.trim())}
+                    aria-label="Back to parent folder"
+                >
+                    Back
+                </button>
+                <nav className={styles.breadcrumbs} aria-label="Current asset folder">
+                    <button type="button" className={styles.breadcrumb} onClick={() => setCurrentPath([])} aria-current={!currentPath.length ? "page" : undefined}>
+                        {root}
+                    </button>
+                    {currentPath.map((segment, index) => {
+                        const path = currentPath.slice(0, index + 1);
+                        const isCurrent = index === currentPath.length - 1;
+                        return (
+                            <span key={path.join("/")} className={styles.breadcrumbItem}>
+                                <span aria-hidden="true">/</span>
+                                <button type="button" className={styles.breadcrumb} onClick={() => setCurrentPath(path)} aria-current={isCurrent ? "page" : undefined} disabled={Boolean(query.trim())}>
+                                    {segment}
+                                </button>
+                            </span>
+                        );
+                    })}
+                </nav>
+                {query.trim() && <span className={styles.searchStatus}>Searching all folders</span>}
+            </div>
+            <div className={styles.meta}>{visibleAssets.length} assets{navigation.folders.length && !query.trim() ? ` 繚 ${navigation.folders.length} folders` : ""}</div>
 
             <div className={styles.grid}>
+                {!query.trim() && navigation.folders.map((folder) => (
+                    <article key={`folder:${folder.path.join("/")}`} className={styles.folderCard}>
+                        <button
+                            type="button"
+                            className={styles.folderButton}
+                            onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
+                            aria-label={`Open folder ${folder.path.join("/")}`}
+                        >
+                            <span className={styles.folderIcon} aria-hidden="true">Folder</span>
+                            <span className={styles.folderCopy}>
+                                <strong>{folder.path[folder.path.length - 1]}</strong>
+                                <small>{folder.count} {folder.count === 1 ? "asset" : "assets"}{folder.roots.size > 1 ? ` 繚 ${[...folder.roots].join("/")}` : ""}</small>
+                            </span>
+                            <span className={styles.folderArrow} aria-hidden="true">→</span>
+                        </button>
+                    </article>
+                ))}
                 {visibleAssets.map((asset) => {
                     const checked = selected.has(assetKey(asset));
                     return (
@@ -200,6 +254,7 @@ export function LibraryWorkspace() {
                         </article>
                     );
                 })}
+                {!visibleAssets.length && !navigation.folders.length && !error && <p className={styles.empty}>This folder has no assets.</p>}
             </div>
 
             {preview && (
