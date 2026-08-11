@@ -218,7 +218,9 @@ function labelsUsedIn(...values) {
 }
 
 function buildReferenceDefinitions(segment, references, usage) {
-  const referenceConfig = references && typeof references === "object" && !Array.isArray(references) ? references : {};
+  const referenceConfig = Array.isArray(references)
+    ? { assets: references }
+    : references && typeof references === "object" ? references : {};
   const source = clean(referenceConfig.subjectDefinitions || segment.subjectDefinitions);
   const definitions = new Map();
   for (const line of source.split(/\r?\n/)) {

@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { handleLongVideoRoute } from "./server/long-video/api.mjs";
 import { planSequence as defaultPlanSequence } from "./server/long-video/planner.mjs";
 import { runSequence } from "./server/long-video/runner.mjs";
+import { createContinuationPromptFinalizer } from "./server/long-video/continuation-finalizer.mjs";
 import { checkMediaTools } from "./server/long-video/media.mjs";
 import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
@@ -103,6 +104,13 @@ let timingHistoryWrite = Promise.resolve();
 let generatorSupportsLastImage;
 const ollamaCoordinator = createOllamaCoordinator({
   beforeRequest: (target) => releaseComfyForOllama(target),
+});
+const continuationPromptFinalizer = createContinuationPromptFinalizer({
+  ollamaCoordinator,
+  getModel: ({ job } = {}) => job?.ollamaModel || defaultOllamaModel(),
+  getOllamaUrl: () => OLLAMA_URL,
+  getComfyUrl: () => COMFY_URL,
+  getRemoteComfy: () => COMFY_REMOTE,
 });
 const timingHistoryReady = fs
   .readFile(TIMING_HISTORY_FILE, "utf8")
@@ -3504,6 +3512,7 @@ async function route(req, res) {
       preflight: () => checkMediaTools(),
       runJob: (job, deps) => runSequence(job, {
         ...deps,
+        finalizePrompt: deps.finalizePrompt || continuationPromptFinalizer,
         generate: startSequenceGeneration,
       }),
     });

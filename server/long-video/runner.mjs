@@ -7,6 +7,7 @@ import { appendEvent, getJob, updateJob, updateSegment, writeAttempt, writeAssem
 import { LongVideoError } from "./schema.mjs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
+import { buildDeterministicContinuationPrompt } from "./continuation-finalizer.mjs";
 
 async function logEvent(id, event, deps) {
   if (deps.log) return deps.log(event);
@@ -74,11 +75,20 @@ export function appendMultiReferenceTail(prompt, references = [], previousTail =
   const tailLabel = `<Picture ${references.length}>`;
   const instruction = `${tailLabel} is the previous segment's normalized tail frame, used as a normal continuity reference; do not lock it to frame 0.`;
   if (text.toLocaleLowerCase().includes(instruction.toLocaleLowerCase())) return text;
+  const definition = `${tailLabel} is the previous segment's normalized tail frame, used only for continuity and not as a frame-zero lock.`;
+  const definitionBoundary = /(subject_definitions\s*:[\s\S]*?)(\n\n(?=summary\s*:))/i;
+  const escapedTailLabel = tailLabel.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+  const hasTailDefinition = new RegExp(`subject_definitions\\s*:[\\s\\S]*?^\\s*${escapedTailLabel}\\s+`, "im").test(text);
+  const withDefinition = hasTailDefinition
+    ? text
+    : definitionBoundary.test(text)
+      ? text.replace(definitionBoundary, `$1\n${definition}$2`)
+      : text;
   const detailedBoundary = /(\bdetailed_description\s*:[\s\S]*?)(\n\n(?=overall_soundscape\s*:))/i;
-  if (detailedBoundary.test(text)) {
-    return text.replace(detailedBoundary, `$1\n${instruction}$2`).trim();
+  if (detailedBoundary.test(withDefinition)) {
+    return withDefinition.replace(detailedBoundary, `$1\n${instruction}$2`).trim();
   }
-  return `${text}${text ? "\n\n" : ""}${instruction}`.trim();
+  return `${withDefinition}${withDefinition ? "\n\n" : ""}${instruction}`.trim();
 }
 
 function persistedAttemptPrompt(prompt, runtimePaths = []) {
@@ -88,7 +98,36 @@ function persistedAttemptPrompt(prompt, runtimePaths = []) {
   }
   // Finalize dependencies may include a path using a different separator.
   // Keep the useful prompt text but never persist an absolute filesystem path.
-  return safe.replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/g, "[runtime asset]");
+  return safe
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "[runtime image data]")
+    .replace(/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{256,}={0,2}(?![A-Za-z0-9+/])/g, "[runtime image data]")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>]+/g, "[runtime asset]");
+}
+
+function normalizePromptFinalization(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const provider = String(source.provider || fallback.provider || "custom").trim() || "custom";
+  const model = source.model ?? fallback.model ?? null;
+  const result = {
+    provider,
+    model: model === null || model === undefined || String(model).trim() === "" ? null : String(model).trim(),
+    fallback: Boolean(source.fallback ?? fallback.fallback),
+  };
+  const reason = source.reason || fallback.reason;
+  const errorCode = source.errorCode || fallback.errorCode;
+  if (reason) result.reason = String(reason).slice(0, 160);
+  if (errorCode) result.errorCode = String(errorCode).slice(0, 120);
+  return result;
+}
+
+function fallbackPromptFinalization({ model, reason, error } = {}) {
+  return normalizePromptFinalization({
+    provider: "deterministic",
+    model: model || null,
+    fallback: true,
+    reason,
+    errorCode: error?.code,
+  }, { provider: "deterministic", fallback: true });
 }
 
 async function setJob(job, patch, deps) {
@@ -181,30 +220,89 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const multiReference = job.referenceMode === "multi_reference";
       const mode = multiReference ? "ref2v" : index === 0 && job.inputType === "text" ? "t2v" : "i2v";
       const references = multiReference ? segmentReferenceAssets(job, index > 0 ? previousTail : null) : [];
-      const continuation = !multiReference && index > 0 && previousTail
+      const shouldFinalizeContinuation = index > 0 && Boolean(previousTail);
+      const previousSegment = index > 0 ? job.segments[index - 1] : null;
+      const previousEndingState = String(previousSegment?.endingState || previousSegment?.ending_state || "").trim();
+      const continuation = shouldFinalizeContinuation
         ? "Continue directly from the supplied normalized tail frame as Picture 1; preserve the ending state and motion direction from the previous segment."
         : "";
-      let prompt = segment.prompt;
-      if (typeof deps.finalizePrompt === "function") {
-        prompt = await deps.finalizePrompt({ segment, segmentIndex: index, mode, previousTail, references, continuityBible: job.continuityBible, endingState: segment.endingState });
+      const draftPrompt = String(segment.prompt || "").trim();
+      const finalizerModel = job.ollamaModel || deps.finalizerModel || null;
+      let prompt = draftPrompt;
+      let promptFinalization = null;
+      if (shouldFinalizeContinuation) {
+        const finalizerContext = {
+          job,
+          segment,
+          segmentIndex: index,
+          mode,
+          previousTail,
+          tailRoot: folder,
+          references,
+          continuityBible: job.continuityBible,
+          previousEndingState,
+          // Keep the historical next-segment field available while making the
+          // previous segment state explicit for continuation finalization.
+          endingState: segment.endingState,
+          draftPrompt,
+        };
+        await setSegment(job, index, { status: "finalizing_prompt", error: null }, deps);
+        if (typeof deps.finalizePrompt === "function") {
+          try {
+            const finalized = await deps.finalizePrompt(finalizerContext);
+            const candidate = typeof finalized === "string" ? finalized : finalized?.prompt;
+            if (!String(candidate || "").trim()) throw Object.assign(new Error("Continuation finalizer returned an empty prompt."), { code: "FINALIZER_EMPTY" });
+            prompt = String(candidate).trim();
+            promptFinalization = normalizePromptFinalization(finalized?.provenance || finalized, {
+              provider: "custom",
+              model: finalizerModel,
+              fallback: false,
+              reason: "vision_success",
+            });
+          } catch (error) {
+            prompt = buildDeterministicContinuationPrompt(finalizerContext);
+            promptFinalization = fallbackPromptFinalization({ model: finalizerModel, reason: "vision_finalizer_failed", error });
+          }
+        } else {
+          prompt = buildDeterministicContinuationPrompt(finalizerContext);
+          promptFinalization = fallbackPromptFinalization({ model: finalizerModel, reason: "vision_finalizer_unconfigured" });
+        }
       }
       try {
         validatePrompt(prompt, { mode });
         if (multiReference && !/<Picture\s+1>/i.test(prompt)) throw new Error("Ref2VA prompt must declare ordered picture labels.");
-      } catch {
-        const fallbackSegment = multiReference
-          ? {
-              ...segment,
-              description: `Ordered reference pictures: ${references.map((reference, referenceIndex) => `<Picture ${referenceIndex + 1}> (${reference.name || "reference"})`).join(", ")}.\n${segment.description || ""}`.trim(),
-              continuityNote: continuation,
-            }
-          : { ...segment, continuityNote: continuation };
-        prompt = buildSegmentPrompt(fallbackSegment, job.continuityBible, {
-          mode,
-          firstFrame: index === 0,
-          pictureLabel: "Picture 1",
-          shotId: "Shot 1",
-        });
+      } catch (error) {
+        if (shouldFinalizeContinuation) {
+          prompt = buildDeterministicContinuationPrompt({
+            job,
+            segment: { ...segment, continuityNote: continuation },
+            segmentIndex: index,
+            mode,
+            previousTail,
+            tailRoot: folder,
+            references,
+            continuityBible: job.continuityBible,
+            previousEndingState,
+            endingState: segment.endingState,
+            draftPrompt,
+          });
+          promptFinalization = fallbackPromptFinalization({ model: finalizerModel, reason: "prompt_validation_failed", error });
+        } else {
+          const fallbackSegment = multiReference
+            ? {
+                ...segment,
+                description: `Ordered reference pictures: ${references.map((reference, referenceIndex) => `<Picture ${referenceIndex + 1}> (${reference.name || "reference"})`).join(", ")}.\n${segment.description || ""}`.trim(),
+                continuityNote: continuation,
+              }
+            : { ...segment, continuityNote: continuation };
+          prompt = buildSegmentPrompt(fallbackSegment, job.continuityBible, {
+            mode,
+            firstFrame: index === 0,
+            pictureLabel: "Picture 1",
+            shotId: "Shot 1",
+            references,
+          });
+        }
       }
       if (multiReference && index > 0 && previousTail) {
         prompt = appendMultiReferenceTail(prompt, references, previousTail);
@@ -225,8 +323,9 @@ export async function runSequence(sequenceOrId, deps = {}) {
         seed: Number(job.seed || 0) + index,
         modelProfile: job.modelProfile,
         negativePrompt,
+        ...(promptFinalization ? { promptFinalization } : {}),
       };
-      await setSegment(job, index, { status: "queued", attempt, prompt, error: null }, deps);
+      await setSegment(job, index, { status: "queued", attempt, prompt, error: null, ...(promptFinalization ? { promptFinalization } : {}) }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
       await logEvent(id, { event: "generation.start", segmentIndex: index, segmentId: segment.id, attempt, mode, stage: "queued", outputRelative: path.relative(folder, rawPath) }, deps);
       await setSegment(job, index, { status: "rendering" }, deps);
