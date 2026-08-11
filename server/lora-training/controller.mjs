@@ -368,6 +368,12 @@ export function createLoraTrainingController({
 
       const previousAttempt = Number(source.provenance?.attempt ?? source.config?.orchestration?.attempt ?? 0);
       const attempt = Number.isSafeInteger(previousAttempt) && previousAttempt >= 0 ? previousAttempt + 1 : 1;
+      // Keep stable dataset/caption revision metadata and other config
+      // provenance, but never carry a stale execution checkpoint into the
+      // new attempt.  `start()` will create a fresh preflight token for the
+      // cloned dataset.
+      const retryOrchestration = { ...(source.config?.orchestration ?? {}) };
+      for (const key of ['phase', 'preflight', 'progress', 'error', 'artifact', 'queuePosition', 'startedAt', 'finishedAt']) delete retryOrchestration[key];
       const created = await store.createJob({
         ...source,
         id: undefined,
@@ -376,7 +382,7 @@ export function createLoraTrainingController({
         provenance: { ...source.provenance, retryOf: source.id, attempt },
         config: {
           ...source.config,
-          orchestration: { phase: 'draft', retryOf: source.id, attempt },
+          orchestration: { ...retryOrchestration, phase: 'draft', retryOf: source.id, attempt },
         },
       });
       try {

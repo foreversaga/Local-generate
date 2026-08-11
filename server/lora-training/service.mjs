@@ -43,6 +43,24 @@ function isoNow(value = new Date()) {
   return Number.isNaN(parsed.valueOf()) ? new Date().toISOString() : parsed.toISOString();
 }
 
+const DEFAULT_GPU_LEASE_TTL_MS = 30 * 60 * 1000;
+
+function defaultIsProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    // EPERM means the process exists but this process cannot signal it.
+    if (error?.code === 'EPERM') return true;
+    // Keep an unknown process API result conservative: a lease with an
+    // unknown owner must not be deleted merely because probing failed.
+    return null;
+  }
+}
+
 function safeDiagnosticText(value, maximum = TRAINER_DIAGNOSTIC_TEXT_LIMIT) {
   return sanitizeTrainerText(String(value ?? ''), maximum)
     .replace(WINDOWS_ABSOLUTE_PATH, '[PATH]')
@@ -116,6 +134,11 @@ export function createLoraTrainingService(options = {}) {
   const leasePath = resolveSafeChild(paths.root, 'gpu-lease.json');
   const pythonPath = options.python ?? path.join(paths.runtime, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   const now = options.now ?? (() => new Date().toISOString());
+  const ownerPidValue = Number(options.ownerPid ?? process.pid);
+  const ownerPid = Number.isSafeInteger(ownerPidValue) && ownerPidValue > 0 ? ownerPidValue : process.pid;
+  const leaseTtlValue = Number(options.gpuLeaseTtlMs ?? DEFAULT_GPU_LEASE_TTL_MS);
+  const leaseTtlMs = Number.isFinite(leaseTtlValue) && leaseTtlValue > 0 ? leaseTtlValue : DEFAULT_GPU_LEASE_TTL_MS;
+  const isProcessAlive = typeof options.isProcessAlive === 'function' ? options.isProcessAlive : defaultIsProcessAlive;
   const resolveBaseModel = async (context) => normalizeBaseModel(await options.resolveBaseModel?.(context));
   const resolveComfyTarget = async (context) => {
     const value = typeof options.comfyLoraDirectory === 'function' ? await options.comfyLoraDirectory(context) : options.comfyLoraDirectory;
@@ -199,9 +222,46 @@ export function createLoraTrainingService(options = {}) {
     await atomicWriteJson(schedulerPath, { schemaVersion: 1, updatedAt: now(), pending: value.pending, active: value.active });
   }
 
+  function leaseExpiryMs(lease) {
+    const explicit = new Date(lease?.expiresAt).valueOf();
+    if (Number.isFinite(explicit)) return explicit;
+    const acquired = new Date(lease?.acquiredAt).valueOf();
+    return Number.isFinite(acquired) ? acquired + leaseTtlMs : null;
+  }
+
+  async function staleLeaseReason(lease) {
+    const current = new Date(isoNow(now())).valueOf();
+    const expiry = leaseExpiryMs(lease);
+    if (Number.isFinite(expiry) && expiry <= current) return 'expired';
+    const pid = Number(lease?.ownerPid);
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      let alive = null;
+      try { alive = await isProcessAlive(pid); }
+      catch { alive = null; }
+      if (alive === false) return 'owner-exited';
+    }
+    return null;
+  }
+
+  async function clearStaleGpuLease() {
+    return withStorageLock(leasePath, async () => {
+      const document = await readJsonOr(leasePath, { schemaVersion: 1, lease: null });
+      if (!document.lease) return { cleared: false, reason: 'missing' };
+      const reason = await staleLeaseReason(document.lease);
+      if (!reason) return { cleared: false, reason: 'owner-live-or-unknown' };
+      await unlink(leasePath);
+      return { cleared: true, reason };
+    });
+  }
+
   async function acquireGpuLease({ ownerId, jobId }) {
     return withStorageLock(leasePath, async () => {
-      const lease = { id: randomUUID(), ownerId, jobId, acquiredAt: now() };
+      const acquiredAt = isoNow(now());
+      const lease = {
+        id: randomUUID(), ownerId, jobId, ownerPid,
+        acquiredAt,
+        expiresAt: isoNow(new Date(new Date(acquiredAt).valueOf() + leaseTtlMs)),
+      };
       let handle;
       try {
         handle = await open(leasePath, 'wx', 0o600);
@@ -394,30 +454,58 @@ export function createLoraTrainingService(options = {}) {
   async function recoverInterrupted() {
     const state = await loadQueueState();
     const interrupted = state.active;
-    const lease = await readJsonOr(leasePath, { schemaVersion: 1, lease: null });
+    let recoveryError = null;
     try {
-      if (interrupted) {
-        await saveQueueState({ pending: state.pending.filter((item) => item.jobId !== interrupted.jobId), active: null });
-        if (interrupted.jobId) {
-          try {
-            const current = await store.readJob(interrupted.jobId);
-            if (!['succeeded', 'failed', 'canceled'].includes(current.status)) {
-              await controller.onQueueStateChange({ jobId: interrupted.jobId, status: 'failed', error: 'training interrupted during service restart' });
-            }
-          } catch (error) {
-            if (![API_ERROR_CODES.NOT_FOUND, API_ERROR_CODES.INVALID_IDENTIFIER].includes(error?.code)) throw error;
+      if (interrupted?.jobId) {
+        try {
+          const current = await store.readJob(interrupted.jobId);
+          if (!['succeeded', 'failed', 'canceled'].includes(current.status)) {
+            await controller.onQueueStateChange({
+              jobId: interrupted.jobId,
+              status: 'failed',
+              error: {
+                code: 'TRAINING_INTERRUPTED',
+                message: 'training was interrupted by service restart; retry is available',
+                retryable: true,
+                details: { recoverable: true, reason: 'service_restart' },
+              },
+            });
           }
+        } catch (error) {
+          if (![API_ERROR_CODES.NOT_FOUND, API_ERROR_CODES.INVALID_IDENTIFIER].includes(error?.code)) throw error;
         }
       }
-    } finally {
-      // No process survives service restart, so any lease left on disk is stale.
-      // Clear it even when scheduler.active is already null; otherwise a stale
-      // lease can block every subsequent retry indefinitely.
-      if (lease.lease) await unlink(leasePath).catch((error) => {
-        if (error?.code !== 'ENOENT') throw error;
-      });
+      if (interrupted) {
+        // The service is the only restart recovery authority. Keep pending
+        // entries in their persisted order and never requeue the interrupted
+        // active entry in the same recovery pass.
+        const pending = interrupted.jobId
+          ? state.pending.filter((item) => item.jobId !== interrupted.jobId)
+          : state.pending;
+        await saveQueueState({ pending, active: null });
+      }
+    } catch (error) {
+      recoveryError = error;
     }
-    return interrupted ? { recoveredJobId: interrupted.jobId ?? null, automaticRetry: false } : { recoveredJobId: null, automaticRetry: false };
+
+    let leaseCleanup;
+    try {
+      // A lease is removable only when its owner is known to have exited or
+      // its explicit/legacy expiry has passed. A live or unknown owner keeps
+      // the lease, preventing a second process from stealing the GPU.
+      leaseCleanup = await clearStaleGpuLease();
+    } catch (error) {
+      if (!recoveryError) recoveryError = error;
+      else console.warn('[lora-training] unable to clean stale GPU lease', error?.message || error);
+    }
+    if (recoveryError) throw recoveryError;
+    return {
+      recoveredJobId: interrupted?.jobId ?? null,
+      automaticRetry: false,
+      recoverable: Boolean(interrupted?.jobId),
+      leaseCleared: Boolean(leaseCleanup?.cleared),
+      leaseCleanupReason: leaseCleanup?.reason ?? null,
+    };
   }
 
   async function initialize() {

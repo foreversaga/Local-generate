@@ -64,6 +64,27 @@ test("queue reports background state errors without an unhandled rejection", asy
   assert.ok(saved.some((state) => state.active === null));
 });
 
+test("queue does not requeue a persisted active job before service recovery", async () => {
+  const active = { jobId: "restart-active", ownerId: "old-owner", startedAt: "2026-08-11T00:00:00.000Z" };
+  const pending = [
+    { jobId: "pending-first", enqueuedAt: "2026-08-11T00:00:01.000Z" },
+    { jobId: "pending-second", enqueuedAt: "2026-08-11T00:00:02.000Z" },
+  ];
+  const saved = [];
+  const queue = createTrainingQueue({
+    loadState: async () => ({ pending, active }),
+    saveState: async (state) => saved.push(structuredClone(state)),
+    acquireGpuLease: async () => null,
+    releaseGpuLease: async () => {},
+    execute: async () => ({ status: "succeeded" }),
+  });
+
+  await assert.rejects(queue.initialize(), (error) => error.code === "QUEUE_RECOVERY_REQUIRED");
+  assert.deepEqual(queue.snapshot().pending.map(({ jobId }) => jobId), ["pending-first", "pending-second"]);
+  assert.deepEqual(queue.snapshot().active, active);
+  assert.deepEqual(saved, []);
+});
+
 test("controller commits queue position before running transition", async () => {
   const jobId = "22222222-2222-4222-8222-222222222222";
   const timestamp = "2026-08-11T00:00:00.000Z";
@@ -262,20 +283,23 @@ function retryFixture({ sourceStatus = "failed", preflight = { status: "pass", t
     family: "sdxl",
     captionReviewMode: "auto",
     triggerWords: ["subject"],
-    assetIds: [],
+    assetIds: ["input:retry-source.png"],
     config: {
       family: "sdxl",
       baseProfile: "sdxl-base-1.0",
       presetId: "sdxl-character-balanced",
       outputName: "retry-source",
+      overrides: { rank: 32, alpha: 16, epochs: 12 },
       orchestration: {
         phase: sourceStatus,
         attempt: 1,
+        datasetRevision: 4,
+        captionRevision: 7,
         preflight: { status: "pass", token: "source-token", jobId: sourceId, jobRevision: 3 },
         progress: { stage: "failed", step: 9, totalSteps: 9 },
       },
     },
-    provenance: { attempt: 1 },
+    provenance: { attempt: 1, sourceAssets: ["input:retry-source.png"], datasetRevision: 4, captionRevision: 7 },
     createdAt: timestamp,
     updatedAt: timestamp,
   }]]);
@@ -338,6 +362,16 @@ test("retry revalidates a failed job and leaves the new revision in the schedule
   assert.ok(result.job.revision > 0, "retry must not remain a revision-zero draft");
   assert.equal(result.job.provenance.attempt, 2);
   assert.equal(result.job.provenance.retryOf, fixture.sourceId);
+  assert.deepEqual(result.job.triggerWords, ["subject"]);
+  assert.deepEqual(result.job.assetIds, ["input:retry-source.png"]);
+  assert.equal(result.job.config.presetId, "sdxl-character-balanced");
+  assert.equal(result.job.config.outputName, "retry-source");
+  assert.deepEqual(result.job.config.overrides, { rank: 32, alpha: 16, epochs: 12 });
+  assert.deepEqual(result.job.provenance.sourceAssets, ["input:retry-source.png"]);
+  assert.equal(result.job.provenance.datasetRevision, 4);
+  assert.equal(result.job.provenance.captionRevision, 7);
+  assert.equal(result.job.config.orchestration.datasetRevision, 4);
+  assert.equal(result.job.config.orchestration.captionRevision, 7);
   assert.equal(result.job.config.orchestration.preflight.token, "fresh-token");
   assert.deepEqual(fixture.cloneCalls, [{ source: fixture.sourceId, destination: fixture.retryId }]);
   assert.deepEqual(fixture.captionCalls, [fixture.retryId]);
@@ -437,7 +471,7 @@ test("service recovery marks a nonterminal active job interrupted and releases i
       config: { family: "sdxl", baseProfile: "sdxl-base-1.0", outputName: "active-recovery" },
     });
     const lease = { id: "stale-active-lease", ownerId: "old-owner", jobId: created.id, acquiredAt: "2026-08-11T00:01:00.000Z" };
-    await writeFile(paths.scheduler, JSON.stringify({ schemaVersion: 1, pending: [], active: { jobId: created.id, ownerId: lease.ownerId, lease, startedAt: lease.acquiredAt } }));
+    await writeFile(paths.scheduler, JSON.stringify({ schemaVersion: 1, pending: [{ jobId: "pending-one" }, { jobId: "pending-two" }], active: { jobId: created.id, ownerId: lease.ownerId, lease, startedAt: lease.acquiredAt } }));
     await writeFile(path.join(root, "gpu-lease.json"), JSON.stringify({ schemaVersion: 1, lease }));
 
     const service = createLoraTrainingService({ paths, store, resolveBaseModel: async () => null, comfyLoraDirectory: path.join(root, "loras") });
@@ -445,10 +479,90 @@ test("service recovery marks a nonterminal active job interrupted and releases i
     const recovered = await store.readJob(created.id);
     assert.equal(recovered.status, "failed");
     assert.deepEqual(recovered.config.orchestration.error, {
-      code: "TRAINING_FAILED", message: "training interrupted during service restart", retryable: true,
+      code: "TRAINING_INTERRUPTED", message: "training was interrupted by service restart; retry is available", retryable: true,
+      details: { recoverable: true, reason: "service_restart" },
     });
     const scheduler = JSON.parse(await readFile(paths.scheduler, "utf8"));
     assert.equal(scheduler.active, null);
+    assert.deepEqual(scheduler.pending.map(({ jobId }) => jobId), ["pending-one", "pending-two"]);
+    assert.equal(await readFile(path.join(root, "gpu-lease.json"), "utf8").then(() => true).catch(() => false), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("service recovery preserves a live GPU lease instead of stealing it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-lora-recovery-live-lease-"));
+  const paths = pathsFor(root);
+  try {
+    const store = createJobStore({ paths, clock: () => new Date("2026-08-11T00:00:00.000Z") });
+    const created = await store.createJob({
+      slug: "live-lease-recovery",
+      displayName: "Live lease recovery",
+      family: "sdxl",
+      captionReviewMode: "auto",
+      triggerWords: ["subject"],
+      assetIds: [],
+      config: { family: "sdxl", baseProfile: "sdxl-base-1.0", outputName: "live-lease-recovery" },
+    });
+    const lease = {
+      id: "live-lease", ownerId: "live-owner", ownerPid: 4242, jobId: created.id,
+      acquiredAt: "2026-08-11T00:00:00.000Z", expiresAt: "2026-08-11T01:00:00.000Z",
+    };
+    await writeFile(paths.scheduler, JSON.stringify({ schemaVersion: 1, pending: [], active: { jobId: created.id, ownerId: lease.ownerId, lease, startedAt: lease.acquiredAt } }));
+    await writeFile(path.join(root, "gpu-lease.json"), JSON.stringify({ schemaVersion: 1, lease }));
+
+    const service = createLoraTrainingService({
+      paths,
+      store,
+      now: () => "2026-08-11T00:10:00.000Z",
+      isProcessAlive: async (pid) => pid === 4242,
+      resolveBaseModel: async () => null,
+      comfyLoraDirectory: path.join(root, "loras"),
+    });
+    const recovery = await service.initialize();
+    const recovered = await store.readJob(created.id);
+    assert.equal(recovered.status, "failed");
+    assert.equal(recovery.leaseCleared, false);
+    assert.equal(recovery.leaseCleanupReason, "owner-live-or-unknown");
+    assert.equal(await readFile(path.join(root, "gpu-lease.json"), "utf8").then(() => true).catch(() => false), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("service recovery clears a lease whose owner process has exited", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-lora-recovery-dead-owner-"));
+  const paths = pathsFor(root);
+  try {
+    const store = createJobStore({ paths, clock: () => new Date("2026-08-11T00:00:00.000Z") });
+    const created = await store.createJob({
+      slug: "dead-owner-recovery",
+      displayName: "Dead owner recovery",
+      family: "sdxl",
+      captionReviewMode: "auto",
+      triggerWords: ["subject"],
+      assetIds: [],
+      config: { family: "sdxl", baseProfile: "sdxl-base-1.0", outputName: "dead-owner-recovery" },
+    });
+    const lease = {
+      id: "dead-owner-lease", ownerId: "dead-owner", ownerPid: 4343, jobId: created.id,
+      acquiredAt: "2026-08-11T00:00:00.000Z", expiresAt: "2026-08-11T01:00:00.000Z",
+    };
+    await writeFile(paths.scheduler, JSON.stringify({ schemaVersion: 1, pending: [], active: { jobId: created.id, ownerId: lease.ownerId, lease, startedAt: lease.acquiredAt } }));
+    await writeFile(path.join(root, "gpu-lease.json"), JSON.stringify({ schemaVersion: 1, lease }));
+
+    const service = createLoraTrainingService({
+      paths,
+      store,
+      now: () => "2026-08-11T00:10:00.000Z",
+      isProcessAlive: async () => false,
+      resolveBaseModel: async () => null,
+      comfyLoraDirectory: path.join(root, "loras"),
+    });
+    const recovery = await service.initialize();
+    assert.equal(recovery.leaseCleared, true);
+    assert.equal(recovery.leaseCleanupReason, "owner-exited");
     assert.equal(await readFile(path.join(root, "gpu-lease.json"), "utf8").then(() => true).catch(() => false), false);
   } finally {
     await rm(root, { recursive: true, force: true });

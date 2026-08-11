@@ -11,7 +11,6 @@ export function createTrainingQueue({
   releaseGpuLease,
   execute,
   onStateChange = async () => {},
-  onRecovery = async () => {},
   onBackgroundError = async () => {},
   now = () => new Date().toISOString(),
   ownerId = randomUUID(),
@@ -59,12 +58,13 @@ export function createTrainingQueue({
         active: loaded?.active ? clone(loaded.active) : null,
       };
       if (state.active) {
-        const interrupted = state.active;
-        if (!state.pending.some((entry) => entry.jobId === interrupted.jobId)) state.pending.unshift({ jobId: interrupted.jobId, enqueuedAt: interrupted.startedAt ?? now(), recovered: true });
-        state.active = null;
-        await onRecovery(clone(interrupted));
-        await notify(interrupted.jobId, 'queued', { recovered: true });
-        await persist();
+        // Restart recovery belongs to the service, which can reconcile the
+        // persisted job, scheduler order, and GPU lease together.  A queue
+        // must never turn a persisted active entry into a second queued
+        // attempt: that used to race the service's failed/recoverable path.
+        const error = new Error('training queue requires service restart recovery before it can initialize');
+        error.code = 'QUEUE_RECOVERY_REQUIRED';
+        throw error;
       }
       initialized = true;
     })().finally(() => { initializing = null; });
