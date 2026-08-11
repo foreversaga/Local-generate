@@ -51,3 +51,45 @@ test("job adapter preserves image batch summaries and treats partial as terminal
   assert.deepEqual(adapted.randomRanges, raw.randomRanges);
   assert.equal(adapted.raw, raw);
 });
+
+test("job adapter integrates LoRA status, training progress, ETA, artifact and actions", () => {
+  const queued = adaptJob({
+    id: "lora-queued",
+    status: "queued",
+    displayName: "my-character-lora",
+    family: "illustrious",
+    dataset: { imageCount: 39 },
+    orchestration: { progress: { completed: 39, total: 39 } },
+    updatedAt: "2026-01-04T00:00:00Z",
+  }, "lora");
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.progress, 0, "caption completion must not make a queued training job complete");
+  assert.equal(queued.canCancel, true);
+  assert.match(queued.title, /my-character-lora/);
+  assert.match(queued.subtitle, /39 images/);
+
+  const training = adaptJob({ id: "lora-running", status: "training", training: { step: 25, totalSteps: 100, eta: "01:30" } }, "lora");
+  assert.equal(training.status, "running");
+  assert.equal(training.progress, 25);
+  assert.equal(training.etaMs, 90_000);
+
+  const captioning = adaptJob({ id: "lora-captioning", status: "captioning", training: { completed: 39, total: 39 } }, "lora");
+  assert.equal(captioning.status, "running");
+  assert.equal(captioning.progress, 100);
+
+  const installed = adaptJob({ id: "lora-installed", status: "training", training: { stage: "installed" } }, "lora");
+  assert.equal(installed.status, "running");
+  assert.equal(installed.progress, 100, "an installed artifact is complete even before the terminal event is observed");
+
+  const succeeded = adaptJob({
+    id: "lora-done", status: "succeeded", artifact: { registryId: "reg-1", fileName: "my-character-lora.safetensors", downloadUrl: "/app/api/lora-training/jobs/lora-done/artifact/download" },
+  }, "lora");
+  assert.equal(succeeded.status, "complete");
+  assert.equal(succeeded.progress, 100);
+  assert.equal(succeeded.output.downloadUrl, "/app/api/lora-training/jobs/lora-done/artifact/download");
+  assert.equal(succeeded.canRetry, false);
+
+  const failed = adaptJob({ id: "lora-failed", status: "preflight_failed" }, "lora");
+  assert.equal(failed.status, "error");
+  assert.equal(failed.canRetry, true);
+});

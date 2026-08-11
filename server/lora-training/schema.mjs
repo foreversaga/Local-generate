@@ -117,7 +117,7 @@ export function normalizeAssetIds(value = []) {
     if (id.length > 256 || id !== id.trim() || hasControlCharacters(id)) {
       throw invalid('assetId must be a UUID or Studio asset key');
     }
-    const match = /^(input|output):(.+)$/.exec(id);
+    const match = /^(input|output|training):(.+)$/.exec(id);
     if (!match) throw invalid('assetId must be a UUID or Studio asset key');
     const [, prefix, relativePath] = match;
     if (relativePath.length > 220 || relativePath.startsWith('/') || relativePath.startsWith('\\') ||

@@ -10,6 +10,7 @@ export async function fetchUnifiedJobs(): Promise<UnifiedJob[]> {
     { source: "long", url: `${BRIDGE_URL}/api/sequences` },
     { source: "upscale", url: `${BRIDGE_URL}/api/upscale/jobs` },
     { source: "img2img", url: `${BRIDGE_URL}/api/img2img/jobs` },
+    { source: "lora", url: `${BRIDGE_URL}/api/lora-training/jobs` },
   ] as const;
   const collections = await Promise.all(specs.map(async (spec) => {
     try {
@@ -29,6 +30,9 @@ export async function performJobAction(job: UnifiedJob, action: "cancel" | "paus
   if (job.source === "video" && action === "cancel") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/cancel`, "POST");
   if (job.source === "long" && ["cancel", "pause", "resume"].includes(action)) return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "long" && action === "retry") return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/start`, "POST");
+  if (job.source === "lora" && (action === "cancel" || action === "retry")) {
+    return request(`${BRIDGE_URL}/api/lora-training/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
+  }
   if (job.source === "upscale" && action === "retry") return request(`${BRIDGE_URL}/api/upscale`, "POST", { sourceName: job.raw.sourceName, sourceRoot: job.raw.sourceRoot, scale: job.raw.scale });
   if (job.source === "img2img" && action === "retry") {
     const body: Record<string, unknown> = {
@@ -60,9 +64,11 @@ async function request(url: string, method: string, body?: object) {
 }
 
 export function jobOutputHref(job: UnifiedJob) {
-  const output = job.output as { root?: string; name?: string; url?: string } | null;
+  const output = job.output as { root?: string; name?: string; url?: string; downloadUrl?: string } | null;
   if (!output) return "";
-  if (output.url) return `${BRIDGE_URL}${output.url}`;
+  const url = output.url || output.downloadUrl;
+  if (url) return url.startsWith(`${BRIDGE_URL}/`) ? url : `${BRIDGE_URL}${url}`;
+  if (job.source === "lora") return "";
   if (output.name) return `${BRIDGE_URL}/media?root=${encodeURIComponent(output.root || "output")}&name=${encodeURIComponent(output.name)}`;
   return "";
 }

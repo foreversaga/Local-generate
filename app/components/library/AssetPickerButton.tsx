@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { assetKey, assetUrl, fetchAssets, type StudioAsset } from "./asset-client";
+import { assetKey, assetUrl, fetchAssets, fetchTrainingAssets, type AssetSource, type StudioAsset } from "./asset-client";
 import styles from "./AssetPickerButton.module.css";
 
 type Props = {
     kind?: "image" | "video";
     root?: "input" | "output";
+    assetSource?: AssetSource;
     multiple?: boolean;
     max?: number;
     selectedKeys?: string[];
@@ -17,6 +18,7 @@ type Props = {
 export function AssetPickerButton({
     kind,
     root,
+    assetSource = "library",
     multiple = false,
     max = 1,
     selectedKeys = [],
@@ -26,13 +28,17 @@ export function AssetPickerButton({
     const [open, setOpen] = useState(false);
     const [assets, setAssets] = useState<StudioAsset[]>([]);
     const [query, setQuery] = useState("");
+    const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set(selectedKeys));
     const [preview, setPreview] = useState<StudioAsset | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [selectionNotice, setSelectionNotice] = useState("");
     const triggerRef = useRef<HTMLButtonElement>(null);
     const dialogRef = useRef<HTMLDivElement>(null);
     const selectedKeysSignature = JSON.stringify(selectedKeys);
+    const sourceLabel = assetSource === "training" ? "訓練素材（專案 input）" : "Asset Picker";
+    const breadcrumbLabel = assetSource === "training" ? "訓練素材" : root ?? "All assets";
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -44,7 +50,7 @@ export function AssetPickerButton({
     useEffect(() => {
         if (!open) return;
 
-        void fetchAssets()
+        void (assetSource === "training" ? fetchTrainingAssets() : fetchAssets())
             .then((next) => { setAssets(next); setError(""); })
             .catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load assets."))
             .finally(() => setLoading(false));
@@ -69,17 +75,52 @@ export function AssetPickerButton({
             document.body.style.overflow = previousOverflow;
             if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
         };
-    }, [open]);
+    }, [assetSource, open]);
+
+    const scopedAssets = useMemo(() => assets.filter((asset) => (!root || asset.root === root) && (!kind || asset.kind === kind)), [assets, kind, root]);
+
+    const navigation = useMemo(() => {
+        const directAssets: StudioAsset[] = [];
+        const folders = new Map<string, FolderNode>();
+
+        for (const asset of scopedAssets) {
+            const segments = pathSegments(asset.name);
+            if (!isPathWithin(segments, currentPath)) continue;
+            const remainder = segments.slice(currentPath.length);
+            if (remainder.length === 1) {
+                directAssets.push(asset);
+                continue;
+            }
+            if (remainder.length < 2) continue;
+
+            const folderPath = [...currentPath, remainder[0]];
+            const key = folderPath.join("/");
+            const folder = folders.get(key) ?? { path: folderPath, count: 0, roots: new Set<StudioAsset["root"]>() };
+            folder.count += 1;
+            folder.roots.add(asset.root);
+            folders.set(key, folder);
+        }
+
+        return {
+            directAssets: sortAssets(directAssets),
+            folders: [...folders.values()].sort((a, b) => a.path.join("/").localeCompare(b.path.join("/"))),
+        };
+    }, [currentPath, scopedAssets]);
 
     const visibleAssets = useMemo(() => {
         const needle = query.trim().toLowerCase();
-        return assets
-            .filter((asset) => (!root || asset.root === root) && (!kind || asset.kind === kind) && (!needle || asset.name.toLowerCase().includes(needle)))
-            .sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
-    }, [assets, kind, query, root]);
+        const candidates = needle ? scopedAssets : navigation.directAssets;
+        return sortAssets(candidates.filter((asset) => !needle || asset.name.toLowerCase().includes(needle)));
+    }, [navigation.directAssets, query, scopedAssets]);
+    const currentFolderKeys = useMemo(() => navigation.directAssets.map(assetKey), [navigation.directAssets]);
+    const allCurrentFolderSelected = currentFolderKeys.length > 0 && currentFolderKeys.every((key) => selected.has(key));
 
     function openDialog() {
         setLoading(true);
+        setCurrentPath([]);
+        setQuery("");
+        setPreview(null);
+        setSelectionNotice("");
         setOpen(true);
     }
 
@@ -107,9 +148,38 @@ export function AssetPickerButton({
         });
     }
 
+    function toggleAllCurrentFolder() {
+        const current = selected;
+        const next = new Set(current);
+        const allSelected = currentFolderKeys.length > 0 && currentFolderKeys.every((key) => current.has(key));
+
+        if (allSelected) {
+            currentFolderKeys.forEach((key) => next.delete(key));
+            setSelectionNotice("已取消全選圖片");
+        } else {
+            const limit = Math.max(0, max);
+            const available = Math.max(0, limit - current.size);
+            const missingKeys = currentFolderKeys.filter((key) => !current.has(key));
+            if (available === 0) {
+                setSelectionNotice(`已達選取上限（${limit} 張），無法新增圖片`);
+            } else {
+                const keysToAdd = missingKeys.slice(0, available);
+                keysToAdd.forEach((key) => next.add(key));
+                if (keysToAdd.length < missingKeys.length) {
+                    setSelectionNotice(`已加入 ${keysToAdd.length} 張圖片；已達選取上限（${limit} 張）`);
+                } else if (next.size >= limit) {
+                    setSelectionNotice(`已全選目前資料夾圖片；已達選取上限（${limit} 張）`);
+                } else {
+                    setSelectionNotice(`已全選目前資料夾圖片（加入 ${keysToAdd.length} 張）`);
+                }
+            }
+        }
+        setSelected(next);
+    }
+
     function confirm() {
         const limit = multiple ? max : 1;
-        const chosen = assets.filter((asset) => selected.has(assetKey(asset))).slice(0, limit);
+        const chosen = scopedAssets.filter((asset) => selected.has(assetKey(asset))).slice(0, limit);
         onSelect(chosen);
         closeDialog();
     }
@@ -124,11 +194,62 @@ export function AssetPickerButton({
                     <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label="Asset picker">
                         <header>
                             <div>
-                                <span>Asset Picker</span>
+                                <span>{sourceLabel}</span>
                                 <strong>{multiple ? `Select up to ${max}` : "Select one asset"}</strong>
                             </div>
                             <button type="button" onClick={closeDialog} aria-label="Close asset picker">×</button>
                         </header>
+
+                        <div className={styles.navigation}>
+                            <button
+                                type="button"
+                                className={styles.backButton}
+                                onClick={() => setCurrentPath((path) => path.slice(0, -1))}
+                                disabled={!currentPath.length || Boolean(query.trim())}
+                                aria-label="Back to parent folder"
+                            >
+                                Back
+                            </button>
+                            <nav className={styles.breadcrumbs} aria-label="Current asset folder">
+                                <button
+                                    type="button"
+                                    className={styles.breadcrumb}
+                                    onClick={() => setCurrentPath([])}
+                                    aria-current={!currentPath.length ? "page" : undefined}
+                                >
+                                    {breadcrumbLabel}
+                                </button>
+                                {currentPath.map((segment, index) => {
+                                    const path = currentPath.slice(0, index + 1);
+                                    const isCurrent = index === currentPath.length - 1;
+                                    return (
+                                        <span key={path.join("/")} className={styles.breadcrumbItem}>
+                                            <span aria-hidden="true">/</span>
+                                            <button
+                                                type="button"
+                                                className={styles.breadcrumb}
+                                                onClick={() => setCurrentPath(path)}
+                                                aria-current={isCurrent ? "page" : undefined}
+                                                disabled={Boolean(query.trim())}
+                                            >
+                                                {segment}
+                                            </button>
+                                        </span>
+                                    );
+                                })}
+                            </nav>
+                            {multiple && !query.trim() && navigation.directAssets.length > 0 && (
+                                <button
+                                    type="button"
+                                    className={styles.bulkButton}
+                                    aria-pressed={allCurrentFolderSelected}
+                                    onClick={toggleAllCurrentFolder}
+                                >
+                                    {allCurrentFolderSelected ? "取消全選圖片" : "全選圖片"}
+                                </button>
+                            )}
+                            {query.trim() && <span className={styles.searchStatus}>Searching all folders</span>}
+                        </div>
 
                         <label className={styles.search}>
                             <span className="sr-only">Search assets</span>
@@ -139,6 +260,23 @@ export function AssetPickerButton({
                             <div className={styles.grid}>
                                 {loading && <p>Loading…</p>}
                                 {error && <p className={styles.error} role="alert">{error}</p>}
+                                {!query.trim() && navigation.folders.map((folder) => (
+                                    <article key={`folder:${folder.path.join("/")}`} className={styles.folderCard}>
+                                        <button
+                                            type="button"
+                                            className={styles.folderButton}
+                                            onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
+                                            aria-label={`Open folder ${folder.path.join("/")}`}
+                                        >
+                                            <span className={styles.folderIcon} aria-hidden="true">Folder</span>
+                                            <span className={styles.folderCopy}>
+                                                <strong>{folder.path[folder.path.length - 1]}</strong>
+                                                <small>{folder.count} selectable {folder.count === 1 ? "asset" : "assets"}{folder.roots.size > 1 ? ` · ${[...folder.roots].join("/")}` : ""}</small>
+                                            </span>
+                                            <span className={styles.folderArrow} aria-hidden="true">›</span>
+                                        </button>
+                                    </article>
+                                ))}
                                 {visibleAssets.map((asset) => {
                                     const checked = selected.has(assetKey(asset));
                                     return (
@@ -176,6 +314,11 @@ export function AssetPickerButton({
                                         </article>
                                     );
                                 })}
+                                {!loading && !error && !navigation.folders.length && !visibleAssets.length && (
+                                    <p className={styles.empty}>
+                                        {query.trim() ? "No matching assets." : "This folder has no selectable assets."}
+                                    </p>
+                                )}
                             </div>
 
                             {preview && (
@@ -195,7 +338,8 @@ export function AssetPickerButton({
                         </div>
 
                         <footer>
-                            <span>{selected.size} selected</span>
+                            <span aria-live="polite">{selected.size} selected</span>
+                            <span className={styles.selectionNotice} role="status" aria-live="polite">{selectionNotice}</span>
                             <button type="button" className={styles.confirm} disabled={!selected.size} onClick={confirm}>Use selected</button>
                         </footer>
                     </div>
@@ -203,6 +347,24 @@ export function AssetPickerButton({
             )}
         </>
     );
+}
+
+type FolderNode = {
+    path: string[];
+    count: number;
+    roots: Set<StudioAsset["root"]>;
+};
+
+function pathSegments(name: string) {
+    return name.split("/").filter(Boolean);
+}
+
+function isPathWithin(segments: string[], path: string[]) {
+    return path.every((segment, index) => segments[index] === segment);
+}
+
+function sortAssets(items: StudioAsset[]) {
+    return [...items].sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
 }
 
 function trapFocus(event: KeyboardEvent, container: HTMLElement | null) {

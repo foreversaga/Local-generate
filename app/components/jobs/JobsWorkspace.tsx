@@ -97,6 +97,6 @@ export function StatusBadge({ status }: { status: string }) {
 function statusLabel(status: string) {
   return ({ queued: "Queued", running: "Running", complete: "Complete", partial: "Partial", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] || status;
 }
-function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I" } as Record<string, string>)[source] || source; }
+function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I", lora: "LoRA 訓練" } as Record<string, string>)[source] || source; }
 function formatDate(value: string) { if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); }
 function formatDuration(ms: number) { const seconds = Math.max(0, Math.round(ms / 1000)); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }

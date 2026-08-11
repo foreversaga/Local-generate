@@ -29,3 +29,19 @@ test("Jobs exposes partial status and preserves image batch retry fields", async
   assert.match(client, /job\.raw\.randomRanges/);
   assert.match(client, /body\.randomRanges = job\.raw\.randomRanges/);
 });
+
+test("Jobs includes LoRA training collection, actions and safe artifact detail", async () => {
+  const [list, detail, client, bridge] = await Promise.all([
+    readFile(new URL("../app/components/jobs/JobsWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/jobs/JobDetailWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/jobs/job-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+  ]);
+  assert.match(client, /\/api\/lora-training\/jobs/);
+  assert.match(client, /lora-training\/jobs\/\$\{encodeURIComponent\(job\.id\)\}\/\$\{action\}/);
+  assert.match(list, /lora: "LoRA 訓練"/);
+  assert.match(detail, /router\.replace/);
+  assert.match(detail, /job\.artifact\.fileName/);
+  assert.match(bridge, /displayName: job\.displayName/);
+  assert.match(bridge, /sourceAssets, sourceAssetCount/);
+});

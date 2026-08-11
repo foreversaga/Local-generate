@@ -13,9 +13,18 @@ import {
 import { ensureLoraTrainingLayout, getJobPaths, LORA_PATHS } from './paths.mjs';
 
 const writeQueues = new Map();
+const RENAME_RETRY_DELAYS_MS = Object.freeze([25, 75, 200, 500]);
+const TRANSIENT_RENAME_ERRORS = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
 
-function storageError(message, cause) {
-  return new LoraTrainingError(API_ERROR_CODES.IO_ERROR, message, { status: 500, details: cause?.code ? { reason: cause.code } : undefined });
+function storageError(message, cause, details = {}) {
+  const mergedDetails = {
+    ...details,
+    ...(cause?.code && details.reason === undefined ? { reason: cause.code } : {}),
+  };
+  return new LoraTrainingError(API_ERROR_CODES.IO_ERROR, message, {
+    status: 500,
+    details: Object.keys(mergedDetails).length ? mergedDetails : undefined,
+  });
 }
 
 function notFound(kind) {
@@ -36,24 +45,68 @@ export function withStorageLock(key, operation) {
     if (writeQueues.get(key) === tracked) writeQueues.delete(key);
   });
   writeQueues.set(key, tracked);
+  // `finally()` creates a second promise.  If the operation rejects, that
+  // tracker rejects too; consume it so callers can handle the original
+  // result without Vinext's unhandled-rejection backstop terminating Node.
+  void tracked.catch(() => {});
   return result;
 }
 
-export async function atomicWriteJson(filePath, value) {
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function renameWithRetry(tempPath, filePath, { renameImpl = rename, sleep = delay } = {}) {
+  let attempts = 0;
+  while (true) {
+    attempts += 1;
+    try {
+      await renameImpl(tempPath, filePath);
+      return attempts;
+    } catch (error) {
+      const canRetry = TRANSIENT_RENAME_ERRORS.has(error?.code) && attempts <= RENAME_RETRY_DELAYS_MS.length;
+      if (!canRetry) {
+        // Keep the original errno for API diagnostics, but do not mutate an
+        // error supplied by a test double (or a frozen native error).
+        let failure;
+        try {
+          failure = Object.assign(error, { _atomicRenameAttempts: attempts });
+        } catch {
+          failure = new Error(error?.message || 'rename failed', { cause: error });
+          failure.code = error?.code;
+          failure._atomicRenameAttempts = attempts;
+        }
+        throw failure;
+      }
+      await sleep(RENAME_RETRY_DELAYS_MS[attempts - 1]);
+    }
+  }
+}
+
+export async function atomicWriteJson(filePath, value, options = {}) {
   const directory = path.dirname(filePath);
   const tempPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   let handle;
+  let operation = 'open';
+  let attempts = 0;
   try {
     handle = await open(tempPath, 'wx', 0o600);
+    operation = 'write';
     await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    operation = 'sync';
     await handle.sync();
+    operation = 'close';
     await handle.close();
     handle = undefined;
-    await rename(tempPath, filePath);
+    operation = 'rename';
+    attempts = await renameWithRetry(tempPath, filePath, options);
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     await unlink(tempPath).catch(() => {});
-    throw storageError('Unable to persist LoRA training data', error);
+    throw storageError('Unable to persist LoRA training data', error, {
+      retryable: true,
+      operation,
+      attempts: attempts || Number(error?._atomicRenameAttempts) || 1,
+      target: path.basename(filePath),
+    });
   }
 }
 

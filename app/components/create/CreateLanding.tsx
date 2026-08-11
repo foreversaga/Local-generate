@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { draftForCreateAsset } from "../../lib/create-asset-start.mjs";
 import { SINGLE_CREATE_DRAFT_STORAGE_KEY } from "../../lib/single-create-draft.mjs";
 import { AssetPickerButton } from "../library/AssetPickerButton";
+import type { StudioAsset } from "../library/asset-client";
 import { fetchUnifiedJobs, type UnifiedJob } from "../jobs/job-client";
 import styles from "./CreateLanding.module.css";
 
@@ -18,9 +19,9 @@ export function CreateLanding() {
             .catch(() => setJobs([]));
     }, []);
 
-    function startFromAsset(assets: Array<{ root: "input" | "output"; name: string; kind: "image" | "video" }>) {
+    function startFromAsset(assets: StudioAsset[]) {
         const asset = assets[0];
-        if (!asset) return;
+        if (!asset || !isCreateAssetRoot(asset.root)) return;
         const serialized = window.localStorage.getItem(SINGLE_CREATE_DRAFT_STORAGE_KEY);
         const draft = draftForCreateAsset(serialized, asset);
         window.localStorage.setItem(SINGLE_CREATE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
@@ -88,6 +89,10 @@ export function CreateLanding() {
             </section>
         </div>
     );
+}
+
+function isCreateAssetRoot(root: StudioAsset["root"]): root is "input" | "output" {
+    return root === "input" || root === "output";
 }
 
 function WorkflowCard({ code, title, description, href }: { code: string; title: string; description: string; href: string }) {

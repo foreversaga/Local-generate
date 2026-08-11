@@ -35,13 +35,15 @@ test("Image to Image UI preserves readiness, submit, poll and retry contracts", 
   const canRetryLine = workspace.match(/const canRetry =[^\n]+/u)?.[0] || "";
   assert.match(canRetryLine, /modelAllowedForRuntime\(model, runtimeMode\)/);
   assert.doesNotMatch(canRetryLine, /job\??\.model/);
-  const requestBodyStart = workspace.indexOf("function requestBody()");
+  const requestBodyStart = workspace.indexOf("function requestBody");
   const retryStart = workspace.indexOf("async function retry()");
   assert.ok(requestBodyStart >= 0 && retryStart > requestBodyStart, "request body helper should precede retry");
   const requestBodyBlock = workspace.slice(requestBodyStart, retryStart);
   assert.doesNotMatch(requestBodyBlock, /const current = job/);
+  assert.match(requestBodyBlock, /isImg2ImgAssetRoot\(sourceRoot\)/);
+  assert.match(workspace, /function isImg2ImgAssetRoot\(root: StudioAsset\["root"\]\): root is "input" \| "output"/);
   assert.match(requestBodyBlock, /sourceName: source\?\.name/);
-  assert.match(requestBodyBlock, /sourceRoot: source\?\.root/);
+  assert.match(requestBodyBlock, /sourceRoot: sourceRoot \|\| "input"/);
   assert.match(requestBodyBlock, /prompt: prompt\.trim\(\)/);
   assert.match(requestBodyBlock, /negativePrompt: negativePrompt\.trim\(\)/);
   assert.match(requestBodyBlock, /model,/);

@@ -4,7 +4,7 @@ import { open, readFile, rename, unlink } from 'node:fs/promises';
 import { API_ERROR_CODES, LoraTrainingError, invalid, normalizeCaption, normalizeTriggerWords, normalizeUuid } from './schema.mjs';
 import { resolveSafeChild } from './paths.mjs';
 import { atomicWriteJson, withStorageLock } from './store.mjs';
-import { datasetService } from './dataset.mjs';
+import { datasetFingerprint, datasetService } from './dataset.mjs';
 
 const DEFAULT_PROMPT = 'Describe this training image as concise comma-separated visual tags. Return only JSON with one string property named caption.';
 
@@ -65,11 +65,50 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     const manifestPath = path.join(locations.captions, 'manifest.json');
     return withStorageLock(manifestPath, async () => {
       const current = await readCaptions(jobId);
+      const datasetManifest = await dataset.readManifest(jobId);
       const records = current.records.filter((item) => item.imageId !== image.id);
       records.push(record);
-      await atomicWriteJson(manifestPath, { ...current, revision: current.revision + 1, updatedAt: clock().toISOString(), records });
+      await atomicWriteJson(manifestPath, {
+        ...current,
+        revision: current.revision + 1,
+        datasetRevision: datasetManifest.revision,
+        datasetFingerprint: datasetFingerprint(datasetManifest),
+        updatedAt: clock().toISOString(),
+        records,
+      });
       return record;
     });
+  }
+
+  async function checkpoint(jobId) {
+    const id = normalizeUuid(jobId, 'jobId');
+    const [manifest, captions] = await Promise.all([dataset.readManifest(id), readCaptions(id)]);
+    const images = manifest.images;
+    const expected = new Map(images.map((image) => [image.id, image]));
+    const seen = new Set();
+    const records = captions.records;
+    const completeRecords = records.length === images.length && records.every((record) => {
+      const image = expected.get(record.imageId);
+      if (!image || seen.has(record.imageId) || !['ready', 'edited'].includes(record.status)) return false;
+      if (record.imageFile && record.imageFile !== image.fileName) return false;
+      if (typeof record.caption !== 'string' || !record.caption.trim()) return false;
+      seen.add(record.imageId);
+      return true;
+    }) && seen.size === images.length;
+    const fingerprint = datasetFingerprint(manifest);
+    const metadataMatches =
+      (captions.datasetRevision === undefined || captions.datasetRevision === manifest.revision) &&
+      (captions.datasetFingerprint === undefined || captions.datasetFingerprint === fingerprint);
+    const failed = records.filter((record) => record.status === 'failed').length;
+    return {
+      complete: images.length > 0 && completeRecords && metadataMatches,
+      records: structuredClone(records),
+      total: images.length,
+      failed,
+      datasetRevision: manifest.revision,
+      datasetFingerprint: fingerprint,
+      legacy: captions.datasetRevision === undefined || captions.datasetFingerprint === undefined,
+    };
   }
 
   async function generateOne(jobId, imageId, triggerWords, { attempts = maxAttempts } = {}) {
@@ -127,7 +166,7 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     return persistRecord(id, image, record);
   }
 
-  return Object.freeze({ generate, generateOne, edit, readCaptions, endpoint, model });
+  return Object.freeze({ generate, generateOne, edit, readCaptions, checkpoint, endpoint, model });
 }
 
 export const captionService = createCaptionService();

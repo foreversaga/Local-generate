@@ -20,14 +20,18 @@ test("LoRA Trainer is discoverable from Tools and mounts its workspace route", a
 test("LoRA Trainer keeps the multi-image, auto/manual, and one-click start contract", async () => {
   const workspace = await read("../app/components/tools/lora-trainer/LoraTrainerWorkspace.tsx");
 
-  assert.match(workspace, /<AssetPickerButton kind="image" multiple max=\{50\}/);
+  assert.match(workspace, /<AssetPickerButton assetSource="training" kind="image" multiple max=\{50\}/);
   assert.match(workspace, /type="file" accept="image\/jpeg,image\/png,image\/webp" multiple/);
   assert.match(workspace, /type="radio" name="caption-mode" value="auto"/);
   assert.match(workspace, /type="radio" name="caption-mode" value="manual"/);
 
   const start = workspace.slice(workspace.indexOf("async function beginTraining()"), workspace.indexOf("async function saveCaption"));
-  assert.match(start, /createLoraJob\(\{ sourceAssetIds: assets\.map\(assetKey\), captionReviewMode: mode, config \}\)/);
-  assert.match(start, /startLoraJob\(created\.id, \{ revision: created\.revision, captionReviewMode: mode, config \}\)/);
+  assert.match(start, /resolvedTrainingConfig\(config, triggerDraft\)/);
+  assert.match(start, /createLoraJob\(\{ sourceAssetIds: assets\.map\(assetKey\), captionReviewMode: mode, config: resolvedConfig \}\)/);
+  assert.match(start, /startLoraJob\(created\.id, \{ revision: created\.revision, captionReviewMode: mode, config: resolvedConfig \}\)/);
+  assert.match(workspace, /id="trigger-words"[\s\S]*aria-invalid=\{Boolean\(triggerError\)\}/);
+  assert.match(workspace, /生成時需在提示詞使用；留白會自動採 LoRA 名稱/);
+  assert.match(workspace, /trigger-words-error[\s\S]*role="alert"/);
   assert.match(workspace, /onClick=\{beginTraining\} disabled=\{Boolean\(busy\) \|\| !assets\.length \|\| healthBlocked\}/);
   assert.match(workspace, /const currentHealth = healthResource\?\.key === healthKey && healthResource\.status === "loaded" \? healthResource\.health : null;[\s\S]*const healthNetworkWarning = healthResource\?\.key === healthKey && healthResource\.status === "error" \? healthResource\.error : "";[\s\S]*const healthBlocked = currentHealth\?\.ok === false;/);
 });
@@ -59,4 +63,34 @@ test("LoRA Trainer exposes caption, progress, artifact, consumer, and accessibil
   assert.match(client, /request\("\/jobs", \{ method: "POST"/);
   assert.match(client, /\/jobs\/\$\{encodeURIComponent\(id\)\}\/start/);
   assert.match(client, /\/jobs\/\$\{encodeURIComponent\(id\)\}\/artifact/);
+});
+
+test("queued progress distinguishes waiting for the trainer from measured steps", async () => {
+  const workspace = await read("../app/components/tools/lora-trainer/LoraTrainerWorkspace.tsx");
+
+  assert.match(workspace, /const hasMeasuredProgress = Number\.isFinite\(job\?\.training\.totalSteps\)/);
+  assert.match(workspace, /const progressStateLabel = job\?\.status === "queued"/);
+  assert.match(workspace, /等待 GPU/);
+  assert.match(workspace, /aria-label="訓練進度尚未開始"/);
+});
+
+test("revision-aware preflight and polling keep the UI on canonical job state", async () => {
+  const [workspace, client, bridge] = await Promise.all([
+    read("../app/components/tools/lora-trainer/LoraTrainerWorkspace.tsx"),
+    read("../app/components/tools/lora-trainer/lora-training-client.ts"),
+    read("../local-bridge.mjs"),
+  ]);
+
+  assert.match(workspace, /const QUEUEABLE_JOB_STATUSES = new Set\(\["draft", "ready", "preflight_failed"\]\)/);
+  assert.match(workspace, /const canQueueJob = !job \|\| QUEUEABLE_JOB_STATUSES\.has\(job\.status\)/);
+  assert.match(workspace, /const preflightJob = result\.job \|\| await fetchLoraJob\(saved\.id\)/);
+  assert.match(workspace, /enqueueLoraJob\(preflightJob\.id, preflightJob\.revision, result\.preflightToken\)/);
+  assert.match(workspace, /const requestSequenceRef = useRef\(0\)/);
+  assert.match(workspace, /next\.revision < latestJobRevisionRef\.current/);
+  assert.match(workspace, /setStage\(stageForJob\(next\)\)/);
+
+  assert.match(client, /readonly details\?: Record<string, unknown>/);
+  assert.match(client, /isLoraRevisionConflict/);
+  assert.match(bridge, /controller\.runPreflight\(jobId, \{ expectedRevision: body\.revision \}\)/);
+  assert.match(bridge, /job: publicLoraTrainingJob\(details\)/);
 });

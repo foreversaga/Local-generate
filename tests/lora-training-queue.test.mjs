@@ -140,6 +140,59 @@ test("controller commits queue position before running transition", async () => 
   assert.equal(job.status, "succeeded");
 });
 
+test("preflight validates expected revision and returns the canonical revision for enqueue", async () => {
+  const jobId = "44444444-4444-4444-8444-444444444444";
+  const timestamp = "2026-08-11T00:00:00.000Z";
+  let job = {
+    id: jobId,
+    revision: 3,
+    slug: "preflight-revision",
+    displayName: "Preflight revision",
+    status: "draft",
+    family: "sdxl",
+    captionReviewMode: "auto",
+    triggerWords: ["subject"],
+    assetIds: [],
+    config: { family: "sdxl", orchestration: {} },
+    provenance: {},
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const queue = { position: () => null, enqueue: async () => 1, start: () => Promise.resolve() };
+  const store = {
+    readJob: async () => structuredClone(job),
+    updateJob: async (_id, patch, { expectedRevision }) => {
+      assert.equal(expectedRevision, job.revision);
+      job = {
+        ...job,
+        ...structuredClone(patch),
+        config: patch.config ? structuredClone(patch.config) : job.config,
+        revision: job.revision + 1,
+        updatedAt: timestamp,
+      };
+      return structuredClone(job);
+    },
+  };
+  const controller = createLoraTrainingController({
+    store,
+    queue,
+    dataset: { readManifest: async () => ({ images: [] }) },
+    captions: { readCaptions: async () => ({ records: [] }) },
+    preflight: { run: async () => ({ status: "pass", checks: [], token: "fresh-token" }) },
+    now: () => new Date(timestamp),
+  });
+
+  await assert.rejects(
+    controller.runPreflight(jobId, { expectedRevision: 2 }),
+    (error) => error.code === "REVISION_CONFLICT" && error.status === 409 && error.details.actualRevision === 3,
+  );
+  const report = await controller.runPreflight(jobId, { expectedRevision: 3 });
+  assert.equal(report.revision, 4);
+  const queued = await controller.enqueue(jobId, { expectedRevision: report.revision, preflightToken: report.token });
+  assert.equal(queued.job.status, "queued");
+  assert.equal(queued.job.revision, 6);
+});
+
 test("real queue path has no revision conflict between queued and running", async () => {
   const jobId = "33333333-3333-4333-8333-333333333333";
   const timestamp = "2026-08-11T00:00:00.000Z";
@@ -194,6 +247,125 @@ test("real queue path has no revision conflict between queued and running", asyn
   assert.deepEqual(backgroundErrors, []);
   assert.equal(queue.snapshot().active, null);
   assert.deepEqual(queue.snapshot().pending, []);
+});
+
+function retryFixture({ sourceStatus = "failed", preflight = { status: "pass", token: "fresh-token" } } = {}) {
+  const sourceId = "44444444-4444-4444-8444-444444444444";
+  const retryId = "55555555-5555-4555-8555-555555555555";
+  const timestamp = "2026-08-11T00:00:00.000Z";
+  const jobs = new Map([[sourceId, {
+    id: sourceId,
+    revision: 3,
+    slug: "retry-source",
+    displayName: "Retry source",
+    status: sourceStatus,
+    family: "sdxl",
+    captionReviewMode: "auto",
+    triggerWords: ["subject"],
+    assetIds: [],
+    config: {
+      family: "sdxl",
+      baseProfile: "sdxl-base-1.0",
+      presetId: "sdxl-character-balanced",
+      outputName: "retry-source",
+      orchestration: {
+        phase: sourceStatus,
+        attempt: 1,
+        preflight: { status: "pass", token: "source-token", jobId: sourceId, jobRevision: 3 },
+        progress: { stage: "failed", step: 9, totalSteps: 9 },
+      },
+    },
+    provenance: { attempt: 1 },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }]]);
+  const cloneCalls = [];
+  const captionCalls = [];
+  const queueState = { pending: [], active: null };
+  const backgroundErrors = [];
+  let controller;
+  const store = {
+    readJob: async (id) => structuredClone(jobs.get(id)),
+    createJob: async (input) => {
+      const created = { ...structuredClone(input), id: retryId, revision: 0, createdAt: timestamp, updatedAt: timestamp };
+      jobs.set(retryId, created);
+      return structuredClone(created);
+    },
+    updateJob: async (id, patch, { expectedRevision }) => {
+      const current = jobs.get(id);
+      if (!current || current.revision !== expectedRevision) throw new LoraTrainingError("REVISION_CONFLICT", "revision conflict", { status: 409 });
+      const next = { ...current, ...structuredClone(patch), revision: current.revision + 1, updatedAt: timestamp };
+      jobs.set(id, next);
+      return structuredClone(next);
+    },
+  };
+  const dataset = {
+    cloneDataset: async (source, destination) => { cloneCalls.push({ source, destination }); },
+    readManifest: async () => ({ images: [{ id: "66666666-6666-4666-8666-666666666666" }] }),
+  };
+  const captions = {
+    generate: async (id) => { captionCalls.push(id); return { failed: 0 }; },
+    readCaptions: async () => ({ records: [] }),
+  };
+  const queue = createTrainingQueue({
+    loadState: async () => structuredClone(queueState),
+    saveState: async (next) => Object.assign(queueState, structuredClone(next)),
+    acquireGpuLease: async () => null,
+    releaseGpuLease: async () => {},
+    execute: async () => ({ status: "succeeded" }),
+    onStateChange: async (event) => controller.onQueueStateChange(event),
+    onBackgroundError: async (event) => backgroundErrors.push(event),
+    ownerId: "retry-test-owner",
+    now: () => timestamp,
+  });
+  controller = createLoraTrainingController({
+    store,
+    dataset,
+    captions,
+    queue,
+    preflight: { run: async () => structuredClone(preflight) },
+    now: () => new Date(timestamp),
+  });
+  return { controller, sourceId, retryId, jobs, cloneCalls, captionCalls, queueState, backgroundErrors };
+}
+
+test("retry revalidates a failed job and leaves the new revision in the scheduler", async () => {
+  const fixture = retryFixture();
+  const result = await fixture.controller.retry(fixture.sourceId);
+
+  assert.equal(result.job.id, fixture.retryId);
+  assert.equal(result.job.status, "queued");
+  assert.ok(result.job.revision > 0, "retry must not remain a revision-zero draft");
+  assert.equal(result.job.provenance.attempt, 2);
+  assert.equal(result.job.provenance.retryOf, fixture.sourceId);
+  assert.equal(result.job.config.orchestration.preflight.token, "fresh-token");
+  assert.deepEqual(fixture.cloneCalls, [{ source: fixture.sourceId, destination: fixture.retryId }]);
+  assert.deepEqual(fixture.captionCalls, [fixture.retryId]);
+  assert.deepEqual(fixture.queueState.pending.map(({ jobId }) => jobId), [fixture.retryId]);
+  assert.deepEqual(fixture.queueState.active, null);
+  assert.deepEqual(fixture.backgroundErrors, []);
+});
+
+test("retry stops safely when the new preflight fails", async () => {
+  const fixture = retryFixture({ preflight: { status: "fail", token: "rejected-token", checks: [{ id: "gpu", status: "fail" }] } });
+  const result = await fixture.controller.retry(fixture.sourceId);
+
+  assert.equal(result.job.status, "failed");
+  assert.equal(result.job.config.orchestration.preflight.status, "fail");
+  assert.equal(result.job.config.orchestration.error.code, "PREFLIGHT_FAILED");
+  assert.deepEqual(fixture.queueState.pending, []);
+  assert.equal(fixture.queueState.active, null);
+});
+
+test("retry rejects active jobs instead of creating a duplicate queue entry", async () => {
+  const fixture = retryFixture({ sourceStatus: "running" });
+  await assert.rejects(
+    fixture.controller.retry(fixture.sourceId),
+    (error) => error.code === "RETRY_NOT_ALLOWED" && error.status === 409,
+  );
+  assert.equal(fixture.jobs.has(fixture.retryId), false);
+  assert.deepEqual(fixture.cloneCalls, []);
+  assert.deepEqual(fixture.queueState.pending, []);
 });
 
 test("service recovery clears stale active state and preserves an existing training failure", async () => {

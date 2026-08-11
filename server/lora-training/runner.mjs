@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import readline from 'node:readline';
 
 const SECRET = /(?:bearer\s+|hf_[a-z0-9]+|token=|password=|api[_-]?key=)/ig;
+const ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|tmp|var|opt)\/)[^\s"']*/g;
 
 export function parseTrainingProgress(line) {
   const text = String(line);
@@ -18,8 +19,18 @@ export function parseTrainingProgress(line) {
   };
 }
 
-function safeLine(line, maximum = 4096) {
-  return String(line).replace(SECRET, '[REDACTED]').slice(0, maximum);
+export function sanitizeTrainerText(line, maximum = 4096) {
+  return String(line)
+    .replace(SECRET, '[REDACTED]')
+    .replace(ABSOLUTE_PATH, '[PATH]')
+    .slice(0, maximum);
+}
+
+function clockMilliseconds(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 export function createTrainingRunner({
@@ -28,7 +39,7 @@ export function createTrainingRunner({
   onLog = async () => {},
   now = () => Date.now(),
   progressIntervalMs = 500,
-  maxLogLines = 2000,
+  maxLogLines = 400,
   cancelGraceMs = 5000,
   platform = process.platform,
 } = {}) {
@@ -39,6 +50,8 @@ export function createTrainingRunner({
     if (!resolved || resolved.shell !== false || typeof resolved.command !== 'string' || !Array.isArray(resolved.args)) {
       throw new TypeError('a resolved shell:false command is required');
     }
+    const startedAt = new Date(now()).toISOString();
+    const startedClock = now();
     const child = spawn(resolved.command, resolved.args, {
       cwd: resolved.cwd,
       env: { ...process.env, ...env },
@@ -54,12 +67,13 @@ export function createTrainingRunner({
     let abortListener;
     const consume = (stream, channel) => {
       if (!stream) return;
+      stream.setEncoding?.('utf8');
       const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
       lines.on('line', (raw) => {
-        const line = safeLine(raw);
+        const line = sanitizeTrainerText(raw);
         logs.push({ at: new Date(now()).toISOString(), channel, line });
         if (logs.length > maxLogLines) logs.splice(0, logs.length - maxLogLines);
-        void onLog(logs.at(-1));
+        void Promise.resolve(onLog(logs.at(-1))).catch(() => {});
         const progress = parseTrainingProgress(line);
         if (!progress) return;
         pendingProgress = progress;
@@ -67,7 +81,7 @@ export function createTrainingRunner({
         if (timestamp - lastProgressAt >= progressIntervalMs) {
           lastProgressAt = timestamp;
           pendingProgress = null;
-          void onProgress(progress);
+          void Promise.resolve(onProgress(progress)).catch(() => {});
         }
       });
     };
@@ -95,7 +109,15 @@ export function createTrainingRunner({
         child.once('close', (code, terminationSignal) => resolve({ code, signal: terminationSignal }));
       });
       if (pendingProgress) await onProgress(pendingProgress);
-      return { ...result, logs: structuredClone(logs) };
+      const finishedAt = new Date(now()).toISOString();
+      const finishedClock = now();
+      return {
+        ...result,
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, clockMilliseconds(finishedClock) - clockMilliseconds(startedClock)),
+        logs: structuredClone(logs),
+      };
     } finally {
       if (cancelTimer) clearTimeout(cancelTimer);
       if (signal && abortListener) signal.removeEventListener('abort', abortListener);

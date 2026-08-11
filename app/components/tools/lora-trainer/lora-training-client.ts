@@ -3,7 +3,7 @@ const API_ROOT = "/app/api/lora-training";
 export type LoraFamily = "sdxl" | "illustrious";
 export type CaptionReviewMode = "auto" | "manual";
 export type LoraJobStatus =
-  | "draft" | "captioning" | "caption_review" | "caption_failed"
+  | "draft" | "ready" | "captioning" | "caption_review" | "caption_failed"
   | "preflight_failed" | "queued" | "training" | "cancelling"
   | "cancelled" | "installing" | "completed" | "failed" | "interrupted";
 
@@ -54,7 +54,7 @@ export type LoraJob = {
   status: LoraJobStatus;
   createdAt: string;
   updatedAt: string;
-  dataset: { imageCount: number; manifestPath: string };
+  dataset: { imageCount: number; manifestPath?: string };
   captionReviewMode: CaptionReviewMode;
   captions: { total: number; confirmed: number; failed: number };
   training: {
@@ -72,7 +72,7 @@ export type LoraJob = {
   };
   artifact?: { registryId: string; sha256: string; sizeBytes: number };
   error?: ApiError;
-  provenance: { sourceJobId?: string; retryOf?: string; sourceAssets: string[] };
+  provenance: { sourceJobId?: string; retryOf?: string; sourceAssets?: string[]; sourceAssetCount?: number };
 };
 
 export type CaptionRecord = {
@@ -100,6 +100,8 @@ export type PreflightResult = {
   checks: PreflightCheck[];
   preflightToken?: string;
   resolvedConfig?: Record<string, unknown>;
+  revision?: number;
+  job?: LoraJob;
 };
 
 export type ArtifactDetails = {
@@ -125,6 +127,7 @@ type Payload = {
   preflightToken?: string;
   resolvedConfig?: Record<string, unknown>;
   artifact?: ArtifactDetails;
+  revision?: number;
   error?: ApiError | string;
   code?: string;
   message?: string;
@@ -133,13 +136,21 @@ type Payload = {
 export class LoraTrainingApiError extends Error {
   readonly status: number;
   readonly detail?: ApiError;
+  readonly details?: Record<string, unknown>;
 
   constructor(message: string, status: number, detail?: ApiError) {
     super(message);
     this.name = "LoraTrainingApiError";
     this.status = status;
     this.detail = detail;
+    this.details = detail?.details;
   }
+}
+
+export function isLoraRevisionConflict(reason: unknown): reason is LoraTrainingApiError {
+  return reason instanceof LoraTrainingApiError
+    && reason.status === 409
+    && reason.detail?.code === "REVISION_CONFLICT";
 }
 
 async function request(path: string, init?: RequestInit): Promise<Payload> {
@@ -225,10 +236,15 @@ export async function runPreflight(id: string, revision: number) {
   const payload = await request(`/jobs/${encodeURIComponent(id)}/preflight`, {
     method: "POST", body: JSON.stringify({ revision }),
   });
-  return payload.preflight || {
+  const result = payload.preflight || {
     checks: payload.checks || [],
     preflightToken: payload.preflightToken,
     resolvedConfig: payload.resolvedConfig,
+  };
+  return {
+    ...result,
+    ...(payload.revision !== undefined ? { revision: payload.revision } : {}),
+    ...(payload.job ? { job: payload.job } : {}),
   };
 }
 

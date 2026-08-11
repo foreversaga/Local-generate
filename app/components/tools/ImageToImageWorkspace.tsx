@@ -24,6 +24,7 @@ import {
     type Img2ImgJob,
     type Img2ImgRandomRanges,
     type Img2ImgRuntimeMode,
+    type Img2ImgSubmitInput,
 } from "./img2img-client";
 import styles from "./ImageToImageWorkspace.module.css";
 
@@ -592,10 +593,14 @@ export function ImageToImageWorkspace() {
         return parseNumberDraft(seed, "Seed", 0, 2147483647, true);
     }
 
-    function requestBody() {
+    function requestBody(): Img2ImgSubmitInput {
+        const sourceRoot = source?.root;
+        if (sourceRoot && !isImg2ImgAssetRoot(sourceRoot)) {
+            throw new Error("Image-to-image only supports input or output assets.");
+        }
         return {
             sourceName: source?.name || "",
-            sourceRoot: source?.root || "input",
+            sourceRoot: sourceRoot || "input",
             prompt: prompt.trim(),
             negativePrompt: negativePrompt.trim(),
             model,
@@ -1083,6 +1088,10 @@ export function ImageToImageWorkspace() {
             </section>
         </div>
     );
+}
+
+function isImg2ImgAssetRoot(root: StudioAsset["root"]): root is "input" | "output" {
+    return root === "input" || root === "output";
 }
 
 async function assetToPromptImage(asset: StudioAsset) {

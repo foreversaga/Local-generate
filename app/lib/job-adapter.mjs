@@ -2,8 +2,11 @@ const STATUS_MAP = new Map([
   ["completed", "complete"],
   ["complete", "complete"],
   ["success", "complete"],
+  ["succeeded", "complete"],
   ["partial", "partial"],
   ["failed", "error"],
+  ["preflight_failed", "error"],
+  ["caption_failed", "error"],
   ["error", "error"],
   ["interrupted", "error"],
   ["cancelled", "cancelled"],
@@ -17,10 +20,17 @@ const STATUS_MAP = new Map([
   ["rendering", "running"],
   ["normalizing", "running"],
   ["extracting_tail", "running"],
+  ["captioning", "running"],
+  ["training", "running"],
+  ["installing", "running"],
   ["queued", "queued"],
   ["pending", "queued"],
   ["draft", "queued"],
   ["ready", "queued"],
+  ["captions_ready", "queued"],
+  ["caption_review", "queued"],
+  ["preflight", "queued"],
+  ["preflight_ready", "queued"],
   ["stale", "queued"],
 ]);
 
@@ -34,7 +44,10 @@ export function adaptJob(raw, source = "video") {
   const batchProgress = Number.isFinite(Number(raw?.batchCount)) && Number(raw.batchCount) > 0
     ? ((Number(raw?.completedCount) || 0) + (Number(raw?.failedCount) || 0)) / Number(raw.batchCount) * 100
     : null;
-  const progress = clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
+  const progress = source === "lora"
+    ? loraProgress(raw, status)
+    : clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
+  const artifact = artifactRef(raw, source);
   return {
     id: String(raw?.id || ""),
     source,
@@ -42,13 +55,14 @@ export function adaptJob(raw, source = "video") {
     rawStatus: String(raw?.status || "queued"),
     title: jobTitle(raw, source),
     subtitle: jobSubtitle(raw, source),
-    stage: String(raw?.stage || raw?.segmentStage || raw?.status || "queued"),
+    stage: jobStage(raw, source),
     progress,
     createdAt,
     updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
-    etaMs: Number.isFinite(raw?.etaMs) ? raw.etaMs : null,
+    etaMs: etaMilliseconds(raw, source),
     error: typeof raw?.error === "string" ? raw.error : raw?.error?.message || "",
-    output: outputRef(raw, source),
+    output: outputRef(raw, source, artifact),
+    artifact,
     batchCount: positiveInteger(raw?.batchCount),
     randomRanges: raw?.randomRanges || null,
     completedCount: nonNegativeInteger(raw?.completedCount),
@@ -95,6 +109,10 @@ function jobTitle(raw, source) {
   if (source === "long") return raw?.title || "Long Video";
   if (source === "upscale") return `Upscale · ${raw?.sourceName || "Video"}`;
   if (source === "img2img") return `Image to Image · ${raw?.sourceName || "Image"}`;
+  if (source === "lora") {
+    const name = raw?.displayName || raw?.outputName || raw?.config?.outputName || raw?.slug;
+    return name ? String(name) : "LoRA training";
+  }
   const mode = String(raw?.mode || "video").toUpperCase();
   const prompt = String(raw?.prompt || "").trim();
   return prompt ? `${mode} · ${prompt.slice(0, 58)}${prompt.length > 58 ? "…" : ""}` : `${mode} generation`;
@@ -110,24 +128,120 @@ function jobSubtitle(raw, source) {
     const summary = count && count > 1 ? `${completed}/${count} complete${failed ? `, ${failed} failed` : ""}` : "";
     return [raw?.model || "Image generation", summary].filter(Boolean).join(" 繚 ");
   }
+  if (source === "lora") {
+    const family = raw?.family || raw?.training?.family || raw?.config?.family || "LoRA";
+    const imageCount = Number(raw?.dataset?.imageCount ?? raw?.imageCount);
+    return [`${String(family).toLocaleUpperCase()} LoRA`, Number.isFinite(imageCount) && imageCount > 0 ? `${imageCount} images` : ""].filter(Boolean).join(" · ");
+  }
   return [raw?.modelProfile, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.duration ? `${raw.duration}s` : ""].filter(Boolean).join(" · ");
 }
 
-function outputRef(raw, source) {
+function outputRef(raw, source, artifact = null) {
   if (source === "long") return raw?.finalAsset || null;
+  if (source === "lora") return artifact;
   return raw?.output || null;
 }
 
 function canCancel(raw, source) {
-  const status = String(raw?.status || "");
+  const status = String(raw?.status || "").toLowerCase();
   if (source === "video") return ["queued", "running", "cancelling"].includes(status);
   if (source === "long") return ["queued", "running", "paused", "assembling"].includes(status);
+  if (source === "lora") return ["captioning", "queued", "training", "installing"].includes(status);
   return false;
 }
 
 function retryable(raw, source) {
   const status = normalizeJobStatus(raw?.status);
   if (!["error", "cancelled"].includes(status)) return false;
+  if (source === "lora") return ["failed", "preflight_failed", "caption_failed", "canceled", "cancelled", "interrupted", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "long" || source === "upscale" || source === "img2img") return true;
   return false;
+}
+
+const LORA_STAGE_LABELS = {
+  draft: "草稿",
+  ready: "準備完成",
+  captioning: "產生 captions",
+  captions_ready: "Captions 完成",
+  caption_review: "等待確認 captions",
+  caption_failed: "Caption 失敗",
+  preflight: "訓練前檢查",
+  preflight_ready: "訓練前檢查完成",
+  preflight_failed: "訓練前檢查失敗",
+  queued: "已排入佇列",
+  training: "訓練中",
+  installing: "安裝模型",
+  cancelling: "正在取消",
+  succeeded: "已完成",
+  completed: "已完成",
+  failed: "訓練失敗",
+  canceled: "已取消",
+  cancelled: "已取消",
+  interrupted: "訓練中斷",
+};
+
+function jobStage(raw, source) {
+  let value = raw?.stage || raw?.segmentStage;
+  if (!value && source === "lora") {
+    const rawStatus = String(raw?.status || "").toLowerCase();
+    const trainingStage = String(raw?.training?.stage || "").toLowerCase();
+    const installedStage = ["installed", "complete", "completed"].includes(trainingStage);
+    value = installedStage && ["training", "running", "installing", "succeeded", "completed"].includes(rawStatus)
+      ? trainingStage
+      : rawStatus || trainingStage;
+  }
+  value = String(value || raw?.status || "queued");
+  if (source !== "lora") return value;
+  return LORA_STAGE_LABELS[value.toLowerCase()] || value;
+}
+
+function loraProgress(raw, status) {
+  const rawStatus = String(raw?.status || raw?.stage || "").toLowerCase();
+  if (status === "complete" || ["succeeded", "completed"].includes(rawStatus)) return 100;
+  const training = raw?.training && typeof raw.training === "object" ? raw.training : {};
+  if (["installed", "complete", "completed"].includes(String(training.stage || "").toLowerCase())) return 100;
+  const trainingStep = Number(training.step);
+  const totalSteps = Number(training.totalSteps);
+  if (["training", "installing", "running"].includes(rawStatus) && Number.isFinite(trainingStep) && Number.isFinite(totalSteps) && totalSteps > 0) {
+    return clampProgress(trainingStep / totalSteps * 100);
+  }
+  if (rawStatus === "captioning") {
+    const completed = Number(raw?.orchestration?.progress?.completed ?? raw?.progress?.completed ?? training.completed);
+    const total = Number(raw?.orchestration?.progress?.total ?? raw?.progress?.total ?? training.total);
+    if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) return clampProgress(completed / total * 100);
+  }
+  return 0;
+}
+
+function etaMilliseconds(raw, source) {
+  if (source !== "lora") return Number.isFinite(raw?.etaMs) ? raw.etaMs : null;
+  const training = raw?.training && typeof raw.training === "object" ? raw.training : {};
+  const seconds = Number(training.etaSeconds ?? raw?.etaSeconds);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  return parseEta(training.eta ?? raw?.eta);
+}
+
+function parseEta(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.round(value * 1000);
+  if (typeof value !== "string") return null;
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) return Math.round(Number(value) * 1000);
+  const parts = value.trim().split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part) || part < 0) || parts.length < 2 || parts.length > 3) return null;
+  const seconds = parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return Math.round(seconds * 1000);
+}
+
+function artifactRef(raw, source) {
+  if (source !== "lora" || !raw?.artifact || typeof raw.artifact !== "object") return null;
+  const artifact = raw.artifact;
+  const downloadUrl = typeof artifact.downloadUrl === "string" && artifact.downloadUrl.startsWith("/") ? artifact.downloadUrl : "";
+  const fileName = [artifact.fileName, artifact.name].find((value) => typeof value === "string" && value.trim());
+  return {
+    registryId: typeof artifact.registryId === "string" ? artifact.registryId : typeof artifact.id === "string" ? artifact.id : "",
+    displayName: typeof artifact.displayName === "string" ? artifact.displayName : "",
+    fileName: typeof fileName === "string" ? fileName.split(/[\\/]/).pop() || "" : "",
+    downloadUrl,
+    sha256: typeof artifact.sha256 === "string" ? artifact.sha256 : typeof artifact.hash === "string" ? artifact.hash : "",
+    sizeBytes: Number.isFinite(Number(artifact.sizeBytes ?? artifact.size)) ? Number(artifact.sizeBytes ?? artifact.size) : null,
+  };
 }

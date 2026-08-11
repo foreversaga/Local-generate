@@ -99,7 +99,10 @@ export function createTrainingQueue({
     if (index >= 0) {
       state.pending.splice(index, 1);
       await persist();
-      await notify(jobId, 'canceled');
+      // The controller's cancel API is still holding the per-job lock while
+      // this notification is emitted. Mark it so the controller can queue the
+      // persistence update without awaiting the same lock recursively.
+      await notify(jobId, 'canceled', { queueCancel: true });
       return true;
     }
     if (state.active?.jobId === jobId && activeAbort) {
@@ -168,7 +171,18 @@ export function createTrainingQueue({
         catch (error) { await reportBackgroundError(error, { phase: 'persist-final', jobId: next.jobId }); }
         try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: finished?.lease ?? lease }); }
         catch (error) { await reportBackgroundError(error, { phase: 'release', jobId: next.jobId }); }
-        await safeNotify(next.jobId, outcome, failure ? { error: failure.message } : {});
+        // Preserve the service's safe structured failure (exit code, signal,
+        // bounded stderr tail, or a distinct artifact code).  Legacy callers
+        // that throw a plain Error still receive the old string shape.
+        const failureDetails = failure ? {
+          error: failure?.code || failure?.details ? {
+            ...(failure.code ? { code: failure.code } : {}),
+            message: failure.message,
+            ...(failure.retryable !== undefined ? { retryable: failure.retryable } : {}),
+            ...(failure.details ? { details: failure.details } : {}),
+          } : failure.message,
+        } : {};
+        await safeNotify(next.jobId, outcome, failureDetails);
       }
     })().finally(() => { draining = null; });
     return draining;

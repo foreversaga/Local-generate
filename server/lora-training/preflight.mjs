@@ -1,9 +1,10 @@
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { MODEL_FAMILIES, invalid, normalizeSlug, normalizeUuid } from './schema.mjs';
+import { API_ERROR_CODES, LoraTrainingError, MODEL_FAMILIES, invalid, normalizeSlug, normalizeUuid } from './schema.mjs';
 import { LORA_PATHS } from './paths.mjs';
 import { datasetService } from './dataset.mjs';
+import { TRAINING_PARAMETER_ALIASES, TRAINING_PARAMETER_KEYS, resolveTrainingParameters } from './presets.mjs';
 
 function result(id, status, message, details) { return { id, status, message, ...(details ? { details } : {}) }; }
 
@@ -16,13 +17,64 @@ export function createPreflightService({
   checkTrainer = async () => ({ ok: false, message: 'trainer runtime adapter is not configured' }),
   resolveBaseModel = async () => null,
   paths = LORA_PATHS,
+  presetOptions = {},
   clock = () => new Date(),
 } = {}) {
+  function configError(error) {
+    const rawMessage = typeof error?.message === 'string' && error.message
+      ? error.message
+      : 'training configuration is invalid';
+    const message = error?.code && ['ENOENT', 'EACCES', 'EPERM'].includes(error.code)
+      || /(?:ENOENT|EACCES|no such file|cannot read|unexpected token)/i.test(rawMessage)
+      ? 'selected training preset could not be loaded'
+      : rawMessage.replace(/(?:[A-Za-z]:\\|\/)[^\s,;]+/g, '[redacted path]').slice(0, 240);
+    const parameterMatch = rawMessage.match(/parameter is not allowed:\s*([A-Za-z][A-Za-z0-9]*)/i)
+      ?? rawMessage.match(/training parameter conflict:\s*([A-Za-z][A-Za-z0-9]*)/i)
+      ?? rawMessage.match(/^([A-Za-z][A-Za-z0-9]*)\s+(?:must|is)\b/i);
+    const field = parameterMatch?.[1];
+    const suggestion = field
+      ? `Update ${field} to a supported value or remove it.`
+      : 'Choose a supported preset and training parameter values.';
+    return new LoraTrainingError(API_ERROR_CODES.INVALID_REQUEST, `training configuration is invalid: ${message} ${suggestion}`, {
+      status: 422,
+      details: {
+        retryable: true,
+        ...(field ? { field } : {}),
+        suggestion,
+        allowedParameters: TRAINING_PARAMETER_KEYS,
+        aliases: TRAINING_PARAMETER_ALIASES,
+      },
+    });
+  }
+
+  async function validateConfig(job, config = job?.config ?? {}) {
+    if (!job) throw invalid('job is required');
+    const family = config.family ?? job.family;
+    if (!MODEL_FAMILIES.includes(family)) throw invalid('family is unsupported', { allowed: MODEL_FAMILIES });
+    const preset = config.presetId ?? config.preset ?? family;
+    try {
+      const resolved = await resolveTrainingParameters({
+        preset,
+        family,
+        parameters: config.overrides ?? config.parameters ?? {},
+      }, presetOptions);
+      return Object.freeze({
+        presetId: resolved.preset,
+        selectedPreset: resolved.selectedPreset,
+        parameters: resolved.parameters,
+        values: resolved.values,
+      });
+    } catch (error) {
+      throw configError(error);
+    }
+  }
+
   async function run(job, config = job?.config ?? {}) {
     if (!job) throw invalid('job is required');
     const jobId = normalizeUuid(job.id, 'jobId');
     const family = config.family ?? job.family;
     if (!MODEL_FAMILIES.includes(family)) throw invalid('family is unsupported', { allowed: MODEL_FAMILIES });
+    const resolvedConfig = await validateConfig(job, config);
     const checks = [];
     let manifest;
     try {
@@ -38,6 +90,26 @@ export function createPreflightService({
         checks.push(result('captions', manifest && ready === manifest.images.length ? 'pass' : 'fail', `${ready}/${manifest?.images.length ?? 0} captions ready`, { ready }));
       }
     } catch (error) { checks.push(result('captions', 'fail', error.message)); }
+
+    // The Studio stores images and captions in separate canonical splits,
+    // while sd-scripts discovers DreamBooth data only from immediate
+    // `<repeats>_<class_tokens>` subdirectories.  Validate the pair contract
+    // before queueing so a passing 39/39 split cannot reach a trainer with an
+    // empty subset.  Materialization itself remains in the dispatch path.
+    if (typeof dataset.inspectTrainerLayout === 'function') {
+      try {
+        const layout = await dataset.inspectTrainerLayout(jobId, {
+          triggerWords: job.triggerWords,
+          classTokens: config.classTokens ?? config.classToken,
+          repeats: config.trainingRepeats ?? config.repeats,
+          captionExtension: resolvedConfig.values.captionExtension ?? '.txt',
+        });
+        checks.push(result('datasetLayout', layout.ok ? 'pass' : 'fail', layout.ok ? `${layout.imageCount} image/caption pair(s) ready for DreamBooth` : (layout.message ?? 'trainer dataset layout is unavailable'), layout.ok ? {
+          imageCount: layout.imageCount, captionCount: layout.captionCount, repeats: layout.repeats,
+          classTokens: layout.classTokens, subset: layout.subset, captionExtension: layout.captionExtension,
+        } : { code: layout.code }));
+      } catch (error) { checks.push(result('datasetLayout', 'fail', error.message)); }
+    }
 
     try {
       const response = await fetchImpl(new URL('/api/tags', ollamaUrl), { signal: AbortSignal.timeout(5000) });
@@ -66,9 +138,17 @@ export function createPreflightService({
 
     const status = checks.some((item) => item.status === 'fail') ? 'fail' : checks.some((item) => item.status === 'warning') ? 'warning' : 'pass';
     const fingerprint = createHash('sha256').update(JSON.stringify({ jobId, revision: job.revision, family, config, datasetRevision: manifest?.revision, checks: checks.map(({ id, status: checkStatus }) => [id, checkStatus]) })).digest('hex');
-    return { status, checks, token: fingerprint, jobId, jobRevision: job.revision, checkedAt: clock().toISOString() };
+    return {
+      status,
+      checks,
+      token: fingerprint,
+      jobId,
+      jobRevision: job.revision,
+      checkedAt: clock().toISOString(),
+      resolvedConfig,
+    };
   }
-  return Object.freeze({ run });
+  return Object.freeze({ run, validateConfig });
 }
 
 export const preflightService = createPreflightService();

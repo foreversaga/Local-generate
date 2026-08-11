@@ -11,9 +11,9 @@ import { createCaptionService } from './captioner.mjs';
 import { createPreflightService } from './preflight.mjs';
 import { createLoraTrainingController } from './controller.mjs';
 import { createTrainingQueue } from './queue.mjs';
-import { createTrainingRunner } from './runner.mjs';
+import { createTrainingRunner, sanitizeTrainerText } from './runner.mjs';
 import { installTrainingArtifact } from './artifact.mjs';
-import { resolveTrainingCommand } from './presets.mjs';
+import { normalizeTrainingParameters, resolveTrainingCommand } from './presets.mjs';
 import { inspectRuntimeRevision, preflightLoraTraining } from './health.mjs';
 
 function serviceError(code, message, status = 500, details) {
@@ -31,6 +31,66 @@ function ensureInside(root, candidate, label) {
   const resolved = path.resolve(candidate);
   if (resolved === resolvedRoot || !resolved.startsWith(`${resolvedRoot}${path.sep}`)) throw serviceError('UNSAFE_RUNTIME_PATH', `${label} is outside its job directory`, 500);
   return resolved;
+}
+
+const TRAINER_DIAGNOSTIC_TAIL_LINES = 40;
+const TRAINER_DIAGNOSTIC_TAIL_BYTES = 8192;
+const TRAINER_DIAGNOSTIC_TEXT_LIMIT = 8192;
+const WINDOWS_ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\)[^\s"']*/g;
+
+function isoNow(value = new Date()) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? new Date().toISOString() : parsed.toISOString();
+}
+
+function safeDiagnosticText(value, maximum = TRAINER_DIAGNOSTIC_TEXT_LIMIT) {
+  return sanitizeTrainerText(String(value ?? ''), maximum)
+    .replace(WINDOWS_ABSOLUTE_PATH, '[PATH]')
+    .replace(/\r/g, '')
+    .slice(0, maximum);
+}
+
+function safeDiagnosticPath(value, jobDirectory) {
+  if (typeof value !== 'string' || !value) return value == null ? null : safeDiagnosticText(value, 512);
+  const absolute = path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+  if (!absolute) return safeDiagnosticText(value, 512);
+  const resolved = path.resolve(value);
+  const root = path.resolve(jobDirectory);
+  if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) {
+    return path.relative(root, resolved).split(path.sep).join('/');
+  }
+  return path.basename(resolved);
+}
+
+function safeTrainerCommand(resolved, jobDirectory) {
+  if (!resolved) return null;
+  return {
+    command: path.basename(String(resolved.command ?? '')),
+    args: Array.isArray(resolved.args) ? resolved.args.map((value) => safeDiagnosticPath(String(value), jobDirectory)) : [],
+    cwd: safeDiagnosticPath(resolved.cwd, jobDirectory),
+    preset: typeof resolved.preset === 'string' ? safeDiagnosticText(resolved.preset, 128) : undefined,
+  };
+}
+
+function resultTail(result, channel) {
+  const logs = Array.isArray(result?.logs) ? result.logs.filter((entry) => entry?.channel === channel) : [];
+  const fallback = channel === 'stderr' ? result?.stderrTail : result?.stdoutTail;
+  const values = logs.length ? logs.map((entry) => entry.line) : (Array.isArray(fallback) ? fallback : typeof fallback === 'string' ? fallback.split(/\r?\n/) : []);
+  const selected = [];
+  let bytes = 0;
+  for (const line of values.slice(-TRAINER_DIAGNOSTIC_TAIL_LINES).reverse()) {
+    if (bytes >= TRAINER_DIAGNOSTIC_TAIL_BYTES) break;
+    const safe = safeDiagnosticText(line, TRAINER_DIAGNOSTIC_TEXT_LIMIT);
+    const remaining = TRAINER_DIAGNOSTIC_TAIL_BYTES - bytes;
+    selected.unshift(safe.slice(0, remaining));
+    bytes += Math.min(safe.length, remaining);
+  }
+  return selected;
+}
+
+function diagnosticAttempt(job, config) {
+  const raw = Number(config?.orchestration?.attempt ?? job?.provenance?.attempt ?? 1);
+  return Number.isSafeInteger(raw) && raw > 0 && raw < 1_000_000 ? raw : 1;
 }
 
 async function readJsonOr(filePath, fallback) {
@@ -62,6 +122,37 @@ export function createLoraTrainingService(options = {}) {
     return typeof value === 'string' && value ? path.resolve(value) : null;
   };
 
+  async function persistTrainerDiagnostics({ job, config, jobDirectory, resolved, result, error, startedAt, finishedAt, phase = 'trainer' }) {
+    try {
+      const attempt = diagnosticAttempt(job, config);
+      const logsDirectory = resolveSafeChild(jobDirectory, 'logs');
+      await mkdir(logsDirectory, { recursive: true });
+      const diagnostics = {
+        schemaVersion: 1,
+        jobId: job.id,
+        attempt,
+        phase,
+        startedAt: result?.startedAt ?? startedAt,
+        finishedAt: result?.finishedAt ?? finishedAt,
+        durationMs: Number.isFinite(result?.durationMs) ? Math.max(0, result.durationMs) : Math.max(0, new Date(finishedAt).valueOf() - new Date(startedAt).valueOf()),
+        command: safeTrainerCommand(resolved, jobDirectory),
+        exitCode: Number.isInteger(result?.code) ? result.code : null,
+        signal: typeof result?.signal === 'string' ? safeDiagnosticText(result.signal, 64) : null,
+        stdoutTail: resultTail(result, 'stdout'),
+        stderrTail: resultTail(result, 'stderr'),
+        ...(error ? { error: { code: safeDiagnosticText(error.code ?? 'TRAINER_FAILED', 80), message: safeDiagnosticText(error.message, 512) } } : {}),
+      };
+      const filePath = resolveSafeChild(logsDirectory, `trainer-attempt-${attempt}.json`);
+      await atomicWriteJson(filePath, diagnostics);
+      return { filePath, diagnostics };
+    } catch (diagnosticError) {
+      // Diagnostics are best effort.  Never replace the process/artifact
+      // failure with an unrelated storage error.
+      console.warn('[lora-training] unable to persist trainer diagnostics', diagnosticError?.message || diagnosticError);
+      return null;
+    }
+  }
+
   const preflight = options.preflight ?? createPreflightService({
     dataset,
     readCaptions: captions.readCaptions,
@@ -69,6 +160,7 @@ export function createLoraTrainingService(options = {}) {
     ollamaUrl: options.ollamaUrl,
     ollamaModel: options.ollamaModel,
     paths,
+    presetOptions: options.presetOptions,
     clock: options.clock,
     resolveBaseModel,
     checkTrainer: options.checkTrainer ?? (async () => {
@@ -147,32 +239,90 @@ export function createLoraTrainingService(options = {}) {
     const outputDirectory = resolveSafeChild(jobDirectory, 'output/staging');
     await mkdir(outputDirectory, { recursive: true });
     const outputName = config.outputName ?? job.slug;
+    // Keep the canonical Studio split untouched and materialize a fresh
+    // DreamBooth tree for every dispatch.  A missing caption therefore fails
+    // before a trainer process can be spawned.
+    const trainerDataset = typeof dataset.materializeTrainerDataset === 'function'
+      ? await dataset.materializeTrainerDataset(job.id, {
+        triggerWords: job.triggerWords,
+        classTokens: config.classTokens ?? config.classToken,
+        repeats: config.trainingRepeats ?? config.repeats,
+        captionExtension: '.txt',
+      })
+      : { root: dataset.getLocations(job.id).dataset };
     const resolved = await (options.resolveCommand ?? resolveTrainingCommand)({
       preset: config.presetId ?? config.preset ?? job.family,
-      parameters: config.overrides ?? config.parameters ?? {},
+      family: job.family,
+      // The process adapter only receives canonical trainer keys.  Public/UI
+      // aliases are normalized before dispatch even when a custom resolver is
+      // injected for tests or an alternate runtime.
+      parameters: normalizeTrainingParameters(config.overrides ?? config.parameters ?? {}),
       runtimeRoot: paths.runtime,
       python: pythonPath,
       baseCheckpoint: baseModel.path,
-      datasetDirectory: dataset.getLocations(job.id).dataset,
+      datasetDirectory: trainerDataset.root,
       outputDirectory,
       outputName,
     }, options.presetOptions);
     if (!resolved || resolved.shell !== false) throw serviceError('UNSAFE_TRAINER_COMMAND', 'trainer command must use shell:false', 500);
 
+    const startedAt = isoNow(now());
     let runResult;
-    if (typeof options.executeTraining === 'function') {
-      runResult = await options.executeTraining({ job, resolved, outputDirectory, signal, reportProgress });
-    } else {
-      const runner = (options.createRunner ?? createTrainingRunner)({ onProgress: reportProgress, onLog: options.onTrainerLog });
-      runResult = await runner.run(resolved, { env: options.runnerEnv ?? {}, signal });
+    let runError;
+    try {
+      if (typeof options.executeTraining === 'function') {
+        runResult = await options.executeTraining({ job, resolved, outputDirectory, signal, reportProgress });
+      } else {
+        const runner = (options.createRunner ?? createTrainingRunner)({ onProgress: reportProgress, onLog: options.onTrainerLog });
+        runResult = await runner.run(resolved, {
+          // Python's stdio/argparse must not inherit a legacy Windows code
+          // page (cp950 was the first visible failure in the incident log).
+          env: { ...(options.runnerEnv ?? {}), PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+          signal,
+        });
+      }
+    } catch (error) {
+      runError = error;
+      runResult = error?.runResult ?? {
+        code: Number.isInteger(error?.exitCode) ? error.exitCode : undefined,
+        signal: error?.signal,
+        stderrTail: error?.stderrTail,
+      };
+    }
+    const finishedAt = isoNow(now());
+    await persistTrainerDiagnostics({ job, config, jobDirectory, resolved, result: runResult, error: runError, startedAt, finishedAt });
+    if (runError) {
+      const stderrTail = resultTail(runResult, 'stderr').join('\n');
+      const exitDescription = Number.isInteger(runResult?.code) ? `exit code ${runResult.code}` : (runResult?.signal ? `signal ${runResult.signal}` : 'trainer process error');
+      const message = stderrTail ? `trainer process failed (${exitDescription}): ${stderrTail}` : `trainer process failed (${exitDescription})`;
+      throw serviceError('TRAINER_FAILED', message, 500, {
+        exitCode: Number.isInteger(runResult?.code) ? runResult.code : null,
+        ...(runResult?.signal ? { signal: safeDiagnosticText(runResult.signal, 64) } : {}),
+        ...(stderrTail ? { stderrTail: safeDiagnosticText(stderrTail) } : {}),
+      });
     }
     if (signal.aborted) return { status: 'canceled' };
     if (runResult?.status === 'canceled') return { status: 'canceled' };
     if (runResult?.status === 'failed' || (runResult?.code !== undefined && runResult.code !== 0)) {
-      throw serviceError('TRAINER_FAILED', 'trainer process exited unsuccessfully', 500, { exitCode: runResult?.code });
+      const stderrTail = resultTail(runResult, 'stderr').join('\n');
+      const exitDescription = Number.isInteger(runResult?.code) ? `exit code ${runResult.code}` : (runResult?.signal ? `signal ${runResult.signal}` : 'unknown exit');
+      const message = stderrTail ? `trainer process failed (${exitDescription}): ${stderrTail}` : `trainer process failed (${exitDescription})`;
+      throw serviceError('TRAINER_FAILED', message, 500, {
+        exitCode: Number.isInteger(runResult?.code) ? runResult.code : null,
+        ...(runResult?.signal ? { signal: safeDiagnosticText(runResult.signal, 64) } : {}),
+        ...(stderrTail ? { stderrTail: safeDiagnosticText(stderrTail) } : {}),
+      });
     }
     const source = ensureInside(outputDirectory, runResult?.artifactPath ?? path.join(outputDirectory, `${outputName}.safetensors`), 'training artifact');
-    await access(source, constants.R_OK);
+    try {
+      await access(source, constants.R_OK);
+    } catch {
+      const artifactError = serviceError('ARTIFACT_MISSING', 'trainer completed but the expected artifact was not produced', 500, {
+        ...(Number.isInteger(runResult?.code) ? { exitCode: runResult.code } : {}),
+      });
+      await persistTrainerDiagnostics({ job, config, jobDirectory, resolved, result: runResult, error: artifactError, startedAt, finishedAt, phase: 'artifact' });
+      throw artifactError;
+    }
     await mkdir(targetDirectory, { recursive: true });
     let registryRecord;
     const installed = await (options.installArtifact ?? installTrainingArtifact)({

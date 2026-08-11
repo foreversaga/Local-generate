@@ -11,6 +11,7 @@
     "networkAlpha": 16,
     "saveEveryEpochs": 1,
     "mixedPrecision": "fp16",
-    "savePrecision": "fp16"
+    "savePrecision": "fp16",
+    "captionExtension": ".txt"
   }
 }

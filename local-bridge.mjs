@@ -20,6 +20,8 @@ import {
   datasetService as loraDatasetService,
   jobStore as loraJobStore,
   registryStore as loraRegistryStore,
+  normalizeAssetIds,
+  normalizeTriggerWords,
   toApiError as toLoraApiError,
 } from "./server/lora-training/index.mjs";
 import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
@@ -36,6 +38,7 @@ const COMFY_ROOT = path.resolve(
   process.env.COMFYUI_ROOT || path.join(H3_ROOT, "..", "ComfyUI"),
 );
 const INPUT_ROOT = path.join(COMFY_ROOT, "input");
+const TRAINING_ROOT = path.join(H3_ROOT, "input");
 const OUTPUT_ROOT = path.join(COMFY_ROOT, "output");
 const LOG_ROOT = path.resolve(
   process.env.MINIMAX_H3_LOGS_ROOT || path.join(PROJECT_ROOT, "logs"),
@@ -436,6 +439,20 @@ function mimeFor(fileName) {
   return values[extension] || "application/octet-stream";
 }
 
+function mediaContentDisposition(rootName, relativeName, download) {
+  const disposition = download ? "attachment" : "inline";
+  const baseName = path.basename(relativeName).replace(/["\r\n]/g, "") || "asset";
+  if (rootName !== "training") return `${disposition}; filename="${baseName}"`;
+  const fallback = baseName.replace(/[^\x20-\x7e]/g, "_") || "asset";
+  let encoded;
+  try {
+    encoded = encodeURIComponent(baseName).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  } catch {
+    encoded = encodeURIComponent(fallback);
+  }
+  return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 async function walkMedia(root, prefix = "") {
   let entries = [];
   try {
@@ -453,6 +470,111 @@ async function walkMedia(root, prefix = "") {
       continue;
     }
     if (classifyFile(entry.name)) files.push({ relativeName, fullPath });
+  }
+  return files;
+}
+
+function canonicalTrainingAssetName(value) {
+  if (typeof value !== "string") {
+    throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset name must be a relative path.", 400);
+  }
+  const normalized = value;
+  const segments = normalized.split("/");
+  const hasControl = Array.from(normalized).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (
+    !normalized
+    || normalized.length > 1024
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\\")
+    || hasControl
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset path is unsafe.", 400);
+  }
+  return normalized;
+}
+
+async function trainingRootContext() {
+  const rootAbsolute = path.resolve(TRAINING_ROOT);
+  const rootStat = await fs.lstat(rootAbsolute).catch((error) => {
+    if (error?.code === "ENOENT") {
+      throw makeRuntimeError("LORA_ASSET_ROOT_NOT_FOUND", "Training asset root is unavailable.", 404);
+    }
+    throw makeRuntimeError("LORA_ASSET_ROOT_INVALID", "Training asset root is unavailable.", 409);
+  });
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw makeRuntimeError("LORA_ASSET_ROOT_INVALID", "Training asset root is not a directory.", 409);
+  }
+  const rootReal = await fs.realpath(rootAbsolute).catch(() => null);
+  if (!rootReal || !pathContained(rootAbsolute, rootReal) || !pathContained(rootReal, rootAbsolute)) {
+    throw makeRuntimeError("LORA_ASSET_ROOT_INVALID", "Training asset root is outside its allowed directory.", 409);
+  }
+  return { rootAbsolute, rootReal };
+}
+
+async function resolveTrainingMediaPath(relativeName) {
+  const cleanName = canonicalTrainingAssetName(relativeName);
+  const { rootAbsolute, rootReal } = await trainingRootContext();
+  const candidate = safePath(rootAbsolute, cleanName);
+  if (!pathContained(rootAbsolute, candidate)) {
+    throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset path is outside its root.", 400);
+  }
+  const segments = cleanName.split("/");
+  let current = rootAbsolute;
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const segmentStat = await fs.lstat(current).catch((error) => {
+      if (error?.code === "ENOENT") {
+        throw makeRuntimeError("LORA_ASSET_NOT_FOUND", "Training asset was not found.", 404);
+      }
+      throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset path cannot be inspected.", 409);
+    });
+    if (segmentStat.isSymbolicLink()) {
+      throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Symlink or reparse training assets are not allowed.", 409);
+    }
+    const segmentReal = await fs.realpath(current).catch(() => null);
+    if (!segmentReal || !pathContained(rootReal, segmentReal)) {
+      throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset path is outside its root.", 409);
+    }
+    if (index < segments.length - 1 && !segmentStat.isDirectory()) {
+      throw makeRuntimeError("LORA_ASSET_NOT_FOUND", "Training asset was not found.", 404);
+    }
+  }
+  const stat = await fs.stat(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw makeRuntimeError("LORA_ASSET_NOT_FOUND", "Training asset was not found.", 404);
+    throw makeRuntimeError("LORA_ASSET_PATH_INVALID", "Training asset cannot be inspected.", 409);
+  });
+  if (!stat.isFile()) throw makeRuntimeError("LORA_ASSET_NOT_REGULAR", "Training asset must be a regular media file.", 409);
+  return candidate;
+}
+
+async function walkTrainingMedia({ rootAbsolute, rootReal }, directory = rootAbsolute, prefix = "") {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
+    let cleanName;
+    try {
+      cleanName = canonicalTrainingAssetName(relativeName);
+    } catch {
+      continue;
+    }
+    const fullPath = path.join(directory, entry.name);
+    const segmentStat = await fs.lstat(fullPath).catch(() => null);
+    if (!segmentStat || segmentStat.isSymbolicLink()) continue;
+    const segmentReal = await fs.realpath(fullPath).catch(() => null);
+    if (!segmentReal || !pathContained(rootReal, segmentReal)) continue;
+    if (segmentStat.isDirectory()) {
+      files.push(...(await walkTrainingMedia({ rootAbsolute, rootReal }, fullPath, cleanName)));
+      continue;
+    }
+    if (!segmentStat.isFile() || classifyFile(cleanName) !== "image") continue;
+    files.push({ relativeName: cleanName, fullPath });
   }
   return files;
 }
@@ -495,6 +617,20 @@ async function listAssets(rootName) {
   return all.sort((left, right) => right.modified.localeCompare(left.modified)).slice(0, 100);
 }
 
+async function listTrainingAssets() {
+  const context = await trainingRootContext();
+  const files = await walkTrainingMedia(context);
+  const all = [];
+  for (const file of files) {
+    try {
+      all.push(await toAsset("training", file.relativeName));
+    } catch {
+      // A file can disappear or change while the directory is being scanned.
+    }
+  }
+  return all.sort((left, right) => right.modified.localeCompare(left.modified));
+}
+
 function mediaRoots(rootName) {
   return rootName === "input"
     ? [INPUT_ROOT]
@@ -502,6 +638,7 @@ function mediaRoots(rootName) {
 }
 
 async function resolveMediaPath(rootName, relativeName) {
+  if (rootName === "training") return resolveTrainingMediaPath(relativeName);
   const cleanName = String(relativeName || "").replaceAll("\\", "/").replace(/^\/+/, "");
   if (!cleanName) throw new Error("缺少媒體檔名。");
   for (const root of mediaRoots(rootName)) {
@@ -1661,8 +1798,8 @@ async function resolveLoraTrainingSource(input) {
   if (separator < 1) throw makeRuntimeError("LORA_ASSET_INVALID", "Training sources must reference a Studio asset.", 400);
   const root = assetId.slice(0, separator);
   const name = assetId.slice(separator + 1);
-  if (!['input', 'output'].includes(root) || classifyFile(name) !== "image") {
-    throw makeRuntimeError("LORA_ASSET_INVALID", "Training sources must be image assets from input or output.", 415);
+  if (!['input', 'output', 'training'].includes(root) || classifyFile(name) !== "image") {
+    throw makeRuntimeError("LORA_ASSET_INVALID", "Training sources must be image assets from input, output, or training.", 415);
   }
   const asset = await toAsset(root, name);
   return { path: await resolveMediaPath(root, name), fileName: asset.name, mimeType: asset.mime, assetId };
@@ -1700,45 +1837,134 @@ function loraPhase(job) {
   return job?.config?.orchestration?.phase || job?.status || "draft";
 }
 
+function loraEtaSeconds(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value !== "string") return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(value.trim())) return Number(value);
+  const parts = value.trim().split(":").map(Number);
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) return undefined;
+  return parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+function publicLoraArtifact(artifact, job) {
+  if (!artifact || typeof artifact !== "object") return null;
+  const fileName = [artifact.fileName, artifact.name].find((value) => typeof value === "string" && value.trim());
+  const publicArtifact = {
+    registryId: artifact.registryId || artifact.id || "",
+    displayName: artifact.displayName || job?.displayName || job?.config?.outputName || "",
+    ...(fileName ? { fileName: path.basename(fileName) } : {}),
+    ...(artifact.sha256 || artifact.hash ? { sha256: artifact.sha256 || artifact.hash } : {}),
+    ...((artifact.sizeBytes ?? artifact.size) !== undefined ? { sizeBytes: artifact.sizeBytes ?? artifact.size } : {}),
+  };
+  if (job?.id) publicArtifact.downloadUrl = `/app/api/lora-training/jobs/${encodeURIComponent(job.id)}/artifact/download`;
+  return publicArtifact;
+}
+
+function publicLoraError(error) {
+  if (!error) return null;
+  if (typeof error === "string") return { message: error };
+  if (typeof error !== "object") return { message: String(error) };
+  const details = error.details && typeof error.details === "object"
+    ? Object.fromEntries(Object.entries(error.details).filter(([key]) => !/(path|asset|source|token)/i.test(key)))
+    : undefined;
+  return {
+    ...(error.code ? { code: String(error.code) } : {}),
+    message: String(error.message || "LoRA training failed."),
+    ...(error.retryable !== undefined ? { retryable: Boolean(error.retryable) } : {}),
+    ...(details && Object.keys(details).length ? { details } : {}),
+  };
+}
+
+function publicLoraSourceAssets(job) {
+  const candidates = [
+    ...(Array.isArray(job?.provenance?.sourceAssets) ? [job.provenance.sourceAssets] : []),
+    ...(Array.isArray(job?.assetIds) ? [job.assetIds] : []),
+  ];
+  for (const value of candidates) {
+    try {
+      return normalizeAssetIds(value);
+    } catch {
+      // Ignore malformed legacy provenance and try the canonical assetIds field.
+    }
+  }
+  return [];
+}
+
 function publicLoraTrainingJob(details) {
   const job = details?.job || details;
   const phase = loraPhase(job);
   const status = ({
-    succeeded: "completed", canceled: "cancelled", running: "training",
+    succeeded: "completed", canceled: "cancelled", cancelled: "cancelled", running: "training",
+    failed: "failed", preflight_failed: "preflight_failed", caption_failed: "caption_failed",
+    caption_review: "caption_review", preflight_ready: "ready",
     captions_ready: job?.captionReviewMode === "manual" ? "caption_review" : "draft",
-  })[phase] || ({ succeeded: "completed", canceled: "cancelled", running: "training" })[job?.status] || phase;
+  })[phase] || ({ succeeded: "completed", canceled: "cancelled", cancelled: "cancelled", running: "training", failed: "failed", preflight_failed: "preflight_failed", caption_failed: "caption_failed" })[job?.status] || phase;
   const orchestration = job?.config?.orchestration || {};
+  const progress = orchestration.progress && typeof orchestration.progress === "object" ? orchestration.progress : {};
+  const config = job?.config && typeof job.config === "object" ? job.config : {};
   const artifact = orchestration.artifact || job?.artifact;
+  const training = {
+    family: job.family || config.family || "",
+    presetId: config.presetId || config.preset || job.family || "",
+    baseProfile: config.baseProfile || "",
+    attempt: Number(job.provenance?.attempt || config.orchestration?.attempt || 1),
+    ...(progress.stage ? { stage: String(progress.stage) } : {}),
+    ...(Number.isFinite(Number(progress.step)) ? { step: Number(progress.step) } : {}),
+    ...(Number.isFinite(Number(progress.totalSteps)) ? { totalSteps: Number(progress.totalSteps) } : {}),
+    ...(Number.isFinite(Number(progress.completed)) ? { completed: Number(progress.completed) } : {}),
+    ...(Number.isFinite(Number(progress.total)) ? { total: Number(progress.total) } : {}),
+    ...(Number.isFinite(Number(progress.failed)) ? { failed: Number(progress.failed) } : {}),
+    ...(Number.isFinite(Number(progress.epoch)) ? { epoch: Number(progress.epoch) } : {}),
+    ...(Number.isFinite(Number(progress.totalEpochs)) ? { totalEpochs: Number(progress.totalEpochs) } : {}),
+    ...(Number.isFinite(Number(progress.loss)) ? { loss: Number(progress.loss) } : {}),
+    ...(loraEtaSeconds(progress.etaSeconds ?? progress.eta) !== undefined ? { etaSeconds: loraEtaSeconds(progress.etaSeconds ?? progress.eta), eta: progress.eta } : {}),
+  };
+  const triggerWords = (Array.isArray(job?.triggerWords) ? job.triggerWords : config.triggerWords)
+    ?.filter((word) => typeof word === "string" && word.trim())
+    .map((word) => word.trim())
+    .slice(0, 20) || [];
+  const overrides = config.overrides && typeof config.overrides === "object" ? config.overrides : {};
+  const configSummary = {
+    family: training.family,
+    baseProfile: training.baseProfile,
+    presetId: training.presetId,
+    outputName: typeof config.outputName === "string" ? config.outputName : "",
+    overrides: Object.fromEntries(["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"]
+      .filter((key) => Number.isFinite(Number(overrides[key])))
+      .map((key) => [key, Number(overrides[key])])),
+  };
+  const provenance = {};
+  for (const key of ["sourceJobId", "retryOf", "attempt"]) {
+    if (job?.provenance?.[key] !== undefined && typeof job.provenance[key] !== "object") provenance[key] = job.provenance[key];
+  }
+  const sourceAssets = publicLoraSourceAssets(job);
+  const manifestPath = typeof details?.dataset?.manifestPath === "string" && !path.isAbsolute(details.dataset.manifestPath)
+    ? details.dataset.manifestPath
+    : "";
   return {
     schemaVersion: 1,
     id: job.id,
     revision: job.revision,
+    slug: job.slug,
+    displayName: job.displayName || config.outputName || job.slug || "Trained LoRA",
+    outputName: config.outputName || job.displayName || job.slug || "",
+    family: training.family,
+    baseProfile: training.baseProfile,
+    triggerWords,
     status,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     dataset: {
       imageCount: details?.dataset?.images?.length ?? details?.dataset?.imageCount ?? job?.assetIds?.length ?? 0,
-      manifestPath: details?.dataset?.manifestPath || "",
+      ...(manifestPath ? { manifestPath } : {}),
     },
     captionReviewMode: job.captionReviewMode,
     captions: details?.captions || { total: 0, confirmed: 0, failed: 0 },
-    training: {
-      family: job.family,
-      presetId: job.config?.presetId || job.config?.preset || job.family,
-      baseProfile: job.config?.baseProfile || "",
-      attempt: Number(job.provenance?.attempt || 1),
-      ...(orchestration.progress || {}),
-    },
-    ...(artifact ? { artifact: {
-      registryId: artifact.registryId || artifact.id,
-      sha256: artifact.sha256 || artifact.hash,
-      sizeBytes: artifact.sizeBytes ?? artifact.size,
-    } } : {}),
-    ...(orchestration.error || job.error ? { error: orchestration.error || job.error } : {}),
-    provenance: {
-      ...job.provenance,
-      sourceAssets: Array.isArray(job.provenance?.sourceAssets) ? job.provenance.sourceAssets : job.assetIds || [],
-    },
+    config: configSummary,
+    training,
+    ...(artifact ? { artifact: publicLoraArtifact(artifact, job) } : {}),
+    ...(orchestration.error || job.error ? { error: publicLoraError(orchestration.error || job.error) } : {}),
+    provenance: { ...provenance, sourceAssets, sourceAssetCount: sourceAssets.length },
   };
 }
 
@@ -1774,7 +2000,53 @@ function loraServiceController(service) {
   };
 }
 
+function nonEmptyLoraTriggerWords(value) {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const normalized = values
+    .map((word) => typeof word === "string" ? word.trim() : word)
+    .filter((word) => typeof word !== "string" || word.length > 0);
+  return normalized.length ? normalized : null;
+}
+
+function fallbackLoraTriggerWord(outputName) {
+  const cleaned = typeof outputName === "string"
+    ? outputName.normalize("NFKC").trim()
+      .replace(/[^\p{L}\p{N} _.-]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^[^\p{L}\p{N}]+/u, "")
+      .slice(0, 80)
+      .trim()
+    : "";
+  if (!cleaned) return "character";
+  try {
+    return normalizeTriggerWords([cleaned])[0];
+  } catch {
+    return "character";
+  }
+}
+
+export function resolveLoraTriggerWords(body = {}, config = body?.config || {}) {
+  const bodyCandidate = nonEmptyLoraTriggerWords(body?.triggerWords);
+  if (bodyCandidate) return bodyCandidate;
+  const configCandidate = nonEmptyLoraTriggerWords(config?.triggerWords);
+  if (configCandidate) return configCandidate;
+  return [fallbackLoraTriggerWord(config?.outputName)];
+}
+
 async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
+  if (pathname === "/api/lora-training/assets") {
+    if (req.method !== "GET") {
+      sendError(res, 405, "Training assets endpoint only supports GET.");
+      return true;
+    }
+    try {
+      sendJson(res, 200, { assets: await listTrainingAssets() });
+    } catch (error) {
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      sendError(res, status, error?.message || "Training assets could not be listed.", error?.code);
+    }
+    return true;
+  }
   if (pathname !== "/api/lora-training/health" && !pathname.startsWith("/api/lora-training/jobs")) return false;
   try {
     const service = await getLoraTrainingService();
@@ -1824,7 +2096,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
         family: config.family || body.family,
         slug: body.slug || `lora-${Date.now().toString(36)}`,
         displayName: body.displayName || config.outputName || "Trained LoRA",
-        triggerWords: body.triggerWords || config.triggerWords || [config.outputName || "character"],
+        triggerWords: resolveLoraTriggerWords(body, config),
       });
       sendJson(res, 201, { job: publicLoraTrainingJob(details) }); return true;
     }
@@ -1836,14 +2108,23 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
     }
     if (req.method === "POST" && ["start", "cancel", "retry", "preflight", "enqueue"].includes(action)) {
-      const body = ["cancel", "retry"].includes(action) ? {} : await readJson(req);
+      const body = action === "cancel" ? {} : await readJson(req);
       let result;
       if (action === "start") result = await controller.start(jobId, { expectedRevision: body.revision });
       if (action === "cancel") result = await controller.cancel(jobId);
       if (action === "retry") result = await controller.retry(jobId);
       if (action === "preflight") {
-        const report = await controller.runPreflight(jobId);
-        sendJson(res, 200, { preflight: { ...report, preflightToken: report.preflightToken || report.token } }); return true;
+        const report = await controller.runPreflight(jobId, { expectedRevision: body.revision });
+        // Preflight itself mutates the job (and therefore increments its
+        // revision).  Return the canonical post-mutation job so clients can
+        // enqueue with the fresh revision instead of replaying `body.revision`.
+        const details = await controller.get(jobId);
+        const revision = details.job.revision;
+        sendJson(res, 200, {
+          preflight: { ...report, preflightToken: report.preflightToken || report.token, revision },
+          revision,
+          job: publicLoraTrainingJob(details),
+        }); return true;
       }
       if (action === "enqueue") result = await controller.enqueue(jobId, { expectedRevision: body.revision, preflightToken: body.preflightToken });
       sendJson(res, action === "retry" ? 201 : 200, { job: publicLoraTrainingJob(result) }); return true;
@@ -1851,8 +2132,15 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
     if (req.method === "PUT" && action === "config") {
       const body = await readJson(req);
       const current = await loraJobStore.readJob(jobId);
-      const { revision, ...config } = body;
-      const job = await loraJobStore.updateJob(jobId, { config: { ...current.config, ...config } }, { expectedRevision: revision });
+      const { revision, triggerWords, ...config } = body;
+      const nextConfig = { ...current.config, ...config };
+      const patch = { config: nextConfig };
+      if (Object.prototype.hasOwnProperty.call(body, "triggerWords")) {
+        const resolvedTriggerWords = resolveLoraTriggerWords({ triggerWords }, nextConfig);
+        patch.triggerWords = resolvedTriggerWords;
+        patch.config = { ...nextConfig, triggerWords: resolvedTriggerWords };
+      }
+      const job = await loraJobStore.updateJob(jobId, patch, { expectedRevision: revision });
       sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(job.id)) }); return true;
     }
     if (req.method === "GET" && action === "captions") {
@@ -1865,7 +2153,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
     const captionMatch = action.match(/^captions\/([^/]+)(?:\/(retry))?$/);
     if (captionMatch && ((req.method === "PATCH" && !captionMatch[2]) || (req.method === "POST" && captionMatch[2] === "retry"))) {
       const body = await readJson(req);
-      if (captionMatch[2]) await controller.retryCaption(jobId, decodeURIComponent(captionMatch[1]));
+      if (captionMatch[2]) await controller.retryCaption(jobId, decodeURIComponent(captionMatch[1]), { expectedRevision: body.revision });
       else await controller.editCaption(jobId, decodeURIComponent(captionMatch[1]), body.caption, { expectedRevision: body.revision });
       sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
     }
@@ -3146,7 +3434,7 @@ async function route(req, res) {
     if (handled || res.headersSent) return;
   }
 
-  if (pathname === "/api/lora-training/health" || pathname.startsWith("/api/lora-training/jobs")) {
+  if (pathname === "/api/lora-training/assets" || pathname === "/api/lora-training/health" || pathname.startsWith("/api/lora-training/jobs")) {
     const handled = await handleLoraTrainingRoute(req, res, { pathname, requestUrl });
     if (handled || res.headersSent) return;
   }
@@ -3297,11 +3585,21 @@ async function route(req, res) {
   if (req.method === "GET" && pathname === "/media") {
     const rootName = requestUrl.searchParams.get("root");
     const relativeName = requestUrl.searchParams.get("name");
-    if (!["input", "output"].includes(rootName) || !relativeName) {
+    if (!["input", "output", "training"].includes(rootName) || !relativeName) {
       sendError(res, 400, "缺少媒體路徑。");
       return;
     }
-    const fullPath = await resolveMediaPath(rootName, relativeName);
+    let fullPath;
+    try {
+      fullPath = await resolveMediaPath(rootName, relativeName);
+    } catch (error) {
+      if (rootName === "training") {
+        const status = Number.isInteger(error?.status) ? error.status : 500;
+        sendError(res, status, error?.message || "Training media could not be resolved.", error?.code);
+        return;
+      }
+      throw error;
+    }
     const kind = classifyFile(relativeName);
     if (!kind) {
       sendError(res, 415, "不支援的媒體格式。");
@@ -3316,7 +3614,7 @@ async function route(req, res) {
       ...jsonHeaders(),
       "Content-Type": mimeFor(relativeName),
       "Content-Length": stat.size,
-      "Content-Disposition": (requestUrl.searchParams.get("download") === "1" ? "attachment" : "inline") + "; filename=\"" + path.basename(relativeName).replace(/"/g, "") + "\"",
+      "Content-Disposition": mediaContentDisposition(rootName, relativeName, requestUrl.searchParams.get("download") === "1"),
     });
     createReadStream(fullPath).pipe(res);
     return;
@@ -3348,6 +3646,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 export {
   route,
   canonicalInputAssetName,
+  canonicalTrainingAssetName,
+  mediaContentDisposition,
+  listTrainingAssets,
+  resolveTrainingMediaPath,
+  publicLoraTrainingJob,
   deleteInputAsset,
   deleteOutputAsset,
   deleteMediaAsset,
