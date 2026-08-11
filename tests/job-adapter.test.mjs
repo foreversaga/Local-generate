@@ -15,6 +15,9 @@ test("job adapter preserves source-specific actions without inventing unsupporte
   assert.equal(adaptJob({ id: "v", status: "running" }, "video").canCancel, true);
   assert.equal(adaptJob({ id: "u", status: "running", sourceName: "a.mp4" }, "upscale").canCancel, false);
   assert.equal(adaptJob({ id: "i", status: "failed", sourceName: "a.png" }, "img2img").canRetry, true);
+  const interrupted = adaptJob({ id: "v-recoverable", status: "interrupted", recoverable: true, attempt: 1 }, "video");
+  assert.equal(interrupted.status, "error");
+  assert.equal(interrupted.canRetry, true);
   assert.equal(adaptJob({ id: "l", status: "paused" }, "long").canResume, true);
   assert.equal(adaptJob({ id: "done", status: "completed" }, "long").canRetry, false);
 });

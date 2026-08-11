@@ -28,6 +28,7 @@ export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promi
 
 export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry") {
   if (job.source === "video" && action === "cancel") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/cancel`, "POST");
+  if (job.source === "video" && action === "retry") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/retry`, "POST");
   if (job.source === "long" && ["cancel", "pause", "resume"].includes(action)) return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "long" && action === "retry") return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/start`, "POST");
   if (job.source === "lora" && (action === "cancel" || action === "retry")) {

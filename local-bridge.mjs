@@ -31,6 +31,7 @@ import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
 import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
+import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -48,6 +49,14 @@ const LOG_ROOT = path.resolve(
 const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
+const SINGLE_VIDEO_JOBS_ROOT = path.resolve(
+  process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT || path.join(PROJECT_ROOT, "data", "jobs", "single-video"),
+);
+const SINGLE_VIDEO_OWNER_ID = String(process.env.MINIMAX_H3_SINGLE_VIDEO_OWNER_ID || `bridge-${process.pid}`);
+const singleVideoJobStore = createSingleVideoJobStore({
+  root: SINGLE_VIDEO_JOBS_ROOT,
+  maxTerminalJobs: 100,
+});
 const bridgePythonResolver = createPythonResolver({
   platform: process.platform,
   env: process.env,
@@ -110,8 +119,13 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bm
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
 const jobs = new Map();
 const jobProcesses = new Map();
+const singleJobPersistence = new Map();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
+const singleVideoStoreReady = recoverSingleVideoJobsAtStartup().catch((error) => {
+  console.error("[single-video] startup recovery failed", error?.message || error);
+  return { error };
+});
 // Asset admission and deletion share a process-wide FIFO barrier.  The lock
 // is held only through route admission/registration (never model execution),
 // so a delete cannot pass a concurrently admitted source asset.
@@ -259,6 +273,37 @@ async function readCodexModels() {
 
 function now() {
   return new Date().toISOString();
+}
+
+function persistSingleJob(job) {
+  if (!job?.persistent || !job.id) return Promise.resolve(null);
+  const previous = singleJobPersistence.get(job.id) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => singleVideoJobStore.save(job));
+  const tracked = next.finally(() => {
+    if (singleJobPersistence.get(job.id) === tracked) singleJobPersistence.delete(job.id);
+  });
+  singleJobPersistence.set(job.id, tracked);
+  return next;
+}
+
+function scheduleSingleJobPersistence(job) {
+  const pending = persistSingleJob(job);
+  pending.catch((error) => {
+    console.warn("[single-video] job persistence warning", job?.id || "", error?.message || error);
+  });
+  return pending;
+}
+
+async function flushSingleJobPersistence() {
+  const pending = [...singleJobPersistence.values()];
+  if (pending.length) await Promise.all(pending.map((value) => value.catch(() => null)));
+}
+
+async function ensureSingleVideoStore() {
+  const state = await singleVideoStoreReady;
+  if (state?.error) throw state.error;
+  await flushSingleJobPersistence();
+  return state;
 }
 
 function jsonHeaders() {
@@ -2376,6 +2421,7 @@ function publicJob(job) {
     id: job.id,
     status: job.status,
     mode: job.mode,
+    model: job.model || job.modelProfile,
     progress: job.progress,
     stage: job.stage,
     prompt: job.prompt,
@@ -2387,13 +2433,16 @@ function publicJob(job) {
     height: job.height,
     duration: job.duration,
     modelProfile: job.modelProfile,
+    dimensions: { width: job.width, height: job.height },
+    inputRefs: job.inputRefs ? structuredClone(job.inputRefs) : {},
     ...(job.characterLoraName ? {
       characterLoraName: job.characterLoraName,
       characterLoraStrength: job.characterLoraStrength,
       loraProvenance: job.loraProvenance ? structuredClone(job.loraProvenance) : { relativePath: job.characterLoraName, legacy: true },
     } : {}),
     output: job.output,
-    error: job.error,
+    error: safePublicJobError(job.error),
+    exitCode: job.exitCode,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
     elapsedMs: job.elapsedMs,
@@ -2408,11 +2457,24 @@ function publicJob(job) {
     connectionState: job.connectionState,
     updatedAt: job.updatedAt,
     lastNativeProgressAt: job.lastNativeProgressAt,
+    attempt: job.attempt || 1,
+    retryOf: job.retryOf || job.provenance?.retryOf || null,
+    recoverable: Boolean(job.recoverable),
+    recovery: job.recovery ? structuredClone(job.recovery) : null,
+    provenance: job.provenance ? structuredClone(job.provenance) : null,
   };
+}
+
+function safePublicJobError(value) {
+  return String(value || "")
+    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s,;]+/g, "[redacted path]")
+    .slice(-2000);
 }
 
 function touchJob(job) {
   job.updatedAt = now();
+  scheduleSingleJobPersistence(job);
 }
 
 function stageProgress(classType) {
@@ -2760,8 +2822,44 @@ async function startGeneration(payload, internal = {}) {
   const batchId = String(payload.batchId || "");
   const batchIndex = Math.round(clampNumber(payload.batchIndex, 1, 1, 20));
   const batchTotal = Math.round(clampNumber(payload.batchTotal, 1, 1, 20));
+  const inputRefs = {
+    inputImage: String(payload.inputImageName || "").trim(),
+    lastFrame: String(payload.lastImageName || "").trim(),
+    inputVideo: String(payload.inputVideoName || "").trim(),
+    referenceImage: String(payload.referenceImageName || "").trim(),
+    referenceImages: referenceImageNames,
+  };
+  const requestProvenance = {
+    mode,
+    prompt,
+    negativePrompt,
+    model: modelProfile,
+    modelProfile,
+    width,
+    height,
+    dimensions: { width, height },
+    duration,
+    steps,
+    seed,
+    inputImageName: inputRefs.inputImage,
+    lastImageName: inputRefs.lastFrame,
+    inputVideoName: inputRefs.inputVideo,
+    referenceImageName: inputRefs.referenceImage,
+    referenceImageNames: referenceImageNames.slice(),
+    characterLoraName,
+    characterLoraStrength,
+    outputName: requestedOutputName,
+    batchId,
+    batchIndex,
+    batchTotal,
+    inputRefs,
+  };
+  const existingJob = internal.existingJob && typeof internal.existingJob === "object" ? internal.existingJob : null;
+  const attempt = Math.max(1, Number(existingJob?.attempt || internal.attempt || 1));
+  const createdAt = existingJob?.createdAt || now();
+  const queuedAt = now();
   const job = {
-    id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+    id: existingJob?.id || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
     status: "queued",
     mode,
     progress: 2,
@@ -2776,6 +2874,8 @@ async function startGeneration(payload, internal = {}) {
     width,
     height,
     duration,
+    steps,
+    model: modelProfile,
     modelProfile,
     ...(characterLoraName ? {
       characterLoraName,
@@ -2790,14 +2890,35 @@ async function startGeneration(payload, internal = {}) {
         triggerWords: registryLora.registry.triggerWords,
       } : { relativePath: characterLoraName, legacy: true },
     } : {}),
-    startedAt: now(),
+    inputRefs,
+    createdAt,
+    queuedAt,
+    startedAt: existingJob?.startedAt || createdAt,
     updatedAt: now(),
     connectionState: "starting",
     outputName,
     outputRelativeName: output.name,
     outputPath,
     cancelRequested: false,
+    attempt,
+    retryOf: internal.retryOf || existingJob?.retryOf || existingJob?.provenance?.retryOf || null,
+    recoverable: false,
+    recovery: null,
+    persistent: true,
+    provenance: {
+      request: requestProvenance,
+      attempt,
+      ...(internal.retryOf ? { retryOf: internal.retryOf, originalId: existingJob?.provenance?.originalId || internal.retryOf } : {}),
+      ...(existingJob?.provenance?.reason ? { reason: existingJob.provenance.reason } : {}),
+      submittedAt: existingJob?.provenance?.submittedAt || createdAt,
+    },
   };
+  try {
+    await singleVideoJobStore.create(job, { id: job.id, createdAt });
+  } catch (error) {
+    reservedOutputPaths.delete(outputPath);
+    throw error;
+  }
   jobs.set(job.id, job);
 
   let args = [];
@@ -2893,6 +3014,7 @@ async function startGeneration(payload, internal = {}) {
   child.on("error", (error) => {
     job.error = error.message;
     job.exitCode = -1;
+    touchJob(job);
   });
   child.on("close", async (code) => {
     job.exitCode = Number.isInteger(code) ? code : (job.exitCode ?? null);
@@ -2928,12 +3050,14 @@ async function startGeneration(payload, internal = {}) {
         }
         job.finishedAt = now();
         touchJob(job);
+        await persistSingleJob(job);
       } catch (error) {
         job.status = job.cancelRequested ? "cancelled" : "failed";
         job.stage = job.cancelRequested ? "cancelled" : "failed";
         if (!job.error) job.error = error instanceof Error ? error.message : String(error);
         job.finishedAt = now();
         try { touchJob(job); } catch (touchError) { job.error = job.error || String(touchError); }
+        await persistSingleJob(job).catch(() => {});
       } finally {
         // Keep the source admitted until output/toAsset registration has
         // completed.  DELETE and the next generation admission cannot slip
@@ -2946,6 +3070,90 @@ async function startGeneration(payload, internal = {}) {
     });
   });
   return publicJob(job);
+}
+
+function requestFromPersistedSingleJob(job) {
+  const request = job?.provenance?.request && typeof job.provenance.request === "object"
+    ? structuredClone(job.provenance.request)
+    : {};
+  return {
+    ...request,
+    mode: request.mode || job.mode,
+    prompt: request.prompt || job.prompt,
+    negativePrompt: request.negativePrompt || job.negativePrompt || "",
+    modelProfile: request.modelProfile || request.model || job.modelProfile,
+    width: request.width ?? job.width,
+    height: request.height ?? job.height,
+    duration: request.duration ?? job.duration,
+    steps: request.steps ?? job.steps,
+    seed: request.seed ?? job.seed,
+    outputName: request.outputName || job.outputName || job.output?.name || "h3-render",
+    batchId: request.batchId || job.batchId || "",
+    batchIndex: request.batchIndex ?? job.batchIndex ?? 1,
+    batchTotal: request.batchTotal ?? job.batchTotal ?? 1,
+  };
+}
+
+async function resumeSingleVideoJob(job) {
+  const request = requestFromPersistedSingleJob(job);
+  return await startGeneration(request, { existingJob: job });
+}
+
+async function retrySingleVideoJob(id) {
+  await ensureSingleVideoStore();
+  const source = await singleVideoJobStore.read(id);
+  if (!source) {
+    const error = new Error("Single Video job was not found.");
+    error.code = "SINGLE_VIDEO_JOB_NOT_FOUND";
+    error.status = 404;
+    throw error;
+  }
+  if (["queued", "running", "cancelling"].includes(source.status)) {
+    const error = new Error("Active Single Video jobs cannot be retried.");
+    error.code = "SINGLE_VIDEO_JOB_ACTIVE";
+    error.status = 409;
+    throw error;
+  }
+  if (!["failed", "cancelled", "interrupted"].includes(source.status)) {
+    const error = new Error("Only failed, cancelled, or interrupted Single Video jobs can be retried.");
+    error.code = "SINGLE_VIDEO_JOB_NOT_RETRYABLE";
+    error.status = 409;
+    throw error;
+  }
+  const nextAttempt = Math.max(1, Number(source.attempt || source.provenance?.attempt || 1) + 1);
+  return await startGeneration(requestFromPersistedSingleJob(source), {
+    retryOf: source.id,
+    attempt: nextAttempt,
+  });
+}
+
+async function recoverSingleVideoJobsAtStartup() {
+  const recovery = await singleVideoJobStore.recover({ ownerId: SINGLE_VIDEO_OWNER_ID });
+  if (process.env.MINIMAX_H3_SINGLE_VIDEO_AUTO_RESUME !== "0") {
+    for (const queued of recovery.requeued) {
+      try {
+        await resumeSingleVideoJob(queued);
+      } catch (error) {
+        await singleVideoJobStore.update(queued.id, {
+          status: "interrupted",
+          stage: "interrupted",
+          recoverable: true,
+          error: error instanceof Error ? error.message : String(error),
+          recovery: {
+            reason: "bridge_restart_requeue_failed",
+            previousStatus: "queued",
+            recoveredBy: SINGLE_VIDEO_OWNER_ID,
+            recoveredAt: now(),
+          },
+          finishedAt: now(),
+        }).catch(() => {});
+      }
+    }
+  }
+  await singleVideoJobStore.prune({ maxTerminalJobs: 100 }).catch((error) => {
+    console.warn("[single-video] retention warning", error?.message || error);
+  });
+  return recovery;
 }
 
 function sequenceMediaName(value, fallbackRoot = OUTPUT_ROOT) {
@@ -3599,8 +3807,8 @@ async function route(req, res) {
     return;
   }
   if (req.method === "GET" && pathname === "/api/jobs") {
-    const values = [...jobs.values()]
-      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+    await ensureSingleVideoStore();
+    const values = (await singleVideoJobStore.list())
       .slice(0, 20)
       .map(publicJob);
     sendJson(res, 200, { jobs: values });
@@ -3608,12 +3816,27 @@ async function route(req, res) {
   }
   if (req.method === "GET" && pathname.startsWith("/api/jobs/")) {
     const id = pathname.split("/").pop();
-    const job = jobs.get(id);
+    await ensureSingleVideoStore();
+    const job = await singleVideoJobStore.read(id);
     if (!job) {
       sendError(res, 404, "找不到這個生成工作。");
       return;
     }
     sendJson(res, 200, publicJob(job));
+    return;
+  }
+  if (req.method === "POST" && pathname.startsWith("/api/jobs/") && pathname.endsWith("/retry")) {
+    const id = pathname.split("/")[3];
+    try {
+      const job = await withAssetLifecycleLock(() => withRuntimeOperation(() => retrySingleVideoJob(id)));
+      sendJson(res, 201, { job });
+    } catch (error) {
+      const status = Number.isInteger(error?.status) ? error.status : 500;
+      sendJson(res, status, {
+        error: error instanceof Error ? error.message : "Single Video retry failed.",
+        ...(error?.code ? { code: error.code } : {}),
+      });
+    }
     return;
   }
   if (req.method === "POST" && pathname === "/api/assets/upload") {
@@ -3680,7 +3903,8 @@ async function route(req, res) {
   }
   if (req.method === "POST" && pathname.startsWith("/api/jobs/") && pathname.endsWith("/cancel")) {
     const id = pathname.split("/")[3];
-    const job = jobs.get(id);
+    await ensureSingleVideoStore();
+    const job = jobs.get(id) || await singleVideoJobStore.read(id);
     const child = jobProcesses.get(id);
     if (!job || !child) {
       sendError(res, 404, "這個工作目前不在執行中。");
@@ -3689,6 +3913,7 @@ async function route(req, res) {
     job.cancelRequested = true;
     job.status = "cancelling";
     job.stage = "正在停止…";
+    touchJob(job);
     child.kill();
     sendJson(res, 200, { job: publicJob(job) });
     return;

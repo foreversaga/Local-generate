@@ -153,6 +153,7 @@ function canCancel(raw, source) {
 function retryable(raw, source) {
   const status = normalizeJobStatus(raw?.status);
   if (!["error", "cancelled"].includes(status)) return false;
+  if (source === "video") return ["failed", "interrupted", "canceled", "cancelled", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "lora") return ["failed", "preflight_failed", "caption_failed", "canceled", "cancelled", "interrupted", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "long" || source === "upscale" || source === "img2img") return true;
   return false;
