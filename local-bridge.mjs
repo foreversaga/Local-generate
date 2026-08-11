@@ -32,6 +32,7 @@ import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./serv
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
+import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -410,6 +411,16 @@ function sendJson(res, status, payload) {
 
 function sendError(res, status, message, code) {
   sendJson(res, status, { error: message, ...(code ? { code } : {}) });
+}
+
+function sendAssetUploadError(res, error) {
+  const code = error?.code || "ASSET_UPLOAD_FAILED";
+  const message = error instanceof Error ? error.message : "Media asset upload failed.";
+  const details = error?.details && typeof error.details === "object" ? error.details : undefined;
+  sendJson(res, Number.isInteger(error?.status) ? error.status : 500, {
+    error: { code, message, ...(details ? { details } : {}) },
+    code,
+  });
 }
 
 function promptErrorPayload(error) {
@@ -2332,9 +2343,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       }
       let assetIds = Array.isArray(body.assetIds) ? body.assetIds : [];
       if (action === "images" && body.data) {
-        const uploaded = await uploadAsset({ name: body.name, mimeType: body.mimeType, data: body.data });
-        if (uploaded.kind !== "image") throw makeRuntimeError("UNSUPPORTED_IMAGE", "Training uploads must be images.", 415);
-        assetIds = [`${uploaded.root}:${uploaded.name}`];
+        throw makeRuntimeError("LORA_IMAGES_RAW_UPLOAD_REQUIRED", "Upload image bytes through the raw asset upload endpoint before importing them into LoRA Trainer.", 415);
       }
       if (!assetIds.length) throw makeRuntimeError("LORA_IMAGES_REQUIRED", "At least one image asset is required.", 400);
       await loraDatasetService.importImages(jobId, assetIds.map((assetId) => ({ assetId })), { resolver: resolveLoraTrainingSource });
@@ -3374,41 +3383,14 @@ function trimJobs() {
   }
 }
 
-async function uploadAsset(payload) {
-  const inputName = path.basename(String(payload.name || "upload"));
-  const mimeType = String(payload.mimeType || "");
-  let extension = path.extname(inputName).toLowerCase();
-  if (!extension) {
-    const extensionByMime = {
-      "image/png": ".png",
-      "image/jpeg": ".jpg",
-      "image/webp": ".webp",
-      "video/mp4": ".mp4",
-      "video/quicktime": ".mov",
-      "video/webm": ".webm",
-    };
-    extension = extensionByMime[mimeType] || "";
-  }
-  if (!IMAGE_EXTENSIONS.has(extension) && !VIDEO_EXTENSIONS.has(extension)) {
-    throw new Error("只支援 PNG、JPG、WEBP、MP4、MOV 或 WEBM。");
-  }
-  const cleanStem = path
-    .basename(inputName, path.extname(inputName))
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "upload";
-  let outputName = cleanStem + extension;
-  let outputPath = safePath(INPUT_ROOT, outputName);
-  let counter = 1;
-  while (await fs.stat(outputPath).catch(() => null)) {
-    outputName = cleanStem + "-" + counter + extension;
-    outputPath = safePath(INPUT_ROOT, outputName);
-    counter += 1;
-  }
-  const data = String(payload.data || "").replace(/^data:[^;]+;base64,/, "");
-  if (!data) throw new Error("上傳內容是空的。");
-  await fs.mkdir(INPUT_ROOT, { recursive: true });
-  await fs.writeFile(outputPath, Buffer.from(data, "base64"));
-  return await toAsset("input", outputName);
+const assetUploadService = createAssetUploadService({
+  root: INPUT_ROOT,
+  assetRoot: "input",
+  toAsset,
+});
+
+async function uploadAsset(request, metadata) {
+  return await assetUploadService.upload(request, metadata);
 }
 
 const ACTIVE_LONG_VIDEO_STATES = new Set(["planning", "queued", "running", "paused", "assembling"]);
@@ -3840,7 +3822,21 @@ async function route(req, res) {
     return;
   }
   if (req.method === "POST" && pathname === "/api/assets/upload") {
-    sendJson(res, 200, { asset: await uploadAsset(await readJson(req)) });
+    try {
+      const contentType = String(req.headers?.["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+      if (contentType !== RAW_UPLOAD_CONTENT_TYPE) {
+        throw new AssetUploadError("ASSET_UPLOAD_CONTENT_TYPE_INVALID", "Raw uploads must use application/octet-stream.", 415);
+      }
+      const asset = await withAssetLifecycleLock(() => uploadAsset(req, {
+        name: requestUrl.searchParams.get("name") || "",
+        mimeType: req.headers?.["x-asset-mime"] || requestUrl.searchParams.get("mimeType") || "",
+        contentType,
+      }));
+      sendJson(res, 201, { asset });
+    } catch (error) {
+      if (!req.readableEnded) req.resume?.();
+      if (!res.headersSent && !res.destroyed) sendAssetUploadError(res, error);
+    }
     return;
   }
   if (req.method === "POST" && pathname === "/api/ollama/prompt") {

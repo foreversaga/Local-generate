@@ -12,6 +12,7 @@ import {
   readImageDimensions,
 } from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
+import { uploadAssets } from "../library/asset-client";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
 import styles from "./SingleCreateForm.module.css";
@@ -439,21 +440,7 @@ export function SingleCreateForm() {
     setUploadingTarget(target);
     setSubmitError("");
     try {
-      const uploaded: Asset[] = [];
-      for (const file of candidates) {
-        const response = await fetch(`${BRIDGE_URL}/api/assets/upload`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: file.name,
-            mimeType: file.type,
-            data: await fileToBase64(file),
-          }),
-        });
-        const payload = (await response.json().catch(() => ({}))) as { asset?: Asset; error?: string };
-        if (!response.ok || !payload.asset) throw new Error(payload.error || `無法上傳 ${file.name}`);
-        uploaded.push(payload.asset);
-      }
+      const uploaded = (await uploadAssets(candidates)).filter((asset): asset is Asset => asset.root === "input");
 
       setAssets((current) => mergeAssets(current, uploaded));
       if (target === "referenceImage") setReferenceImage(uploaded[0] || null);
@@ -1264,18 +1251,6 @@ function assetUrl(asset: Asset) {
 
 function numberDraft(value: string): NumberDraft {
   return value === "" ? "" : Number(value);
-}
-
-async function fileToBase64(file: File) {
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const value = String(reader.result || "");
-      resolve(value.includes(",") ? value.split(",")[1] : value);
-    };
-    reader.onerror = () => reject(new Error("讀取檔案失敗。"));
-    reader.readAsDataURL(file);
-  });
 }
 
 function apiErrorMessage(payload: ApiErrorPayload, fallback: string) {
