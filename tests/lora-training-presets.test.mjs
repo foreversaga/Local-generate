@@ -76,6 +76,11 @@ test('maps every UI training override to the sd-scripts CLI', async () => {
   assert.equal(flagValue(command.args, '--caption_extension'), '.txt');
 });
 
+test('preserves a resolver-approved PATH command instead of resolving it as a local path', async () => {
+  const command = await resolveTrainingCommand({ ...COMMAND_REQUEST, python: 'python3' });
+  assert.equal(command.command, 'python3');
+});
+
 test('accepts trainer-supported float alpha and save precision', async () => {
   const resolved = await resolveTrainingParameters({
     preset: 'sdxl-style-balanced',

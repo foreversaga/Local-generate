@@ -62,6 +62,17 @@ async function invokeGet(pathname) {
   return { status: res.status, body: JSON.parse(body || "{}") };
 }
 
+test("health exposes structured safe Python resolver diagnostics", async () => {
+  const response = await invokeGet("/api/health");
+  assert.equal(response.status, 200);
+  assert.equal(typeof response.body.python, "object");
+  assert.equal(typeof response.body.python.available, "boolean");
+  assert.equal(typeof response.body.python.source, "string");
+  assert.ok(Object.hasOwn(response.body.python, "version"));
+  assert.ok(Object.hasOwn(response.body.python, "error"));
+  assert.doesNotMatch(JSON.stringify(response.body.python), /MINIMAX_H3_PYTHON=.*[A-Za-z]:|private|secret/i);
+});
+
 test("Character LoRA bridge validation accepts safe relative paths only", () => {
   assert.equal(normalizeCharacterLoraName(" characters\\hero.safetensors "), "characters/hero.safetensors");
   assert.throws(() => normalizeCharacterLoraName("../escape.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });

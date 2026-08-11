@@ -8,6 +8,7 @@ import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from
 
 import { atomicWriteJson, createJobStore } from '../server/lora-training/store.mjs';
 import { createDatasetService } from '../server/lora-training/dataset.mjs';
+import { resolvePythonExecutable } from '../server/runtime/python-resolver.mjs';
 
 const execFileAsync = promisify(execFile);
 const JOB_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -251,8 +252,13 @@ test('rejects unsafe repeats and missing captions before materialization', async
 });
 
 test('generated fixture is non-empty to the pinned sd-scripts DreamBooth parser', async (t) => {
-  const python = path.join('data', 'lora-training', 'runtime', 'venv', 'Scripts', 'python.exe');
-  try { await access(python); } catch { t.skip('pinned sd-scripts venv is unavailable'); return; }
+  const runtimeRoot = path.resolve('data/lora-training/runtime');
+  const resolution = await resolvePythonExecutable({ candidateRoots: [runtimeRoot], env: {} });
+  if (!resolution.available || resolution.source !== 'venv') {
+    t.skip('pinned sd-scripts venv is unavailable');
+    return;
+  }
+  const python = resolution.executable;
   const value = await fixture();
   try {
     const materialized = await value.dataset.materializeTrainerDataset(value.job.id, { triggerWords: value.job.triggerWords });

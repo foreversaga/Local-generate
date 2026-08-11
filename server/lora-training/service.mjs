@@ -15,6 +15,7 @@ import { createTrainingRunner, sanitizeTrainerText } from './runner.mjs';
 import { installTrainingArtifact } from './artifact.mjs';
 import { normalizeTrainingParameters, resolveTrainingCommand } from './presets.mjs';
 import { inspectRuntimeRevision, preflightLoraTraining } from './health.mjs';
+import { createPythonResolver, toPublicPythonResolution } from '../runtime/python-resolver.mjs';
 
 function serviceError(code, message, status = 500, details) {
   return new LoraTrainingError(code, message, { status, details });
@@ -132,7 +133,32 @@ export function createLoraTrainingService(options = {}) {
   });
   const schedulerPath = paths.scheduler;
   const leasePath = resolveSafeChild(paths.root, 'gpu-lease.json');
-  const pythonPath = options.python ?? path.join(paths.runtime, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const pythonResolver = options.pythonResolver ?? createPythonResolver({
+    platform: options.platform ?? process.platform,
+    env: options.env ?? process.env,
+    runtimeRoot: paths.runtime,
+    explicitExecutable: options.python,
+  });
+  async function resolveTrainerPython() {
+    const result = typeof pythonResolver === 'function'
+      ? await pythonResolver({ candidateRoots: [paths.runtime], ...(options.python !== undefined ? { explicitExecutable: options.python } : {}) })
+      : await pythonResolver.resolve();
+    return result && typeof result === 'object'
+      ? result
+      : { executable: null, source: 'none', version: null, available: false, error: { code: 'PYTHON_RESOLVER_INVALID', message: 'Python resolver returned an invalid result.', source: 'none' } };
+  }
+  async function requireTrainerPython() {
+    const result = await resolveTrainerPython();
+    if (!result.available || !result.executable) {
+      throw serviceError(
+        result.error?.code ?? 'PYTHON_UNAVAILABLE',
+        result.error?.message ?? 'A usable Python interpreter is unavailable.',
+        503,
+        { python: toPublicPythonResolution(result) },
+      );
+    }
+    return result;
+  }
   const now = options.now ?? (() => new Date().toISOString());
   const ownerPidValue = Number(options.ownerPid ?? process.pid);
   const ownerPid = Number.isSafeInteger(ownerPidValue) && ownerPidValue > 0 ? ownerPidValue : process.pid;
@@ -190,7 +216,20 @@ export function createLoraTrainingService(options = {}) {
       const entrypoint = path.join(paths.runtime, 'sd-scripts', 'sdxl_train_network.py');
       const revision = await inspectRuntimeRevision(paths.runtime);
       const checks = [];
-      for (const [name, target] of [['python', pythonPath], ['entrypoint', entrypoint]]) {
+      const pythonResolution = await resolveTrainerPython();
+      if (!pythonResolution.available || !pythonResolution.executable) {
+        checks.push({ name: 'python', ok: false, error: pythonResolution.error?.code ?? 'PYTHON_UNAVAILABLE' });
+      } else if (pythonResolution.source === 'PATH') {
+        checks.push({ name: 'python', ok: true, source: 'PATH', version: pythonResolution.version ?? null });
+      } else {
+        try {
+          await access(pythonResolution.executable, constants.R_OK);
+          checks.push({ name: 'python', ok: true });
+        } catch (error) {
+          checks.push({ name: 'python', ok: false, error: error?.code ?? error?.message });
+        }
+      }
+      for (const [name, target] of [['entrypoint', entrypoint]]) {
         try {
           await access(target, constants.R_OK);
           checks.push({ name, ok: true, path: target });
@@ -202,7 +241,7 @@ export function createLoraTrainingService(options = {}) {
       return {
         ok,
         message: ok ? 'trainer runtime is ready' : 'trainer runtime is incomplete',
-        details: { pythonPath, entrypoint, revision, checks },
+        details: { python: toPublicPythonResolution(pythonResolution), entrypoint, revision, checks },
       };
     }),
   });
@@ -295,6 +334,7 @@ export function createLoraTrainingService(options = {}) {
     if (!baseModel) throw serviceError('BASE_MODEL_UNAVAILABLE', 'base model could not be resolved', 422);
     const targetDirectory = await resolveComfyTarget({ job });
     if (!targetDirectory) throw serviceError('ARTIFACT_TARGET_UNAVAILABLE', 'ComfyUI LoRA target is not configured', 503);
+    const pythonResolution = typeof options.resolveCommand === 'function' ? null : await requireTrainerPython();
     const jobDirectory = getJobPaths(job.id, paths).directory;
     const outputDirectory = resolveSafeChild(jobDirectory, 'output/staging');
     await mkdir(outputDirectory, { recursive: true });
@@ -318,7 +358,7 @@ export function createLoraTrainingService(options = {}) {
       // injected for tests or an alternate runtime.
       parameters: normalizeTrainingParameters(config.overrides ?? config.parameters ?? {}),
       runtimeRoot: paths.runtime,
-      python: pythonPath,
+      ...(pythonResolution?.executable ? { python: pythonResolution.executable } : {}),
       baseCheckpoint: baseModel.path,
       datasetDirectory: trainerDataset.root,
       outputDirectory,
@@ -522,11 +562,18 @@ export function createLoraTrainingService(options = {}) {
 
   async function health({ family = 'sdxl', baseProfile } = {}) {
     await initialize();
+    const pythonResolution = await resolveTrainerPython();
     const base = await resolveBaseModel({ family, baseProfile });
     const targetDirectory = await resolveComfyTarget({ family, baseProfile });
-    if (!base || !targetDirectory) return { ok: false, checks: [{ name: !base ? 'baseCheckpoint' : 'targetDirectory', ok: false, error: 'not configured' }] };
+    if (!base || !targetDirectory) {
+      return {
+        ok: false,
+        python: toPublicPythonResolution(pythonResolution),
+        checks: [{ name: !base ? 'baseCheckpoint' : 'targetDirectory', ok: false, error: 'not configured' }],
+      };
+    }
     return preflightLoraTraining({
-      root: paths.root, runtimeRoot: paths.runtime, python: pythonPath,
+      root: paths.root, runtimeRoot: paths.runtime, pythonResolution,
       baseCheckpoint: base.path, targetDirectory,
       ollamaProbe: options.ollamaProbe, gpuProbe: options.gpuProbe,
     });

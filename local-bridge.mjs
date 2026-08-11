@@ -30,6 +30,7 @@ import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
 import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
 import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
+import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -47,9 +48,27 @@ const LOG_ROOT = path.resolve(
 const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
-const PYTHON = path.resolve(
-  process.env.MINIMAX_H3_PYTHON || path.join(COMFY_ROOT, "venv", "Scripts", "python.exe"),
-);
+const bridgePythonResolver = createPythonResolver({
+  platform: process.platform,
+  env: process.env,
+  projectRoot: PROJECT_ROOT,
+  candidateRoots: [COMFY_ROOT, H3_ROOT],
+});
+let bridgePythonResolutionPromise;
+function resolveBridgePython({ refresh = false } = {}) {
+  if (refresh || !bridgePythonResolutionPromise) bridgePythonResolutionPromise = bridgePythonResolver.resolve();
+  return bridgePythonResolutionPromise;
+}
+async function requireBridgePython() {
+  const resolution = await resolveBridgePython();
+  if (!resolution.available || !resolution.executable) {
+    const code = resolution.error?.code || "PYTHON_UNAVAILABLE";
+    throw makeRuntimeError(code, resolution.error?.message || "A usable Python interpreter is unavailable.", 503, {
+      python: toPublicPythonResolution(resolution),
+    });
+  }
+  return resolution;
+}
 const REF2VA_MODEL_NAME = "minimax_h3_ref2va_pruned_nvfp4.safetensors";
 const REF2VA_MODEL = path.join(COMFY_ROOT, "models", "diffusion_models", REF2VA_MODEL_NAME);
 const INITIAL_REMOTE_MODE = /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
@@ -913,10 +932,11 @@ async function releaseOllamaForComfy() {
 }
 
 async function health() {
-  const [ollama, comfy, codex] = await Promise.all([
+  const [ollama, comfy, codex, python] = await Promise.all([
     fetchJson(OLLAMA_URL + "/api/tags").catch(() => null),
     fetchJson(COMFY_URL + "/system_stats").catch(() => null),
     codexStatus(),
+    resolveBridgePython(),
   ]);
   const models = Array.isArray(ollama?.models)
     ? ollama.models.map((item) => String(item.name || item.model || "")).filter(Boolean)
@@ -930,6 +950,7 @@ async function health() {
     : [];
   return {
     bridge: true,
+    python: toPublicPythonResolution(python),
     h3Root: await fs
       .stat(H3_ROOT)
       .then((value) => value.isDirectory())
@@ -1897,6 +1918,9 @@ async function getLoraTrainingService() {
       if (typeof factory !== "function") throw makeRuntimeError("LORA_TRAINING_UNAVAILABLE", "LoRA training service is not configured.", 503);
       return await factory({
         resolveSource: resolveLoraTrainingSource,
+        pythonResolver: ({ candidateRoots } = {}) => bridgePythonResolver.resolve({
+          candidateRoots: candidateRoots ?? [COMFY_ROOT, H3_ROOT],
+        }),
         comfyRoot: COMFY_ROOT,
         comfyUrl: COMFY_URL,
         ollamaUrl: OLLAMA_URL,
@@ -2648,7 +2672,8 @@ async function startGeneration(payload, internal = {}) {
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
     throw new Error("找不到 minimax-h3-local，請確認本機路徑。");
   }
-  if (!(await fs.stat(PYTHON).catch(() => null))) {
+  const pythonResolution = await requireBridgePython();
+  if (!pythonResolution.available) {
     throw new Error("找不到 ComfyUI 虛擬環境的 Python。");
   }
   if ((mode === "fl2v" || mode === "l2v") && !(await hasLastImageGeneratorFlag())) {
@@ -2854,8 +2879,8 @@ async function startGeneration(payload, internal = {}) {
     PYTHONIOENCODING: "utf-8",
     MINIMAX_H3_LOGS_ROOT: LOG_ROOT,
   };
-  if (childEnv.Path && childEnv.PATH) delete childEnv.PATH;
-  const child = queueSpawn(PYTHON, args, {
+  if (childEnv.Path && childEnv.PATH && pythonResolution.source !== "PATH") delete childEnv.PATH;
+  const child = queueSpawn(pythonResolution.executable, args, {
     cwd: H3_ROOT,
     windowsHide: true,
     env: childEnv,

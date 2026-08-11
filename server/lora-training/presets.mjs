@@ -67,6 +67,15 @@ function requiredPath(value, name) {
   return path.resolve(value.trim());
 }
 
+function requiredExecutable(value, name) {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0')) throw new TypeError(`${name} is required`);
+  const executable = value.trim();
+  // Keep PATH commands (for example `python3`) as commands.  The runtime
+  // resolver has already admitted them with a bounded --version probe.
+  if (!executable.includes('/') && !executable.includes('\\') && !path.win32.isAbsolute(executable)) return executable;
+  return path.isAbsolute(executable) || path.win32.isAbsolute(executable) ? executable : path.resolve(executable);
+}
+
 /**
  * Convert public/UI parameter names into the pinned trainer's canonical names.
  * If an alias and its canonical key are both supplied, equal values are
@@ -164,7 +173,7 @@ export async function resolveTrainingCommand(request, options = {}) {
   });
   const values = parameterResolution.values;
   const runtimeRoot = requiredPath(request.runtimeRoot, 'runtimeRoot');
-  const python = requiredPath(request.python ?? path.join(runtimeRoot, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'), 'python');
+  const python = requiredExecutable(request.python ?? 'python', 'python');
   const entrypoint = path.join(runtimeRoot, 'sd-scripts', preset.entrypoint);
   const args = [entrypoint,
     '--pretrained_model_name_or_path', requiredPath(request.baseCheckpoint, 'baseCheckpoint'),
