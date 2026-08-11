@@ -15,7 +15,7 @@ export function CreateLanding() {
 
     useEffect(() => {
         void fetchUnifiedJobs()
-            .then((items) => setJobs(items.slice(0, 3)))
+            .then((snapshot) => setJobs(snapshot.jobs.slice(0, 3)))
             .catch(() => setJobs([]));
     }, []);
 

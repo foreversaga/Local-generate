@@ -1,24 +1,27 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { fetchUnifiedJobs, type UnifiedJob } from "./job-client";
+import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-client";
 import styles from "./JobsWorkspace.module.css";
 
 const STATUS_OPTIONS = ["all", "queued", "running", "complete", "partial", "error", "cancelled"] as const;
+const SOURCE_OPTIONS = ["all", "video", "long", "upscale", "img2img", "lora"] as const;
 
 export function JobsWorkspace() {
   const [jobs, setJobs] = useState<UnifiedJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<(typeof STATUS_OPTIONS)[number]>("all");
+  const [source, setSource] = useState<(typeof SOURCE_OPTIONS)[number]>("all");
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
+  const [sourceErrors, setSourceErrors] = useState<JobSourceError[]>([]);
 
   useEffect(() => {
     let active = true;
     const refresh = async () => {
       try {
-        const next = await fetchUnifiedJobs();
-        if (active) { setJobs(next); setError(""); }
+        const snapshot = await fetchUnifiedJobs();
+        if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); setError(""); }
       } catch (reason) {
         if (active) setError(reason instanceof Error ? reason.message : "Unable to load jobs.");
       } finally {
@@ -32,9 +35,10 @@ export function JobsWorkspace() {
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return jobs.filter((job) => (status === "all" || job.status === status)
+    return jobs.filter((job) => (source === "all" || job.source === source)
+      && (status === "all" || job.status === status)
       && (!needle || `${job.title} ${job.subtitle} ${job.id} ${job.source}`.toLowerCase().includes(needle)));
-  }, [jobs, query, status]);
+  }, [jobs, query, source, status]);
 
   return (
     <div className={styles.workspace}>
@@ -43,6 +47,13 @@ export function JobsWorkspace() {
           <span className="sr-only">Search jobs</span>
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, id, source…" />
         </label>
+        <div className={styles.filters} role="group" aria-label="Filter by source">
+          {SOURCE_OPTIONS.map((option) => (
+            <button key={option} type="button" className={source === option ? styles.filterActive : ""} aria-pressed={source === option} onClick={() => setSource(option)}>
+              {option === "all" ? "All sources" : sourceLabel(option)}
+            </button>
+          ))}
+        </div>
         <div className={styles.filters} role="group" aria-label="Filter by status">
           {STATUS_OPTIONS.map((option) => (
             <button key={option} type="button" className={status === option ? styles.filterActive : ""} aria-pressed={status === option} onClick={() => setStatus(option)}>
@@ -53,11 +64,18 @@ export function JobsWorkspace() {
       </section>
 
       {error && <div className={styles.error} role="alert">{error}</div>}
-      <div className={styles.summaryLine} aria-live="polite">{loading ? "Loading jobs…" : `${visible.length} jobs · ${jobs.filter((job) => job.status === "queued" || job.status === "running").length} active`}</div>
+      {sourceErrors.length > 0 && (
+        <div className={styles.sourceWarning} role="status" aria-live="polite">
+          <strong>Some job sources are unavailable.</strong>
+          <span>{sourceErrors.map((item) => `${sourceLabel(item.source)}: ${item.message}`).join(" · ")}</span>
+        </div>
+      )}
+      <div className={styles.summaryLine} aria-live="polite">{loading ? "Loading jobs…" : sourceErrors.length > 0 ? `${visible.length} jobs shown · ${sourceErrors.length} source${sourceErrors.length === 1 ? "" : "s"} unavailable` : `${visible.length} jobs · ${jobs.filter((job) => job.status === "queued" || job.status === "running").length} active`}</div>
 
       <div className={styles.list}>
         {visible.map((job) => <JobRow key={`${job.source}:${job.id}`} job={job} />)}
-        {!loading && visible.length === 0 && <div className={styles.empty}>No jobs match the current filters.</div>}
+        {!loading && visible.length === 0 && sourceErrors.length === 0 && <div className={styles.empty}>No jobs match the current filters.</div>}
+        {!loading && visible.length === 0 && sourceErrors.length > 0 && <div className={styles.empty}>Job counts are incomplete while unavailable sources are being retried.</div>}
       </div>
     </div>
   );

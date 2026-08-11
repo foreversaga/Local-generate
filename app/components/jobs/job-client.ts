@@ -1,29 +1,29 @@
+import { fetchUnifiedJobSnapshot } from "../../lib/job-source-fetch.mjs";
 import { mergeJobCollections } from "../../lib/job-adapter.mjs";
 
 export type UnifiedJob = ReturnType<typeof mergeJobCollections>[number];
 
 const BRIDGE_URL = "/app";
 
-export async function fetchUnifiedJobs(): Promise<UnifiedJob[]> {
-  const specs = [
-    { source: "video", url: `${BRIDGE_URL}/api/jobs` },
-    { source: "long", url: `${BRIDGE_URL}/api/sequences` },
-    { source: "upscale", url: `${BRIDGE_URL}/api/upscale/jobs` },
-    { source: "img2img", url: `${BRIDGE_URL}/api/img2img/jobs` },
-    { source: "lora", url: `${BRIDGE_URL}/api/lora-training/jobs` },
-  ] as const;
-  const collections = await Promise.all(specs.map(async (spec) => {
-    try {
-      const response = await fetch(spec.url, { cache: "no-store" });
-      if (!response.ok) return { source: spec.source, jobs: [] };
-      const payload = await response.json() as { jobs?: unknown[]; job?: unknown };
-      const jobs = payload.jobs || (spec.source === "img2img" && payload.job ? [payload.job] : []);
-      return { source: spec.source, jobs };
-    } catch {
-      return { source: spec.source, jobs: [] };
-    }
-  }));
-  return mergeJobCollections(collections) as UnifiedJob[];
+export type JobSourceError = {
+  source: string;
+  status: number | null;
+  code: string;
+  message: string;
+};
+
+export type UnifiedJobsSnapshot = {
+  jobs: UnifiedJob[];
+  errors: JobSourceError[];
+};
+
+export type FetchUnifiedJobsOptions = {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+};
+
+export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promise<UnifiedJobsSnapshot> {
+  return await fetchUnifiedJobSnapshot(options) as UnifiedJobsSnapshot;
 }
 
 export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry") {

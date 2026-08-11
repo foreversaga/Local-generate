@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchUnifiedJobs, jobOutputHref, performJobAction, type UnifiedJob } from "./job-client";
+import { lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
+import { fetchUnifiedJobs, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import styles from "./JobsWorkspace.module.css";
 
@@ -12,16 +13,20 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [sourceUnavailable, setSourceUnavailable] = useState<JobSourceError | null>(null);
 
   const refresh = useCallback(async (targetId = jobId, targetSource = sourceHint) => {
-    const jobs = await fetchUnifiedJobs();
-    const next = jobs.find((item) => item.id === targetId && (!targetSource || item.source === targetSource)) || jobs.find((item) => item.id === targetId) || null;
-    setJob(next); setLoading(false);
+    const snapshot = await fetchUnifiedJobs();
+    const { job: next, sourceError: failedSource } = lookupUnifiedJob(snapshot, { jobId: targetId, sourceHint: targetSource });
+    setJob(next);
+    setSourceUnavailable(failedSource);
+    setError("");
+    setLoading(false);
   }, [jobId, sourceHint]);
 
   useEffect(() => {
     let active = true;
-    const poll = async () => { if (!active) return; try { await refresh(); } catch (reason) { if (active) setError(reason instanceof Error ? reason.message : "Unable to load job."); } };
+    const poll = async () => { if (!active) return; try { await refresh(); } catch (reason) { if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "Unable to load job."); } } };
     void poll();
     const timer = window.setInterval(poll, 2500);
     return () => { active = false; window.clearInterval(timer); };
@@ -45,6 +50,15 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   }
 
   if (loading) return <div className={styles.empty}>Loading job…</div>;
+  if (!job && sourceUnavailable) {
+    return (
+      <div className={styles.error} role="alert">
+        <strong>Job source unavailable.</strong>
+        <p>{sourceLabel(sourceUnavailable.source)}: {sourceUnavailable.message}</p>
+        <a href="/app/jobs" className={styles.backLink}>← All jobs</a>
+      </div>
+    );
+  }
   if (!job) return <div className={styles.error} role="alert">Job not found.</div>;
   const outputHref = jobOutputHref(job);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
@@ -78,3 +92,4 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     </div>
   );
 }
+function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I", lora: "LoRA" } as Record<string, string>)[source] || source; }
