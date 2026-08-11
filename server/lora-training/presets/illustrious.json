@@ -1,0 +1,16 @@
+{
+  "id": "illustrious",
+  "entrypoint": "sdxl_train_network.py",
+  "networkModule": "networks.lora",
+  "defaults": {
+    "resolution": 1024,
+    "batchSize": 1,
+    "epochs": 12,
+    "learningRate": 0.0001,
+    "networkDim": 32,
+    "networkAlpha": 16,
+    "saveEveryEpochs": 1,
+    "mixedPrecision": "bf16",
+    "savePrecision": "fp16"
+  }
+}

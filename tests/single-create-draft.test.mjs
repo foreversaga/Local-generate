@@ -19,6 +19,8 @@ function draftInput(overrides = {}) {
     seed: 12345,
     renderCount: 2,
     outputName: "draft-video",
+    characterLoraName: "characters/hero.safetensors",
+    characterLoraStrength: 0.8,
     referenceImageKey: "input:first.png",
     referenceImageKeys: ["input:first.png", "input:second.png"],
     lastFrameImageKey: "input:last.png",
@@ -38,6 +40,12 @@ test("Single Create draft contract keeps only stable form state and asset keys",
 test("Single Create draft round-trips valid state", () => {
   const source = createSingleCreateDraft(draftInput({ width: "", seed: "" }));
   assert.deepEqual(parseSingleCreateDraft(JSON.stringify(source)), source);
+});
+
+test("Single Create draft preserves an intentionally blank character LoRA strength", () => {
+  const source = createSingleCreateDraft(draftInput({ characterLoraStrength: "" }));
+  assert.equal(source.characterLoraStrength, "");
+  assert.equal(parseSingleCreateDraft(JSON.stringify(source)).characterLoraStrength, "");
 });
 
 test("Single Create draft rejects unknown versions and sanitizes corrupted fields", () => {
@@ -76,6 +84,8 @@ test("Single Create draft rejects unknown versions and sanitizes corrupted field
     seed: "",
     renderCount: 3,
     outputName: "",
+    characterLoraName: "",
+    characterLoraStrength: 0.75,
     referenceImageKey: null,
     referenceImageKeys: ["input:a.png", "input:b.png"],
     lastFrameImageKey: null,

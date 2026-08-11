@@ -10,6 +10,8 @@ import {
   buildImg2ImgPrompt,
   createImg2ImgController,
   evaluateImg2ImgReadiness,
+  normalizeCharacterLoraName,
+  normalizeCharacterLoraStrength,
   normalizeImageAssetName,
   parseImg2ImgHistory,
 } from "../server/image-generation/img2img.mjs";
@@ -57,6 +59,12 @@ const currentObjectInfo = {
   CheckpointLoaderSimple: { input: { required: { ckpt_name: [{ value: [...CHECKPOINT_MODELS] }, { tooltip: "Checkpoint" }] } } },
 };
 
+const loraObjectInfo = {
+  ...currentObjectInfo,
+  LoraLoader: { input: { required: { model: ["MODEL"], clip: ["CLIP"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"], strength_clip: ["FLOAT"] } } },
+  LoraLoaderModelOnly: { input: { required: { model: ["MODEL"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"] } } },
+};
+
 const zImageObjectInfo = {
   LoadImage: {},
   VAEEncode: {},
@@ -89,6 +97,53 @@ test("builds an eight-node native img2img workflow", () => {
   assert.equal(graph["6"].inputs.denoise, 0.55);
   assert.equal(graph["6"].inputs.steps, 4);
   assert.deepEqual(graph["8"].inputs.images, ["7", 0]);
+});
+
+test("adds a checkpoint LoRA without changing the unselected graph node ids", () => {
+  const graph = buildImg2ImgPrompt({
+    sourceName: "source.png",
+    prompt: "cinematic portrait",
+    negativePrompt: "blur",
+    model: IMG2IMG_MODELS[0],
+    characterLoraName: "characters/hero.safetensors",
+    characterLoraStrength: 0.75,
+  });
+  assert.equal(graph["9"].class_type, "LoraLoader");
+  assert.deepEqual(graph["9"].inputs.model, ["1", 0]);
+  assert.deepEqual(graph["9"].inputs.clip, ["1", 1]);
+  assert.equal(graph["9"].inputs.lora_name, "characters/hero.safetensors");
+  assert.equal(graph["9"].inputs.strength_model, 0.75);
+  assert.equal(graph["9"].inputs.strength_clip, 0.75);
+  assert.deepEqual(graph["4"].inputs.clip, ["9", 1]);
+  assert.deepEqual(graph["5"].inputs.clip, ["9", 1]);
+  assert.deepEqual(graph["6"].inputs.model, ["9", 0]);
+});
+
+test("adds a model-only LoRA to the Z-Image model path", () => {
+  const graph = buildImg2ImgPrompt({
+    sourceName: "source.png",
+    prompt: "a realistic portrait",
+    model: Z_IMAGE_MODEL,
+    characterLoraName: "z-image/hero.safetensors",
+    characterLoraStrength: 0.6,
+  });
+  assert.equal(graph["12"].class_type, "LoraLoaderModelOnly");
+  assert.deepEqual(graph["12"].inputs.model, ["1", 0]);
+  assert.equal(graph["12"].inputs.lora_name, "z-image/hero.safetensors");
+  assert.equal(graph["12"].inputs.strength_model, 0.6);
+  assert.deepEqual(graph["8"].inputs.model, ["12", 0]);
+});
+
+test("validates character LoRA names and strengths", () => {
+  assert.equal(normalizeCharacterLoraName(" characters\\hero.safetensors "), "characters/hero.safetensors");
+  assert.equal(normalizeCharacterLoraStrength(undefined), 0.75);
+  assert.equal(normalizeCharacterLoraStrength("0.8"), 0.8);
+  assert.throws(() => normalizeCharacterLoraName("../escape.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.throws(() => normalizeCharacterLoraName("C:\\models\\hero.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.throws(() => normalizeCharacterLoraName("\\\\server\\share\\hero.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.throws(() => normalizeCharacterLoraStrength(""), { code: "CHARACTER_LORA_STRENGTH_INVALID" });
+  assert.throws(() => normalizeCharacterLoraStrength(false), { code: "CHARACTER_LORA_STRENGTH_INVALID" });
+  assert.throws(() => normalizeCharacterLoraStrength(2.1), { code: "CHARACTER_LORA_STRENGTH_INVALID" });
 });
 
 test("builds the WAI checkpoint workflow without changing the native graph", () => {
@@ -156,6 +211,15 @@ test("readiness parses the current ComfyUI checkpoint combo schema", () => {
   assert.equal(readiness.models[IMG2IMG_MODELS[1]], true);
 });
 
+test("readiness reports the optional LoRA loader nodes without making them required", () => {
+  const withoutLoraNodes = evaluateImg2ImgReadiness(currentObjectInfo);
+  assert.equal(withoutLoraNodes.models[IMG2IMG_MODELS[0]], true);
+  assert.equal(withoutLoraNodes.profiles[IMG2IMG_MODELS[0]].loraAvailable, false);
+  const withLoraNodes = evaluateImg2ImgReadiness(loraObjectInfo);
+  assert.equal(withLoraNodes.profiles[IMG2IMG_MODELS[0]].loraLoader, "LoraLoader");
+  assert.equal(withLoraNodes.profiles[IMG2IMG_MODELS[0]].loraAvailable, true);
+});
+
 test("readiness checks Z-Image loader nodes and companion model combos", () => {
   const readiness = evaluateImg2ImgReadiness(zImageObjectInfo);
   assert.equal(readiness.ready, true);
@@ -215,6 +279,27 @@ test("POST readiness 503 keeps health details for actionable diagnostics", async
   assert.equal(res.body.error, "Image-to-image is not ready.");
   assert.equal(res.body.health.comfyUi, false);
   assert.equal(res.body.health.models[IMG2IMG_MODELS[0]], true);
+});
+
+test("POST rejects a LoRA when the selected profile loader node is unavailable", async () => {
+  const controller = createImg2ImgController({
+    inputRoot: path.join(os.tmpdir(), "h3-img2img-lora-input-missing"),
+    outputRoot: path.join(os.tmpdir(), "h3-img2img-lora-output-missing"),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/system_stats")) return response({});
+      if (String(url).endsWith("/object_info")) return response(currentObjectInfo);
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+  });
+  const res = apiResponse();
+  await controller.handleRoute({ method: "POST", url: "/api/img2img" }, res, {
+    readJson: async () => ({ sourceName: "source.png", prompt: "restyle", characterLoraName: "characters/hero.safetensors" }),
+    sendJson: (_target, status, body) => { res.status = status; res.body = body; },
+    sendError: (_target, status, message, code) => { res.status = status; res.body = { error: message, code }; },
+  });
+  assert.equal(res.status, 503);
+  assert.equal(res.body.code, "IMG2IMG_LORA_NOT_READY");
+  assert.equal(res.body.health.profiles[IMG2IMG_MODELS[0]].loraAvailable, false);
 });
 
 test("POST rejects a selected model when another profile is ready", async () => {
@@ -321,6 +406,7 @@ test("remote controller uploads, generates, downloads, and registers an image", 
       remote: true,
       inputRoot,
       outputRoot,
+      storeRoot: path.join(root, "records"),
       fetchImpl,
       pollIntervalMs: 1,
       beforeRun: async () => { beforeRuns += 1; },
@@ -337,6 +423,7 @@ test("remote controller uploads, generates, downloads, and registers an image", 
     assert.equal(job.status, "completed", job.error);
     assert.equal(beforeRuns, 1);
     assert.equal(submittedGraph["2"].inputs.image, "h3-studio-img2img/job.png");
+    assert.equal(submittedGraph["6"].inputs.seed, 7);
     assert.equal(job.output.name, "img2img/source-12345678.png");
     assert.deepEqual([...await readFile(path.join(outputRoot, job.output.name))], [137, 80, 78, 71, 13, 10]);
     assert.ok(calls.some((item) => item.startsWith("/view?")));
@@ -376,6 +463,7 @@ test("local controller submits the Z-Image graph and registers node 11 output", 
       comfyUrl: "http://local-comfy",
       inputRoot,
       outputRoot,
+      storeRoot: path.join(root, "records"),
       fetchImpl,
       pollIntervalMs: 1,
       idFactory: () => "z-local-job",
@@ -391,6 +479,186 @@ test("local controller submits the Z-Image graph and registers node 11 output", 
     assert.equal(submittedGraph["1"].class_type, "UNETLoader");
     assert.equal(submittedGraph["11"].class_type, "SaveImage");
     assert.equal(job.output.name, artifactName);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch controller randomizes every item Seed, ignores legacy Seed ranges, and reloads persisted records", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-batch-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  const storeRoot = path.join(root, "records");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  const submitted = [];
+  let promptCount = 0;
+  const randomValues = [0, 0, 0, 0, 0.999999999999, 0.999999999999, 0.999999999999, 0.999999999999, 0.999999999999];
+  let randomIndex = 0;
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://batch-comfy", "");
+    if (endpoint === "/system_stats") return new Response("{}");
+    if (endpoint === "/object_info") return new Response(JSON.stringify(requiredObjectInfo));
+    if (endpoint === "/upload/image") return new Response(JSON.stringify({ name: "batch-source.png", subfolder: "h3-studio-img2img", type: "input" }));
+    if (endpoint === "/prompt") {
+      promptCount += 1;
+      submitted.push(JSON.parse(init.body).prompt);
+      return new Response(JSON.stringify({ prompt_id: `batch-prompt-${promptCount}` }));
+    }
+    if (endpoint.startsWith("/history/batch-prompt-")) {
+      const index = Number(endpoint.slice("/history/batch-prompt-".length));
+      return new Response(JSON.stringify({
+        [`batch-prompt-${index}`]: {
+          status: { status_str: "success", completed: true },
+          outputs: { "8": { images: [{ filename: `remote-${index}.png`, subfolder: "img2img", type: "output" }] } },
+        },
+      }));
+    }
+    if (endpoint.startsWith("/view?")) return new Response(Buffer.from([137, 80, 78, 71, 13, 10]));
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  try {
+    const controller = createImg2ImgController({
+      comfyUrl: "http://batch-comfy",
+      remote: true,
+      inputRoot,
+      outputRoot,
+      storeRoot,
+      fetchImpl,
+      pollIntervalMs: 1,
+      idFactory: () => "batch-job-1",
+      randomFn: () => randomValues[randomIndex++] ?? 0,
+      toAsset: async (_root, name) => ({ root: "output", name, kind: "image" }),
+    });
+    const queued = await controller.enqueue({
+      sourceName: "source.png",
+      prompt: "restyled portrait",
+      model: IMG2IMG_MODELS[0],
+      denoise: 0.55,
+      steps: 4,
+      cfg: 1,
+      seed: 42,
+      batchCount: 3,
+      randomRanges: {
+        denoise: { min: 0.4, max: 0.6 },
+        steps: { min: 3, max: 5 },
+        cfg: { min: 0.5, max: 1.5 },
+        seed: { min: 100, max: 102 },
+      },
+    });
+    assert.equal(queued.status, "queued");
+    assert.equal(queued.batchCount, 3);
+    assert.equal(queued.items.length, 3);
+    let job = queued;
+    for (let count = 0; count < 1000 && !["completed", "failed", "partial"].includes(job.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      job = await controller.getJob(queued.id);
+    }
+    assert.equal(job.status, "completed", job.error);
+    assert.equal(job.completedCount, 3);
+    assert.equal(job.failedCount, 0);
+    assert.deepEqual(job.items[0].parameters, { denoise: 0.55, steps: 4, cfg: 1, seed: 0 });
+    assert.deepEqual(job.items[1].parameters, { denoise: 0.4, steps: 3, cfg: 0.5, seed: 2147483647 });
+    assert.deepEqual(job.items[2].parameters, { denoise: 0.6, steps: 5, cfg: 1.5, seed: 2147483647 });
+    assert.equal(submitted[0]["6"].inputs.seed, 0);
+    assert.equal(submitted[1]["6"].inputs.seed, 2147483647);
+    assert.equal(submitted[2]["6"].inputs.seed, 2147483647);
+    assert.notEqual(job.items[0].output.name, job.items[1].output.name);
+    assert.notEqual(job.items[1].output.name, job.items[2].output.name);
+
+    const restarted = createImg2ImgController({ inputRoot, outputRoot, storeRoot, fetchImpl: async () => { throw new Error("ComfyUI should not be queried for persisted detail"); } });
+    const persisted = await restarted.getJob(queued.id);
+    assert.equal(persisted.status, "completed");
+    assert.equal(persisted.items[2].parameters.seed, 2147483647);
+    assert.equal((await restarted.listJobs()).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch controller records partial failures and continues with later items", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-partial-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  const storeRoot = path.join(root, "records");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  let promptCount = 0;
+  const fetchImpl = async (url) => {
+    const endpoint = String(url).replace("http://partial-comfy", "");
+    if (endpoint === "/system_stats") return new Response("{}");
+    if (endpoint === "/object_info") return new Response(JSON.stringify(requiredObjectInfo));
+    if (endpoint === "/upload/image") return new Response(JSON.stringify({ name: "partial-source.png", subfolder: "h3-studio-img2img", type: "input" }));
+    if (endpoint === "/prompt") {
+      promptCount += 1;
+      if (promptCount === 2) throw new Error("simulated second image failure");
+      return new Response(JSON.stringify({ prompt_id: `partial-prompt-${promptCount}` }));
+    }
+    if (endpoint.startsWith("/history/partial-prompt-")) {
+      const index = Number(endpoint.slice("/history/partial-prompt-".length));
+      return new Response(JSON.stringify({
+        [`partial-prompt-${index}`]: {
+          status: { status_str: "success", completed: true },
+          outputs: { "8": { images: [{ filename: `partial-${index}.png`, subfolder: "img2img", type: "output" }] } },
+        },
+      }));
+    }
+    if (endpoint.startsWith("/view?")) return new Response(Buffer.from([137, 80, 78, 71, 13, 10]));
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  try {
+    const controller = createImg2ImgController({
+      comfyUrl: "http://partial-comfy",
+      remote: true,
+      inputRoot,
+      outputRoot,
+      storeRoot,
+      fetchImpl,
+      pollIntervalMs: 1,
+      idFactory: () => "partial-job-1",
+      toAsset: async (_root, name) => ({ root: "output", name, kind: "image" }),
+    });
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "restyled", batchCount: 3 });
+    let job = queued;
+    for (let count = 0; count < 1000 && !["completed", "failed", "partial"].includes(job.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      job = await controller.getJob(queued.id);
+    }
+    assert.equal(job.status, "partial");
+    assert.equal(job.completedCount, 2);
+    assert.equal(job.failedCount, 1);
+    assert.equal(job.items[1].status, "failed");
+    assert.match(job.items[1].error, /simulated second image failure/);
+    assert.equal(job.items[2].status, "completed");
+    assert.equal(promptCount, 3);
+    const persisted = await createImg2ImgController({ inputRoot, outputRoot, storeRoot, fetchImpl }).getJob(queued.id);
+    assert.equal(persisted.status, "partial");
+    assert.equal(persisted.failedCount, 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch request rejects invalid count and unaligned random ranges", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-range-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  try {
+    const controller = createImg2ImgController({ inputRoot, outputRoot, storeRoot: path.join(root, "records"), fetchImpl: async () => { throw new Error("not reached"); } });
+    await assert.rejects(
+      () => controller.enqueue({ sourceName: "source.png", prompt: "restyled", batchCount: 21 }),
+      (error) => error?.status === 400 && error?.code === "BATCH_COUNT_INVALID",
+    );
+    await assert.rejects(
+      () => controller.enqueue({ sourceName: "source.png", prompt: "restyled", randomRanges: { denoise: { min: 0.011, max: 0.5 } } }),
+      (error) => error?.status === 400 && error?.code === "RANDOM_RANGE_INVALID",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

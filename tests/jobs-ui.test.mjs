@@ -16,3 +16,16 @@ test("Jobs progress and filter controls expose accessible values", async () => {
   assert.match(detail, /aria-valuetext=\{`\$\{progress\}% complete`\}/);
   assert.match(styles, /\.filters button\{min-height:44px/);
 });
+
+test("Jobs exposes partial status and preserves image batch retry fields", async () => {
+  const [list, client] = await Promise.all([
+    readFile(new URL("../app/components/jobs/JobsWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/jobs/job-client.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(list, /"partial"/);
+  assert.match(list, /partial: "Partial"/);
+  assert.match(client, /job\.raw\.batchCount/);
+  assert.match(client, /body\.batchCount = job\.raw\.batchCount/);
+  assert.match(client, /job\.raw\.randomRanges/);
+  assert.match(client, /body\.randomRanges = job\.raw\.randomRanges/);
+});

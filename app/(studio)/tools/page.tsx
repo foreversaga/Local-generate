@@ -22,6 +22,13 @@ export default function ToolsPage() {
           href="/app/tools/image-to-image"
           actionLabel="Open tool"
         />
+        <RouteCard
+          code="03 / LORA TRAINER"
+          title="LoRA Trainer"
+          description="整理圖片與 captions，完成 preflight 後排入單 GPU 訓練佇列。"
+          href="/app/tools/lora-trainer"
+          actionLabel="Open trainer"
+        />
       </RouteGrid>
     </RoutePage>
   );

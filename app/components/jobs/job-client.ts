@@ -15,8 +15,9 @@ export async function fetchUnifiedJobs(): Promise<UnifiedJob[]> {
     try {
       const response = await fetch(spec.url, { cache: "no-store" });
       if (!response.ok) return { source: spec.source, jobs: [] };
-      const payload = await response.json() as { jobs?: unknown[] };
-      return { source: spec.source, jobs: payload.jobs || [] };
+      const payload = await response.json() as { jobs?: unknown[]; job?: unknown };
+      const jobs = payload.jobs || (spec.source === "img2img" && payload.job ? [payload.job] : []);
+      return { source: spec.source, jobs };
     } catch {
       return { source: spec.source, jobs: [] };
     }
@@ -29,7 +30,25 @@ export async function performJobAction(job: UnifiedJob, action: "cancel" | "paus
   if (job.source === "long" && ["cancel", "pause", "resume"].includes(action)) return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "long" && action === "retry") return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/start`, "POST");
   if (job.source === "upscale" && action === "retry") return request(`${BRIDGE_URL}/api/upscale`, "POST", { sourceName: job.raw.sourceName, sourceRoot: job.raw.sourceRoot, scale: job.raw.scale });
-  if (job.source === "img2img" && action === "retry") return request(`${BRIDGE_URL}/api/img2img`, "POST", { sourceName: job.raw.sourceName, sourceRoot: job.raw.sourceRoot, prompt: job.raw.prompt, negativePrompt: job.raw.negativePrompt, model: job.raw.model, denoise: job.raw.denoise, steps: job.raw.steps, cfg: job.raw.cfg, seed: job.raw.seed });
+  if (job.source === "img2img" && action === "retry") {
+    const body: Record<string, unknown> = {
+      sourceName: job.raw.sourceName,
+      sourceRoot: job.raw.sourceRoot,
+      prompt: job.raw.prompt,
+      negativePrompt: job.raw.negativePrompt,
+      model: job.raw.model,
+      denoise: job.raw.denoise,
+      steps: job.raw.steps,
+      cfg: job.raw.cfg,
+      seed: job.raw.seed,
+    };
+    if (typeof job.raw.characterLoraId === "string" && job.raw.characterLoraId) body.characterLoraId = job.raw.characterLoraId;
+    if (typeof job.raw.characterLoraName === "string" && job.raw.characterLoraName) body.characterLoraName = job.raw.characterLoraName;
+    if (Number.isFinite(job.raw.characterLoraStrength)) body.characterLoraStrength = job.raw.characterLoraStrength;
+    if (Number.isInteger(job.raw.batchCount)) body.batchCount = job.raw.batchCount;
+    if (job.raw.randomRanges && typeof job.raw.randomRanges === "object") body.randomRanges = job.raw.randomRanges;
+    return request(`${BRIDGE_URL}/api/img2img`, "POST", body);
+  }
   throw new Error("This action is not supported by the existing backend contract.");
 }
 

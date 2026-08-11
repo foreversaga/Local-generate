@@ -73,6 +73,9 @@ export function SingleCreateForm() {
   const [seed, setSeed] = useState<NumberDraft>(12345);
   const [renderCount, setRenderCount] = useState<NumberDraft>(1);
   const [outputName, setOutputName] = useState("");
+  const [characterLoraName, setCharacterLoraName] = useState("");
+  const [characterLoraStrength, setCharacterLoraStrength] = useState<NumberDraft>(0.75);
+  const [characterLoraOptions, setCharacterLoraOptions] = useState<string[]>([]);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
   const [referenceImages, setReferenceImages] = useState<Asset[]>([]);
   const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
@@ -99,6 +102,8 @@ export function SingleCreateForm() {
     steps,
     seed,
     renderCount,
+    characterLoraName,
+    characterLoraStrength,
     referenceImage,
     referenceImages,
     lastFrameImage,
@@ -111,6 +116,8 @@ export function SingleCreateForm() {
     referenceImage,
     referenceImages,
     renderCount,
+    characterLoraName,
+    characterLoraStrength,
     seed,
     sourceVideo,
     steps,
@@ -132,6 +139,8 @@ export function SingleCreateForm() {
     seed,
     renderCount,
     outputName,
+    characterLoraName,
+    characterLoraStrength,
     referenceImageKey: referenceImage ? assetKey(referenceImage) : null,
     referenceImageKeys: referenceImages.map(assetKey),
     lastFrameImageKey: lastFrameImage ? assetKey(lastFrameImage) : null,
@@ -144,6 +153,8 @@ export function SingleCreateForm() {
     modelProfile,
     negativePrompt,
     outputName,
+    characterLoraName,
+    characterLoraStrength,
     prompt,
     referenceImage,
     referenceImages,
@@ -184,8 +195,25 @@ export function SingleCreateForm() {
     }
   }
 
+  async function refreshCharacterLoras() {
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/loras?family=wan&profile=wan22_animate_fp8&consumer=single-replace`);
+      if (!response.ok) {
+        setCharacterLoraOptions([]);
+        return;
+      }
+      const payload = (await response.json()) as { loras?: unknown };
+      setCharacterLoraOptions(Array.isArray(payload.loras)
+        ? payload.loras.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+        : []);
+    } catch {
+      // The field remains usable as a free-text relative path when discovery is unavailable.
+      setCharacterLoraOptions([]);
+    }
+  }
+
   async function initializeSingleCreate() {
-    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth()]);
+    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth(), refreshCharacterLoras()]);
     setAssetsReady(assetsLoaded);
   }
 
@@ -224,6 +252,8 @@ export function SingleCreateForm() {
     setSeed(draft.seed);
     setRenderCount(draft.renderCount);
     setOutputName(draft.outputName);
+    setCharacterLoraName(draft.characterLoraName);
+    setCharacterLoraStrength(draft.characterLoraStrength);
     setReferenceImage(imageByKey(draft.referenceImageKey));
     setReferenceImages(draft.referenceImageKeys
       .map((key) => imageByKey(key))
@@ -382,6 +412,8 @@ export function SingleCreateForm() {
             referenceImageNames,
             lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
             sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
+            characterLoraName: mode === "replace" ? characterLoraName : "",
+            characterLoraStrength: mode === "replace" ? Number(characterLoraStrength) : undefined,
             modelProfile,
             width: submittedWidth,
             height: submittedHeight,
@@ -528,6 +560,51 @@ export function SingleCreateForm() {
                 </select>
               </label>
 
+              {mode === "replace" && (
+                <>
+                  <label className={`${styles.field} ${visibleFieldError("characterLoraName") ? styles.fieldInvalid : ""}`}>
+                    <span className={styles.fieldLabel}>角色 LoRA <span className={styles.optional}>optional</span></span>
+                    <input
+                      id="single-character-lora"
+                      className={styles.input}
+                      list="single-character-lora-options"
+                      value={characterLoraName}
+                      aria-describedby={`single-character-lora-helper${visibleFieldError("characterLoraName") ? " single-character-lora-error" : ""}`}
+                      aria-invalid={Boolean(visibleFieldError("characterLoraName"))}
+                      onBlur={() => markTouched("characterLoraName")}
+                      onChange={(event) => setCharacterLoraName(event.target.value)}
+                    />
+                    <datalist id="single-character-lora-options">
+                      {characterLoraOptions.map((name) => <option key={name} value={name} />)}
+                    </datalist>
+                    <span id="single-character-lora-helper" className={styles.helper}>可直接輸入 models/loras 下相對路徑；僅支援 Wan2.2 Animate 相容 LoRA。真人建議 0.55–0.75，動漫角色建議 0.7–0.9。不要重選官方 LightX2V／relight。</span>
+                    <FieldError id="single-character-lora-error" message={visibleFieldError("characterLoraName")} />
+                  </label>
+
+                  <label className={`${styles.field} ${visibleFieldError("characterLoraStrength") ? styles.fieldInvalid : ""}`}>
+                    <span className={styles.rangeHeader}>
+                      <span className={styles.fieldLabel}>LoRA 強度</span>
+                      <span className={styles.rangeValue}>{characterLoraStrength === "" ? "—" : Number(characterLoraStrength).toFixed(2)}</span>
+                    </span>
+                    <input
+                      id="single-character-lora-strength"
+                      className={styles.input}
+                      type="number"
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      value={characterLoraStrength}
+                      aria-describedby={`single-character-lora-strength-helper${visibleFieldError("characterLoraStrength") ? " single-character-lora-strength-error" : ""}`}
+                      aria-invalid={Boolean(visibleFieldError("characterLoraStrength"))}
+                      onBlur={() => markTouched("characterLoraStrength")}
+                      onChange={(event) => setCharacterLoraStrength(numberDraft(event.target.value))}
+                    />
+                    <span id="single-character-lora-strength-helper" className={styles.helper}>範圍 0–2，預設 0.75；留白 LoRA 名稱時不會送出。</span>
+                    <FieldError id="single-character-lora-strength-error" message={visibleFieldError("characterLoraStrength")} />
+                  </label>
+                </>
+              )}
+
               <div className={styles.field}>
                 <span className={styles.fieldLabel}>影片尺寸</span>
                 <div className={styles.resolutionRow}>
@@ -663,6 +740,9 @@ export function SingleCreateForm() {
             <SummaryRow label="Steps / Seed" value={`${steps || "—"} / ${seed === "" ? "—" : seed}`} />
             <SummaryRow label="數量" value={renderCount === "" ? "—" : String(renderCount)} />
             <SummaryRow label="素材" value={assetSummary(mode, referenceImage, referenceImages, lastFrameImage, sourceVideo)} />
+            {mode === "replace" && characterLoraName.trim() && (
+              <SummaryRow label="角色 LoRA" value={`${characterLoraName.trim()} · ${characterLoraStrength === "" ? "—" : Number(characterLoraStrength).toFixed(2)}`} />
+            )}
           </div>
         </section>
 
@@ -1079,6 +1159,8 @@ function focusValidationField(field: string) {
     steps: "single-steps",
     seed: "single-seed",
     renderCount: "single-render-count",
+    characterLoraName: "single-character-lora",
+    characterLoraStrength: "single-character-lora-strength",
   };
   const element = document.getElementById(ids[field] || "");
   if (element instanceof HTMLElement) {

@@ -18,6 +18,8 @@ export type SingleCreateDraftInput = {
   seed: number | "";
   renderCount: number | "";
   outputName: string;
+  characterLoraName: string;
+  characterLoraStrength: number | "";
   referenceImageKey: string | null;
   referenceImageKeys: string[];
   lastFrameImageKey: string | null;

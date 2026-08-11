@@ -7,7 +7,12 @@ import test, { after } from "node:test";
 
 const bridgeLogRoot = await mkdtemp(path.join(os.tmpdir(), "h3-prompt-bridge-logs-"));
 process.env.MINIMAX_H3_LOGS_ROOT = bridgeLogRoot;
-const { route } = await import("../local-bridge.mjs");
+const {
+  route,
+  normalizeCharacterLoraName,
+  normalizeCharacterLoraStrength,
+  characterLoraOptions,
+} = await import("../local-bridge.mjs");
 
 after(async () => {
   await rm(bridgeLogRoot, { recursive: true, force: true });
@@ -40,6 +45,92 @@ async function invoke(pathname, payload) {
   await route(request(pathname, payload), res);
   return { status: res.status, body: JSON.parse(body || "{}") };
 }
+
+async function invokeGet(pathname) {
+  let body = "";
+  const req = Readable.from([]);
+  req.method = "GET";
+  req.url = pathname;
+  req.headers = {};
+  const res = {
+    headersSent: false,
+    setHeader() {},
+    writeHead(status) { this.status = status; },
+    end(chunk) { body += String(chunk || ""); },
+  };
+  await route(req, res);
+  return { status: res.status, body: JSON.parse(body || "{}") };
+}
+
+test("Character LoRA bridge validation accepts safe relative paths only", () => {
+  assert.equal(normalizeCharacterLoraName(" characters\\hero.safetensors "), "characters/hero.safetensors");
+  assert.throws(() => normalizeCharacterLoraName("../escape.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.throws(() => normalizeCharacterLoraName("C:\\models\\hero.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.throws(() => normalizeCharacterLoraName("\\\\server\\share\\hero.safetensors"), { code: "CHARACTER_LORA_NAME_INVALID" });
+  assert.equal(normalizeCharacterLoraStrength(undefined), 0.75);
+  assert.equal(normalizeCharacterLoraStrength("0.8"), 0.8);
+  assert.throws(() => normalizeCharacterLoraStrength("   "), { code: "CHARACTER_LORA_STRENGTH_INVALID" });
+  assert.throws(() => normalizeCharacterLoraStrength(2.1), { code: "CHARACTER_LORA_STRENGTH_INVALID" });
+});
+
+test("Character LoRA options come from the ComfyUI combo and omit built-ins", () => {
+  assert.deepEqual(
+    characterLoraOptions({
+      LoraLoaderModelOnly: {
+        input: {
+          required: {
+            lora_name: [[
+              "characters/hero.safetensors",
+              "LIGHTX2V_I2V_14B_480P_CFG_STEP_DISTILL_RANK64_BF16.SAFETENSORS",
+              "characters\\hero.safetensors",
+            ]],
+          },
+        },
+      },
+    }),
+    ["characters/hero.safetensors"],
+  );
+  assert.deepEqual(
+    characterLoraOptions({
+      LoraLoaderModelOnly: {
+        input: {
+          required: {
+            lora_name: [{ value: ["characters/current-schema.safetensors"] }],
+          },
+        },
+      },
+    }),
+    ["characters/current-schema.safetensors"],
+  );
+});
+
+test("Character LoRA discovery degrades to an empty list when ComfyUI is unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("ComfyUI unavailable"); };
+  try {
+    const result = await invokeGet("/api/loras");
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, {
+      loras: [],
+      items: [],
+      available: false,
+      registryVersion: 0,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Generate rejects unsafe character LoRA payloads before starting a job", async () => {
+  const result = await invoke("/api/generate", {
+    mode: "replace",
+    prompt: "Replace the subject.",
+    characterLoraName: "../escape.safetensors",
+    characterLoraStrength: 0.75,
+  });
+  assert.equal(result.status, 400);
+  assert.equal(result.body.code, "CHARACTER_LORA_NAME_INVALID");
+});
 
 test("Ollama prompt output is validated and repaired once with low randomness", async () => {
   const originalFetch = globalThis.fetch;

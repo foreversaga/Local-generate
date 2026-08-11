@@ -37,7 +37,7 @@ test("routed Single Create autosaves drafts and exposes mobile section anchors",
   assert.match(form, /role="status" aria-live="polite"/);
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*\.sectionNav \{[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(styles, /\.sectionNav a \{[\s\S]*min-height: 44px/);
-  assert.match(form, /const \[assetsLoaded\] = await Promise\.all\(\[refreshAssets\(\), refreshHealth\(\)\]\);/);
+  assert.match(form, /const \[assetsLoaded\] = await Promise\.all\(\[refreshAssets\(\), refreshHealth\(\), refreshCharacterLoras\(\)\]\);/);
   assert.match(form, /setAssetsReady\(assetsLoaded\)/);
   assert.match(draftHook, /try \{[\s\S]*localStorage\.getItem\(SINGLE_CREATE_DRAFT_STORAGE_KEY\)/);
   assert.match(draftHook, /localStorage\.setItem\(SINGLE_CREATE_DRAFT_STORAGE_KEY/);
@@ -57,4 +57,16 @@ test("Single Create asset selectors and compact controls expose usable targets",
   assert.match(styles, /\.range \{[\s\S]*min-height: 44px;[\s\S]*padding: 18px 0;/);
   assert.match(styles, /\.referenceChip button \{[\s\S]*width: 44px;[\s\S]*height: 44px;/);
   assert.match(assistantStyles, /\.providerSwitch button \{[\s\S]*min-height: 44px;/);
+});
+
+test("Replace exposes optional character LoRA controls with accessible guidance", async () => {
+  const form = await readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8");
+  assert.match(form, /single-character-lora/);
+  assert.match(form, /single-character-lora-strength/);
+  assert.match(form, /list="single-character-lora-options"/);
+  assert.match(form, /type="number"[\s\S]*min=\{0\}[\s\S]*max=\{2\}[\s\S]*step=\{0\.05\}/);
+  assert.match(form, /Wan2\.2 Animate/);
+  assert.match(form, /0\.55–0\.75/);
+  assert.match(form, /0\.7–0\.9/);
+  assert.match(form, /LightX2V/);
 });

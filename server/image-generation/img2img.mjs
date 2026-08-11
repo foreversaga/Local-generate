@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createImg2ImgStore } from "./img2img-store.mjs";
 
 export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "CheckpointLoaderSimple",
@@ -34,6 +35,7 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     model: "sd_xl_turbo_1.0_fp16.safetensors",
     workflow: "checkpoint",
     loader: "CheckpointLoaderSimple",
+    loraLoader: "LoraLoader",
     localOnly: false,
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 4, cfg: 1, denoise: 0.65 },
@@ -42,6 +44,7 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     model: "v1-5-pruned-emaonly-fp16.safetensors",
     workflow: "checkpoint",
     loader: "CheckpointLoaderSimple",
+    loraLoader: "LoraLoader",
     localOnly: false,
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 20, cfg: 7, denoise: 0.65 },
@@ -50,6 +53,7 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     model: "waiIllustriousSDXL_v170.safetensors",
     workflow: "checkpoint",
     loader: "CheckpointLoaderSimple",
+    loraLoader: "LoraLoader",
     localOnly: true,
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 20, cfg: 7, denoise: 0.65 },
@@ -58,6 +62,7 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     model: "z_image_turbo_bf16.safetensors",
     workflow: "z-image",
     loader: "UNETLoader",
+    loraLoader: "LoraLoaderModelOnly",
     localOnly: true,
     requiredNodes: Z_IMAGE_REQUIRED_NODES,
     companions: {
@@ -93,6 +98,14 @@ export const IMG2IMG_MODELS = Object.freeze(Object.keys(IMG2IMG_MODEL_PROFILES))
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
+const IMG2IMG_BATCH_MAX = 20;
+const IMG2IMG_PARAMETER_RULES = Object.freeze({
+  denoise: Object.freeze({ min: 0.01, max: 1, step: 0.01, integer: false }),
+  steps: Object.freeze({ min: 1, max: 50, step: 1, integer: true }),
+  cfg: Object.freeze({ min: 0, max: 20, step: 0.5, integer: false }),
+  seed: Object.freeze({ min: 0, max: 2_147_483_647, step: 1, integer: true }),
+});
+const IMG2IMG_SEED_RANGE = Object.freeze({ min: 0, max: 2_147_483_647 });
 
 function isoNow(now = Date.now()) {
   return new Date(now).toISOString();
@@ -131,6 +144,45 @@ export function normalizeImageAssetName(value) {
     throw makeError("Image-to-image accepts PNG, JPG, or WEBP assets only.", 415, "SOURCE_KIND_INVALID");
   }
   return normalized;
+}
+
+export function normalizeCharacterLoraName(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return "";
+  if (typeof value !== "string") {
+    throw makeError("Character LoRA name must be a string.", 400, "CHARACTER_LORA_NAME_INVALID");
+  }
+  const normalized = value.trim().replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized
+    || normalized.length > 512
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0")
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    throw makeError(
+      "Character LoRA must be a safe relative path under ComfyUI/models/loras.",
+      400,
+      "CHARACTER_LORA_NAME_INVALID",
+    );
+  }
+  return normalized;
+}
+
+export function normalizeCharacterLoraStrength(value, fallback = 0.75) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw makeError("Character LoRA strength must be a finite number between 0 and 2.", 400, "CHARACTER_LORA_STRENGTH_INVALID");
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    throw makeError("Character LoRA strength must be a finite number between 0 and 2.", 400, "CHARACTER_LORA_STRENGTH_INVALID");
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 2) {
+    throw makeError("Character LoRA strength must be a finite number between 0 and 2.", 400, "CHARACTER_LORA_STRENGTH_INVALID");
+  }
+  return number;
 }
 
 function sanitizePrefix(value) {
@@ -197,11 +249,87 @@ function boundedModelParameters(profile, { denoise, steps, cfg, seed } = {}) {
   };
 }
 
+function roundParameterValue(value, rule) {
+  const units = Math.round((Number(value) - rule.min) / rule.step);
+  const rounded = rule.min + units * rule.step;
+  return Number(rounded.toFixed(12));
+}
+
+function parameterValueAligned(value, rule) {
+  const units = (Number(value) - rule.min) / rule.step;
+  return Math.abs(units - Math.round(units)) <= 1e-8;
+}
+
+function batchCountError() {
+  return makeError(`batchCount must be an integer between 1 and ${IMG2IMG_BATCH_MAX}.`, 400, "BATCH_COUNT_INVALID");
+}
+
+function randomRangeError(name, detail = "is invalid") {
+  return makeError(`randomRanges.${name} ${detail}.`, 400, "RANDOM_RANGE_INVALID");
+}
+
+function normalizeBatchCount(value) {
+  if (value === undefined) return 1;
+  const number = Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number) || number < 1 || number > IMG2IMG_BATCH_MAX) throw batchCountError();
+  return number;
+}
+
+function normalizeRandomRange(name, value, base) {
+  const rule = IMG2IMG_PARAMETER_RULES[name];
+  if (value === undefined || value === null) return { min: roundParameterValue(base, rule), max: roundParameterValue(base, rule) };
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw randomRangeError(name);
+  if (typeof value.min !== "number" || typeof value.max !== "number") throw randomRangeError(name, "must contain numeric min and max values");
+  const min = value.min;
+  const max = value.max;
+  if (!Number.isFinite(min) || !Number.isFinite(max)) throw randomRangeError(name, "must contain finite min and max values");
+  if (min < rule.min || min > rule.max || max < rule.min || max > rule.max) {
+    throw randomRangeError(name, `must stay within ${rule.min} and ${rule.max}`);
+  }
+  if (min > max) throw randomRangeError(name, "min must not exceed max");
+  if (!parameterValueAligned(min, rule) || !parameterValueAligned(max, rule)) {
+    throw randomRangeError(name, `min and max must align to step ${rule.step}`);
+  }
+  return { min: roundParameterValue(min, rule), max: roundParameterValue(max, rule) };
+}
+
+function normalizeRandomRanges(input, base) {
+  if (input !== undefined && input !== null && (typeof input !== "object" || Array.isArray(input))) {
+    throw makeError("randomRanges must be an object.", 400, "RANDOM_RANGE_INVALID");
+  }
+  const ranges = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  return Object.freeze(Object.fromEntries(Object.keys(IMG2IMG_PARAMETER_RULES).map((name) => [
+    name,
+    Object.freeze(normalizeRandomRange(name, ranges[name], base[name])),
+  ])));
+}
+
+function sampleRandomRange(name, range, randomFn) {
+  const rule = IMG2IMG_PARAMETER_RULES[name];
+  if (range.min === range.max) return range.min;
+  const span = Math.max(0, Math.round((range.max - range.min) / rule.step));
+  const raw = Number(typeof randomFn === "function" ? randomFn() : Math.random());
+  const unit = Number.isFinite(raw) ? Math.min(0.999999999999, Math.max(0, raw)) : 0;
+  const index = Math.min(span, Math.floor(unit * (span + 1)));
+  return roundParameterValue(range.min + index * rule.step, rule);
+}
+
+function randomizeParameters(ranges, randomFn) {
+  return {
+    denoise: sampleRandomRange("denoise", ranges.denoise, randomFn),
+    steps: sampleRandomRange("steps", ranges.steps, randomFn),
+    cfg: sampleRandomRange("cfg", ranges.cfg, randomFn),
+    seed: sampleRandomRange("seed", IMG2IMG_SEED_RANGE, randomFn),
+  };
+}
+
 export function buildImg2ImgPrompt({
   sourceName,
   prompt,
   negativePrompt = "",
   model = IMG2IMG_MODELS[0],
+  characterLoraName,
+  characterLoraStrength,
   denoise,
   steps,
   cfg,
@@ -217,11 +345,13 @@ export function buildImg2ImgPrompt({
   const profile = modelProfile(model);
   if (!profile) throw unsupportedModelError(model);
   const parameters = boundedModelParameters(profile, { denoise, steps, cfg, seed });
+  const loraName = normalizeCharacterLoraName(characterLoraName);
+  const loraStrength = loraName ? normalizeCharacterLoraStrength(characterLoraStrength) : null;
   const cleanNegative = String(negativePrompt || "").trim();
   const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
 
   if (profile.workflow === "checkpoint") {
-    return {
+    const graph = {
       "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: profile.model } },
       "2": { class_type: "LoadImage", inputs: { image } },
       "3": { class_type: "VAEEncode", inputs: { pixels: link(2), vae: link(1, 2) } },
@@ -245,12 +375,28 @@ export function buildImg2ImgPrompt({
       "7": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
       "8": { class_type: "SaveImage", inputs: { images: link(7), filename_prefix: cleanPrefix } },
     };
+    if (loraName) {
+      graph["9"] = {
+        class_type: "LoraLoader",
+        inputs: {
+          model: link(1),
+          clip: link(1, 1),
+          lora_name: loraName,
+          strength_model: loraStrength,
+          strength_clip: loraStrength,
+        },
+      };
+      graph["4"].inputs.clip = link(9, 1);
+      graph["5"].inputs.clip = link(9, 1);
+      graph["6"].inputs.model = link(9);
+    }
+    return graph;
   }
 
   if (profile.workflow === "z-image") {
     const companions = profile.companions;
     const sampling = profile.sampling;
-    return {
+    const graph = {
       "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
       "2": {
         class_type: "CLIPLoader",
@@ -280,6 +426,18 @@ export function buildImg2ImgPrompt({
       "10": { class_type: "VAEDecode", inputs: { samples: link(9), vae: link(3) } },
       "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: cleanPrefix } },
     };
+    if (loraName) {
+      graph["12"] = {
+        class_type: "LoraLoaderModelOnly",
+        inputs: {
+          model: link(1),
+          lora_name: loraName,
+          strength_model: loraStrength,
+        },
+      };
+      graph["8"].inputs.model = link(12);
+    }
+    return graph;
   }
 
   throw makeError(`Image model ${String(model)} has no workflow implementation.`, 500, "MODEL_WORKFLOW_UNSUPPORTED");
@@ -319,6 +477,7 @@ function evaluateModelProfile(objectInfo, profile, { remote = false } = {}) {
     ? zImageModelAvailability(objectInfo, profile)
     : { model: checkpointModelAvailability(objectInfo, profile) };
   const localOnly = Boolean(profile.localOnly);
+  const loraLoader = profile.loraLoader || null;
   const runtimeSupported = !(remote && localOnly);
   const nodesReady = Object.values(nodes).every(Boolean);
   const companionsReady = Object.values(companionAvailability).every(Boolean);
@@ -332,6 +491,8 @@ function evaluateModelProfile(objectInfo, profile, { remote = false } = {}) {
     localOnly,
     workflow: profile.workflow,
     loader: profile.loader,
+    loraLoader,
+    loraAvailable: Boolean(loraLoader && objectInfo?.[loraLoader]),
     nodes,
     companions: companionAvailability,
     ...(reason ? { reason } : {}),
@@ -409,13 +570,35 @@ function publicJob(job) {
     prompt: job.prompt,
     negativePrompt: job.negativePrompt,
     model: job.model,
+    ...(job.characterLoraName ? {
+      characterLoraName: job.characterLoraName,
+      characterLoraStrength: job.characterLoraStrength,
+      ...(job.characterLoraId ? { characterLoraId: job.characterLoraId } : {}),
+      ...(job.loraProvenance ? { loraProvenance: structuredClone(job.loraProvenance) } : {}),
+    } : {}),
     denoise: job.denoise,
     steps: job.steps,
     cfg: job.cfg,
     seed: job.seed,
+    batchCount: job.batchCount || 1,
+    randomRanges: job.randomRanges ? Object.fromEntries(Object.entries(job.randomRanges).map(([name, range]) => [name, { ...range }])) : undefined,
+    completedCount: Number(job.completedCount || 0),
+    failedCount: Number(job.failedCount || 0),
+    items: Array.isArray(job.items) ? job.items.map((item) => ({
+      index: item.index,
+      status: item.status,
+      ...(item.parameters ? { parameters: { ...item.parameters } } : { parameters: null }),
+      output: item.output ? { ...item.output } : null,
+      error: item.error || null,
+      ...(item.stage ? { stage: item.stage } : {}),
+      ...(Number.isFinite(item.progress) ? { progress: item.progress } : {}),
+      startedAt: item.startedAt ?? null,
+      completedAt: item.completedAt ?? null,
+    })) : [],
     ...(job.output ? { output: { ...job.output } } : {}),
     ...(job.error ? { error: job.error } : {}),
     createdAt: job.createdAt,
+    ...(job.updatedAt ? { updatedAt: job.updatedAt } : {}),
     startedAt: job.startedAt,
     completedAt: job.completedAt,
   };
@@ -428,6 +611,7 @@ export function createImg2ImgController({
   outputRoot,
   toAsset,
   beforeRun,
+  resolveCharacterLora,
   fetchImpl = globalThis.fetch,
   fsApi = fs,
   now = () => new Date(),
@@ -436,11 +620,67 @@ export function createImg2ImgController({
   maxPollMs = 10 * 60 * 1000,
   requestTimeoutMs = 30_000,
   clientId = "h3-img2img",
+  store = null,
+  storeRoot,
+  randomFn = null,
 } = {}) {
   if (!inputRoot || !outputRoot) throw new Error("Image-to-image controller requires inputRoot and outputRoot.");
+  const jobStore = store || createImg2ImgStore({ root: storeRoot });
   const jobs = new Map();
   const queue = [];
   let active = null;
+  let storeLoaded = false;
+  let storeLoading = null;
+  const randomSource = typeof randomFn === "function" ? randomFn : () => randomInt(0, 1_000_000_000) / 1_000_000_000;
+  const pendingPersistence = new Map();
+
+  async function ensureStoreLoaded() {
+    if (storeLoaded) return;
+    if (!storeLoading) {
+      storeLoading = Promise.resolve().then(async () => {
+        let persisted;
+        try {
+          persisted = await jobStore.list();
+        } catch {
+          throw makeError("Unable to load image-to-image job history.", 503, "IMG2IMG_PERSISTENCE_FAILED");
+        }
+        for (const job of persisted) {
+          if (!job?.id) continue;
+          jobs.set(String(job.id), job);
+        }
+        storeLoaded = true;
+      }).finally(() => {
+        storeLoading = null;
+      });
+    }
+    await storeLoading;
+  }
+
+  async function persistJob(job, { required = false } = {}) {
+    const key = String(job.id);
+    const previous = pendingPersistence.get(key) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      job.updatedAt = isoNow(now());
+      await jobStore.save(job);
+    });
+    const tracked = operation.finally(() => {
+      if (pendingPersistence.get(key) === tracked) pendingPersistence.delete(key);
+    }).catch(() => {});
+    pendingPersistence.set(key, tracked);
+    try {
+      await operation;
+      return true;
+    } catch (error) {
+      if (required) throw makeError("Unable to persist image-to-image job.", 503, "IMG2IMG_PERSISTENCE_FAILED");
+      job.persistenceError = errorMessage(error, "Unable to persist image-to-image job.");
+      console.error("[img2img] Unable to persist job:", job.persistenceError);
+      return false;
+    }
+  }
+
+  async function waitForPersistence(id) {
+    await pendingPersistence.get(String(id));
+  }
 
   async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
     const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -520,7 +760,7 @@ export function createImg2ImgController({
     if (stat?.isFile()) await fsApi.unlink(candidate).catch(() => {});
   }
 
-  async function waitForHistory(job, promptId) {
+  async function waitForHistory(job, promptId, onProgress = null) {
     const started = Date.now();
     while (true) {
       const parsed = parseImg2ImgHistory(await requestJson(`/history/${encodeURIComponent(promptId)}`), promptId);
@@ -529,8 +769,12 @@ export function createImg2ImgController({
       if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveImage artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
       const elapsed = Date.now() - started;
       if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out waiting for the generated image.", 504, "COMFY_POLL_TIMEOUT");
-      job.progress = Math.min(90, 28 + Math.floor(Math.min(62, elapsed / 3000)));
-      job.stage = "Generating image";
+      const progress = Math.min(90, 28 + Math.floor(Math.min(62, elapsed / 3000)));
+      if (typeof onProgress === "function") await onProgress(progress, "Generating image");
+      else {
+        job.progress = progress;
+        job.stage = "Generating image";
+      }
       await sleep(pollIntervalMs);
     }
   }
@@ -544,12 +788,13 @@ export function createImg2ImgController({
     return typeof toAsset === "function" ? toAsset("output", relativeName) : { root: "output", name: relativeName, kind: "image" };
   }
 
-  async function downloadRemoteArtifact(job, artifact) {
+  async function downloadRemoteArtifact(job, artifact, itemIndex = 0) {
     const query = new URLSearchParams({ filename: artifact.filename, subfolder: artifact.subfolder, type: artifact.type });
     const response = await request(`/view?${query.toString()}`, {}, 60_000);
     if (!response.ok) throw makeError(`Unable to download generated image: HTTP ${response.status}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
     const extension = path.posix.extname(artifact.filename).toLowerCase();
-    const localName = `img2img/${sanitizePrefix(path.posix.basename(job.sourceName, path.posix.extname(job.sourceName)))}-${job.id.slice(0, 8)}${extension}`;
+    const suffix = job.batchCount > 1 ? `-${String(itemIndex + 1).padStart(2, "0")}` : "";
+    const localName = `img2img/${sanitizePrefix(path.posix.basename(job.sourceName, path.posix.extname(job.sourceName)))}-${job.id.slice(0, 8)}${suffix}${extension}`;
     const candidate = path.resolve(outputRoot, localName);
     if (!inside(outputRoot, candidate)) throw makeError("Downloaded image path is unsafe.", 500, "OUTPUT_PATH_INVALID");
     await fsApi.mkdir(path.dirname(candidate), { recursive: true });
@@ -557,13 +802,29 @@ export function createImg2ImgController({
     return typeof toAsset === "function" ? toAsset("output", localName) : { root: "output", name: localName, kind: "image" };
   }
 
-  async function runJob(job) {
+  function updateParentProgress(job, itemIndex, itemProgress, stage) {
+    const count = Math.max(1, Number(job.batchCount || 1));
+    const child = Math.max(0, Math.min(100, Number(itemProgress) || 0));
+    job.progress = Math.min(100, Math.max(0, Math.round(((itemIndex + child / 100) / count) * 100)));
+    job.stage = count > 1 ? `${stage} (${itemIndex + 1}/${count})` : stage;
+  }
+
+  function itemFilenamePrefix(job, itemIndex) {
+    const suffix = job.batchCount > 1 ? `_${String(itemIndex + 1).padStart(2, "0")}` : "";
+    return `img2img/h3_img2img_${job.id.slice(0, 8)}${suffix}`;
+  }
+
+  async function runItem(job, item, itemIndex, parameters) {
     let staged = null;
+    item.parameters = { ...parameters };
+    item.status = "running";
+    item.progress = 4;
+    item.stage = "Preparing GPU";
+    item.startedAt = isoNow(now());
+    item.completedAt = null;
+    updateParentProgress(job, itemIndex, item.progress, item.stage);
+    await persistJob(job);
     try {
-      job.status = "running";
-      job.startedAt = isoNow(now());
-      job.progress = 4;
-      job.stage = "Preparing GPU";
       const profile = assertModelForRuntime(job.model, { remote });
       if (typeof beforeRun === "function") await beforeRun(job);
       const readiness = await checkReadiness();
@@ -573,15 +834,31 @@ export function createImg2ImgController({
           : `Selected image model ${job.model} or its companion files are unavailable.`;
         throw makeError(detail, 503, "IMG2IMG_NOT_READY");
       }
-      job.progress = 12;
-      job.stage = "Preparing source image";
+      if (job.characterLoraName && !readiness.profiles?.[job.model]?.loraAvailable) {
+        throw makeError(
+          `ComfyUI does not provide the ${profile.loraLoader} node required for a character LoRA with ${job.model}.`,
+          503,
+          "IMG2IMG_LORA_NOT_READY",
+        );
+      }
+      item.progress = 12;
+      item.stage = "Preparing source image";
+      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      await persistJob(job);
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
       if (remote) staged = await uploadRemoteInput(job, source);
       else if (job.sourceRoot === "output") staged = await copyOutputToLocalInput(job, source);
       else staged = { loadName: source.cleanName, created: false };
-      const graph = buildImg2ImgPrompt({ ...job, sourceName: staged.loadName, filenamePrefix: `img2img/h3_img2img_${job.id.slice(0, 8)}` });
-      job.progress = 22;
-      job.stage = "Submitting ComfyUI workflow";
+      const graph = buildImg2ImgPrompt({
+        ...job,
+        ...parameters,
+        sourceName: staged.loadName,
+        filenamePrefix: itemFilenamePrefix(job, itemIndex),
+      });
+      item.progress = 22;
+      item.stage = "Submitting ComfyUI workflow";
+      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      await persistJob(job);
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -589,21 +866,86 @@ export function createImg2ImgController({
       });
       const promptId = submitted.prompt_id || submitted.promptId;
       if (!promptId) throw makeError("ComfyUI rejected the image workflow.", 502, "COMFY_PROMPT_REJECTED");
-      job.progress = 28;
-      const artifact = await waitForHistory(job, String(promptId));
-      job.progress = 94;
-      job.stage = remote ? "Downloading image" : "Registering image";
-      job.output = remote ? await downloadRemoteArtifact(job, artifact) : await registerLocalArtifact(artifact);
+      item.progress = 28;
+      item.stage = "Generating image";
+      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      await persistJob(job);
+      const artifact = await waitForHistory(job, String(promptId), async (progress, stage) => {
+        item.progress = progress;
+        item.stage = stage;
+        updateParentProgress(job, itemIndex, progress, stage);
+        await persistJob(job);
+      });
+      item.progress = 94;
+      item.stage = remote ? "Downloading image" : "Registering image";
+      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      item.output = remote
+        ? await downloadRemoteArtifact(job, artifact, itemIndex)
+        : await registerLocalArtifact(artifact);
+      item.progress = 100;
+      item.status = "completed";
+      item.stage = "Completed";
+      item.completedAt = isoNow(now());
+      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      await persistJob(job);
+      return true;
+    } catch (error) {
+      item.status = "failed";
+      item.stage = "Failed";
+      item.error = errorMessage(error);
+      item.completedAt = isoNow(now());
+      updateParentProgress(job, itemIndex, 100, item.stage);
+      await persistJob(job);
+      return false;
+    } finally {
+      await cleanupLocalTemp(staged);
+    }
+  }
+
+  async function runJob(job) {
+    try {
+      job.status = "running";
+      job.startedAt = isoNow(now());
+      job.error = undefined;
+      job.progress = 0;
+      job.stage = "Preparing batch";
+      await persistJob(job);
+      for (let itemIndex = 0; itemIndex < job.batchCount; itemIndex += 1) {
+        const item = job.items[itemIndex];
+        const baseParameters = { denoise: job.denoise, steps: job.steps, cfg: job.cfg, seed: job.seed };
+        const parameters = job.batchCount === 1
+          ? baseParameters
+          : itemIndex === 0
+            ? { ...baseParameters, seed: sampleRandomRange("seed", IMG2IMG_SEED_RANGE, randomSource) }
+            : randomizeParameters(job.randomRanges, randomSource);
+        const succeeded = await runItem(job, item, itemIndex, parameters);
+        if (succeeded) {
+          job.completedCount += 1;
+          if (!job.output && item.output) job.output = { ...item.output };
+        } else {
+          job.failedCount += 1;
+        }
+        await persistJob(job);
+      }
+      if (job.completedCount === job.batchCount) job.status = "completed";
+      else if (job.failedCount === job.batchCount) job.status = "failed";
+      else job.status = "partial";
+      if (job.status === "failed" || job.status === "partial") {
+        const failures = job.items.filter((item) => item.status === "failed");
+        job.error = failures.length === 1
+          ? failures[0].error
+          : `${failures.length} of ${job.batchCount} image generations failed.`;
+      }
       job.progress = 100;
-      job.status = "completed";
-      job.stage = "Completed";
+      job.stage = job.status === "completed" ? "Completed" : job.status === "partial" ? "Partial" : "Failed";
+      job.completedAt = isoNow(now());
+      await persistJob(job);
     } catch (error) {
       job.status = "failed";
       job.stage = "Failed";
       job.error = errorMessage(error);
-    } finally {
-      await cleanupLocalTemp(staged);
       job.completedAt = isoNow(now());
+      await persistJob(job);
     }
   }
 
@@ -620,13 +962,31 @@ export function createImg2ImgController({
   }
 
   async function enqueue(input = {}) {
+    await ensureStoreLoaded();
     const model = String(input.model || IMG2IMG_MODELS[0]);
     const profile = assertModelForRuntime(model, { remote });
+    const requestedLora = String(input.characterLoraId || input.characterLoraName || "").trim();
+    const resolvedLora = requestedLora && typeof resolveCharacterLora === "function"
+      ? await resolveCharacterLora(requestedLora, { model, profile })
+      : null;
+    const characterLoraName = normalizeCharacterLoraName(resolvedLora?.name || requestedLora);
+    const characterLoraStrength = characterLoraName
+      ? normalizeCharacterLoraStrength(input.characterLoraStrength)
+      : null;
     const sourceRoot = String(input.sourceRoot || "input");
     const sourceName = normalizeImageAssetName(input.sourceName);
     await resolveAsset(sourceRoot, sourceName);
     const prompt = String(input.prompt || "").trim();
     if (!prompt) throw makeError("A positive image prompt is required.", 400, "PROMPT_REQUIRED");
+    const batchCount = normalizeBatchCount(input.batchCount);
+    const baseSeed = input.seed === undefined ? Math.floor(randomSource() * 2_147_483_647) : input.seed;
+    const parameters = boundedModelParameters(profile, {
+      denoise: input.denoise,
+      steps: input.steps,
+      cfg: input.cfg,
+      seed: baseSeed,
+    });
+    const randomRanges = normalizeRandomRanges(input.randomRanges, parameters);
     const job = {
       id: String(idFactory()),
       status: "queued",
@@ -637,16 +997,47 @@ export function createImg2ImgController({
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
-      denoise: boundedNumber(input.denoise, profile.defaults.denoise, 0.01, 1),
-      steps: boundedInteger(input.steps, profile.defaults.steps, 1, 50),
-      cfg: boundedNumber(input.cfg, profile.defaults.cfg, 0, 20),
-      seed: boundedInteger(input.seed, Math.floor(Math.random() * 2_147_483_647), 0, 2_147_483_647),
+      ...(characterLoraName ? {
+        characterLoraName,
+        characterLoraStrength,
+        ...(resolvedLora?.registry?.id ? { characterLoraId: resolvedLora.registry.id } : {}),
+        loraProvenance: resolvedLora?.registry ? {
+          registryId: resolvedLora.registry.id,
+          displayName: resolvedLora.registry.displayName,
+          relativePath: resolvedLora.registry.relativePath,
+          family: resolvedLora.registry.family,
+          baseProfile: resolvedLora.registry.baseProfile,
+          sha256: resolvedLora.registry.sha256,
+          triggerWords: resolvedLora.registry.triggerWords,
+        } : { relativePath: characterLoraName, legacy: true },
+      } : {}),
+      denoise: parameters.denoise,
+      steps: parameters.steps,
+      cfg: parameters.cfg,
+      seed: parameters.seed,
+      batchCount,
+      randomRanges,
+      completedCount: 0,
+      failedCount: 0,
+      items: Array.from({ length: batchCount }, (_, index) => ({
+        index,
+        status: "queued",
+        parameters: null,
+        output: null,
+        error: null,
+        progress: 0,
+        stage: "Queued",
+        startedAt: null,
+        completedAt: null,
+      })),
       createdAt: isoNow(now()),
+      updatedAt: isoNow(now()),
       startedAt: null,
       completedAt: null,
     };
     // Validate the full graph contract before admitting the job.
     buildImg2ImgPrompt(job);
+    await persistJob(job, { required: true });
     jobs.set(job.id, job);
     queue.push(job);
     pump();
@@ -663,12 +1054,22 @@ export function createImg2ImgController({
         const body = await readJson(req);
         const requestedModel = String(body?.model || IMG2IMG_MODELS[0]);
         assertModelForRuntime(requestedModel, { remote });
+        const requestedLoraName = normalizeCharacterLoraName(body?.characterLoraId || body?.characterLoraName);
+        if (requestedLoraName) normalizeCharacterLoraStrength(body?.characterLoraStrength);
         const readiness = await checkReadiness();
         if (!readiness.ready || !readiness.models[requestedModel]) {
           sendJson(res, 503, {
             error: !readiness.ready
               ? "Image-to-image is not ready."
               : `Image model ${requestedModel} is not ready on this runtime.`,
+            health: readiness,
+          });
+          return true;
+        }
+        if (requestedLoraName && !readiness.profiles?.[requestedModel]?.loraAvailable) {
+          sendJson(res, 503, {
+            error: `ComfyUI does not provide the ${readiness.profiles?.[requestedModel]?.loraLoader || "LoRA"} node required for a character LoRA with ${requestedModel}.`,
+            code: "IMG2IMG_LORA_NOT_READY",
             health: readiness,
           });
           return true;
@@ -680,14 +1081,34 @@ export function createImg2ImgController({
       return true;
     }
     if (req.method === "GET" && pathname === "/api/img2img/jobs") {
-      sendJson(res, 200, { jobs: [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicJob) });
+      try {
+        await ensureStoreLoaded();
+        await Promise.all([...pendingPersistence.values()]);
+        const records = await jobStore.list();
+        const merged = new Map(records.map((job) => [String(job.id), job]));
+        for (const job of jobs.values()) merged.set(String(job.id), job);
+        sendJson(res, 200, {
+          jobs: [...merged.values()]
+            .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+            .map(publicJob),
+        });
+      } catch {
+        sendError(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
+      }
       return true;
     }
     if (req.method === "GET" && pathname.startsWith("/api/img2img/jobs/")) {
       const id = decodeURIComponent(pathname.slice("/api/img2img/jobs/".length));
-      const job = jobs.get(id);
-      if (!job) sendError(res, 404, "Image-to-image job not found.");
-      else sendJson(res, 200, { job: publicJob(job) });
+      try {
+        await ensureStoreLoaded();
+        const job = jobs.get(id) || await jobStore.read(id);
+        await waitForPersistence(id);
+        if (job && !jobs.has(id)) jobs.set(id, job);
+        if (!job) sendError(res, 404, "Image-to-image job not found.");
+        else sendJson(res, 200, { job: publicJob(job) });
+      } catch {
+        sendError(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
+      }
       return true;
     }
     return false;
@@ -696,8 +1117,23 @@ export function createImg2ImgController({
   return {
     checkReadiness,
     enqueue,
-    getJob: async (id) => jobs.has(String(id)) ? publicJob(jobs.get(String(id))) : null,
+    getJob: async (id) => {
+      await ensureStoreLoaded();
+      const key = String(id);
+      const job = jobs.get(key) || await jobStore.read(key);
+      await waitForPersistence(key);
+      if (job && !jobs.has(key)) jobs.set(key, job);
+      return job ? publicJob(job) : null;
+    },
     getJobs: () => [...jobs.values()].map(publicJob),
+    listJobs: async () => {
+      await ensureStoreLoaded();
+      await Promise.all([...pendingPersistence.values()]);
+      const records = await jobStore.list();
+      const merged = new Map(records.map((job) => [String(job.id), job]));
+      for (const job of jobs.values()) merged.set(String(job.id), job);
+      return [...merged.values()].sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))).map(publicJob);
+    },
     handleRoute,
     active: () => active ? publicJob(active) : null,
   };

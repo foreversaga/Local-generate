@@ -2,6 +2,7 @@ const STATUS_MAP = new Map([
   ["completed", "complete"],
   ["complete", "complete"],
   ["success", "complete"],
+  ["partial", "partial"],
   ["failed", "error"],
   ["error", "error"],
   ["interrupted", "error"],
@@ -30,7 +31,10 @@ export function normalizeJobStatus(value) {
 export function adaptJob(raw, source = "video") {
   const status = normalizeJobStatus(raw?.status);
   const createdAt = raw?.createdAt || raw?.startedAt || raw?.updatedAt || raw?.finishedAt || raw?.completedAt || "";
-  const progress = clampProgress(raw?.progress ?? raw?.segmentProgress ?? (status === "complete" ? 100 : 0));
+  const batchProgress = Number.isFinite(Number(raw?.batchCount)) && Number(raw.batchCount) > 0
+    ? ((Number(raw?.completedCount) || 0) + (Number(raw?.failedCount) || 0)) / Number(raw.batchCount) * 100
+    : null;
+  const progress = clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
   return {
     id: String(raw?.id || ""),
     source,
@@ -45,6 +49,11 @@ export function adaptJob(raw, source = "video") {
     etaMs: Number.isFinite(raw?.etaMs) ? raw.etaMs : null,
     error: typeof raw?.error === "string" ? raw.error : raw?.error?.message || "",
     output: outputRef(raw, source),
+    batchCount: positiveInteger(raw?.batchCount),
+    randomRanges: raw?.randomRanges || null,
+    completedCount: nonNegativeInteger(raw?.completedCount),
+    failedCount: nonNegativeInteger(raw?.failedCount),
+    items: Array.isArray(raw?.items) ? raw.items : [],
     canCancel: canCancel(raw, source),
     canPause: source === "long" && ["running", "queued"].includes(String(raw?.status || "")),
     canResume: source === "long" && String(raw?.status || "") === "paused",
@@ -72,6 +81,16 @@ function clampProgress(value) {
   return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
+function nonNegativeInteger(value) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric >= 0 ? numeric : 0;
+}
+
+function positiveInteger(value) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
 function jobTitle(raw, source) {
   if (source === "long") return raw?.title || "Long Video";
   if (source === "upscale") return `Upscale · ${raw?.sourceName || "Video"}`;
@@ -84,7 +103,13 @@ function jobTitle(raw, source) {
 function jobSubtitle(raw, source) {
   if (source === "long") return `${raw?.segments?.length || 0} segments · ${raw?.duration || 0}s`;
   if (source === "upscale") return `${raw?.scale || 2}× video upscale`;
-  if (source === "img2img") return raw?.model || "Image generation";
+  if (source === "img2img") {
+    const count = positiveInteger(raw?.batchCount);
+    const completed = nonNegativeInteger(raw?.completedCount);
+    const failed = nonNegativeInteger(raw?.failedCount);
+    const summary = count && count > 1 ? `${completed}/${count} complete${failed ? `, ${failed} failed` : ""}` : "";
+    return [raw?.model || "Image generation", summary].filter(Boolean).join(" 繚 ");
+  }
   return [raw?.modelProfile, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.duration ? `${raw.duration}s` : ""].filter(Boolean).join(" · ");
 }
 

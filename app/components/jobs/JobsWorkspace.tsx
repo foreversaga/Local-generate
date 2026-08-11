@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchUnifiedJobs, type UnifiedJob } from "./job-client";
 import styles from "./JobsWorkspace.module.css";
 
-const STATUS_OPTIONS = ["all", "queued", "running", "complete", "error", "cancelled"] as const;
+const STATUS_OPTIONS = ["all", "queued", "running", "complete", "partial", "error", "cancelled"] as const;
 
 export function JobsWorkspace() {
   const [jobs, setJobs] = useState<UnifiedJob[]>([]);
@@ -95,7 +95,7 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 function statusLabel(status: string) {
-  return ({ queued: "Queued", running: "Running", complete: "Complete", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] || status;
+  return ({ queued: "Queued", running: "Running", complete: "Complete", partial: "Partial", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] || status;
 }
 function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I" } as Record<string, string>)[source] || source; }
 function formatDate(value: string) { if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); }

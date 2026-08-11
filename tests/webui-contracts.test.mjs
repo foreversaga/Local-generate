@@ -117,6 +117,32 @@ test("single render requires a non-empty prompt and enforces H3 prompt length", 
   );
 });
 
+test("replace request sends character LoRA fields only when a name is selected", () => {
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "replace",
+    characterLoraName: " characters/hero.safetensors ",
+    characterLoraStrength: 0.8,
+  }));
+  assert.equal(payload.characterLoraName, "characters/hero.safetensors");
+  assert.equal(payload.characterLoraStrength, 0.8);
+
+  const withoutLora = buildSingleRenderRequest(validRequestInput({
+    mode: "replace",
+    characterLoraName: "   ",
+    characterLoraStrength: 1.4,
+  }));
+  assert.equal("characterLoraName" in withoutLora, false);
+  assert.equal("characterLoraStrength" in withoutLora, false);
+
+  const nonReplace = buildSingleRenderRequest(validRequestInput({
+    mode: "t2v",
+    characterLoraName: "characters/ignored.safetensors",
+    characterLoraStrength: 0.8,
+  }));
+  assert.equal("characterLoraName" in nonReplace, false);
+  assert.equal("characterLoraStrength" in nonReplace, false);
+});
+
 test("single render validates required assets per mode", () => {
   assert.match(messages(validSingleInput({ mode: "i2v" }))[0], /I2VA/);
   assert.match(messages(validSingleInput({ mode: "ref2v" }))[0], /Ref2VA/);
@@ -130,6 +156,20 @@ test("single render validates required assets per mode", () => {
   assert.deepEqual(validateSingleRender(validSingleInput({ mode: "fl2v", referenceImage: ASSET, lastFrameImage: ASSET })), []);
   assert.deepEqual(validateSingleRender(validSingleInput({ mode: "l2v", lastFrameImage: ASSET })), []);
   assert.deepEqual(validateSingleRender(validSingleInput({ mode: "replace", referenceImage: ASSET, sourceVideo: { name: "source.mp4" } })), []);
+});
+
+test("replace validation protects character LoRA path and strength", () => {
+  const valid = validSingleInput({
+    mode: "replace",
+    referenceImage: ASSET,
+    sourceVideo: { name: "source.mp4" },
+    characterLoraName: "characters/hero.safetensors",
+    characterLoraStrength: 0.75,
+  });
+  assert.deepEqual(validateSingleRender(valid), []);
+  assert.match(messages({ ...valid, characterLoraName: "../escape.safetensors" }).find((message) => message.includes("LoRA")), /relative path/);
+  assert.match(messages({ ...valid, characterLoraStrength: 2.1 }).find((message) => message.includes("LoRA")), /between 0 and 2/);
+  assert.deepEqual(validateSingleRender({ ...valid, characterLoraName: "" }), []);
 });
 
 test("asset validation issues point at the exact missing Single Create fields", () => {

@@ -53,6 +53,7 @@ export function routeTitle(pathname) {
   if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return "Job Detail";
   if (normalizedPath === "/app/tools/upscale") return "Upscale";
   if (normalizedPath === "/app/tools/image-to-image") return "Image to Image";
+  if (normalizedPath === "/app/tools/lora-trainer") return "LoRA Trainer";
 
   return WEB_UI_ROUTES.find((route) => route.id === primaryRouteForPath(normalizedPath))?.label ?? "Create";
 }

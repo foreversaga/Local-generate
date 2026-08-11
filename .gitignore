@@ -42,3 +42,7 @@ dev.*.log
 /work/
 /logs/
 /data/jobs/
+/data/img2img/
+
+# LoRA training runtime data
+/data/lora-training/

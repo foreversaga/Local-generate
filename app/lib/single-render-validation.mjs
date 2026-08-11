@@ -11,6 +11,8 @@
  *   referenceImages: SingleRenderAssetRef[];
  *   lastFrameImage: SingleRenderAssetRef | null;
  *   sourceVideo: SingleRenderAssetRef | null;
+ *   characterLoraName?: string;
+ *   characterLoraStrength?: NumberDraft;
  * }} SingleRenderAssetValidationInput
  */
 
@@ -84,6 +86,14 @@ export function validateSingleRender(input) {
     integer: true,
   }));
 
+  if (input.mode === "replace") {
+    const characterLoraName = typeof input.characterLoraName === "string" ? input.characterLoraName.trim() : "";
+    if (characterLoraName) {
+      issues.push(...validateCharacterLoraName(characterLoraName));
+      issues.push(...validateCharacterLoraStrength(input.characterLoraStrength));
+    }
+  }
+
   return issues;
 }
 
@@ -125,6 +135,44 @@ export function validateSingleRenderAssets(input) {
   }
 
   return issues;
+}
+
+/**
+ * Validate a user-provided relative path under ComfyUI/models/loras.
+ * The bridge repeats this check before spawning the generator.
+ *
+ * @param {unknown} value
+ * @returns {ValidationIssue[]}
+ */
+export function validateCharacterLoraName(value) {
+  if (typeof value !== "string") return [issue("characterLoraName", "Character LoRA name must be text.")];
+  const normalized = value.trim().replaceAll("\\", "/");
+  if (!normalized) return [];
+  const segments = normalized.split("/");
+  if (
+    normalized.length > 512
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0")
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    return [issue("characterLoraName", "Character LoRA must be a safe relative path under models/loras.")];
+  }
+  return [];
+}
+
+/**
+ * @param {NumberDraft | undefined} value
+ * @returns {ValidationIssue[]}
+ */
+export function validateCharacterLoraStrength(value) {
+  if (value === "" || value === undefined || value === null) {
+    return [issue("characterLoraStrength", "Character LoRA strength must be between 0 and 2.")];
+  }
+  if (!Number.isFinite(value) || value < 0 || value > 2) {
+    return [issue("characterLoraStrength", "Character LoRA strength must be between 0 and 2.")];
+  }
+  return [];
 }
 
 /**

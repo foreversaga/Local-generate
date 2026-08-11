@@ -28,3 +28,26 @@ test("merged jobs sort recent first and count active states", () => {
   assert.deepEqual(jobs.map((job) => job.id), ["c", "b", "a"]);
   assert.equal(activeJobCount(jobs), 2);
 });
+
+test("job adapter preserves image batch summaries and treats partial as terminal", () => {
+  assert.equal(normalizeJobStatus("partial"), "partial");
+  const raw = {
+    id: "img-batch",
+    status: "partial",
+    model: "sdxl.safetensors",
+    batchCount: 3,
+    completedCount: 2,
+    failedCount: 1,
+    randomRanges: { denoise: { min: 0.4, max: 0.8 } },
+    items: [{ index: 0, status: "completed", parameters: { seed: 10 } }],
+  };
+  const adapted = adaptJob(raw, "img2img");
+  assert.equal(adapted.status, "partial");
+  assert.equal(adapted.progress, 100);
+  assert.equal(adapted.batchCount, 3);
+  assert.equal(adapted.completedCount, 2);
+  assert.equal(adapted.failedCount, 1);
+  assert.deepEqual(adapted.items, raw.items);
+  assert.deepEqual(adapted.randomRanges, raw.randomRanges);
+  assert.equal(adapted.raw, raw);
+});

@@ -1,0 +1,16 @@
+{
+  "id": "sdxl",
+  "entrypoint": "sdxl_train_network.py",
+  "networkModule": "networks.lora",
+  "defaults": {
+    "resolution": 1024,
+    "batchSize": 1,
+    "epochs": 10,
+    "learningRate": 0.0001,
+    "networkDim": 16,
+    "networkAlpha": 16,
+    "saveEveryEpochs": 1,
+    "mixedPrecision": "fp16",
+    "savePrecision": "fp16"
+  }
+}

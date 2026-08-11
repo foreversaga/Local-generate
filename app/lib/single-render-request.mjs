@@ -10,6 +10,9 @@ const SEED_MODULUS = 2147483648;
  *   referenceImageNames?: string[];
  *   lastFrameName?: string;
  *   sourceVideoName?: string;
+ *   characterLoraName?: string;
+ *   characterLoraId?: string;
+ *   characterLoraStrength?: number;
  *   modelProfile: string;
  *   width: number;
  *   height: number;
@@ -33,6 +36,8 @@ const SEED_MODULUS = 2147483648;
 export function buildSingleRenderRequest(input) {
   const referenceImageName = input.referenceImageName || "";
   const sourceVideoName = input.sourceVideoName || "";
+  const characterLoraId = input.mode === "replace" ? String(input.characterLoraId || "").trim() : "";
+  const characterLoraName = input.mode === "replace" ? String(input.characterLoraName || "").trim() : "";
   const payload = {
     mode: input.mode,
     prompt: input.prompt,
@@ -55,6 +60,14 @@ export function buildSingleRenderRequest(input) {
 
   if (input.mode === "ref2v") {
     payload.referenceImageNames = (input.referenceImageNames || []).slice(0, MAX_REF2V_IMAGES);
+  }
+
+  if (characterLoraId) {
+    payload.characterLoraId = characterLoraId;
+    payload.characterLoraStrength = input.characterLoraStrength ?? 0.75;
+  } else if (characterLoraName) {
+    payload.characterLoraName = characterLoraName;
+    payload.characterLoraStrength = input.characterLoraStrength ?? 0.75;
   }
 
   return payload;

@@ -2,7 +2,37 @@ import type { StudioAsset } from "../library/asset-client";
 
 const BRIDGE_URL = "/app";
 
-export type Img2ImgStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type Img2ImgStatus = "queued" | "running" | "completed" | "failed" | "partial" | "cancelled";
+
+export type Img2ImgRandomRange = {
+    min: number;
+    max: number;
+};
+
+export type Img2ImgRandomRanges = {
+    denoise: Img2ImgRandomRange;
+    steps: Img2ImgRandomRange;
+    cfg: Img2ImgRandomRange;
+    /** Legacy persisted range; batch execution now always randomizes Seed. */
+    seed?: Img2ImgRandomRange;
+};
+
+export type Img2ImgParameters = {
+    denoise: number;
+    steps: number;
+    cfg: number;
+    seed: number;
+};
+
+export type Img2ImgItem = {
+    index: number;
+    status: Img2ImgStatus | string;
+    parameters?: Partial<Img2ImgParameters>;
+    output?: StudioAsset;
+    error?: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+};
 
 export type Img2ImgRuntimeMode = "local" | "remote";
 
@@ -16,6 +46,10 @@ export type Img2ImgHealth = {
     comfyUi?: boolean;
     nodes?: Record<string, boolean>;
     models?: Record<string, boolean>;
+    profiles?: Record<string, {
+        loraLoader?: string | null;
+        loraAvailable?: boolean;
+    }>;
 };
 
 type Img2ImgRuntimePayload = {
@@ -35,12 +69,19 @@ export type Img2ImgJob = {
     prompt: string;
     negativePrompt: string;
     model: string;
+    characterLoraName?: string;
+    characterLoraStrength?: number;
     denoise: number;
     steps: number;
     cfg: number;
     seed: number;
     output?: StudioAsset;
     error?: string;
+    batchCount?: number;
+    randomRanges?: Img2ImgRandomRanges;
+    completedCount?: number;
+    failedCount?: number;
+    items?: Img2ImgItem[];
     createdAt?: string;
     startedAt?: string | null;
     completedAt?: string | null;
@@ -52,15 +93,28 @@ export type Img2ImgSubmitInput = {
     prompt: string;
     negativePrompt: string;
     model: string;
+    characterLoraName?: string;
+    characterLoraStrength?: number;
     denoise: number;
     steps: number;
     cfg: number;
     seed: number;
+    batchCount: number;
+    randomRanges: Img2ImgRandomRanges;
 };
 
 export type Img2ImgApiPayload = {
     job?: Img2ImgJob;
+    jobs?: Img2ImgJob[];
+    records?: Img2ImgJob[];
     health?: Img2ImgHealth;
+    error?: string | { code?: string; message?: string };
+    code?: string;
+};
+
+export type Img2ImgLoraPayload = {
+    loras?: string[];
+    available?: boolean;
     error?: string | { code?: string; message?: string };
     code?: string;
 };
@@ -126,6 +180,13 @@ export async function submitImg2Img(input: Img2ImgSubmitInput) {
     return payload.job;
 }
 
+export async function fetchImg2ImgLoras(modelOrProfile: string) {
+    const response = await fetch(`${BRIDGE_URL}/api/loras?consumer=img2img&profile=${encodeURIComponent(modelOrProfile)}`, { cache: "no-store" });
+    const payload = await response.json().catch(() => ({})) as Img2ImgLoraPayload;
+    if (!response.ok || !Array.isArray(payload.loras)) return [];
+    return payload.loras.filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+}
+
 export async function fetchImg2ImgJob(id: string) {
     const response = await fetch(`${BRIDGE_URL}/api/img2img/jobs/${encodeURIComponent(id)}`, { cache: "no-store" });
     const payload = await readPayload(response);
@@ -133,6 +194,20 @@ export async function fetchImg2ImgJob(id: string) {
         throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to load image-to-image job."), response.status, payload);
     }
     return payload.job;
+}
+
+export async function fetchImg2ImgJobs(query = "") {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set("q", query.trim());
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const response = await fetch(`${BRIDGE_URL}/api/img2img/jobs${suffix}`, { cache: "no-store" });
+    const payload = await readPayload(response);
+    if (!response.ok) {
+        throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to load image-to-image history."), response.status, payload);
+    }
+    if (Array.isArray(payload.jobs)) return payload.jobs;
+    if (Array.isArray(payload.records)) return payload.records;
+    return payload.job ? [payload.job] : [];
 }
 
 export function isImg2ImgActive(job?: Img2ImgJob | null) {

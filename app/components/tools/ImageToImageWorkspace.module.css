@@ -163,6 +163,15 @@
   color: var(--lime);
 }
 
+.deleteButton {
+  color: var(--danger);
+}
+
+.deleteButton:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .primaryButton:disabled,
 .secondaryButton:disabled,
 .textButton:disabled {
@@ -353,6 +362,198 @@
   justify-content: center;
 }
 
+.rangeGrid {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rangeRow {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.rangeRow > span:first-child {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rangeRow label {
+  min-width: 0;
+}
+
+.rangeRow input {
+  width: 100%;
+}
+
+.batchSummary {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.itemGallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.itemCard,
+.historyCard {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  padding: 12px;
+}
+
+.itemHeader,
+.historyToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.itemHeader strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.itemParameters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.itemParameters dt {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.itemParameters dd {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.itemImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--panel);
+}
+
+.historySearch {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.historySearch > span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.historySearch input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  padding: 11px 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.historySearch input:focus-visible,
+.historyToggle:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+
+.historyList {
+  display: grid;
+  gap: 8px;
+}
+
+.historyToggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.historyToggle > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.historyToggle small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyToggle > span:last-child {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.historyDetails {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.historyDetails p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.historyItem {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.historyItem a {
+  color: var(--lime);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 @media (max-width: 860px) {
   .layout,
   .formGrid {
@@ -385,6 +586,10 @@
 
   .primaryButton {
     width: 100%;
+  }
+
+  .rangeRow {
+    grid-template-columns: 62px minmax(0, 1fr) auto minmax(0, 1fr);
   }
 }
 

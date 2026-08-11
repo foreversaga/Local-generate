@@ -14,6 +14,14 @@ import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
 import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
+import {
+  LoraTrainingError,
+  captionService as loraCaptionService,
+  datasetService as loraDatasetService,
+  jobStore as loraJobStore,
+  registryStore as loraRegistryStore,
+  toApiError as toLoraApiError,
+} from "./server/lora-training/index.mjs";
 import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
 import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
 import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
@@ -52,6 +60,8 @@ let runtimeSwitching = false;
 let activeRuntimeOperations = 0;
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
+const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
+  || "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
 const defaultOllamaModel = () => COMFY_REMOTE ? GEMMA4_OLLAMA_MODEL : QWEN_OLLAMA_MODEL;
 const CODEX_CLI = process.env.CODEX_CLI_PATH || (process.platform === "win32" ? "codex.cmd" : "codex");
 const CODEX_HOME = path.resolve(
@@ -66,6 +76,12 @@ const CODEX_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_IMAGE_LIMIT_BYTES = 12 * 1024 * 1024;
 const MAX_PLANNER_IMAGES = 8;
 const DEFAULT_SHORT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark, identity drift, face drift, face morphing, facial feature drift, age drift, hairstyle drift, costume drift, body-shape drift, asymmetrical eyes, mismatched pupils, extra eyes, duplicated facial features, distorted jaw, facial flicker";
+const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
+const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
+const BUILTIN_ANIMATE_LORAS = new Set([
+  "lightx2v_i2v_14b_480p_cfg_step_distill_rank64_bf16.safetensors",
+  "wananimate_relight_lora_fp16.safetensors",
+]);
 const MAX_BODY_BYTES = 260 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
@@ -1388,6 +1404,536 @@ function clampNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, number));
 }
 
+function normalizeCharacterLoraName(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return "";
+  if (typeof value !== "string") {
+    throw makeRuntimeError("CHARACTER_LORA_NAME_INVALID", "Character LoRA name must be a string.", 400);
+  }
+  const normalized = value.trim().replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized
+    || normalized.length > CHARACTER_LORA_MAX_NAME_LENGTH
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0")
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    throw makeRuntimeError(
+      "CHARACTER_LORA_NAME_INVALID",
+      "Character LoRA must be a safe relative path under ComfyUI/models/loras.",
+      400,
+    );
+  }
+  return normalized;
+}
+
+function normalizeCharacterLoraStrength(value, fallback = CHARACTER_LORA_DEFAULT_STRENGTH) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw makeRuntimeError("CHARACTER_LORA_STRENGTH_INVALID", "Character LoRA strength must be a number between 0 and 2.", 400);
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    throw makeRuntimeError("CHARACTER_LORA_STRENGTH_INVALID", "Character LoRA strength must be a number between 0 and 2.", 400);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 2) {
+    throw makeRuntimeError("CHARACTER_LORA_STRENGTH_INVALID", "Character LoRA strength must be a number between 0 and 2.", 400);
+  }
+  return number;
+}
+
+function comboValues(nodeInfo, key) {
+  const spec = nodeInfo?.input?.required?.[key];
+  const choices = Array.isArray(spec) ? spec[0] : spec;
+  if (Array.isArray(choices)) return choices.map((value) => String(value)).filter(Boolean);
+  if (choices && typeof choices === "object" && Array.isArray(choices.value)) {
+    return choices.value.map((value) => String(value)).filter(Boolean);
+  }
+  return [];
+}
+
+function characterLoraOptions(objectInfo) {
+  const seen = new Set();
+  return comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name")
+    .map((value) => value.replaceAll("\\", "/").trim())
+    .filter((value) => {
+      let safeValue = "";
+      try {
+        safeValue = normalizeCharacterLoraName(value);
+      } catch {
+        return false;
+      }
+      const lower = safeValue.toLowerCase();
+      if (!safeValue || BUILTIN_ANIMATE_LORAS.has(lower) || lower.includes("lightx2v") || lower.includes("relight") || seen.has(lower)) return false;
+      seen.add(lower);
+      return true;
+    });
+}
+
+const LORA_CONSUMER_FAMILIES = Object.freeze({
+  "single-replace": Object.freeze(["wan22-animate"]),
+  img2img: Object.freeze(["sdxl", "illustrious", "sd15", "z-image"]),
+});
+
+const IMG2IMG_LORA_PROFILES = Object.freeze({
+  "sd_xl_base_1.0.safetensors": Object.freeze({ family: "sdxl", baseProfile: "sdxl-base-1.0" }),
+  "v1-5-pruned-emaonly-fp16.safetensors": Object.freeze({ family: "sd15", baseProfile: "sd15" }),
+  "waiIllustriousSDXL_v170.safetensors": Object.freeze({ family: "illustrious", baseProfile: "wai-illustrious" }),
+  "z_image_turbo_bf16.safetensors": Object.freeze({ family: "z-image", baseProfile: "z-image-turbo" }),
+  wan22_animate_fp8: Object.freeze({ family: "wan22-animate", baseProfile: "wan22-animate" }),
+});
+
+function normalizeLoraFamilyFilter(value) {
+  const family = String(value || "").trim().toLowerCase();
+  if (!family) return "";
+  if (family === "wan") return "wan22-animate";
+  if (!["sdxl", "illustrious", "sd15", "z-image", "wan22-animate"].includes(family)) {
+    throw makeRuntimeError("LORA_FAMILY_INVALID", "Unsupported LoRA family.", 400, { family });
+  }
+  return family;
+}
+
+function normalizeLoraConsumerFilter(value) {
+  const consumer = String(value || "").trim().toLowerCase();
+  if (!consumer) return "";
+  if (!Object.hasOwn(LORA_CONSUMER_FAMILIES, consumer)) {
+    throw makeRuntimeError("LORA_CONSUMER_INVALID", "Unsupported LoRA consumer.", 400, { consumer });
+  }
+  return consumer;
+}
+
+function registryConsumerMetadata(item) {
+  const consumers = [];
+  if (item.family === "wan22-animate") consumers.push("single-replace");
+  if (["sdxl", "illustrious", "sd15", "z-image"].includes(item.family)) consumers.push("img2img");
+  return consumers;
+}
+
+function compatibleLoraItem(item, { family, profile, consumer }) {
+  if (family && item.family !== family) return false;
+  if (!consumer && item.family === "wan22-animate") return false;
+  if (consumer && !registryConsumerMetadata(item).includes(consumer)) return false;
+  if (profile) {
+    const expected = IMG2IMG_LORA_PROFILES[profile];
+    if (expected && (item.family !== expected.family || (item.baseProfile && item.baseProfile !== expected.baseProfile))) return false;
+    if (!expected && item.baseProfile !== profile) return false;
+  }
+  return true;
+}
+
+async function listLoras({ family = "", profile = "", consumer = "" } = {}) {
+  const normalizedFamily = normalizeLoraFamilyFilter(family);
+  const normalizedConsumer = normalizeLoraConsumerFilter(consumer);
+  if (normalizedConsumer && normalizedFamily && !LORA_CONSUMER_FAMILIES[normalizedConsumer].includes(normalizedFamily)) {
+    return { loras: [], items: [], available: true, registryVersion: 0 };
+  }
+  const [objectInfoResult, registryResult] = await Promise.allSettled([
+    fetchJson(COMFY_URL + "/object_info", {}, 5000),
+    loraRegistryStore.readRegistry(),
+  ]);
+  const objectInfo = objectInfoResult.status === "fulfilled" ? objectInfoResult.value : null;
+  const loaderNames = objectInfo
+    ? [...comboValues(objectInfo?.LoraLoader, "lora_name"), ...comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name")]
+    : [];
+  const legacyNames = characterLoraOptions({
+    LoraLoaderModelOnly: objectInfo?.LoraLoaderModelOnly,
+  });
+  for (const name of comboValues(objectInfo?.LoraLoader, "lora_name")) {
+    const normalized = name.replaceAll("\\", "/").trim();
+    const lower = normalized.toLowerCase();
+    if (!normalized || BUILTIN_ANIMATE_LORAS.has(lower) || lower.includes("lightx2v") || lower.includes("relight")) continue;
+    try { normalizeCharacterLoraName(normalized); } catch { continue; }
+    if (!legacyNames.some((value) => value.toLowerCase() === lower)) legacyNames.push(normalized);
+  }
+  const loaded = new Set(loaderNames.map((value) => value.replaceAll("\\", "/").trim().toLowerCase()));
+  const registry = registryResult.status === "fulfilled" ? registryResult.value : { revision: 0, items: [] };
+  const items = registry.items
+    .filter((item) => item.status === "available" && compatibleLoraItem(item, {
+      family: normalizedFamily,
+      profile: String(profile || "").trim(),
+      consumer: normalizedConsumer,
+    }))
+    .map((item) => {
+      const registryPath = item.relativePath.replaceAll("\\", "/");
+      const loaderPath = loaderNames
+        .map((value) => value.replaceAll("\\", "/").trim())
+        .find((value) => value.toLowerCase() === registryPath.toLowerCase() || value.toLowerCase().endsWith(`/${registryPath.toLowerCase()}`));
+      return ({
+      id: item.id,
+      name: loaderPath || registryPath,
+      relativePath: loaderPath || registryPath,
+      registryRelativePath: registryPath,
+      displayName: item.displayName,
+      family: item.family,
+      baseProfile: item.baseProfile,
+      triggerWords: item.triggerWords,
+      sha256: item.hash,
+      sizeBytes: item.size,
+      provenance: item.provenance,
+      consumers: registryConsumerMetadata(item),
+      comfyLoaded: Boolean(loaderPath || loaded.has(registryPath.toLowerCase())),
+    }); });
+  const compatibleLoaded = items.filter((item) => item.comfyLoaded).map((item) => item.relativePath);
+  const filteredRequest = Boolean(normalizedFamily || normalizedConsumer || String(profile || "").trim());
+  const names = [...(filteredRequest ? [] : legacyNames), ...compatibleLoaded].filter((value, index, values) =>
+    values.findIndex((candidate) => candidate.toLowerCase() === value.toLowerCase()) === index);
+  const structuredItems = filteredRequest ? items : [
+    ...items,
+    ...legacyNames
+      .filter((name) => !items.some((item) => item.relativePath.toLowerCase() === name.toLowerCase()))
+      .map((name) => ({
+        id: null, name, relativePath: name, displayName: path.posix.basename(name),
+        family: null, baseProfile: null, triggerWords: [], sha256: null, sizeBytes: null,
+        provenance: null, consumers: ["single-replace", "img2img"], comfyLoaded: true, registry: false,
+      })),
+  ];
+  return {
+    loras: names,
+    items: structuredItems,
+    available: Boolean(objectInfo),
+    registryVersion: registry.revision,
+  };
+}
+
+async function resolveRegistryLora(value, { family, profile, consumer } = {}) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return null;
+  const registry = await loraRegistryStore.readRegistry();
+  const normalizedCandidate = candidate.replaceAll("\\", "/").toLowerCase();
+  const item = registry.items.find((entry) => {
+    const registryPath = entry.relativePath.replaceAll("\\", "/").toLowerCase();
+    return entry.id === candidate || registryPath === normalizedCandidate || normalizedCandidate.endsWith(`/${registryPath}`);
+  });
+  if (!item) return null;
+  if (!compatibleLoraItem(item, { family, profile, consumer })) {
+    throw makeRuntimeError("LORA_FAMILY_MISMATCH", "The selected LoRA is incompatible with this consumer or model profile.", 422, {
+      registryId: item.id,
+      actualFamily: item.family,
+      expectedFamily: family || IMG2IMG_LORA_PROFILES[profile]?.family,
+      profile,
+      consumer,
+    });
+  }
+  const discovery = await listLoras({ family: item.family, profile, consumer });
+  const discovered = discovery.items.find((entry) => entry.id === item.id);
+  if (!discovered?.comfyLoaded) {
+    throw makeRuntimeError("LORA_NOT_LOADED", "The selected trained LoRA is not visible to the active ComfyUI loader.", 409, { registryId: item.id });
+  }
+  return { name: discovered.relativePath, registry: discovered };
+}
+
+let loraTrainingServicePromise;
+
+async function probeCaptionOllama() {
+  try {
+    const response = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) {
+      return { ok: false, model: OLLAMA_CAPTION_MODEL, message: `Ollama tags probe returned HTTP ${response.status}.` };
+    }
+    const payload = await response.json();
+    const names = Array.isArray(payload?.models)
+      ? payload.models.map((item) => String(item?.name || item?.model || "")).filter(Boolean)
+      : [];
+    const hasExplicitTag = OLLAMA_CAPTION_MODEL.lastIndexOf(":") > OLLAMA_CAPTION_MODEL.lastIndexOf("/");
+    const available = names.some((name) => name === OLLAMA_CAPTION_MODEL || (
+      !hasExplicitTag
+      && name.startsWith(`${OLLAMA_CAPTION_MODEL}:`)
+      && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(name.slice(OLLAMA_CAPTION_MODEL.length + 1))
+    ));
+    return {
+      ok: available,
+      model: OLLAMA_CAPTION_MODEL,
+      ...(available ? {} : { message: `Ollama model ${OLLAMA_CAPTION_MODEL} is not installed.` }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      model: OLLAMA_CAPTION_MODEL,
+      message: error instanceof Error ? error.message : "Ollama tags probe failed.",
+    };
+  }
+}
+
+async function resolveLoraTrainingSource(input) {
+  const assetId = String(input?.assetId || input?.sourceAssetId || "");
+  const separator = assetId.indexOf(":");
+  if (separator < 1) throw makeRuntimeError("LORA_ASSET_INVALID", "Training sources must reference a Studio asset.", 400);
+  const root = assetId.slice(0, separator);
+  const name = assetId.slice(separator + 1);
+  if (!['input', 'output'].includes(root) || classifyFile(name) !== "image") {
+    throw makeRuntimeError("LORA_ASSET_INVALID", "Training sources must be image assets from input or output.", 415);
+  }
+  const asset = await toAsset(root, name);
+  return { path: await resolveMediaPath(root, name), fileName: asset.name, mimeType: asset.mime, assetId };
+}
+
+async function getLoraTrainingService() {
+  if (!loraTrainingServicePromise) {
+    loraTrainingServicePromise = import("./server/lora-training/index.mjs").then(async (module) => {
+      const factory = module.createLoraTrainingService || module.getLoraTrainingService;
+      if (typeof factory !== "function") throw makeRuntimeError("LORA_TRAINING_UNAVAILABLE", "LoRA training service is not configured.", 503);
+      return await factory({
+        resolveSource: resolveLoraTrainingSource,
+        comfyRoot: COMFY_ROOT,
+        comfyUrl: COMFY_URL,
+        ollamaUrl: OLLAMA_URL,
+        ollamaModel: OLLAMA_CAPTION_MODEL,
+        ollamaProbe: probeCaptionOllama,
+        comfyLoraDirectory: path.join(COMFY_ROOT, "models", "loras", "trained"),
+        resolveBaseModel: ({ family, baseProfile }) => {
+          const fileName = family === "illustrious" || baseProfile === "wai-illustrious"
+            ? "waiIllustriousSDXL_v170.safetensors"
+            : "sd_xl_base_1.0.safetensors";
+          return { path: path.join(COMFY_ROOT, "models", "checkpoints", fileName), fileName };
+        },
+      });
+    }).catch((error) => {
+      loraTrainingServicePromise = undefined;
+      throw error;
+    });
+  }
+  return loraTrainingServicePromise;
+}
+
+function loraPhase(job) {
+  return job?.config?.orchestration?.phase || job?.status || "draft";
+}
+
+function publicLoraTrainingJob(details) {
+  const job = details?.job || details;
+  const phase = loraPhase(job);
+  const status = ({
+    succeeded: "completed", canceled: "cancelled", running: "training",
+    captions_ready: job?.captionReviewMode === "manual" ? "caption_review" : "draft",
+  })[phase] || ({ succeeded: "completed", canceled: "cancelled", running: "training" })[job?.status] || phase;
+  const orchestration = job?.config?.orchestration || {};
+  const artifact = orchestration.artifact || job?.artifact;
+  return {
+    schemaVersion: 1,
+    id: job.id,
+    revision: job.revision,
+    status,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    dataset: {
+      imageCount: details?.dataset?.images?.length ?? details?.dataset?.imageCount ?? job?.assetIds?.length ?? 0,
+      manifestPath: details?.dataset?.manifestPath || "",
+    },
+    captionReviewMode: job.captionReviewMode,
+    captions: details?.captions || { total: 0, confirmed: 0, failed: 0 },
+    training: {
+      family: job.family,
+      presetId: job.config?.presetId || job.config?.preset || job.family,
+      baseProfile: job.config?.baseProfile || "",
+      attempt: Number(job.provenance?.attempt || 1),
+      ...(orchestration.progress || {}),
+    },
+    ...(artifact ? { artifact: {
+      registryId: artifact.registryId || artifact.id,
+      sha256: artifact.sha256 || artifact.hash,
+      sizeBytes: artifact.sizeBytes ?? artifact.size,
+    } } : {}),
+    ...(orchestration.error || job.error ? { error: orchestration.error || job.error } : {}),
+    provenance: {
+      ...job.provenance,
+      sourceAssets: Array.isArray(job.provenance?.sourceAssets) ? job.provenance.sourceAssets : job.assetIds || [],
+    },
+  };
+}
+
+function sendLoraTrainingError(res, error) {
+  const converted = toLoraApiError(error);
+  const detail = converted.body?.error || {};
+  sendJson(res, Number.isInteger(error?.status) ? error.status : (Number.isInteger(converted.status) ? converted.status : 500), {
+    error: {
+      code: error?.code || detail.code || "LORA_TRAINING_FAILED",
+      message: error?.message || detail.message || "LoRA training request failed.",
+      retryable: Boolean(detail.retryable ?? detail.details?.retryable ?? error?.details?.retryable),
+      ...(detail.details === undefined ? {} : { details: detail.details }),
+    },
+  });
+}
+
+async function loraArtifactForJob(service, jobId) {
+  if (typeof service.artifact === "function") return service.artifact(jobId);
+  const registry = await loraRegistryStore.readRegistry();
+  const item = registry.items.find((entry) => entry.provenance?.jobId === jobId);
+  if (!item) throw new LoraTrainingError("NOT_FOUND", "training artifact not found", { status: 404 });
+  return item;
+}
+
+function loraServiceController(service) {
+  if (typeof service.create !== "function") return service.components?.controller || service.controller || service;
+  return {
+    create: service.create.bind(service), get: service.get.bind(service), list: service.list.bind(service),
+    start: service.start.bind(service), cancel: service.cancel.bind(service), retry: service.retry.bind(service),
+    editCaption: service.editCaption.bind(service), retryCaption: service.retryCaption.bind(service),
+    confirmCaptions: service.confirmCaptions.bind(service), enqueue: service.enqueue.bind(service),
+    runPreflight: (service.preflight || service.runPreflight).bind(service),
+  };
+}
+
+async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
+  if (pathname !== "/api/lora-training/health" && !pathname.startsWith("/api/lora-training/jobs")) return false;
+  try {
+    const service = await getLoraTrainingService();
+    const controller = loraServiceController(service);
+    if (req.method === "GET" && pathname === "/api/lora-training/health") {
+      const family = requestUrl.searchParams.has("family")
+        ? String(requestUrl.searchParams.get("family") || "").trim().toLowerCase()
+        : "sdxl";
+      if (!["sdxl", "illustrious"].includes(family)) {
+        throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
+          status: 400,
+          details: { field: "family", allowed: ["sdxl", "illustrious"] },
+        });
+      }
+      const baseProfile = requestUrl.searchParams.has("baseProfile")
+        ? String(requestUrl.searchParams.get("baseProfile") || "").trim()
+        : undefined;
+      const allowedBaseProfile = family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious";
+      if (baseProfile !== undefined && baseProfile !== allowedBaseProfile) {
+        throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
+          status: 400,
+          details: { field: "baseProfile", family, allowed: [allowedBaseProfile] },
+        });
+      }
+      const healthResult = typeof service.health === "function"
+        ? await service.health({ family, ...(baseProfile ? { baseProfile } : {}) })
+        : { available: true };
+      sendJson(res, 200, healthResult); return true;
+    }
+    if (req.method === "GET" && pathname === "/api/lora-training/jobs") {
+      const listed = await controller.list({
+        status: requestUrl.searchParams.get("status") || undefined,
+        family: requestUrl.searchParams.get("family") || undefined,
+      });
+      const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 20));
+      const offset = Math.max(0, Number(requestUrl.searchParams.get("cursor")) || 0);
+      sendJson(res, 200, {
+        jobs: listed.slice(offset, offset + limit).map((job) => publicLoraTrainingJob(job)),
+        nextCursor: offset + limit < listed.length ? String(offset + limit) : null,
+      }); return true;
+    }
+    if (req.method === "POST" && pathname === "/api/lora-training/jobs") {
+      const body = await readJson(req);
+      const config = body.config || {};
+      const details = await controller.create({
+        ...body,
+        family: config.family || body.family,
+        slug: body.slug || `lora-${Date.now().toString(36)}`,
+        displayName: body.displayName || config.outputName || "Trained LoRA",
+        triggerWords: body.triggerWords || config.triggerWords || [config.outputName || "character"],
+      });
+      sendJson(res, 201, { job: publicLoraTrainingJob(details) }); return true;
+    }
+    const match = pathname.match(/^\/api\/lora-training\/jobs\/([^/]+)(?:\/(.*))?$/);
+    if (!match) return false;
+    const jobId = decodeURIComponent(match[1]);
+    const action = match[2] || "";
+    if (req.method === "GET" && !action) {
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
+    }
+    if (req.method === "POST" && ["start", "cancel", "retry", "preflight", "enqueue"].includes(action)) {
+      const body = ["cancel", "retry"].includes(action) ? {} : await readJson(req);
+      let result;
+      if (action === "start") result = await controller.start(jobId, { expectedRevision: body.revision });
+      if (action === "cancel") result = await controller.cancel(jobId);
+      if (action === "retry") result = await controller.retry(jobId);
+      if (action === "preflight") {
+        const report = await controller.runPreflight(jobId);
+        sendJson(res, 200, { preflight: { ...report, preflightToken: report.preflightToken || report.token } }); return true;
+      }
+      if (action === "enqueue") result = await controller.enqueue(jobId, { expectedRevision: body.revision, preflightToken: body.preflightToken });
+      sendJson(res, action === "retry" ? 201 : 200, { job: publicLoraTrainingJob(result) }); return true;
+    }
+    if (req.method === "PUT" && action === "config") {
+      const body = await readJson(req);
+      const current = await loraJobStore.readJob(jobId);
+      const { revision, ...config } = body;
+      const job = await loraJobStore.updateJob(jobId, { config: { ...current.config, ...config } }, { expectedRevision: revision });
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(job.id)) }); return true;
+    }
+    if (req.method === "GET" && action === "captions") {
+      const manifest = await loraCaptionService.readCaptions(jobId);
+      const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 8));
+      const offset = Math.max(0, Number(requestUrl.searchParams.get("cursor")) || 0);
+      const records = manifest.records.slice(offset, offset + limit);
+      sendJson(res, 200, { captions: records.map((record) => ({ ...record, imageId: record.imageId, imageFile: record.imageFile || record.fileName })), nextCursor: offset + limit < manifest.records.length ? String(offset + limit) : null }); return true;
+    }
+    const captionMatch = action.match(/^captions\/([^/]+)(?:\/(retry))?$/);
+    if (captionMatch && ((req.method === "PATCH" && !captionMatch[2]) || (req.method === "POST" && captionMatch[2] === "retry"))) {
+      const body = await readJson(req);
+      if (captionMatch[2]) await controller.retryCaption(jobId, decodeURIComponent(captionMatch[1]));
+      else await controller.editCaption(jobId, decodeURIComponent(captionMatch[1]), body.caption, { expectedRevision: body.revision });
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
+    }
+    if (req.method === "POST" && action === "captions/confirm") {
+      const body = await readJson(req);
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.confirmCaptions(jobId, { expectedRevision: body.revision })) }); return true;
+    }
+    if (req.method === "POST" && action === "captions/generate") {
+      const body = await readJson(req);
+      const current = await loraJobStore.readJob(jobId);
+      if (body.revision !== undefined && current.revision !== body.revision) {
+        throw new LoraTrainingError("REVISION_CONFLICT", "revision conflict", { status: 409, details: { actualRevision: current.revision } });
+      }
+      await service.generateCaptions(jobId, { imageIds: body.imageIds });
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
+    }
+    if (req.method === "POST" && ["images", "images/import"].includes(action)) {
+      const body = await readJson(req);
+      const current = await loraJobStore.readJob(jobId);
+      if (body.revision !== undefined && current.revision !== body.revision) {
+        throw new LoraTrainingError("REVISION_CONFLICT", "revision conflict", { status: 409, details: { actualRevision: current.revision } });
+      }
+      let assetIds = Array.isArray(body.assetIds) ? body.assetIds : [];
+      if (action === "images" && body.data) {
+        const uploaded = await uploadAsset({ name: body.name, mimeType: body.mimeType, data: body.data });
+        if (uploaded.kind !== "image") throw makeRuntimeError("UNSUPPORTED_IMAGE", "Training uploads must be images.", 415);
+        assetIds = [`${uploaded.root}:${uploaded.name}`];
+      }
+      if (!assetIds.length) throw makeRuntimeError("LORA_IMAGES_REQUIRED", "At least one image asset is required.", 400);
+      await loraDatasetService.importImages(jobId, assetIds.map((assetId) => ({ assetId })), { resolver: resolveLoraTrainingSource });
+      sendJson(res, 200, { job: publicLoraTrainingJob(await controller.get(jobId)) }); return true;
+    }
+    if (req.method === "GET" && action === "artifact") {
+      const artifact = await loraArtifactForJob(service, jobId);
+      sendJson(res, 200, { artifact: {
+        registryId: artifact.id || artifact.registryId, displayName: artifact.displayName,
+        family: artifact.family, baseProfile: artifact.baseProfile, triggerWords: artifact.triggerWords,
+        sha256: artifact.hash || artifact.sha256, sizeBytes: artifact.size ?? artifact.sizeBytes,
+        installedAt: artifact.updatedAt || artifact.createdAt, provenance: artifact.provenance,
+        downloadUrl: `/app/api/lora-training/jobs/${encodeURIComponent(jobId)}/artifact/download`,
+      } }); return true;
+    }
+    if (req.method === "GET" && action === "artifact/download") {
+      const artifact = await loraArtifactForJob(service, jobId);
+      const relativePath = artifact.relativePath;
+      const loraRoot = path.resolve(COMFY_ROOT, "models", "loras");
+      const loraRootReal = await fs.realpath(loraRoot).catch(() => loraRoot);
+      let filePath = path.resolve(loraRoot, ...String(relativePath || "").replaceAll("\\", "/").split("/"));
+      if (!relativePath || !filePath.startsWith(loraRoot + path.sep)) throw makeRuntimeError("LORA_ARTIFACT_PATH_INVALID", "Artifact path is invalid.", 500);
+      let realFilePath = await fs.realpath(filePath).catch(() => null);
+      let info = realFilePath && realFilePath.startsWith(loraRootReal + path.sep) ? await fs.stat(realFilePath).catch(() => null) : null;
+      if (!info) {
+        filePath = path.resolve(loraRoot, "trained", ...String(relativePath).replaceAll("\\", "/").split("/"));
+        if (!filePath.startsWith(loraRoot + path.sep)) throw makeRuntimeError("LORA_ARTIFACT_PATH_INVALID", "Artifact path is invalid.", 500);
+        realFilePath = await fs.realpath(filePath).catch(() => null);
+        info = realFilePath && realFilePath.startsWith(loraRootReal + path.sep) ? await fs.stat(realFilePath).catch(() => null) : null;
+      }
+      if (!info) throw makeRuntimeError("LORA_ARTIFACT_NOT_FOUND", "Artifact file is missing.", 404);
+      if (!info.isFile()) throw makeRuntimeError("LORA_ARTIFACT_NOT_FOUND", "Artifact file is missing.", 404);
+      res.writeHead(200, { ...jsonHeaders(), "Content-Type": "application/octet-stream", "Content-Length": info.size, "Content-Disposition": `attachment; filename="${path.basename(realFilePath).replaceAll('"', '')}"`, "X-Content-Type-Options": "nosniff" });
+      createReadStream(realFilePath).pipe(res); return true;
+    }
+    return false;
+  } catch (error) {
+    sendLoraTrainingError(res, error); return true;
+  }
+}
+
 function outputFileName(value) {
   const raw = path.basename(String(value || "h3-render"));
   const withoutExtension = raw.replace(/\.[^.]+$/, "");
@@ -1444,6 +1990,11 @@ function publicJob(job) {
     height: job.height,
     duration: job.duration,
     modelProfile: job.modelProfile,
+    ...(job.characterLoraName ? {
+      characterLoraName: job.characterLoraName,
+      characterLoraStrength: job.characterLoraStrength,
+      loraProvenance: job.loraProvenance ? structuredClone(job.loraProvenance) : { relativePath: job.characterLoraName, legacy: true },
+    } : {}),
     output: job.output,
     error: job.error,
     startedAt: job.startedAt,
@@ -1701,6 +2252,18 @@ async function startGeneration(payload, internal = {}) {
   const requestedMode = String(payload.mode || "").trim().toLowerCase();
   if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const mode = promptMode(payload.mode);
+  const requestedCharacterLora = mode === "replace"
+    ? String(payload.characterLoraId || payload.characterLoraName || "").trim()
+    : "";
+  const registryLora = requestedCharacterLora
+    ? await resolveRegistryLora(requestedCharacterLora, { family: "wan22-animate", profile: "wan22_animate_fp8", consumer: "single-replace" })
+    : null;
+  const characterLoraName = mode === "replace"
+    ? normalizeCharacterLoraName(registryLora?.name || requestedCharacterLora)
+    : "";
+  const characterLoraStrength = characterLoraName
+    ? normalizeCharacterLoraStrength(payload.characterLoraStrength)
+    : null;
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
   const submittedPrompt = String(payload.prompt || "").trim();
   const prompt = mode === "replace"
@@ -1816,6 +2379,19 @@ async function startGeneration(payload, internal = {}) {
     height,
     duration,
     modelProfile,
+    ...(characterLoraName ? {
+      characterLoraName,
+      characterLoraStrength,
+      loraProvenance: registryLora?.registry ? {
+        registryId: registryLora.registry.id,
+        displayName: registryLora.registry.displayName,
+        relativePath: registryLora.registry.relativePath,
+        family: registryLora.registry.family,
+        baseProfile: registryLora.registry.baseProfile,
+        sha256: registryLora.registry.sha256,
+        triggerWords: registryLora.registry.triggerWords,
+      } : { relativePath: characterLoraName, legacy: true },
+    } : {}),
     startedAt: now(),
     updatedAt: now(),
     connectionState: "starting",
@@ -1853,6 +2429,14 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       COMFY_URL,
     ];
+    if (characterLoraName) {
+      args.push(
+        "--character-lora",
+        characterLoraName,
+        "--character-lora-strength",
+        String(characterLoraStrength),
+      );
+    }
     if (COMFY_REMOTE) args.push("--remote-comfy");
   } else {
     args = [
@@ -2489,6 +3073,14 @@ function createImg2ImgControllerForRuntime() {
     outputRoot: OUTPUT_ROOT,
     toAsset,
     beforeRun: () => releaseOllamaForComfy(),
+    resolveCharacterLora: (value, { model }) => {
+      const expected = IMG2IMG_LORA_PROFILES[model];
+      return resolveRegistryLora(value, {
+        family: expected?.family,
+        profile: model,
+        consumer: "img2img",
+      });
+    },
   });
 }
 
@@ -2554,8 +3146,30 @@ async function route(req, res) {
     if (handled || res.headersSent) return;
   }
 
+  if (pathname === "/api/lora-training/health" || pathname.startsWith("/api/lora-training/jobs")) {
+    const handled = await handleLoraTrainingRoute(req, res, { pathname, requestUrl });
+    if (handled || res.headersSent) return;
+  }
+
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, await health());
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/loras") {
+    try {
+      sendJson(res, 200, await listLoras({
+        family: requestUrl.searchParams.get("family") || "",
+        profile: requestUrl.searchParams.get("profile") || requestUrl.searchParams.get("baseProfile") || "",
+        consumer: requestUrl.searchParams.get("consumer") || "",
+      }));
+    } catch (error) {
+      if (Number.isInteger(error?.status)) {
+        sendJson(res, error.status, { error: { code: error.code || "LORA_DISCOVERY_INVALID", message: error.message, retryable: false, details: error.details } });
+      } else {
+        // Legacy clients may still enter a relative path while discovery is offline.
+        sendJson(res, 200, { loras: [], items: [], available: false, registryVersion: 0 });
+      }
+    }
     return;
   }
   if (req.method === "GET" && pathname === "/api/assets") {
@@ -2741,4 +3355,7 @@ export {
   codexLongPlanReferences,
   codexLongPlanModeInstruction,
   normalizePlannerImages,
+  normalizeCharacterLoraName,
+  normalizeCharacterLoraStrength,
+  characterLoraOptions,
 };
