@@ -4,7 +4,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import test from 'node:test';
-import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 
 import { atomicWriteJson, createJobStore } from '../server/lora-training/store.mjs';
 import { createDatasetService } from '../server/lora-training/dataset.mjs';
@@ -25,6 +25,10 @@ function pathsFor(root) {
 
 function fakePng(seed) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from(`fixture-${seed}`)]);
+}
+
+function errno(code, message = code) {
+  return Object.assign(new Error(message), { code });
 }
 
 async function fixture() {
@@ -66,6 +70,166 @@ test('materializes 39 split pairs into DreamBooth layout and refreshes stale fil
     const layout = await value.dataset.inspectTrainerLayout(value.job.id, { classTokens: '../Unsafe/..', repeats: 2 });
     assert.equal(layout.ok, true);
     assert.equal(layout.imageCount, 39);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('retries transient Windows directory swaps and removes the replaced tree', async () => {
+  const value = await fixture();
+  try {
+    const oldFile = path.join(value.locations.trainer, 'legacy', 'old.txt');
+    await mkdir(path.dirname(oldFile), { recursive: true });
+    await writeFile(oldFile, 'keep only until the swap succeeds\n');
+    let renameCalls = 0;
+    const waits = [];
+    const materialized = await value.dataset.materializeTrainerDataset(value.job.id, {
+      classTokens: 'retry',
+      platform: 'win32',
+      renameImpl: async (source, target) => {
+        renameCalls += 1;
+        if (renameCalls <= 2) throw errno('EPERM', 'directory handle is temporarily locked');
+        return rename(source, target);
+      },
+      sleep: async (milliseconds) => waits.push(milliseconds),
+    });
+    assert.equal(materialized.subset, '1_retry');
+    assert.equal(renameCalls, 4);
+    assert.deepEqual(waits, [25, 75]);
+    await assert.rejects(access(oldFile), { code: 'ENOENT' });
+    const jobEntries = await readdir(path.join(value.paths.jobs, value.job.id));
+    assert.equal(jobEntries.some((entry) => entry.startsWith('.trainer-data-')), false);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('restores the old trainer directory and exposes bounded rename diagnostics', async () => {
+  const value = await fixture();
+  try {
+    const oldFile = path.join(value.locations.trainer, 'legacy', 'old.txt');
+    await mkdir(path.dirname(oldFile), { recursive: true });
+    await writeFile(oldFile, 'must be restored\n');
+    const waits = [];
+    const failure = await value.dataset.materializeTrainerDataset(value.job.id, {
+      platform: 'win32',
+      renameImpl: async (source, target) => {
+        if (path.basename(source).startsWith('.trainer-data-stage-')) throw errno('EBUSY', 'stage handle is temporarily locked');
+        return rename(source, target);
+      },
+      sleep: async (milliseconds) => waits.push(milliseconds),
+    }).then(() => null, (error) => error);
+    assert.equal(failure?.code, 'TRAINER_DATASET_MATERIALIZE_FAILED');
+    assert.equal(failure?.details?.operation, 'rename');
+    assert.equal(failure?.details?.phase, 'install-stage');
+    assert.equal(failure?.details?.attempt, 5);
+    assert.equal(failure?.details?.attempts, 5);
+    assert.equal(failure?.details?.errno, 'EBUSY');
+    assert.equal(failure?.details?.relativePath, 'trainer-data');
+    assert.equal(failure?.details?.sourceExists, true);
+    assert.equal(failure?.details?.targetExists, false);
+    assert.deepEqual(waits, [25, 75, 200, 500]);
+    assert.equal(await readFile(oldFile, 'utf8'), 'must be restored\n');
+    const jobEntries = await readdir(path.join(value.paths.jobs, value.job.id));
+    assert.equal(jobEntries.some((entry) => entry.startsWith('.trainer-data-')), false);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('keeps the old trainer backup when rollback is also blocked', async () => {
+  const value = await fixture();
+  try {
+    const oldFile = path.join(value.locations.trainer, 'legacy', 'old.txt');
+    await mkdir(path.dirname(oldFile), { recursive: true });
+    await writeFile(oldFile, 'recoverable old tree\n');
+    const failure = await value.dataset.materializeTrainerDataset(value.job.id, {
+      platform: 'win32',
+      renameImpl: async (source, target) => {
+        const sourceName = path.basename(source);
+        if (sourceName.startsWith('.trainer-data-stage-') || sourceName.startsWith('.trainer-data-backup-')) {
+          throw errno('ENOTEMPTY', 'directory is still in use');
+        }
+        return rename(source, target);
+      },
+      sleep: async () => {},
+    }).then(() => null, (error) => error);
+    assert.equal(failure?.code, 'TRAINER_DATASET_MATERIALIZE_FAILED');
+    assert.equal(failure?.details?.phase, 'install-stage');
+    assert.equal(failure?.details?.rollback?.phase, 'restore-existing');
+    assert.equal(failure?.details?.rollback?.attempts, 5);
+    await assert.rejects(access(value.locations.trainer), { code: 'ENOENT' });
+    const jobEntries = await readdir(path.join(value.paths.jobs, value.job.id));
+    const backupEntry = jobEntries.find((entry) => entry.startsWith('.trainer-data-backup-'));
+    assert.ok(backupEntry, 'blocked rollback must leave a recoverable backup');
+    assert.equal(await readFile(path.join(value.paths.jobs, value.job.id, backupEntry, 'legacy', 'old.txt'), 'utf8'), 'recoverable old tree\n');
+    assert.equal(jobEntries.some((entry) => entry.startsWith('.trainer-data-stage-')), false);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('cleanup rejection does not replace the primary materialization error', async () => {
+  const value = await fixture();
+  try {
+    const failure = await value.dataset.materializeTrainerDataset(value.job.id, {
+      platform: 'linux',
+      renameImpl: async () => { throw errno('EACCES', 'rename denied'); },
+      removeImpl: () => { throw errno('EPERM', 'cleanup denied'); },
+    }).then(() => null, (error) => error);
+    assert.equal(failure?.code, 'TRAINER_DATASET_MATERIALIZE_FAILED');
+    assert.equal(failure?.details?.operation, 'rename');
+    assert.equal(failure?.details?.errno, 'EACCES');
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('does not retry transient rename errors outside Windows', async () => {
+  const value = await fixture();
+  try {
+    let renameCalls = 0;
+    const waits = [];
+    const failure = await value.dataset.materializeTrainerDataset(value.job.id, {
+      platform: 'linux',
+      renameImpl: async () => {
+        renameCalls += 1;
+        throw errno('EPERM', 'permanent on this platform');
+      },
+      sleep: async () => waits.push(true),
+    }).then(() => null, (error) => error);
+    assert.equal(failure?.code, 'TRAINER_DATASET_MATERIALIZE_FAILED');
+    assert.equal(failure?.details?.attempts, 1);
+    assert.equal(failure?.details?.errno, 'EPERM');
+    assert.equal(failure?.details?.retryable, false);
+    assert.equal(renameCalls, 1);
+    assert.deepEqual(waits, []);
+    await assert.rejects(access(value.locations.trainer), { code: 'ENOENT' });
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('materialization failure has no unhandled rejection under strict mode', async () => {
+  const value = await fixture();
+  try {
+    const moduleUrl = new URL('../server/lora-training/dataset.mjs', import.meta.url).href;
+    const script = `
+      import { createDatasetService } from ${JSON.stringify(moduleUrl)};
+      const dataset = createDatasetService({ paths: ${JSON.stringify(value.paths)} });
+      const failure = await dataset.materializeTrainerDataset(${JSON.stringify(value.job.id)}, {
+        platform: 'win32',
+        renameImpl: async () => { const error = new Error('strict-mode lock'); error.code = 'EPERM'; throw error; },
+        sleep: async () => {},
+      }).then(() => null, (error) => error);
+      if (!failure || failure.code !== 'TRAINER_DATASET_MATERIALIZE_FAILED' || failure.details?.attempts !== 5) {
+        throw new Error('materialization failure did not preserve bounded diagnostics');
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    `;
+    await execFileAsync(process.execPath, ['--unhandled-rejections=strict', '--input-type=module', '-e', script], {
+      cwd: path.resolve('.'), windowsHide: true, maxBuffer: 1024 * 1024,
+    });
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }

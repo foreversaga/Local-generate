@@ -10,6 +10,14 @@ const TYPES = Object.freeze({
   '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
 });
 
+// Windows can transiently reject a directory rename while an antivirus
+// scanner, indexer, or trainer process still has a handle open.  Keep this
+// retry deliberately narrow: Unix rename failures and permanent Windows
+// errors must remain immediately observable.
+const RENAME_RETRY_DELAYS_MS = Object.freeze([25, 75, 200, 500]);
+const WINDOWS_TRANSIENT_RENAME_ERRORS = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 // sd-scripts' DreamBooth loader discovers subsets from directories named
 // `<repeats>_<class_tokens>`.  Keep this contract in one place instead of
 // leaking the Studio split layout into the trainer adapter.
@@ -19,6 +27,91 @@ export const TRAINER_CAPTION_EXTENSION = '.txt';
 
 function datasetError(code, message, status, details) {
   return new LoraTrainingError(code, message, { status, details });
+}
+
+function errorCode(error) {
+  return error?.code ?? (error?.errno === undefined ? 'UNKNOWN' : String(error.errno));
+}
+
+function relativePathFrom(root, filePath) {
+  return path.relative(root, filePath).split(path.sep).join('/');
+}
+
+async function existenceDiagnostic(filePath, lstatImpl) {
+  try {
+    const stat = await lstatImpl(filePath);
+    return {
+      exists: true,
+      kind: stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other',
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    return { exists: null, errno: errorCode(error) };
+  }
+}
+
+async function removeBestEffort(removeImpl, filePath) {
+  try {
+    await removeImpl(filePath, { recursive: true, force: true });
+  } catch {
+    // Cleanup is deliberately best effort.  The materialization/rollback
+    // result is the primary error and must remain observable.
+  }
+}
+
+class RenameFailure extends Error {
+  constructor(cause, details) {
+    super(cause?.message || 'directory rename failed', { cause });
+    this.name = 'RenameFailure';
+    this.code = errorCode(cause);
+    this.details = details;
+  }
+}
+
+async function renameWithRetry(source, target, {
+  platform = process.platform,
+  renameImpl = rename,
+  sleep = delay,
+  lstatImpl = lstat,
+  jobDirectory,
+  phase,
+} = {}) {
+  const sourceRelativePath = relativePathFrom(jobDirectory, source);
+  const targetRelativePath = relativePathFrom(jobDirectory, target);
+  let attempts = 0;
+  while (true) {
+    attempts += 1;
+    try {
+      await renameImpl(source, target);
+      return attempts;
+    } catch (error) {
+      const errno = errorCode(error);
+      const transient = WINDOWS_TRANSIENT_RENAME_ERRORS.has(errno);
+      const canRetry = platform === 'win32' && transient && attempts <= RENAME_RETRY_DELAYS_MS.length;
+      if (canRetry) {
+        await sleep(RENAME_RETRY_DELAYS_MS[attempts - 1]);
+        continue;
+      }
+      const sourceState = await existenceDiagnostic(source, lstatImpl);
+      const targetState = await existenceDiagnostic(target, lstatImpl);
+      throw new RenameFailure(error, {
+        retryable: platform === 'win32' && transient,
+        operation: 'rename',
+        phase,
+        attempt: attempts,
+        attempts,
+        errno,
+        reason: errno,
+        relativePath: targetRelativePath,
+        sourceRelativePath,
+        targetRelativePath,
+        sourceExists: sourceState.exists,
+        targetExists: targetState.exists,
+        exists: { source: sourceState.exists, target: targetState.exists },
+        existence: { source: sourceState, target: targetState },
+      });
+    }
+  }
 }
 
 export function normalizeTrainingRepeats(value = DEFAULT_TRAINING_REPEATS) {
@@ -309,6 +402,13 @@ export function createDatasetService({ paths = LORA_PATHS, resolveSource, maxIma
     const id = normalizeUuid(jobId, 'jobId');
     const target = locations(id, paths);
     const job = getJobPaths(id, paths);
+    const {
+      platform = process.platform,
+      renameImpl = rename,
+      sleep = delay,
+      lstatImpl = lstat,
+      removeImpl = rm,
+    } = options;
     return withStorageLock(target.trainer, async () => {
       const layout = trainerLayoutOptions(options);
       const { manifest, entries } = await readTrainerEntries(target, id);
@@ -317,31 +417,40 @@ export function createDatasetService({ paths = LORA_PATHS, resolveSource, maxIma
       const backup = resolveSafeChild(job.directory, `.trainer-data-backup-${randomUUID()}`);
       let movedOld = false;
       let installed = false;
+      let operation = 'stage';
       try {
-      await mkdir(subset, { recursive: true });
-      for (const { image, source, extension, caption } of entries) {
-        // Image ids are generated UUIDs, so using them as names avoids source
-        // filename collisions while retaining the original extension.
-        const imageName = `${image.id}${extension}`;
-        const imageTarget = resolveSafeChild(subset, imageName);
-        const captionTarget = resolveSafeChild(subset, `${image.id}${layout.captionExtension}`);
-        await copyFile(source, imageTarget);
-        await writeFile(captionTarget, `${caption}\n`, { encoding: 'utf8', mode: 0o600 });
-      }
+        await mkdir(subset, { recursive: true });
+        for (const { image, source, extension, caption } of entries) {
+          // Image ids are generated UUIDs, so using them as names avoids source
+          // filename collisions while retaining the original extension.
+          const imageName = `${image.id}${extension}`;
+          const imageTarget = resolveSafeChild(subset, imageName);
+          const captionTarget = resolveSafeChild(subset, `${image.id}${layout.captionExtension}`);
+          operation = 'copy';
+          await copyFile(source, imageTarget);
+          operation = 'write';
+          await writeFile(captionTarget, `${caption}\n`, { encoding: 'utf8', mode: 0o600 });
+        }
 
-      // A generated tree must never be a symlink/junction supplied by a
-      // caller.  Refuse it before moving anything, preserving the old tree.
-      try {
-        const existing = await lstat(target.trainer);
-        if (existing.isSymbolicLink() || !existing.isDirectory()) throw datasetError('UNSAFE_TRAINER_DATASET', 'trainer dataset root is not a regular directory', 422);
-        await rename(target.trainer, backup);
-        movedOld = true;
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-      await rename(stage, target.trainer);
-      installed = true;
-      if (movedOld) await rm(backup, { recursive: true, force: true }).catch(() => {});
+        // A generated tree must never be a symlink/junction supplied by a
+        // caller.  Refuse it before moving anything, preserving the old tree.
+        operation = 'inspect-existing';
+        try {
+          const existing = await lstatImpl(target.trainer);
+          if (existing.isSymbolicLink() || !existing.isDirectory()) throw datasetError('UNSAFE_TRAINER_DATASET', 'trainer dataset root is not a regular directory', 422);
+          operation = 'rename';
+          await renameWithRetry(target.trainer, backup, {
+            platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'backup-existing',
+          });
+          movedOld = true;
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+        operation = 'rename';
+        await renameWithRetry(stage, target.trainer, {
+          platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'install-stage',
+        });
+        installed = true;
         return {
           root: target.trainer,
           subset: layout.subset,
@@ -353,17 +462,41 @@ export function createDatasetService({ paths = LORA_PATHS, resolveSource, maxIma
           captionExtension: layout.captionExtension,
         };
       } catch (error) {
+        let rollbackError;
         if (movedOld && !installed) {
-          await rename(backup, target.trainer).catch(() => {});
+          try {
+            await renameWithRetry(backup, target.trainer, {
+              platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'restore-existing',
+            });
+          } catch (restoreError) {
+            // Keep the backup in place if restoration is still blocked.  It is
+            // safer to leave a recoverable old tree than to delete it during
+            // best-effort cleanup.
+            rollbackError = restoreError;
+          }
         }
         if (error instanceof LoraTrainingError) throw error;
-        throw datasetError('TRAINER_DATASET_MATERIALIZE_FAILED', 'unable to materialize trainer dataset', 500, { reason: error?.code });
+        const details = error instanceof RenameFailure
+          ? { ...error.details }
+          : {
+            retryable: false,
+            operation,
+            attempt: 1,
+            attempts: 1,
+            errno: errorCode(error),
+            reason: errorCode(error),
+            relativePath: relativePathFrom(job.directory, target.trainer),
+          };
+        if (rollbackError instanceof RenameFailure) details.rollback = { ...rollbackError.details };
+        throw datasetError('TRAINER_DATASET_MATERIALIZE_FAILED', 'unable to materialize trainer dataset', 500, details);
       } finally {
         // These paths are generated inside the job directory and never point at
         // canonical dataset files.  Cleanup failures must not mask the original
         // materialization error.
-        await rm(stage, { recursive: true, force: true }).catch(() => {});
-        if (installed || movedOld) await rm(backup, { recursive: true, force: true }).catch(() => {});
+        await removeBestEffort(removeImpl, stage);
+        // If installation failed and restoration also failed, the backup is the
+        // only recoverable copy of the old trainer tree; never remove it here.
+        if (installed) await removeBestEffort(removeImpl, backup);
       }
     });
   }
