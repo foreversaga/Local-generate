@@ -45,6 +45,7 @@ export function createTrainingRunner({
   spawn = nodeSpawn,
   onProgress = async () => {},
   onLog = async () => {},
+  progressParser = parseTrainingProgress,
   now = () => Date.now(),
   progressIntervalMs = 500,
   maxLogLines = 400,
@@ -82,7 +83,7 @@ export function createTrainingRunner({
         logs.push({ at: new Date(now()).toISOString(), channel, line });
         if (logs.length > maxLogLines) logs.splice(0, logs.length - maxLogLines);
         void Promise.resolve(onLog(logs.at(-1))).catch(() => {});
-        const progress = parseTrainingProgress(line);
+        const progress = progressParser(line);
         if (!progress) return;
         pendingProgress = progress;
         const timestamp = now();

@@ -36,12 +36,14 @@ export function normalizeRegistryRecord(input, { id = input?.id, now } = {}) {
   const updatedAt = normalizeTimestamp(input.updatedAt ?? timestamp, 'updatedAt');
   if (typeof input.hash !== 'string' || !SHA256_PATTERN.test(input.hash)) throw invalid('hash must be a SHA-256 hex digest');
   if (!Number.isSafeInteger(input.size) || input.size < 0) throw invalid('size must be a non-negative integer');
+  const characterName = input.characterName === undefined ? undefined : normalizeDisplayName(input.characterName, 'characterName');
   return {
     id: normalizeUuid(id, 'registryId'),
     relativePath: assertSafeRelativePath(input.relativePath),
     family: enumValue(input.family, LORA_MODEL_FAMILIES, 'family'),
     baseProfile: normalizeSlug(input.baseProfile, 'baseProfile'),
     displayName: normalizeDisplayName(input.displayName),
+    ...(characterName === undefined ? {} : { characterName }),
     triggerWords: normalizeTriggerWords(input.triggerWords),
     hash: input.hash.toLowerCase(),
     size: input.size,

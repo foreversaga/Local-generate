@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,9 @@ import {
   registryStore as loraRegistryStore,
   normalizeAssetIds,
   normalizeTriggerWords,
+  normalizeZImageParameters,
+  Z_IMAGE_PARAMETER_ALIASES,
+  Z_IMAGE_PARAMETER_KEYS,
   toApiError as toLoraApiError,
 } from "./server/lora-training/index.mjs";
 import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
@@ -1818,6 +1822,12 @@ const LORA_CONSUMER_FAMILIES = Object.freeze({
   img2img: Object.freeze(["sdxl", "illustrious", "sd15", "z-image"]),
 });
 
+const TRAINABLE_LORA_BASE_PROFILES = Object.freeze({
+  sdxl: "sdxl-base-1.0",
+  illustrious: "wai-illustrious",
+  "z-image": "z-image-turbo",
+});
+
 const IMG2IMG_LORA_PROFILES = Object.freeze({
   "sd_xl_base_1.0.safetensors": Object.freeze({ family: "sdxl", baseProfile: "sdxl-base-1.0" }),
   "v1-5-pruned-emaonly-fp16.safetensors": Object.freeze({ family: "sd15", baseProfile: "sd15" }),
@@ -1858,7 +1868,8 @@ function compatibleLoraItem(item, { family, profile, consumer }) {
   if (consumer && !registryConsumerMetadata(item).includes(consumer)) return false;
   if (profile) {
     const expected = IMG2IMG_LORA_PROFILES[profile];
-    if (expected && (item.family !== expected.family || (item.baseProfile && item.baseProfile !== expected.baseProfile))) return false;
+    if (expected && (item.family !== expected.family || (expected.family === "z-image" ? item.baseProfile !== expected.baseProfile : (item.baseProfile && item.baseProfile !== expected.baseProfile)))) return false;
+    if (!expected && profile === TRAINABLE_LORA_BASE_PROFILES["z-image"] && (item.family !== "z-image" || item.baseProfile !== profile)) return false;
     if (!expected && item.baseProfile !== profile) return false;
   }
   return true;
@@ -2029,6 +2040,15 @@ async function getLoraTrainingService() {
         ollamaProbe: probeCaptionOllama,
         comfyLoraDirectory: path.join(COMFY_ROOT, "models", "loras", "trained"),
         resolveBaseModel: ({ family, baseProfile }) => {
+          if (family === "z-image") {
+            const configured = process.env.MINIMAX_H3_Z_IMAGE_MODEL_PATH || process.env.AI_TOOLKIT_Z_IMAGE_MODEL_PATH;
+            if (!configured || !configured.trim()) return null;
+            return {
+              path: path.resolve(configured.trim()),
+              format: process.env.MINIMAX_H3_Z_IMAGE_MODEL_FORMAT || process.env.AI_TOOLKIT_Z_IMAGE_MODEL_FORMAT || "diffusers",
+              source: process.env.MINIMAX_H3_Z_IMAGE_MODEL_PATH ? "MINIMAX_H3_Z_IMAGE_MODEL_PATH" : "AI_TOOLKIT_Z_IMAGE_MODEL_PATH",
+            };
+          }
           const fileName = family === "illustrious" || baseProfile === "wai-illustrious"
             ? "waiIllustriousSDXL_v170.safetensors"
             : "sd_xl_base_1.0.safetensors";
@@ -2068,6 +2088,12 @@ function publicLoraArtifact(artifact, job) {
   };
   if (job?.id) publicArtifact.downloadUrl = `/app/api/lora-training/jobs/${encodeURIComponent(job.id)}/artifact/download`;
   return publicArtifact;
+}
+
+async function sha256LocalFile(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 function publicLoraError(error) {
@@ -2138,6 +2164,9 @@ function publicLoraTrainingJob(details) {
     ? config.characterName.trim()
     : job.displayName || config.outputName || job.slug || "Trained LoRA";
   const overrides = config.overrides && typeof config.overrides === "object" ? config.overrides : {};
+  const overrideKeys = training.family === "z-image"
+    ? ["rank", "alpha", "learningRate", "steps", "batchSize", "resolution", "seed"]
+    : ["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"];
   const configSummary = {
     family: training.family,
     baseProfile: training.baseProfile,
@@ -2145,9 +2174,16 @@ function publicLoraTrainingJob(details) {
     characterName,
     outputName: typeof config.outputName === "string" ? config.outputName : "",
     triggerWords,
-    overrides: Object.fromEntries(["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"]
+    overrides: Object.fromEntries(overrideKeys
       .filter((key) => Number.isFinite(Number(overrides[key])))
       .map((key) => [key, Number(overrides[key])])),
+    ...(training.family === "z-image" ? {
+      zImageConfig: {
+        gradientCheckpointing: config.zImageConfig?.gradientCheckpointing ?? true,
+        cacheLatents: config.zImageConfig?.cacheLatents ?? true,
+        aspectRatioBuckets: config.zImageConfig?.aspectRatioBuckets ?? true,
+      },
+    } : {}),
   };
   const provenance = {};
   for (const key of ["sourceJobId", "retryOf", "attempt"]) {
@@ -2258,6 +2294,53 @@ export function resolveLoraTriggerWords(body = {}, config = body?.config || {}) 
   return [fallbackLoraTriggerWord(config?.characterName || config?.outputName)];
 }
 
+function normalizeTrainableLoraConfig(config = {}, family = config?.family) {
+  const requestedFamily = String(family || config?.family || "").trim().toLowerCase();
+  const configFamily = config?.family === undefined ? undefined : String(config.family || "").trim().toLowerCase();
+  if (requestedFamily && configFamily && requestedFamily !== configFamily) {
+    throw new LoraTrainingError("INVALID_REQUEST", "family does not match the selected training family", {
+      status: 400,
+      details: { field: "family", requestedFamily, configFamily },
+    });
+  }
+  if (requestedFamily !== "z-image") return config;
+  const expectedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[requestedFamily];
+  const requestedBaseProfile = config?.baseProfile === undefined
+    ? expectedBaseProfile
+    : String(config.baseProfile || "").trim();
+  if (requestedBaseProfile !== expectedBaseProfile) {
+    throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
+      status: 400,
+      details: { field: "baseProfile", family: requestedFamily, allowed: [expectedBaseProfile] },
+    });
+  }
+  const section = config.zImageConfig ?? config.zImage ?? config.aiToolkit ?? config;
+  if (Object.hasOwn(config, "epochs") || Object.hasOwn(section, "epochs")) {
+    throw new LoraTrainingError("INVALID_REQUEST", "epochs is not supported by Z-Image; send training steps instead", {
+      status: 422,
+      details: { field: "epochs", allowed: ["steps"] },
+    });
+  }
+  const directParameters = Object.fromEntries(Object.keys(section)
+    .filter((key) => Z_IMAGE_PARAMETER_KEYS.includes(key) || Object.hasOwn(Z_IMAGE_PARAMETER_ALIASES, key))
+    .map((key) => [key, section[key]]));
+  try {
+    normalizeZImageParameters({
+      ...(section.parameters ?? {}),
+      ...(section.overrides ?? {}),
+      ...directParameters,
+      ...(config.overrides ?? {}),
+      ...(config.parameters ?? {}),
+    });
+  } catch (error) {
+    throw new LoraTrainingError("INVALID_REQUEST", error?.message || "Z-Image training parameters are invalid", {
+      status: 422,
+      details: { field: error?.details?.field || "overrides", allowed: [...Z_IMAGE_PARAMETER_KEYS] },
+    });
+  }
+  return { ...config, family: requestedFamily, baseProfile: expectedBaseProfile };
+}
+
 async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
   if (pathname === "/api/lora-training/assets") {
     if (req.method !== "GET") {
@@ -2280,16 +2363,16 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       const family = requestUrl.searchParams.has("family")
         ? String(requestUrl.searchParams.get("family") || "").trim().toLowerCase()
         : "sdxl";
-      if (!["sdxl", "illustrious"].includes(family)) {
+      if (!Object.hasOwn(TRAINABLE_LORA_BASE_PROFILES, family)) {
         throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
           status: 400,
-          details: { field: "family", allowed: ["sdxl", "illustrious"] },
+          details: { field: "family", allowed: Object.keys(TRAINABLE_LORA_BASE_PROFILES) },
         });
       }
       const baseProfile = requestUrl.searchParams.has("baseProfile")
         ? String(requestUrl.searchParams.get("baseProfile") || "").trim()
-        : undefined;
-      const allowedBaseProfile = family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious";
+        : TRAINABLE_LORA_BASE_PROFILES[family];
+      const allowedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[family];
       if (baseProfile !== undefined && baseProfile !== allowedBaseProfile) {
         throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
           status: 400,
@@ -2315,9 +2398,10 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
     }
     if (req.method === "POST" && pathname === "/api/lora-training/jobs") {
       const body = await readJson(req);
-      const config = body.config || {};
+      const config = normalizeTrainableLoraConfig(body.config || {}, body.family);
       const details = await controller.create({
         ...body,
+        config,
         family: config.family || body.family,
         slug: body.slug || `lora-${Date.now().toString(36)}`,
         displayName: body.displayName || config.characterName || config.outputName || "Trained LoRA",
@@ -2358,7 +2442,15 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       const body = await readJson(req);
       const current = await loraJobStore.readJob(jobId);
       const { revision, triggerWords, ...config } = body;
-      const nextConfig = { ...current.config, ...config };
+      const currentFamily = String(current.family || "").trim().toLowerCase();
+      const requestedFamily = config.family === undefined ? currentFamily : String(config.family).trim().toLowerCase();
+      if (config.family !== undefined && requestedFamily !== currentFamily && (currentFamily === "z-image" || requestedFamily === "z-image")) {
+        throw new LoraTrainingError("INVALID_REQUEST", "family cannot change after job creation", {
+          status: 400,
+          details: { field: "family", currentFamily, requestedFamily },
+        });
+      }
+      const nextConfig = normalizeTrainableLoraConfig({ ...current.config, ...config }, config.family || current.family);
       const patch = { config: nextConfig };
       if (Object.prototype.hasOwnProperty.call(config, "characterName")) {
         patch.displayName = config.characterName;
@@ -2439,6 +2531,15 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       }
       if (!info) throw makeRuntimeError("LORA_ARTIFACT_NOT_FOUND", "Artifact file is missing.", 404);
       if (!info.isFile()) throw makeRuntimeError("LORA_ARTIFACT_NOT_FOUND", "Artifact file is missing.", 404);
+      const expectedSize = artifact.size ?? artifact.sizeBytes;
+      const expectedHash = String(artifact.hash || artifact.sha256 || "").toLowerCase();
+      if (expectedSize !== undefined && expectedSize !== info.size) {
+        throw makeRuntimeError("LORA_ARTIFACT_INTEGRITY_FAILED", "Artifact size does not match registry metadata.", 409);
+      }
+      if (expectedHash) {
+        const actualHash = await sha256LocalFile(realFilePath);
+        if (actualHash !== expectedHash) throw makeRuntimeError("LORA_ARTIFACT_INTEGRITY_FAILED", "Artifact hash does not match registry metadata.", 409);
+      }
       res.writeHead(200, { ...jsonHeaders(), "Content-Type": "application/octet-stream", "Content-Length": info.size, "Content-Disposition": `attachment; filename="${path.basename(realFilePath).replaceAll('"', '')}"`, "X-Content-Type-Options": "nosniff" });
       createReadStream(realFilePath).pipe(res); return true;
     }
