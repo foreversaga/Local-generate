@@ -10,7 +10,9 @@ test("routed Single Create keeps field-level validation accessible", async () =>
 
   assert.match(form, /error=\{errorFor\("lastFrameImage"\)\}/);
   assert.doesNotMatch(form, /error=\{errorFor\("referenceImage"\) \? "" : errorFor\("lastFrameImage"\)\}/);
-  assert.match(form, /aria-describedby=\{error \? `\$\{id\}-error` : undefined\}/);
+  assert.match(form, /<AssetPickerButton/);
+  assert.match(form, /allowedRoots=\{\["input", "output"\]\}/);
+  assert.doesNotMatch(form, /<select[\s\S]*從資源庫選擇/);
   assert.match(form, /<FieldError id=\{`\$\{id\}-error`\} message=\{error\} \/>/);
   assert.match(form, /className=\{styles\.fileInput\}[\s\S]*type="file"/);
   assert.doesNotMatch(form, /<input\s+hidden\s+type="file"/);

@@ -7,9 +7,13 @@ const SEED_MODULUS = 2147483648;
  *   prompt: string;
  *   negativePrompt: string;
  *   referenceImageName?: string;
+ *   referenceImageRoot?: "input" | "output";
  *   referenceImageNames?: string[];
+ *   referenceImageRoots?: Array<"input" | "output">;
  *   lastFrameName?: string;
+ *   lastFrameRoot?: "input" | "output";
  *   sourceVideoName?: string;
+ *   sourceVideoRoot?: "input" | "output";
  *   characterLoraName?: string;
  *   characterLoraId?: string;
  *   characterLoraStrength?: number;
@@ -43,9 +47,13 @@ export function buildSingleRenderRequest(input) {
     prompt: input.prompt,
     negativePrompt: input.negativePrompt,
     inputImageName: input.mode === "i2v" || input.mode === "fl2v" ? referenceImageName : "",
+    inputImageRoot: input.mode === "i2v" || input.mode === "fl2v" ? input.referenceImageRoot || "" : "",
     lastImageName: input.mode === "fl2v" || input.mode === "l2v" ? input.lastFrameName || "" : "",
+    lastImageRoot: input.mode === "fl2v" || input.mode === "l2v" ? input.lastFrameRoot || "" : "",
     inputVideoName: sourceVideoName,
+    inputVideoRoot: input.sourceVideoRoot || "",
     referenceImageName,
+    referenceImageRoot: input.referenceImageRoot || "",
     modelProfile: input.modelProfile,
     width: input.width,
     height: input.height,
@@ -60,6 +68,7 @@ export function buildSingleRenderRequest(input) {
 
   if (input.mode === "ref2v") {
     payload.referenceImageNames = (input.referenceImageNames || []).slice(0, MAX_REF2V_IMAGES);
+    payload.referenceImageRoots = (input.referenceImageRoots || []).slice(0, MAX_REF2V_IMAGES);
   }
 
   if (characterLoraId) {

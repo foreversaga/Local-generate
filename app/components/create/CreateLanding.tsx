@@ -70,7 +70,7 @@ export function CreateLanding() {
                     <h2>從素材庫開始</h2>
                     <p>圖片會作為單次 I2V 參考素材；影片會作為 Ref2V 影片參考素材。完整素材管理仍在素材庫。</p>
                 </div>
-                <AssetPickerButton root="input" label="從素材庫選擇" onSelect={startFromAsset} />
+            <AssetPickerButton allowedRoots={["input", "output"]} label="從素材庫選擇" onSelect={startFromAsset} />
             </section>
 
             <section className={styles.recent}>

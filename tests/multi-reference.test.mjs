@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { codexLongPlanModeInstruction, codexLongPlanReferences, normalizeReferenceImageNames, referenceImageArgs, sequenceGenerationReferenceFields } from "../local-bridge.mjs";
+import { codexLongPlanModeInstruction, codexLongPlanReferences, normalizeReferenceImageNames, normalizeReferenceImageRoots, referenceImageArgs, sequenceGenerationReferenceFields } from "../local-bridge.mjs";
 import { buildRef2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { planSequence } from "../server/long-video/planner.mjs";
 import { appendMultiReferenceTail, runSequence } from "../server/long-video/runner.mjs";
@@ -26,6 +26,21 @@ test("normalizes plural Ref2V references with stable order and repeated args", (
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageName: "other.png", referenceImageNames: ["first.png"] }), { code: "REFERENCE_IMAGES_CONFLICT" });
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageNames: [""] }), { code: "REFERENCE_IMAGE_EMPTY" });
   assert.throws(() => normalizeReferenceImageNames({ mode: "ref2v", referenceImageNames: Array.from({ length: 10 }, (_, index) => `${index}.png`) }), { code: "REFERENCE_IMAGES_LIMIT" });
+});
+
+test("keeps Ref2V asset roots aligned with selected references", () => {
+  assert.deepEqual(
+    normalizeReferenceImageRoots({ mode: "ref2v", referenceImageRoots: ["output", "input"] }, { mode: "ref2v", referenceCount: 2 }),
+    ["output", "input"],
+  );
+  assert.deepEqual(
+    normalizeReferenceImageRoots({ mode: "ref2v" }, { mode: "ref2v", referenceCount: 2 }),
+    ["", ""],
+  );
+  assert.throws(
+    () => normalizeReferenceImageRoots({ mode: "ref2v", referenceImageRoots: ["output"] }, { mode: "ref2v", referenceCount: 2 }),
+    { code: "REFERENCE_IMAGE_ROOTS_MISMATCH" },
+  );
 });
 
 test("long-video bridge only forwards plural references to Ref2V generation", () => {

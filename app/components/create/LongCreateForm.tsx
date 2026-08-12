@@ -14,7 +14,8 @@ import {
   loadStudioSettings,
   reconcileStudioSettings,
 } from "../../lib/studio-settings.mjs";
-import { uploadAssets } from "../library/asset-client";
+import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
+import { AssetPickerButton } from "../library/AssetPickerButton";
 import { FIELD_LABELS, jobStatusLabel } from "../../lib/ui-copy.mjs";
 import styles from "./LongCreateForm.module.css";
 
@@ -141,7 +142,6 @@ export function LongCreateForm() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const inputImages = useMemo(() => assets.filter((asset) => asset.root === "input" && asset.kind === "image"), [assets]);
   const visibleOllamaModels = health?.ollama?.models || [];
   const effectiveOllamaModel = visibleOllamaModels.includes(ollamaModel) ? ollamaModel : visibleOllamaModels[0] || ollamaModel;
   const codexModels = health?.codex?.models?.length ? health.codex.models : CODEX_FALLBACK;
@@ -328,7 +328,7 @@ export function LongCreateForm() {
   }
 
   function addReference(key: string) {
-    const asset = inputImages.find((item) => assetKey(item) === key);
+    const asset = assets.find((item) => assetKey(item) === key && item.kind === "image");
     if (!asset) return;
     setReferences((current) => uniqueAssets(referenceMode === "continuity" ? [asset] : [...current, asset], MAX_LONG_REFERENCE_IMAGES));
     markPlanDirty();
@@ -547,10 +547,16 @@ export function LongCreateForm() {
                 <button type="button" className={referenceMode === "multi_reference" ? styles.active : ""} aria-pressed={referenceMode === "multi_reference"} onClick={() => updateReferenceMode("multi_reference")}>多參考</button>
               </div>
               <div className={styles.assetControls}>
-                <select id="long-reference-assets" className={styles.select} value="" aria-label="加入長片參考圖片" onChange={(event) => { addReference(event.target.value); event.target.value = ""; }}>
-                  <option value="">從資源庫加入圖片…</option>
-                  {inputImages.filter((asset) => !references.some((selected) => assetKey(selected) === assetKey(asset))).map((asset) => <option key={assetKey(asset)} value={assetKey(asset)}>{asset.name}</option>)}
-                </select>
+                <AssetPickerButton
+                  triggerId="long-reference-assets"
+                  allowedRoots={["input", "output"]}
+                  allowedKinds={["image"]}
+                  multiple={referenceMode === "multi_reference"}
+                  maxSelection={referenceMode === "multi_reference" ? MAX_LONG_REFERENCE_IMAGES : 1}
+                  selectedKeys={references.map(assetKey)}
+                  label="從素材庫加入圖片"
+                  onSelect={(chosen) => chosen.forEach((asset) => addReference(libraryAssetKey(asset)))}
+                />
                 <UploadButton busy={uploading} multiple={referenceMode === "multi_reference"} onFiles={uploadReferences} />
               </div>
               {references.length > 0 && <div className={styles.referenceGrid}>{references.map((asset, index) => <div className={styles.referenceCard} key={assetKey(asset)}><AssetThumb asset={asset} /><span>{index + 1}</span><strong title={asset.name}>{asset.name}</strong><button type="button" onClick={() => { setReferences((current) => current.filter((item) => assetKey(item) !== assetKey(asset))); markPlanDirty(); }} aria-label={`移除 ${asset.name}`}>×</button></div>)}</div>}

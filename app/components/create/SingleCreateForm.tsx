@@ -17,7 +17,8 @@ import {
 } from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
 import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
-import { uploadAssets } from "../library/asset-client";
+import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
+import { AssetPickerButton } from "../library/AssetPickerButton";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
 import styles from "./SingleCreateForm.module.css";
@@ -115,8 +116,6 @@ export function SingleCreateForm() {
   const [submitError, setSubmitError] = useState("");
 
   const inputAssets = useMemo(() => assets.filter((asset) => asset.root === "input"), [assets]);
-  const imageAssets = useMemo(() => inputAssets.filter((asset) => asset.kind === "image"), [inputAssets]);
-  const videoAssets = useMemo(() => inputAssets.filter((asset) => asset.kind === "video"), [inputAssets]);
   const availableModels = useMemo(() => modelOptionsForMode(mode), [mode]);
   const modeOption = MODE_OPTIONS.find((option) => option.value === mode) || MODE_OPTIONS[0];
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
@@ -492,7 +491,7 @@ export function SingleCreateForm() {
   }
 
   function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, key: string) {
-    const nextAsset = inputAssets.find((asset) => assetKey(asset) === key) || null;
+    const nextAsset = assets.find((asset) => assetKey(asset) === key) || null;
     if (target === "referenceImage") setReferenceImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "lastFrameImage") setLastFrameImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "sourceVideo") setSourceVideo(nextAsset?.kind === "video" ? nextAsset : null);
@@ -501,7 +500,7 @@ export function SingleCreateForm() {
   }
 
   function addReferenceImage(key: string) {
-    const asset = imageAssets.find((item) => assetKey(item) === key);
+    const asset = assets.find((item) => assetKey(item) === key && item.kind === "image");
     if (!asset || referenceImages.some((item) => assetKey(item) === key)) return;
     setReferenceImages((current) => [...current, asset].slice(0, MAX_REF2V_IMAGES));
     markTouched("referenceImages");
@@ -556,6 +555,7 @@ export function SingleCreateForm() {
       ? `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
       : "";
     const referenceImageNames = referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
+    const referenceImageRoots = referenceImages.map((asset) => asset.root).slice(0, MAX_REF2V_IMAGES);
     const primaryReference = mode === "ref2v" ? referenceImages[0] || referenceImage : referenceImage;
 
     setSubmitting(true);
@@ -569,9 +569,13 @@ export function SingleCreateForm() {
             prompt,
             negativePrompt,
             referenceImageName: primaryReference?.kind === "image" ? primaryReference.name : "",
+            referenceImageRoot: primaryReference?.kind === "image" ? primaryReference.root : undefined,
             referenceImageNames,
+            referenceImageRoots,
             lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
+            lastFrameRoot: lastFrameImage?.kind === "image" ? lastFrameImage.root : undefined,
             sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
+            sourceVideoRoot: sourceVideo?.kind === "video" ? sourceVideo.root : undefined,
             characterLoraName: mode === "replace" ? characterLoraName : "",
             characterLoraStrength: mode === "replace" ? Number(characterLoraStrength) : undefined,
             modelProfile,
@@ -641,8 +645,6 @@ export function SingleCreateForm() {
             </div>
             <SourceFields
               mode={mode}
-              imageAssets={imageAssets}
-              videoAssets={videoAssets}
               referenceImage={referenceImage}
               referenceImages={referenceImages}
               lastFrameImage={lastFrameImage}
@@ -650,7 +652,7 @@ export function SingleCreateForm() {
               uploadingTarget={uploadingTarget}
               errorFor={visibleFieldError}
               onSelectSingle={selectSingleAsset}
-              onAddReference={addReferenceImage}
+              onAddReferences={(keys) => keys.forEach(addReferenceImage)}
               onRemoveReference={removeReferenceImage}
               onClearReference={() => {
                 setReferenceImage(null);
@@ -1007,8 +1009,6 @@ function FormSection({ id, code, title, icon, children }: { id?: string; code: s
 
 function SourceFields({
   mode,
-  imageAssets,
-  videoAssets,
   referenceImage,
   referenceImages,
   lastFrameImage,
@@ -1016,7 +1016,7 @@ function SourceFields({
   uploadingTarget,
   errorFor,
   onSelectSingle,
-  onAddReference,
+  onAddReferences,
   onRemoveReference,
   onClearReference,
   onClearLastFrame,
@@ -1024,8 +1024,6 @@ function SourceFields({
   onUpload,
 }: {
   mode: Mode;
-  imageAssets: Asset[];
-  videoAssets: Asset[];
   referenceImage: Asset | null;
   referenceImages: Asset[];
   lastFrameImage: Asset | null;
@@ -1033,7 +1031,7 @@ function SourceFields({
   uploadingTarget: UploadTarget | null;
   errorFor: (field: string) => string;
   onSelectSingle: (target: Exclude<UploadTarget, "referenceImages">, key: string) => void;
-  onAddReference: (key: string) => void;
+  onAddReferences: (keys: string[]) => void;
   onRemoveReference: (asset: Asset) => void;
   onClearReference: () => void;
   onClearLastFrame: () => void;
@@ -1051,7 +1049,6 @@ function SourceFields({
           id="single-reference-image"
           label={mode === "fl2v" ? "首幀圖片" : mode === "replace" ? "角色／外觀參考圖片" : "參考圖片"}
           kind="image"
-          assets={imageAssets}
           selected={referenceImage}
           error={errorFor("referenceImage")}
           uploading={uploadingTarget === "referenceImage"}
@@ -1066,7 +1063,6 @@ function SourceFields({
           id="single-last-frame"
           label="尾幀圖片"
           kind="image"
-          assets={imageAssets}
           selected={lastFrameImage}
           error={errorFor("lastFrameImage")}
           uploading={uploadingTarget === "lastFrameImage"}
@@ -1086,22 +1082,16 @@ function SourceFields({
             <span className={styles.assetMeta}>{referenceImages.length} / {MAX_REF2V_IMAGES}</span>
           </div>
           <div className={styles.assetControls}>
-            <select
-              id="single-reference-images"
-              className={styles.select}
-              value=""
-              aria-invalid={Boolean(errorFor("referenceImages"))}
-              aria-describedby={errorFor("referenceImages") ? "single-reference-images-error" : undefined}
-              onChange={(event) => {
-                onAddReference(event.target.value);
-                event.target.value = "";
-              }}
-            >
-              <option value="">從資源庫加入圖片…</option>
-              {imageAssets.filter((asset) => !referenceImages.some((selected) => assetKey(selected) === assetKey(asset))).map((asset) => (
-                <option key={assetKey(asset)} value={assetKey(asset)}>{asset.name}</option>
-              ))}
-            </select>
+            <AssetPickerButton
+              triggerId="single-reference-images"
+              allowedRoots={["input", "output"]}
+              allowedKinds={["image"]}
+              multiple
+              maxSelection={MAX_REF2V_IMAGES}
+              selectedKeys={referenceImages.map(assetKey)}
+              label="從素材庫加入圖片"
+              onSelect={(chosen) => onAddReferences(chosen.map(libraryAssetKey))}
+            />
             <UploadButton
               kind="image"
               multiple
@@ -1129,7 +1119,6 @@ function SourceFields({
           id="single-last-frame"
           label="尾幀圖片"
           kind="image"
-          assets={imageAssets}
           selected={lastFrameImage}
           error={errorFor("lastFrameImage")}
           uploading={uploadingTarget === "lastFrameImage"}
@@ -1144,7 +1133,6 @@ function SourceFields({
           id="single-source-video"
           label={mode === "ref2v" ? "參考影片（Video 1）" : "來源動作影片"}
           kind="video"
-          assets={videoAssets}
           selected={sourceVideo}
           error={errorFor("sourceVideo")}
           uploading={uploadingTarget === "sourceVideo"}
@@ -1163,7 +1151,6 @@ function SingleAssetPicker({
   id,
   label,
   kind,
-  assets,
   selected,
   error,
   uploading,
@@ -1174,7 +1161,6 @@ function SingleAssetPicker({
   id: string;
   label: string;
   kind: AssetKind;
-  assets: Asset[];
   selected: Asset | null;
   error: string;
   uploading: boolean;
@@ -1191,17 +1177,14 @@ function SingleAssetPicker({
         </div>
       </div>
       <div className={styles.assetControls}>
-        <select
-          id={id}
-          className={styles.select}
-          value={selected ? assetKey(selected) : ""}
-          aria-invalid={Boolean(error)}
-          aria-describedby={error ? `${id}-error` : undefined}
-          onChange={(event) => onSelect(event.target.value)}
-        >
-          <option value="">從資源庫選擇…</option>
-          {assets.map((asset) => <option key={assetKey(asset)} value={assetKey(asset)}>{asset.name}</option>)}
-        </select>
+        <AssetPickerButton
+          triggerId={id}
+          allowedRoots={["input", "output"]}
+          allowedKinds={[kind]}
+          selectedKeys={selected ? [assetKey(selected)] : []}
+          label="從素材庫選擇"
+          onSelect={(chosen) => { if (chosen[0]) onSelect(libraryAssetKey(chosen[0])); }}
+        />
         <UploadButton kind={kind} busy={uploading} onFiles={onUpload} />
       </div>
       {selected && (
@@ -1209,7 +1192,7 @@ function SingleAssetPicker({
           <AssetThumb asset={selected} />
           <div className={styles.assetName}>
             <strong title={selected.name}>{selected.name}</strong>
-            <span>{formatBytes(selected.size)} · input</span>
+            <span>{formatBytes(selected.size)} · {selected.root === "output" ? "生成結果" : "素材"}</span>
           </div>
           <button type="button" className={styles.removeButton} onClick={onClear} aria-label={`移除 ${label}`}><Icon name="close" /></button>
         </div>

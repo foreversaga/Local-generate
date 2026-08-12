@@ -5,3 +5,4 @@
 @media(max-width:700px){.navigation{align-items:flex-start;flex-wrap:wrap}.breadcrumbs{order:2;width:100%}.searchStatus{margin-left:0}.folderButton{min-height:96px}}
 .dialog{grid-template-rows:auto auto auto minmax(0,1fr) auto}
 .folderButton{cursor:pointer}
+.sourceTabs{display:flex;gap:4px;border-bottom:1px solid var(--line-soft);padding:8px 17px}.sourceTabs button{min-height:40px;border:1px solid var(--line);border-radius:9px;background:var(--bg-elevated);padding:0 12px;color:var(--muted);font-size:11px;font-weight:800}.sourceTabs button[aria-pressed="true"]{border-color:color-mix(in srgb,var(--lime) 50%,var(--line));background:color-mix(in srgb,var(--lime) 12%,var(--bg-elevated));color:var(--lime)}.folderHeader{display:flex;align-items:stretch;min-width:0}.folderHeader>input{width:22px;margin:12px 0 12px 12px;accent-color:var(--lime)}.folderHeader .folderButton{flex:1;min-width:0}

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { canonicalInputAssetName, deleteInputAsset, deleteMediaAsset, withAssetLifecycleLock } from "../local-bridge.mjs";
+import { canonicalInputAssetName, deleteInputAsset, deleteMediaAsset, deleteMediaFolder, withAssetLifecycleLock } from "../local-bridge.mjs";
 
 async function tempInputRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-input-delete-"));
@@ -96,6 +96,27 @@ test("applies the same safe deletion contract to output assets", async () => {
     activeCheck: async () => ({ blocked: true, code: "ASSET_IN_USE" }),
   }), { code: "ASSET_IN_USE", status: 409 });
   assert.equal(await fs.readFile(path.join(root, "nested", "active.mp4"), "utf8"), "active");
+});
+
+test("deletes a nested media folder recursively and reports its contents", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-"));
+  await fs.mkdir(path.join(root, "characters", "alice"), { recursive: true });
+  await fs.writeFile(path.join(root, "characters", "alice", "01.png"), "image");
+  await fs.writeFile(path.join(root, "characters", "alice", "02.jpg"), "image");
+  await fs.writeFile(path.join(root, "characters", "clip.mp4"), "video");
+  const deleted = await deleteMediaFolder("input", "characters", { rootPath: root });
+  assert.deepEqual(deleted, { name: "characters", root: "input", kind: "folder", deletedCount: 3, deletedFolderCount: 2 });
+  await assert.rejects(() => fs.stat(path.join(root, "characters")), { code: "ENOENT" });
+});
+
+test("refuses recursive deletion when an unsupported file is present", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-unsupported-"));
+  await fs.mkdir(path.join(root, "characters"), { recursive: true });
+  await fs.writeFile(path.join(root, "characters", "01.png"), "image");
+  await fs.writeFile(path.join(root, "characters", "metadata.json"), "keep");
+  await assert.rejects(() => deleteMediaFolder("input", "characters", { rootPath: root }), { code: "ASSET_FOLDER_UNSUPPORTED_CONTENT", status: 409 });
+  assert.equal(await fs.readFile(path.join(root, "characters", "01.png"), "utf8"), "image");
+  assert.equal(await fs.readFile(path.join(root, "characters", "metadata.json"), "utf8"), "keep");
 });
 
 test("rejects output symlink candidates without touching the target", async (t) => {

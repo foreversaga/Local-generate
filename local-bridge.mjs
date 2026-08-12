@@ -812,15 +812,13 @@ async function resolveSafeMediaPath(root, cleanName) {
   return candidate;
 }
 
-async function resolveInputMedia(name, expectedKind) {
+async function resolveInputMedia(name, expectedKind, preferredRoot = "") {
   const cleanName = String(name || "")
     .replaceAll("\\", "/")
     .replace(/^\/+/, "");
   if (!cleanName) throw new Error("缺少參考媒體檔名。");
-  const candidates = [
-    { root: INPUT_ROOT, name: cleanName },
-    ...mediaRoots("output").map((root) => ({ root, name: cleanName })),
-  ];
+  const orderedRoots = preferredRoot === "output" ? ["output", "input"] : ["input", "output"];
+  const candidates = orderedRoots.flatMap((rootName) => mediaRoots(rootName).map((root) => ({ root, rootName, name: cleanName })));
   for (const candidate of candidates) {
     const fullPath = await resolveSafeMediaPath(candidate.root, candidate.name);
     if (!fullPath) continue;
@@ -1125,6 +1123,27 @@ export function normalizeReferenceImageNames(payload = {}, { mode = payload.mode
     throw new LongVideoError("REFERENCE_IMAGES_LIMIT", `At most ${MAX_REFERENCE_IMAGE_NAMES} reference images are supported.`, 400);
   }
   return unique;
+}
+
+export function normalizeReferenceImageRoots(payload = {}, { mode = payload.mode, referenceCount = null } = {}) {
+  const provided = Object.prototype.hasOwnProperty.call(payload, "referenceImageRoots");
+  if (provided && mode !== "ref2v") {
+    throw new LongVideoError("REFERENCE_IMAGE_ROOTS_MODE_INVALID", "referenceImageRoots is only supported for mode=ref2v.", 400);
+  }
+  if (!provided) return Array.from({ length: Math.max(0, Number(referenceCount) || 0) }, () => "");
+  if (!Array.isArray(payload.referenceImageRoots)) {
+    throw new LongVideoError("REFERENCE_IMAGE_ROOTS_INVALID", "referenceImageRoots must be an array.", 400);
+  }
+  if (referenceCount !== null && payload.referenceImageRoots.length !== referenceCount) {
+    throw new LongVideoError("REFERENCE_IMAGE_ROOTS_MISMATCH", "referenceImageRoots must match referenceImageNames.", 400);
+  }
+  return payload.referenceImageRoots.map((value, index) => {
+    const root = String(value || "").trim();
+    if (root && root !== "input" && root !== "output") {
+      throw new LongVideoError("REFERENCE_IMAGE_ROOT_INVALID", `referenceImageRoots[${index}] must be input or output.`, 400);
+    }
+    return root;
+  });
 }
 
 export function referenceImageArgs(paths = []) {
@@ -2733,6 +2752,9 @@ async function startGeneration(payload, internal = {}) {
     ? normalizeCharacterLoraStrength(payload.characterLoraStrength)
     : null;
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
+  const referenceImageRoots = mode === "ref2v"
+    ? normalizeReferenceImageRoots(payload, { mode, referenceCount: referenceImageNames.length })
+    : [];
   const submittedPrompt = String(payload.prompt || "").trim();
   const prompt = mode === "replace"
     ? submittedPrompt
@@ -2772,15 +2794,15 @@ async function startGeneration(payload, internal = {}) {
       }
       inputImagePath = candidate;
     } else {
-      inputImagePath = await resolveInputMedia(payload.inputImageName, "image");
+      inputImagePath = await resolveInputMedia(payload.inputImageName, "image", payload.inputImageRoot);
     }
   }
   if (mode === "fl2v" || mode === "l2v") {
-    lastImagePath = await resolveInputMedia(payload.lastImageName, "image");
+    lastImagePath = await resolveInputMedia(payload.lastImageName, "image", payload.lastImageRoot);
   }
   if (mode === "replace") {
-    inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
-    inputImagePath = await resolveInputMedia(payload.referenceImageName, "image");
+    inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video", payload.inputVideoRoot);
+    inputImagePath = await resolveInputMedia(payload.referenceImageName, "image", payload.referenceImageRoot);
   }
   if (mode === "ref2v") {
     if (Array.isArray(internal.referenceImagePaths)) {
@@ -2796,11 +2818,11 @@ async function startGeneration(payload, internal = {}) {
         return candidate;
       }));
     } else {
-      referenceImagePaths = await Promise.all(referenceImageNames.map((name) => resolveInputMedia(name, "image")));
+      referenceImagePaths = await Promise.all(referenceImageNames.map((name, index) => resolveInputMedia(name, "image", referenceImageRoots[index])));
     }
     inputImagePath = referenceImagePaths[0] || null;
     if (payload.inputVideoName) {
-      inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video");
+      inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video", payload.inputVideoRoot);
     }
     if (!inputImagePath && !inputVideoPath) {
       throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
@@ -3552,6 +3574,71 @@ async function deleteOutputAsset(relativeName) {
   return deleteMediaAsset("output", relativeName);
 }
 
+/**
+ * Delete one media directory after validating every descendant.  Only
+ * supported media files are admitted; unsupported files make the operation
+ * fail instead of allowing a bulk action to remove arbitrary data.
+ */
+async function deleteMediaFolder(rootName, relativeName, {
+  rootPath = rootName === "input" ? INPUT_ROOT : OUTPUT_ROOT,
+  activeCheck = activeAssetUse,
+} = {}) {
+  if (!["input", "output"].includes(rootName)) {
+    throw assetDeletionError("ASSET_ROOT_INVALID", "Asset root must be input or output.", 400);
+  }
+  const cleanName = canonicalInputAssetName(relativeName);
+  const rootAbsolute = path.resolve(rootPath);
+  const rootReal = await fs.realpath(rootAbsolute).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media folder was not found.", 404);
+    throw error;
+  });
+  if (!pathContained(rootAbsolute, rootReal) || !pathContained(rootReal, rootAbsolute)) {
+    throw assetDeletionError("ASSET_PATH_INVALID", "Media folder root changed outside its allowed directory.", 409);
+  }
+  const candidate = safePath(rootAbsolute, cleanName);
+  if (!pathContained(rootAbsolute, candidate)) throw assetDeletionError("ASSET_PATH_INVALID", "Media folder is outside its root.", 400);
+  await assertNoSymlinkSegments(rootAbsolute, cleanName);
+  const candidateStat = await fs.lstat(candidate).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Media folder was not found.", 404);
+    throw error;
+  });
+  if (candidateStat.isSymbolicLink() || !candidateStat.isDirectory()) {
+    throw assetDeletionError("ASSET_NOT_REGULAR", "Only a regular media folder can be deleted.", 409);
+  }
+
+  const tree = await walkMedia(candidate, cleanName, rootReal);
+  const supportedFiles = tree.files;
+  const supportedNames = new Set(supportedFiles.map((file) => file.relativeName));
+  const unsupportedFiles = [];
+  const inspect = async (directory) => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(directory, entry.name);
+      const stat = await fs.lstat(fullPath);
+      if (stat.isSymbolicLink()) throw assetDeletionError("ASSET_NOT_REGULAR", "Symlink or reparse media assets cannot be deleted.", 409);
+      if (stat.isDirectory()) await inspect(fullPath);
+      else if (stat.isFile()) {
+        const relative = path.relative(rootAbsolute, fullPath).replaceAll("\\", "/");
+        if (!supportedNames.has(relative)) unsupportedFiles.push(relative);
+      }
+    }
+  };
+  await inspect(candidate);
+  if (unsupportedFiles.length) {
+    throw assetDeletionError("ASSET_FOLDER_UNSUPPORTED_CONTENT", "Media folder contains unsupported files and was not deleted.", 409);
+  }
+  for (const file of supportedFiles) {
+    const activeUse = typeof activeCheck === "function" ? await activeCheck(rootName, file.relativeName) : null;
+    if (activeUse?.blocked) throw assetDeletionError(activeUse.code || "ASSET_IN_USE", "Media asset is in use by an active job.", 409);
+  }
+
+  for (const file of supportedFiles) await deleteMediaAsset(rootName, file.relativeName, { rootPath, activeCheck });
+  const directories = [...tree.folders].sort((left, right) => right.relativeName.split("/").length - left.relativeName.split("/").length);
+  for (const folder of directories) await fs.rmdir(path.join(rootAbsolute, folder.relativeName));
+  await fs.rmdir(candidate);
+  return { name: cleanName, root: rootName, kind: "folder", deletedCount: supportedFiles.length, deletedFolderCount: directories.length + 1 };
+}
+
 async function assertNoSymlinkSegments(rootPath, cleanName) {
   let current = path.resolve(rootPath);
   for (const segment of cleanName.split("/")) {
@@ -3778,9 +3865,9 @@ async function route(req, res) {
       return;
     }
     try {
-      const asset = await withAssetLifecycleLock(() => root === "input"
-        ? deleteInputAsset(relativeName)
-        : deleteOutputAsset(relativeName));
+      const asset = await withAssetLifecycleLock(() => requestUrl.searchParams.get("kind") === "folder"
+        ? deleteMediaFolder(root, relativeName)
+        : root === "input" ? deleteInputAsset(relativeName) : deleteOutputAsset(relativeName));
       sendJson(res, 200, { asset });
     } catch (error) {
       const status = Number.isInteger(error?.status) ? error.status : 500;
@@ -3989,6 +4076,7 @@ export {
   deleteInputAsset,
   deleteOutputAsset,
   deleteMediaAsset,
+  deleteMediaFolder,
   activeAssetUse,
   codexLongPlanReferences,
   codexLongPlanModeInstruction,

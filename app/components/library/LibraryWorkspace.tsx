@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ACTION_LABELS, SOURCE_LABELS } from "../../lib/ui-copy.mjs";
-import { assetKey, assetUrl, deleteAsset, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
+import { assetKey, assetUrl, deleteAsset, deleteAssetFolder, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./LibraryWorkspace.module.css";
 
@@ -13,7 +13,9 @@ export function LibraryWorkspace() {
     const [query, setQuery] = useState("");
     const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
     const [preview, setPreview] = useState<StudioAsset | null>(null);
+    const [pendingDelete, setPendingDelete] = useState<{ assets: StudioAsset[]; folders: Array<{ root: "input" | "output"; path: string }>; size: number } | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -56,6 +58,23 @@ export function LibraryWorkspace() {
         return sortAssets(candidates.filter((asset) => !needle || asset.name.toLowerCase().includes(needle)));
     }, [navigation.directAssets, query, scopedAssets]);
 
+    function folderAssets(path: string[]) {
+        return scopedAssets.filter((asset) => {
+            const segments = asset.name.replaceAll("\\", "/").split("/").filter(Boolean);
+            return path.every((segment, index) => segments[index] === segment) && segments.length > path.length;
+        });
+    }
+
+    function folderKey(rootName: StudioAsset["root"], path: string[]) {
+        return `${rootName}:${path.join("/")}`;
+    }
+
+    function folderSelectionState(path: string[]) {
+        const items = folderAssets(path);
+        const count = items.filter((asset) => selected.has(assetKey(asset))).length;
+        return count === 0 ? "none" : count === items.length ? "all" : "partial";
+    }
+
     async function refresh() {
         try {
             const library = await fetchAssetLibrary();
@@ -86,34 +105,39 @@ export function LibraryWorkspace() {
         });
     }
 
-    async function removeSelected() {
-        const chosen = assets.filter((asset) => selected.has(assetKey(asset)));
-        if (!chosen.length || busy) return;
-        setBusy(true);
-        setError("");
-        try {
-            for (const asset of chosen) await deleteAsset(asset);
-            setSelected(new Set());
-            await refresh();
-        } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
-        } finally {
-            setBusy(false);
-        }
+    function requestDelete(assetsToDelete: StudioAsset[], folders: Array<{ root: "input" | "output"; path: string }> = []) {
+        const uniqueFolders = [...new Map(folders.map((folder) => [`${folder.root}:${folder.path}`, folder])).values()];
+        const folderAssetsToDelete = assets.filter((asset) => uniqueFolders.some((folder) => (
+            asset.root === folder.root && (asset.name === folder.path || asset.name.startsWith(`${folder.path}/`))
+        )));
+        const uniqueAssets = [...new Map([...assetsToDelete, ...folderAssetsToDelete].map((asset) => [assetKey(asset), asset])).values()];
+        if ((!uniqueAssets.length && !uniqueFolders.length) || busy) return;
+        setPendingDelete({ assets: uniqueAssets, folders: uniqueFolders, size: uniqueAssets.reduce((total, asset) => total + asset.size, 0) });
     }
 
-    async function removeAsset(asset: StudioAsset) {
-        if (busy) return;
+    function requestDeleteSelected() {
+        const chosen = assets.filter((asset) => selected.has(assetKey(asset)));
+        const folders = [...selectedFolders].map((key) => {
+            const separator = key.indexOf(":");
+            const rootName = key.slice(0, separator);
+            return rootName === "input" || rootName === "output" ? { root: rootName, path: key.slice(separator + 1) } : null;
+        }).filter((folder): folder is { root: "input" | "output"; path: string } => Boolean(folder));
+        requestDelete(chosen, folders);
+    }
+
+    async function executeDelete() {
+        if (!pendingDelete || busy) return;
         setBusy(true);
         setError("");
         try {
-            await deleteAsset(asset);
-            setSelected((current) => {
-                const next = new Set(current);
-                next.delete(assetKey(asset));
-                return next;
-            });
-            if (preview && assetKey(preview) === assetKey(asset)) closePreview();
+            for (const folder of pendingDelete.folders) await deleteAssetFolder(folder.root, folder.path);
+            const remainingAssets = pendingDelete.assets.filter((asset) => !pendingDelete.folders.some((folder) => (
+                asset.root === folder.root && (asset.name === folder.path || asset.name.startsWith(`${folder.path}/`))
+            )));
+            for (const asset of remainingAssets) await deleteAsset(asset);
+            setSelected(new Set());
+            setSelectedFolders(new Set());
+            setPendingDelete(null);
             await refresh();
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
@@ -164,8 +188,8 @@ export function LibraryWorkspace() {
                         }}
                     />
                 </label>
-                <button type="button" className={styles.delete} disabled={!selected.size || busy} onClick={() => void removeSelected()}>
-                    刪除{selected.size ? `（${selected.size}）` : ""}
+                <button type="button" className={styles.delete} disabled={(!selected.size && !selectedFolders.size) || busy} onClick={requestDeleteSelected}>
+                    刪除{selected.size + selectedFolders.size ? `（${selected.size + selectedFolders.size}）` : ""}
                 </button>
             </section>
 
@@ -202,23 +226,55 @@ export function LibraryWorkspace() {
             <div className={styles.meta}>{visibleAssets.length} 項素材{navigation.folders.length && !query.trim() ? ` · ${navigation.folders.length} 個資料夾` : ""}</div>
 
             <div className={styles.grid}>
-                {!query.trim() && navigation.folders.map((folder) => (
-                    <article key={`folder:${folder.path.join("/")}`} className={styles.folderCard}>
-                        <button
-                            type="button"
-                            className={styles.folderButton}
-                            onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
-                            aria-label={`開啟資料夾 ${folder.path.join("/")}`}
-                        >
-                            <span className={styles.folderIcon} aria-hidden="true">資料夾</span>
-                            <span className={styles.folderCopy}>
-                                <strong>{folder.path[folder.path.length - 1]}</strong>
-                                <small>{folder.count} 項素材{folder.roots.size > 1 ? ` · ${[...folder.roots].map((value) => SOURCE_LABELS[value] || value).join("／")}` : ""}</small>
-                            </span>
-                            <span className={styles.folderArrow} aria-hidden="true">→</span>
-                        </button>
+                {!query.trim() && navigation.folders.map((folder) => {
+                    const folderState = folderSelectionState(folder.path);
+                    const folderRoots = [...folder.roots].filter((value): value is "input" | "output" => value === "input" || value === "output");
+                    const folderSelected = folderRoots.length > 0 && folderRoots.every((value) => selectedFolders.has(folderKey(value, folder.path)));
+                    return (
+                    <article key={`folder:${folder.path.join("/")}`} className={`${styles.folderCard} ${folderState !== "none" ? styles.selected : ""}`}>
+                        <div className={styles.folderHeader}>
+                            {folderRoots.length > 0 && (
+                                <input
+                                    type="checkbox"
+                                    aria-label={`選取資料夾 ${folder.path.join("/")}`}
+                                    aria-checked={folderSelected ? "true" : folderState === "partial" ? "mixed" : "false"}
+                                    checked={folderSelected}
+                                    ref={(node) => { if (node) node.indeterminate = folderState === "partial" || (folderRoots.some((value) => selectedFolders.has(folderKey(value, folder.path))) && !folderSelected); }}
+                                    onChange={() => {
+                                        const next = new Set(selectedFolders);
+                                        if (folderSelected) folderRoots.forEach((value) => next.delete(folderKey(value, folder.path)));
+                                        else folderRoots.forEach((value) => next.add(folderKey(value, folder.path)));
+                                        setSelectedFolders(next);
+                                        setSelected((current) => {
+                                            const updated = new Set(current);
+                                            folderAssets(folder.path).forEach((asset) => {
+                                                if (folderRoots.includes(asset.root as "input" | "output")) {
+                                                    if (folderSelected) updated.delete(assetKey(asset));
+                                                    else updated.add(assetKey(asset));
+                                                }
+                                            });
+                                            return updated;
+                                        });
+                                    }}
+                                />
+                            )}
+                            <button
+                                type="button"
+                                className={styles.folderButton}
+                                onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
+                                aria-label={`開啟資料夾 ${folder.path.join("/")}`}
+                            >
+                                <span className={styles.folderIcon} aria-hidden="true">資料夾</span>
+                                <span className={styles.folderCopy}>
+                                    <strong>{folder.path[folder.path.length - 1]}</strong>
+                                    <small>{folder.count} 項素材{folder.roots.size > 1 ? ` · ${[...folder.roots].map((value) => SOURCE_LABELS[value] || value).join("／")}` : ""}</small>
+                                </span>
+                                <span className={styles.folderArrow} aria-hidden="true">→</span>
+                            </button>
+                        </div>
                     </article>
-                ))}
+                    );
+                })}
                 {visibleAssets.map((asset) => {
                     const checked = selected.has(assetKey(asset));
                     return (
@@ -245,12 +301,12 @@ export function LibraryWorkspace() {
                                 </label>
                                 <div>
                                     <strong title={asset.name}>{asset.name}</strong>
-                                    <small>{asset.root} · {asset.kind} · {formatBytes(asset.size)}</small>
+                                    <small>{SOURCE_LABELS[asset.root] || asset.root} · {asset.kind === "image" ? "圖片" : "影片"} · {formatBytes(asset.size)}</small>
                                 </div>
                             </div>
                             <div className={styles.actions}>
                                 <a href={assetUrl(asset)} download>{ACTION_LABELS.downloadResult}</a>
-                                <button type="button" onClick={() => void removeAsset(asset)}>刪除</button>
+                                <button type="button" onClick={() => requestDelete([asset])}>刪除</button>
                             </div>
                         </article>
                     );
@@ -273,7 +329,22 @@ export function LibraryWorkspace() {
                         <strong>{preview.name}</strong>
                         <div className={styles.previewActions}>
                             <a href={assetUrl(preview)} download>{ACTION_LABELS.downloadResult}</a>
-                            <button type="button" onClick={() => void removeAsset(preview)} disabled={busy}>刪除</button>
+                            <button type="button" onClick={() => requestDelete([preview])} disabled={busy}>刪除</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {pendingDelete && (
+                <div className={styles.backdrop} role="presentation">
+                    <div className={styles.confirmDialog} role="alertdialog" aria-modal="true" aria-labelledby="delete-assets-title">
+                        <h2 id="delete-assets-title">確定刪除？</h2>
+                        <p>{pendingDelete.folders.length} 個資料夾 · {pendingDelete.assets.length} 個檔案 · {formatBytes(pendingDelete.size)}</p>
+                        {pendingDelete.folders.length > 0 && <p className={styles.deleteWarning}>此操作會刪除所有子資料夾內容。</p>}
+                        {error && <p className={styles.error} role="alert">{error}</p>}
+                        <div className={styles.previewActions}>
+                            <button type="button" onClick={() => setPendingDelete(null)} disabled={busy}>取消</button>
+                            <button type="button" onClick={() => void executeDelete()} disabled={busy}>刪除 {pendingDelete.assets.length} 個檔案</button>
                         </div>
                     </div>
                 </div>
