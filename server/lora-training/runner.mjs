@@ -6,13 +6,21 @@ const ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|tmp|var|opt)\/)[^\
 
 export function parseTrainingProgress(line) {
   const text = String(line);
-  const step = text.match(/(?:steps?|global_step)\s*[:= ]\s*(\d+)(?:\s*\/\s*(\d+))?/i) ?? text.match(/(\d+)\s*\/\s*(\d+)\s*\[/);
+  const tqdmStep = text.match(/\b(?:steps?|global_step)\s*[:=]\s*\d+(?:\.\d+)?%\s*\|[^|]*\|\s*(\d+)\s*\/\s*(\d+)\b/i);
+  const stepMatch = tqdmStep
+    ? null
+    : text.match(/(?:steps?|global_step)\s*[:= ]\s*(\d+)(?:\s*\/\s*(\d+))?/i) ?? text.match(/(\d+)\s*\/\s*(\d+)\s*\[/);
+  const step = tqdmStep
+    ? { value: tqdmStep[1], total: tqdmStep[2] }
+    : stepMatch
+      ? { value: stepMatch[1], ...(stepMatch[2] ? { total: stepMatch[2] } : {}) }
+      : null;
   const epoch = text.match(/epoch\s*[:= ]\s*(\d+)(?:\s*\/\s*(\d+))?/i);
   const loss = text.match(/(?:loss|train_loss)\s*[:= ]\s*(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)/i);
   const eta = text.match(/(?:eta\s*[:= ]\s*|<)(\d{1,3}:\d{2}(?::\d{2})?)/i);
   if (!step && !epoch && !loss && !eta) return null;
   return {
-    ...(step ? { step: Number(step[1]), ...(step[2] ? { totalSteps: Number(step[2]) } : {}) } : {}),
+    ...(step ? { step: Number(step.value), ...(step.total ? { totalSteps: Number(step.total) } : {}) } : {}),
     ...(epoch ? { epoch: Number(epoch[1]), ...(epoch[2] ? { totalEpochs: Number(epoch[2]) } : {}) } : {}),
     ...(loss ? { loss: Number(loss[1]) } : {}),
     ...(eta ? { eta: eta[1] } : {}),

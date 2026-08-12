@@ -45,7 +45,7 @@ export function adaptJob(raw, source = "video") {
     ? ((Number(raw?.completedCount) || 0) + (Number(raw?.failedCount) || 0)) / Number(raw.batchCount) * 100
     : null;
   const progress = source === "lora"
-    ? loraProgress(raw, status)
+    ? loraTrainingProgress(raw, status)
     : clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
   const artifact = artifactRef(raw, source);
   return {
@@ -198,15 +198,16 @@ function jobStage(raw, source) {
   return LORA_STAGE_LABELS[value.toLowerCase()] || value;
 }
 
-function loraProgress(raw, status) {
+export function loraTrainingProgress(raw, status = normalizeJobStatus(raw?.status)) {
   const rawStatus = String(raw?.status || raw?.stage || "").toLowerCase();
   if (status === "complete" || ["succeeded", "completed"].includes(rawStatus)) return 100;
   const training = raw?.training && typeof raw.training === "object" ? raw.training : {};
-  if (["installed", "complete", "completed"].includes(String(training.stage || "").toLowerCase())) return 100;
+  const activeTraining = ["training", "installing", "running", "cancelling"].includes(rawStatus);
+  if (["installed", "complete", "completed"].includes(String(training.stage || "").toLowerCase())) return activeTraining ? 99 : 100;
   const trainingStep = Number(training.step);
   const totalSteps = Number(training.totalSteps);
-  if (["training", "installing", "running"].includes(rawStatus) && Number.isFinite(trainingStep) && Number.isFinite(totalSteps) && totalSteps > 0) {
-    return clampProgress(trainingStep / totalSteps * 100);
+  if (activeTraining && Number.isFinite(trainingStep) && Number.isFinite(totalSteps) && totalSteps > 0) {
+    return clampProgress(Math.min(99, trainingStep / totalSteps * 100));
   }
   if (rawStatus === "captioning") {
     const completed = Number(raw?.orchestration?.progress?.completed ?? raw?.progress?.completed ?? training.completed);

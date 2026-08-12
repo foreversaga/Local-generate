@@ -76,13 +76,19 @@ test("job adapter integrates LoRA status, training progress, ETA, artifact and a
   assert.equal(training.progress, 25);
   assert.equal(training.etaMs, 90_000);
 
+  const overrunTraining = adaptJob({ id: "lora-overrun", status: "training", training: { step: 101, totalSteps: 100 } }, "lora");
+  assert.equal(overrunTraining.progress, 99, "active training must not report terminal 100% progress");
+
+  const completedTraining = adaptJob({ id: "lora-completed", status: "completed", training: { step: 101, totalSteps: 100 } }, "lora");
+  assert.equal(completedTraining.progress, 100, "only terminal completion may report 100% progress");
+
   const captioning = adaptJob({ id: "lora-captioning", status: "captioning", training: { completed: 39, total: 39 } }, "lora");
   assert.equal(captioning.status, "running");
   assert.equal(captioning.progress, 100);
 
   const installed = adaptJob({ id: "lora-installed", status: "training", training: { stage: "installed" } }, "lora");
   assert.equal(installed.status, "running");
-  assert.equal(installed.progress, 100, "an installed artifact is complete even before the terminal event is observed");
+  assert.equal(installed.progress, 99, "an active job must wait for the terminal event before reporting 100% progress");
 
   const succeeded = adaptJob({
     id: "lora-done", status: "succeeded", artifact: { registryId: "reg-1", fileName: "my-character-lora.safetensors", downloadUrl: "/app/api/lora-training/jobs/lora-done/artifact/download" },

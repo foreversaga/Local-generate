@@ -4,6 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, useSync
 import { AssetPickerButton } from "../../library/AssetPickerButton";
 import { assetKey, assetUrl, fetchAssetLibrary, type StudioAsset, type StudioAssetFolder, uploadAssets } from "../../library/asset-client";
 import { FIELD_LABELS, jobStatusLabel } from "../../../lib/ui-copy.mjs";
+import { loraTrainingProgress } from "../../../lib/job-adapter.mjs";
 import {
   artifactDownloadUrl,
   cancelLoraJob,
@@ -296,8 +297,8 @@ export function LoraTrainerWorkspace() {
         : "正在檢查訓練環境狀態";
   const hasMeasuredProgress = Number.isFinite(job?.training.totalSteps) && (job?.training.totalSteps || 0) > 0;
   const progress = hasMeasuredProgress
-    ? Math.min(100, Math.round(((job?.training.step || 0) / (job?.training.totalSteps || 1)) * 100))
-    : job?.status === "installing" || job?.status === "completed" ? 100 : 0;
+    ? loraTrainingProgress(job)
+    : job?.status === "completed" ? 100 : job?.status === "installing" ? 99 : 0;
   const progressStateLabel = job?.status === "queued"
     ? "等待 GPU"
     : job?.status === "training"
