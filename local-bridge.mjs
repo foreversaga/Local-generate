@@ -32,6 +32,7 @@ import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./serv
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
 import { createRuntimeContext } from "./server/runtime/runtime-context.mjs";
+import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coordinator.mjs";
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
@@ -93,6 +94,10 @@ const runtimeContext = createRuntimeContext({
   local: { comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL },
   remote: { comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL },
 });
+const gpuResourceCoordinator = createGpuResourceCoordinator({
+  ownerId: `h3-studio-${process.pid}`,
+  runtimeMode: () => runtimeContext.mode,
+});
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
@@ -148,6 +153,12 @@ const continuationPromptFinalizer = createContinuationPromptFinalizer({
   getComfyUrl: () => runtimeContext.comfyUrl,
   getRemoteComfy: () => runtimeContext.isRemote,
 });
+const gpuContinuationPromptFinalizer = (context = {}) => withGpuResource(
+  "ollama-vision",
+  `continuation:${context.job?.id || "sequence"}:${context.segmentIndex ?? 0}`,
+  () => continuationPromptFinalizer(context),
+  { phase: "continuation", sequenceId: context.job?.id, segmentIndex: context.segmentIndex },
+);
 const timingHistoryReady = fs
   .readFile(TIMING_HISTORY_FILE, "utf8")
   .then((text) => {
@@ -900,14 +911,9 @@ async function startRuntimeServices(remote) {
 
 async function runtimeBusyReason() {
   if (runtimeContext.activeOperations > 0) return "A model request is being admitted.";
-  if (activeGenerationId || generationQueue.length || jobProcesses.size) return "A video generation is queued or running.";
-  const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
-  if (seedJobs.some((job) => ["queued", "running", "cancelling"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
-  const img2imgJobs = typeof img2imgController?.getJobs === "function" ? img2imgController.getJobs() : [];
-  if (img2imgJobs.some((job) => ["queued", "running", "cancelling"].includes(job?.status))) return "An image-to-image job is queued or running.";
-  const sequenceJobs = await listLongVideoJobs().catch(() => null);
-  if (!Array.isArray(sequenceJobs)) return "Long-video job state could not be verified.";
-  if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return "A long-video job is active.";
+  const gpuState = gpuResourceCoordinator.snapshot();
+  if (gpuState.active) return `GPU is busy with ${gpuState.active.workloadType}.`;
+  if (gpuState.queue.length) return `${gpuState.queue.length} GPU workload(s) are queued.`;
   return "";
 }
 
@@ -936,6 +942,22 @@ async function switchRuntimeMode(mode) {
 
 async function withRuntimeOperation(operation) {
   return runtimeContext.withOperation(operation);
+}
+
+async function withGpuResource(workloadType, jobId, operation, metadata = {}) {
+  const admission = gpuResourceCoordinator.request({
+    requestId: `${workloadType}:${jobId}`,
+    jobId: `${workloadType}:${jobId}`,
+    workloadType,
+    runtime: runtimeContext.mode,
+    metadata,
+  });
+  const lease = await admission.granted;
+  try {
+    return await operation();
+  } finally {
+    lease?.release?.();
+  }
 }
 
 async function releaseComfyForOllama(target = {}) {
@@ -985,6 +1007,7 @@ async function health() {
     codex,
     comfy: { online: Boolean(comfy), url: runtimeContext.comfyUrl, remote: runtimeContext.isRemote, devices },
     runtime: runtimeContext.snapshot(),
+    gpu: gpuResourceCoordinator.snapshot(),
     paths: {
       h3Root: H3_ROOT,
       comfyRoot: COMFY_ROOT,
@@ -1668,9 +1691,14 @@ async function planSequenceWithPromptProvider(input, options = {}) {
   const provider = promptProvider(plannerInput?.provider || plannerInput?.promptProvider);
   if (provider !== "codex") {
     const model = plannerInput?.ollamaModel || plannerInput?.model || defaultOllamaModel();
-    return defaultPlanSequence(
-      { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
-      { ...options, model },
+    return withGpuResource(
+      "ollama-vision",
+      `sequence-plan:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      () => defaultPlanSequence(
+        { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
+        { ...options, model },
+      ),
+      { phase: "long-video-planning", model },
     );
   }
   const model = codexModel(plannerInput.codexModel || plannerInput.model);
@@ -1965,6 +1993,8 @@ async function getLoraTrainingService() {
         comfyRoot: COMFY_ROOT,
         comfyUrl: runtimeContext.comfyUrl,
         ollamaUrl: runtimeContext.ollamaUrl,
+        gpuCoordinator: gpuResourceCoordinator,
+        gpuRuntime: runtimeContext.mode,
         ollamaModel: OLLAMA_CAPTION_MODEL,
         ollamaProbe: probeCaptionOllama,
         comfyLoraDirectory: path.join(COMFY_ROOT, "models", "loras", "trained"),
@@ -2042,6 +2072,7 @@ function publicLoraSourceAssets(job) {
 
 function publicLoraTrainingJob(details) {
   const job = details?.job || details;
+  const gpu = job?.id ? gpuResourceCoordinator.get(`lora-training:${job.id}`) : null;
   const phase = loraPhase(job);
   const status = ({
     succeeded: "completed", canceled: "cancelled", cancelled: "cancelled", running: "training",
@@ -2094,6 +2125,14 @@ function publicLoraTrainingJob(details) {
   return {
     schemaVersion: 1,
     id: job.id,
+    ...(gpu ? {
+      gpu: {
+        status: gpu.status,
+        workloadType: gpu.workloadType,
+        queuePosition: gpu.queuePosition,
+        runtimeMode: gpu.runtimeMode,
+      },
+    } : {}),
     revision: job.revision,
     slug: job.slug,
     displayName: job.displayName || config.outputName || job.slug || "Trained LoRA",
@@ -2411,10 +2450,13 @@ async function allocateSequenceOutputMediaPath(relativeName) {
 
 function publicJob(job) {
   updateJobTiming(job);
+  const gpu = gpuResourceCoordinator.get(`${job.workloadType || "video-generation"}:${job.id}`);
   return {
     id: job.id,
+    ...(gpu ? { gpu } : {}),
     status: job.status,
     mode: job.mode,
+    workloadType: job.workloadType || "video-generation",
     model: job.model || job.modelProfile,
     progress: job.progress,
     stage: job.stage,
@@ -2624,10 +2666,18 @@ function queueSpawn(command, args, options, job) {
   child.actualChild = null;
 
   const entry = { command, args, options, job, child };
+  entry.gpuAdmission = gpuResourceCoordinator.request({
+    requestId: `video-generation:${job.id}`,
+    jobId: `video-generation:${job.id}`,
+    workloadType: job.workloadType || "video-generation",
+    runtime: runtimeContext.mode,
+    metadata: { mode: job.mode, sequence: job.workloadType === "long-video-segment" },
+  });
   child.kill = () => {
     if (child.cancelled) return;
     child.cancelled = true;
     job.cancelRequested = true;
+    entry.gpuAdmission?.cancel("Video generation cancellation requested.");
     if (child.actualChild) {
       child.actualChild.kill();
       return;
@@ -2660,17 +2710,20 @@ async function pumpGenerationQueue() {
   entry.job.stage = "正在啟動生成…";
   entry.job.connectionState = "starting";
   touchJob(entry.job);
-  let generationLease = null;
+  let gpuLease = null;
+  let ollamaLease = null;
   let leaseReleased = false;
   const releaseGenerationLease = () => {
     if (leaseReleased) return;
     leaseReleased = true;
-    generationLease?.release();
+    gpuLease?.release?.();
+    ollamaLease?.release?.();
   };
   try {
-    entry.job.stage = "Waiting for Ollama cleanup";
+    entry.job.stage = "Waiting for GPU";
     touchJob(entry.job);
-    generationLease = await ollamaCoordinator.acquireGenerationBarrier();
+    gpuLease = await entry.gpuAdmission.granted;
+    if (!gpuLease) throw Object.assign(new Error("GPU admission was cancelled."), { code: "GPU_LEASE_CANCELLED" });
     if (entry.child.cancelled) {
       releaseGenerationLease();
       activeGenerationId = null;
@@ -2678,6 +2731,9 @@ async function pumpGenerationQueue() {
       queueMicrotask(pumpGenerationQueue);
       return;
     }
+    entry.job.stage = "Waiting for Ollama cleanup";
+    touchJob(entry.job);
+    ollamaLease = await ollamaCoordinator.acquireGenerationBarrier();
     const actualChild = spawn(entry.command, entry.args, entry.options);
     entry.child.actualChild = actualChild;
     entry.job.progress = Math.max(entry.job.progress, 9);
@@ -2859,6 +2915,7 @@ async function startGeneration(payload, internal = {}) {
     id: existingJob?.id || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
     status: "queued",
     mode,
+    workloadType: internal.workloadType || "video-generation",
     progress: 2,
     progressSource: "estimated",
     estimatedProgress: 2,
@@ -3342,6 +3399,7 @@ async function startSequenceGeneration(payload) {
     }, {
       inputImagePath: stagedInput?.path,
       referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
+      workloadType: "long-video-segment",
     });
     return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
   } finally {
@@ -3703,6 +3761,8 @@ function createSeedVR2ControllerForRuntime() {
     inputRoot: INPUT_ROOT,
     outputRoot: OUTPUT_ROOT,
     toAsset,
+    gpuCoordinator: gpuResourceCoordinator,
+    gpuRuntime: runtimeContext.mode,
   });
 }
 
@@ -3713,6 +3773,8 @@ function createImg2ImgControllerForRuntime() {
     inputRoot: INPUT_ROOT,
     outputRoot: OUTPUT_ROOT,
     toAsset,
+    gpuCoordinator: gpuResourceCoordinator,
+    gpuRuntime: runtimeContext.mode,
     beforeRun: () => releaseOllamaForComfy(),
     resolveCharacterLora: (value, { model }) => {
       const expected = IMG2IMG_LORA_PROFILES[model];
@@ -3739,7 +3801,7 @@ const domainRouter = createBridgeDomainRouter({
   checkMediaTools,
   outputRoot: OUTPUT_ROOT,
   ollamaCoordinator,
-  continuationPromptFinalizer,
+  continuationPromptFinalizer: gpuContinuationPromptFinalizer,
   runtimeContext,
   withAssetLifecycleLock,
   withRuntimeOperation,
@@ -3775,6 +3837,14 @@ async function route(req, res) {
       return;
     }
     sendError(res, 405, "Runtime endpoint only supports GET and POST.");
+    return;
+  }
+  if (pathname === "/api/runtime/gpu") {
+    if (req.method === "GET") {
+      sendJson(res, 200, gpuResourceCoordinator.snapshot());
+      return;
+    }
+    sendError(res, 405, "GPU runtime endpoint only supports GET.");
     return;
   }
   const handledByDomainRouter = await domainRouter.dispatch({ req, res, pathname, requestUrl, readJson, sendJson, sendError });
@@ -3883,7 +3953,12 @@ async function route(req, res) {
     let payload = null;
     try {
       payload = { ...(await readJson(req)), provider: "ollama" };
-      sendJson(res, 200, await withRuntimeOperation(async () => createPrompt(payload)));
+      sendJson(res, 200, await withRuntimeOperation(() => withGpuResource(
+        "ollama-vision",
+        `prompt:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        () => createPrompt(payload),
+        { phase: "prompt", mode: payload?.mode || "t2v" },
+      )));
     } catch (error) {
       const saved = await persistPromptError({ stage: "prompt_generation", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 502;

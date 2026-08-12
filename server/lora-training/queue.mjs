@@ -4,11 +4,20 @@ function clone(value) {
   return structuredClone(value);
 }
 
+function serializableLease(lease) {
+  if (!lease || typeof lease !== 'object') return lease;
+  return Object.fromEntries([
+    'id', 'requestId', 'jobId', 'ownerId', 'workloadType', 'runtimeMode',
+    'acquiredAt', 'expiresAt',
+  ].filter((key) => lease[key] !== undefined).map((key) => [key, lease[key]]));
+}
+
 export function createTrainingQueue({
   loadState = async () => ({ pending: [], active: null }),
   saveState,
   acquireGpuLease,
   releaseGpuLease,
+  requestGpuLease,
   execute,
   onStateChange = async () => {},
   onBackgroundError = async () => {},
@@ -16,15 +25,17 @@ export function createTrainingQueue({
   ownerId = randomUUID(),
   progressIntervalMs = 500,
 } = {}) {
-  if (typeof saveState !== 'function' || typeof acquireGpuLease !== 'function' ||
+  if (typeof saveState !== 'function' || (typeof acquireGpuLease !== 'function' && typeof requestGpuLease !== 'function') ||
       typeof releaseGpuLease !== 'function' || typeof execute !== 'function') {
-    throw new TypeError('saveState, acquireGpuLease, releaseGpuLease, and execute callbacks are required');
+    throw new TypeError('saveState, an acquire/request GPU callback, releaseGpuLease, and execute callbacks are required');
   }
   let state = { pending: [], active: null };
   let initialized = false;
   let initializing = null;
   let draining = null;
   let activeAbort = null;
+  let activeLease = null;
+  const pendingAdmissions = new Map();
   let lastProgressAt = 0;
 
   const persist = async () => saveState(clone(state));
@@ -66,6 +77,11 @@ export function createTrainingQueue({
         error.code = 'QUEUE_RECOVERY_REQUIRED';
         throw error;
       }
+      if (typeof requestGpuLease === 'function') {
+        for (const entry of state.pending) {
+          if (!pendingAdmissions.has(entry.jobId)) pendingAdmissions.set(entry.jobId, requestGpuLease({ ownerId, jobId: entry.jobId, payload: entry.payload }));
+        }
+      }
       initialized = true;
     })().finally(() => { initializing = null; });
     await initializing;
@@ -87,6 +103,14 @@ export function createTrainingQueue({
     if (typeof jobId !== 'string' || !jobId) throw new TypeError('jobId is required');
     if (state.active?.jobId === jobId || state.pending.some((entry) => entry.jobId === jobId)) throw new Error('job is already queued');
     state.pending.push({ jobId, payload: clone(payload), enqueuedAt: now() });
+    if (typeof requestGpuLease === 'function') {
+      try {
+        pendingAdmissions.set(jobId, requestGpuLease({ ownerId, jobId, payload }));
+      } catch (error) {
+        state.pending.pop();
+        throw error;
+      }
+    }
     await persist();
     await notify(jobId, 'queued', { queuePosition: position(jobId) });
     if (autoDrain) start();
@@ -98,6 +122,8 @@ export function createTrainingQueue({
     const index = state.pending.findIndex((entry) => entry.jobId === jobId);
     if (index >= 0) {
       state.pending.splice(index, 1);
+      pendingAdmissions.get(jobId)?.cancel?.('LoRA training cancellation requested.');
+      pendingAdmissions.delete(jobId);
       await persist();
       // The controller's cancel API is still holding the per-job lock while
       // this notification is emitted. Mark it so the controller can queue the
@@ -120,24 +146,58 @@ export function createTrainingQueue({
     draining = (async () => {
       while (!state.active && state.pending.length) {
         const next = state.pending[0];
+        const admission = pendingAdmissions.get(next.jobId);
         let lease;
         try {
-          lease = await acquireGpuLease({ ownerId, jobId: next.jobId });
+          lease = admission
+            ? await admission.granted
+            : await acquireGpuLease({ ownerId, jobId: next.jobId });
         } catch (error) {
+          if (error?.code === 'GPU_LEASE_CANCELLED') {
+            pendingAdmissions.delete(next.jobId);
+            if (state.pending[0]?.jobId === next.jobId) {
+              state.pending.shift();
+              await persist();
+            }
+            continue;
+          }
           await reportBackgroundError(error, { phase: 'acquire', jobId: next.jobId });
           break;
         }
         if (!lease) break;
+        pendingAdmissions.delete(next.jobId);
         state.pending.shift();
-        state.active = { ...next, ownerId, lease, startedAt: now(), cancelRequested: false };
+        activeLease = lease;
+        state.active = {
+          ...next,
+          ownerId,
+          lease: {
+            id: lease.id,
+            requestId: lease.requestId,
+            workloadType: lease.workloadType,
+            runtimeMode: lease.runtimeMode,
+            acquiredAt: lease.acquiredAt,
+            expiresAt: lease.expiresAt,
+          },
+          startedAt: now(),
+          cancelRequested: false,
+        };
         let outcome = 'failed';
         let failure;
         try { await persist(); }
         catch (error) {
           state.pending.unshift(next);
           state.active = null;
-          try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease }); }
+          try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: activeLease || lease }); }
           catch (releaseError) { await reportBackgroundError(releaseError, { phase: 'release', jobId: next.jobId }); }
+          activeLease = null;
+          if (typeof requestGpuLease === 'function') {
+            try {
+              pendingAdmissions.set(next.jobId, requestGpuLease({ ownerId, jobId: next.jobId, payload: next.payload }));
+            } catch (admissionError) {
+              await reportBackgroundError(admissionError, { phase: 're-admit', jobId: next.jobId });
+            }
+          }
           await reportBackgroundError(error, { phase: 'persist-active', jobId: next.jobId });
           break;
         }
@@ -156,7 +216,7 @@ export function createTrainingQueue({
             await safeNotify(next.jobId, 'running', { progress });
           };
           try {
-            const result = await execute(clone(next), { signal: activeAbort.signal, lease: clone(lease), reportProgress });
+            const result = await execute(clone(next), { signal: activeAbort.signal, lease: serializableLease(lease), reportProgress });
             outcome = state.active.cancelRequested || activeAbort.signal.aborted ? 'canceled' : (result?.status ?? 'succeeded');
             if (!['succeeded', 'failed', 'canceled'].includes(outcome)) throw new Error('execute returned an invalid terminal status');
           } catch (error) {
@@ -164,12 +224,13 @@ export function createTrainingQueue({
             failure = error;
           }
         }
-        const finished = state.active;
         state.active = null;
+        const finishedLease = activeLease || lease;
+        activeLease = null;
         activeAbort = null;
         try { await persist(); }
         catch (error) { await reportBackgroundError(error, { phase: 'persist-final', jobId: next.jobId }); }
-        try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: finished?.lease ?? lease }); }
+        try { await releaseGpuLease({ ownerId, jobId: next.jobId, lease: finishedLease }); }
         catch (error) { await reportBackgroundError(error, { phase: 'release', jobId: next.jobId }); }
         // Preserve the service's safe structured failure (exit code, signal,
         // bounded stderr tail, or a distinct artifact code).  Legacy callers

@@ -462,11 +462,24 @@ export function createLoraTrainingService(options = {}) {
     return { status: 'succeeded', artifact: installed, registry: registryRecord };
   }
 
+  const requestGpuLease = options.gpuCoordinator
+    ? ({ jobId, payload }) => options.gpuCoordinator.request({
+      requestId: `lora-training:${jobId}`,
+      jobId: `lora-training:${jobId}`,
+      workloadType: 'lora-training',
+      runtime: typeof options.gpuRuntime === 'function' ? options.gpuRuntime() : options.gpuRuntime,
+      metadata: { family: payload?.family, preset: payload?.preset },
+    })
+    : undefined;
+  const releaseQueueGpuLease = options.gpuCoordinator
+    ? async ({ lease }) => lease?.release?.()
+    : releaseGpuLease;
   const queue = options.queue ?? createTrainingQueue({
     loadState: loadQueueState,
     saveState: saveQueueState,
     acquireGpuLease,
-    releaseGpuLease,
+    releaseGpuLease: releaseQueueGpuLease,
+    requestGpuLease,
     execute: executeTraining,
     onStateChange: async (event) => controller?.onQueueStateChange(event),
     onBackgroundError: async ({ error, jobId, phase }) => {

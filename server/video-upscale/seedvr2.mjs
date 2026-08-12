@@ -329,7 +329,19 @@ function cloneValue(value) {
   }
 }
 
-function publicJob(job) {
+function publicGpuLease(gpuCoordinator, workloadType, job) {
+  const state = gpuCoordinator?.get?.(`${workloadType}:${job.id}`);
+  if (!state) return undefined;
+  return {
+    status: state.status,
+    workloadType: state.workloadType,
+    queuePosition: state.queuePosition,
+    runtimeMode: state.runtimeMode,
+  };
+}
+
+function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscale") {
+  const gpu = publicGpuLease(gpuCoordinator, gpuWorkloadType, job);
   const output = job.output ? cloneValue(job.output) : undefined;
   const source = job.source && typeof job.source === "object"
     ? cloneValue(job.source)
@@ -337,6 +349,7 @@ function publicJob(job) {
   return {
     id: job.id,
     status: job.status,
+    ...(gpu ? { gpu } : {}),
     progress: job.progress,
     stage: job.stage,
     source,
@@ -406,6 +419,9 @@ export function createSeedVR2Controller({
   pollIntervalMs = 1_000,
   maxPollMs = 0,
   clientId = "h3-seedvr2",
+  gpuCoordinator = null,
+  gpuWorkloadType = "seedvr2-upscale",
+  gpuRuntime = remote ? "remote" : "local",
 } = {}) {
   if (!inputRoot || !outputRoot) throw new Error("SeedVR2 controller requires inputRoot and outputRoot.");
   const comfyRootPath = path.resolve(comfyRoot || path.dirname(inputRoot));
@@ -416,10 +432,35 @@ export function createSeedVR2Controller({
   const jobs = new Map();
   const queue = [];
   const runtimes = new Map();
+  const gpuAdmissions = new Map();
   const pendingPersistence = new Map();
+  const toPublicJob = (job) => publicJob(job, gpuCoordinator, gpuWorkloadType);
   let active = null;
   let storeLoaded = false;
   let storeLoading = null;
+
+  function ensureGpuAdmission(job) {
+    if (!gpuCoordinator) return null;
+    const existing = gpuAdmissions.get(String(job.id));
+    if (existing) return existing;
+    const admission = gpuCoordinator.request({
+      requestId: `${gpuWorkloadType}:${job.id}`,
+      jobId: `${gpuWorkloadType}:${job.id}`,
+      workloadType: gpuWorkloadType,
+      runtime: gpuRuntime,
+      metadata: { profile: job.profile, sourceRoot: job.sourceRoot },
+    });
+    gpuAdmissions.set(String(job.id), admission);
+    return admission;
+  }
+
+  function cancelGpuAdmission(jobId, reason) {
+    const admission = gpuAdmissions.get(String(jobId));
+    if (!admission) return false;
+    const cancelled = admission.cancel(reason);
+    if (cancelled) gpuAdmissions.delete(String(jobId));
+    return cancelled;
+  }
 
   async function ensureStoreLoaded() {
     if (storeLoaded) return;
@@ -433,7 +474,10 @@ export function createSeedVR2Controller({
         }
         for (const job of (recovered.requeued || []).sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
           const queuedJob = job?.id ? jobs.get(String(job.id)) || job : null;
-          if (queuedJob && !queue.some((queued) => queued.id === queuedJob.id)) queue.push(queuedJob);
+          if (queuedJob && !queue.some((queued) => queued.id === queuedJob.id)) {
+            ensureGpuAdmission(queuedJob);
+            queue.push(queuedJob);
+          }
         }
         storeLoaded = true;
         pump();
@@ -682,8 +726,16 @@ export function createSeedVR2Controller({
     let failure = null;
     const abortController = typeof AbortController === "function" ? new AbortController() : null;
     const runtime = { abortController, promptId: "" };
+    const gpuAdmission = ensureGpuAdmission(job);
+    let gpuLease = null;
     runtimes.set(job.id, runtime);
     try {
+      if (gpuAdmission) {
+        await updateJob(job, { status: "queued", stage: "Waiting for GPU" });
+        gpuLease = await gpuAdmission.granted;
+        if (!gpuLease) throw cancellationError();
+        assertNotCancelled(job);
+      }
       assertNotCancelled(job);
       await updateJob(job, {
         status: "running",
@@ -745,15 +797,17 @@ export function createSeedVR2Controller({
       succeeded = true;
     } catch (error) {
       failure = error;
-      if (!job.cancelRequested && error?.code !== "SEEDVR2_CANCELLED") {
+      if (!job.cancelRequested && error?.code !== "SEEDVR2_CANCELLED" && error?.code !== "GPU_LEASE_CANCELLED") {
         job.error = asErrorMessage(error);
         job.progress = Math.min(100, Math.max(job.progress, 1));
         await persistJob(job);
       }
     } finally {
+      gpuLease?.release?.();
+      gpuAdmissions.delete(String(job.id));
       await cleanupStagedTemp(staged, job);
       runtimes.delete(job.id);
-      const cancelled = Boolean(job.cancelRequested) || failure?.code === "SEEDVR2_CANCELLED";
+      const cancelled = Boolean(job.cancelRequested) || failure?.code === "SEEDVR2_CANCELLED" || failure?.code === "GPU_LEASE_CANCELLED";
       if (cancelled) {
         const cancelledAt = isoNow(now());
         await updateJob(job, {
@@ -853,9 +907,10 @@ export function createSeedVR2Controller({
     const job = createJob({ sourceName: cleanName, sourceRoot, scale: 2, profile, seed });
     await persistJob(job, { required: true });
     jobs.set(job.id, job);
+    ensureGpuAdmission(job);
     queue.push(job);
     pump();
-    return publicJob(job);
+    return toPublicJob(job);
   }
 
   async function readJob(id) {
@@ -871,7 +926,7 @@ export function createSeedVR2Controller({
   async function getJob(id) {
     await ensureStoreLoaded();
     const job = await readJob(id);
-    return job ? publicJob(job) : null;
+    return job ? toPublicJob(job) : null;
   }
 
   async function listJobs() {
@@ -883,7 +938,7 @@ export function createSeedVR2Controller({
     return [...merged.values()]
       .sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)))
       .slice(0, 100)
-      .map(publicJob);
+      .map(toPublicJob);
   }
 
   async function cancelJob(id, reason = "Cancelled by user.") {
@@ -893,13 +948,14 @@ export function createSeedVR2Controller({
     if (["completed", "failed", "cancelled", "interrupted"].includes(job.status)) {
       throw makeError(`SeedVR2 job cannot be cancelled from ${job.status}.`, 409, "SEEDVR2_CANCEL_NOT_ALLOWED");
     }
-    if (job.status === "cancelling") return publicJob(job);
+    if (job.status === "cancelling") return toPublicJob(job);
     const cancelReason = asErrorMessage(reason, "Cancelled by user.");
     job.cancelReason = cancelReason;
     job.cancelRequested = true;
     const isQueued = job.status === "queued";
     const runtime = runtimes.get(job.id);
     if (isQueued) {
+      cancelGpuAdmission(job.id, cancelReason);
       const index = queue.findIndex((queued) => queued.id === job.id);
       if (index >= 0) queue.splice(index, 1);
       if (active !== job) {
@@ -911,17 +967,18 @@ export function createSeedVR2Controller({
           cancelledAt,
           cancelRequested: false,
         });
-        return publicJob(job);
+        return toPublicJob(job);
       }
     }
     job.status = "cancelling";
     job.stage = "Cancelling SeedVR2";
     await persistJob(job, { required: true });
+    cancelGpuAdmission(job.id, cancelReason);
     runtime?.abortController?.abort();
     if (runtime?.promptId) {
       await request("/interrupt", { method: "POST" }, requestTimeoutMs).catch(() => null);
     }
-    return publicJob(job);
+    return toPublicJob(job);
   }
 
   async function retryJob(id) {
@@ -969,9 +1026,10 @@ export function createSeedVR2Controller({
     });
     await persistJob(job, { required: true });
     jobs.set(job.id, job);
+    ensureGpuAdmission(job);
     queue.push(job);
     pump();
-    return publicJob(job);
+    return toPublicJob(job);
   }
 
   async function handleRoute(req, res, { pathname = new URL(req.url || "/", "http://localhost").pathname, readJson, sendJson, sendError } = {}) {
@@ -1045,7 +1103,7 @@ export function createSeedVR2Controller({
     checkReadiness,
     enqueue,
     getJob,
-    getJobs: () => [...jobs.values()].map(publicJob),
+    getJobs: () => [...jobs.values()].map(toPublicJob),
     listJobs,
     cancel: cancelJob,
     retry: retryJob,
@@ -1053,7 +1111,7 @@ export function createSeedVR2Controller({
     handleRoute,
     publicJob,
     parseHistory: parseSeedVR2History,
-    active: () => active ? publicJob(active) : null,
+    active: () => active ? toPublicJob(active) : null,
   };
 }
 

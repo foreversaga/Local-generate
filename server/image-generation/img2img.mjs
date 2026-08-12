@@ -580,10 +580,23 @@ function sleep(ms, signal) {
   });
 }
 
-function publicJob(job) {
+function publicGpuLease(gpuCoordinator, workloadType, job) {
+  const state = gpuCoordinator?.get?.(`${workloadType}:${job.id}`);
+  if (!state) return undefined;
+  return {
+    status: state.status,
+    workloadType: state.workloadType,
+    queuePosition: state.queuePosition,
+    runtimeMode: state.runtimeMode,
+  };
+}
+
+function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
+  const gpu = publicGpuLease(gpuCoordinator, gpuWorkloadType, job);
   return {
     id: job.id,
     status: job.status,
+    ...(gpu ? { gpu } : {}),
     progress: job.progress,
     stage: job.stage,
     sourceName: job.sourceName,
@@ -650,17 +663,45 @@ export function createImg2ImgController({
   store = null,
   storeRoot,
   randomFn = null,
+  gpuCoordinator = null,
+  gpuWorkloadType = "img2img",
+  gpuRuntime = remote ? "remote" : "local",
 } = {}) {
   if (!inputRoot || !outputRoot) throw new Error("Image-to-image controller requires inputRoot and outputRoot.");
   const jobStore = store || createImg2ImgStore({ root: storeRoot });
   const jobs = new Map();
   const queue = [];
   const runtimes = new Map();
+  const gpuAdmissions = new Map();
   let active = null;
   let storeLoaded = false;
   let storeLoading = null;
   const randomSource = typeof randomFn === "function" ? randomFn : () => randomInt(0, 1_000_000_000) / 1_000_000_000;
   const pendingPersistence = new Map();
+  const toPublicJob = (job) => publicJob(job, gpuCoordinator, gpuWorkloadType);
+
+  function ensureGpuAdmission(job) {
+    if (!gpuCoordinator) return null;
+    const existing = gpuAdmissions.get(String(job.id));
+    if (existing) return existing;
+    const admission = gpuCoordinator.request({
+      requestId: `${gpuWorkloadType}:${job.id}`,
+      jobId: `${gpuWorkloadType}:${job.id}`,
+      workloadType: gpuWorkloadType,
+      runtime: gpuRuntime,
+      metadata: { model: job.model, batchCount: job.batchCount },
+    });
+    gpuAdmissions.set(String(job.id), admission);
+    return admission;
+  }
+
+  function cancelGpuAdmission(jobId, reason) {
+    const admission = gpuAdmissions.get(String(jobId));
+    if (!admission) return false;
+    const cancelled = admission.cancel(reason);
+    if (cancelled) gpuAdmissions.delete(String(jobId));
+    return cancelled;
+  }
 
   async function ensureStoreLoaded() {
     if (storeLoaded) return;
@@ -735,7 +776,10 @@ export function createImg2ImgController({
             await jobStore.save(job);
           }
           jobs.set(String(job.id), job);
-          if (job.status === "queued") queue.push(job);
+          if (job.status === "queued") {
+            ensureGpuAdmission(job);
+            queue.push(job);
+          }
         }
         storeLoaded = true;
         pump();
@@ -769,7 +813,23 @@ export function createImg2ImgController({
   }
 
   async function waitForPersistence(id) {
-    await pendingPersistence.get(String(id));
+    const key = String(id);
+    let observed = null;
+    // A caller can hold the in-memory job object while the runner advances it
+    // to a terminal state and schedules the corresponding save in the next
+    // microtask.  Yield once and follow any successor promise so cleanup or a
+    // GET cannot observe a completed job before its final record is durable.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const pending = pendingPersistence.get(key);
+      if (pending && pending !== observed) {
+        observed = pending;
+        await pending;
+        continue;
+      }
+      await Promise.resolve();
+      const successor = pendingPersistence.get(key);
+      if (!successor || successor === observed) return;
+    }
   }
 
   async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs, signal) {
@@ -1056,8 +1116,17 @@ export function createImg2ImgController({
   async function runJob(job) {
     const abortController = typeof AbortController === "function" ? new AbortController() : null;
     const runtime = { abortController, promptId: "", itemIndex: -1 };
+    const gpuAdmission = ensureGpuAdmission(job);
+    let gpuLease = null;
     runtimes.set(job.id, runtime);
     try {
+      if (gpuAdmission) {
+        job.stage = "Waiting for GPU";
+        await persistJob(job);
+        gpuLease = await gpuAdmission.granted;
+        if (!gpuLease) throw cancellationError();
+        assertNotCancelled(job);
+      }
       job.completedCount = (job.items || []).filter((item) => item.status === "completed" && item.output).length;
       job.failedCount = (job.items || []).filter((item) => item.status === "failed").length;
       if (!job.output) {
@@ -1114,7 +1183,7 @@ export function createImg2ImgController({
       job.cancelRequested = false;
       await persistJob(job);
     } catch (error) {
-      if (job.cancelRequested || error?.code === "IMG2IMG_CANCELLED") {
+      if (job.cancelRequested || error?.code === "IMG2IMG_CANCELLED" || error?.code === "GPU_LEASE_CANCELLED") {
         cancelRemainingItems(job);
         job.status = "cancelled";
         job.stage = "Cancelled";
@@ -1129,6 +1198,8 @@ export function createImg2ImgController({
       job.completedAt = isoNow(now());
       await persistJob(job);
     } finally {
+      gpuLease?.release?.();
+      gpuAdmissions.delete(String(job.id));
       runtimes.delete(job.id);
     }
   }
@@ -1267,9 +1338,10 @@ export function createImg2ImgController({
     buildImg2ImgPrompt(job);
     await persistJob(job, { required: true });
     jobs.set(job.id, job);
+    ensureGpuAdmission(job);
     queue.push(job);
     pump();
-    return publicJob(job);
+    return toPublicJob(job);
   }
 
   async function cancelJob(id, reason = "Cancelled by user.") {
@@ -1281,12 +1353,13 @@ export function createImg2ImgController({
     if (["completed", "failed", "partial", "cancelled", "interrupted"].includes(job.status)) {
       throw makeError(`Image-to-image job cannot be cancelled from ${job.status}.`, 409, "IMG2IMG_CANCEL_NOT_ALLOWED");
     }
-    if (job.status === "cancelling") return publicJob(job);
+    if (job.status === "cancelling") return toPublicJob(job);
     job.cancelRequested = true;
     job.cancelReason = errorMessage(reason, "Cancelled by user.");
     const runtime = runtimes.get(key);
     const queued = job.status === "queued" && active !== job;
     if (queued) {
+      cancelGpuAdmission(key, job.cancelReason);
       const index = queue.findIndex((queuedJob) => queuedJob.id === key);
       if (index >= 0) queue.splice(index, 1);
       for (const item of job.items || []) {
@@ -1302,14 +1375,15 @@ export function createImg2ImgController({
       job.cancelledAt = isoNow(now());
       job.completedAt = job.completedAt || job.cancelledAt;
       await persistJob(job, { required: true });
-      return publicJob(job);
+      return toPublicJob(job);
     }
     job.status = "cancelling";
     job.stage = "Cancelling image generation";
     await persistJob(job, { required: true });
+    cancelGpuAdmission(key, job.cancelReason);
     runtime?.abortController?.abort();
     if (runtime?.promptId) await request("/interrupt", { method: "POST" }, requestTimeoutMs).catch(() => null);
-    return publicJob(job);
+    return toPublicJob(job);
   }
 
   async function retryJob(id) {
@@ -1417,7 +1491,7 @@ export function createImg2ImgController({
         respond(res, 200, {
           jobs: [...merged.values()]
             .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
-            .map(publicJob),
+            .map(toPublicJob),
         });
       } catch {
         fail(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
@@ -1432,7 +1506,7 @@ export function createImg2ImgController({
         await waitForPersistence(id);
         if (job && !jobs.has(id)) jobs.set(id, job);
         if (!job) fail(res, 404, "Image-to-image job not found.");
-        else respond(res, 200, { job: publicJob(job) });
+        else respond(res, 200, { job: toPublicJob(job) });
       } catch {
         fail(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
       }
@@ -1450,20 +1524,20 @@ export function createImg2ImgController({
       const job = jobs.get(key) || await jobStore.read(key);
       await waitForPersistence(key);
       if (job && !jobs.has(key)) jobs.set(key, job);
-      return job ? publicJob(job) : null;
+      return job ? toPublicJob(job) : null;
     },
-    getJobs: () => [...jobs.values()].map(publicJob),
+    getJobs: () => [...jobs.values()].map(toPublicJob),
     listJobs: async () => {
       await ensureStoreLoaded();
       await Promise.all([...pendingPersistence.values()]);
       const records = await jobStore.list();
       const merged = new Map(records.map((job) => [String(job.id), job]));
       for (const job of jobs.values()) merged.set(String(job.id), job);
-      return [...merged.values()].sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))).map(publicJob);
+      return [...merged.values()].sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))).map(toPublicJob);
     },
     handleRoute,
     cancel: cancelJob,
     retry: retryJob,
-    active: () => active ? publicJob(active) : null,
+    active: () => active ? toPublicJob(active) : null,
   };
 }
