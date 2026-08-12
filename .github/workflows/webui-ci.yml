@@ -3,9 +3,11 @@ name: WebUI CI
 on:
   push:
     branches:
+      - main
       - agent/document-webui-redesign-plan
   pull_request:
     branches:
+      - main
       - agent/document-webui-redesign-plan
   workflow_dispatch:
 
@@ -15,7 +17,7 @@ permissions:
 
 jobs:
   test:
-    name: Build and test
+    name: WebUI quality gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -40,23 +42,70 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
-      - name: Install, build, and run tests
-        id: validate
+      - name: Install dependencies
+        id: install
         continue-on-error: true
-        run: npm ci && npm test
+        run: npm ci
+
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: npm run lint
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: npm run build
+
+      - name: Unit and domain behavior tests
+        id: unit
+        continue-on-error: true
+        run: npm run test:unit
+
+      - name: Start WebUI for route smoke
+        id: server
+        continue-on-error: true
+        run: |
+          nohup npm run dev -- --host 127.0.0.1 > webui.log 2>&1 &
+          echo $! > webui.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8787/app/api/health > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat webui.log
+          exit 1
+
+      - name: WebUI route and health smoke
+        id: smoke
+        continue-on-error: true
+        env:
+          H3_STUDIO_BASE_URL: http://127.0.0.1:8787
+        run: npm run web:smoke
 
       - name: Publish commit status
         if: always() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          UNIT_OUTCOME: ${{ steps.unit.outcome }}
+          SERVER_OUTCOME: ${{ steps.server.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
-          if [ "$VALIDATION_OUTCOME" = "success" ]; then
+          if [ "$INSTALL_OUTCOME" = "success" ] && \
+             [ "$LINT_OUTCOME" = "success" ] && \
+             [ "$BUILD_OUTCOME" = "success" ] && \
+             [ "$UNIT_OUTCOME" = "success" ] && \
+             [ "$SERVER_OUTCOME" = "success" ] && \
+             [ "$SMOKE_OUTCOME" = "success" ]; then
             STATE="success"
-            DESCRIPTION="WebUI build and tests passed"
+            DESCRIPTION="WebUI install, lint, build, unit tests, and route smoke passed"
           else
             STATE="failure"
-            DESCRIPTION="WebUI build or tests failed"
+            DESCRIPTION="WebUI quality gate failed"
           fi
           TARGET_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           PAYLOAD="$(jq -n \
@@ -73,6 +122,6 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
             -d "$PAYLOAD"
 
-      - name: Enforce validation result
-        if: steps.validate.outcome != 'success'
+      - name: Enforce quality gate
+        if: steps.install.outcome != 'success' || steps.lint.outcome != 'success' || steps.build.outcome != 'success' || steps.unit.outcome != 'success' || steps.server.outcome != 'success' || steps.smoke.outcome != 'success'
         run: exit 1

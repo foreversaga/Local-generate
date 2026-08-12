@@ -242,9 +242,13 @@ test("single render request keeps the legacy generate payload shape", () => {
       prompt: "A cinematic tracking shot.",
       negativePrompt: "flicker, watermark",
       inputImageName: "first.png",
+      inputImageRoot: "",
       lastImageName: "last.png",
+      lastImageRoot: "",
       inputVideoName: "stale.mp4",
+      inputVideoRoot: "",
       referenceImageName: "first.png",
+      referenceImageRoot: "",
       modelProfile: "nvfp4_blackwell",
       width: 736,
       height: 416,
@@ -274,10 +278,12 @@ test("the request forwards the normalized resolution that the UI displays", () =
 
 test("ref2v request preserves video input and caps reference images at nine", () => {
   const referenceImageNames = Array.from({ length: 12 }, (_, index) => `ref-${index + 1}.png`);
+  const referenceImageRoots = Array.from({ length: 12 }, (_, index) => index % 2 ? "input" : "output");
   const payload = buildSingleRenderRequest(validRequestInput({
     mode: "ref2v",
     referenceImageName: "ref-1.png",
     referenceImageNames,
+    referenceImageRoots,
     sourceVideoName: "motion.mp4",
     modelProfile: "ref2va_pruned_nvfp4",
   }));
@@ -286,6 +292,7 @@ test("ref2v request preserves video input and caps reference images at nine", ()
   assert.equal(payload.inputVideoName, "motion.mp4");
   assert.equal(payload.referenceImageName, "ref-1.png");
   assert.deepEqual(payload.referenceImageNames, referenceImageNames.slice(0, 9));
+  assert.deepEqual(payload.referenceImageRoots, referenceImageRoots.slice(0, 9));
 });
 
 test("batch request helpers keep legacy seed and filename behavior", () => {
