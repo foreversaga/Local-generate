@@ -41,11 +41,12 @@ test("renders the Create landing at the public root", async () => {
 });
 
 test("uses the same-origin API and current web route wiring", async () => {
-  const [vite, packageJson, readme, bridge, restartScript, h3Instruction, h3Validator] = await Promise.all([
+  const [vite, packageJson, readme, bridge, bridgeRoutes, restartScript, h3Instruction, h3Validator] = await Promise.all([
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../server/routes/bridge-domain-routes.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/restart-web.ps1", import.meta.url), "utf8"),
     readFile(new URL("../server/h3-prompt/instruction.mjs", import.meta.url), "utf8"),
     readFile(new URL("../server/h3-prompt/validator.mjs", import.meta.url), "utf8"),
@@ -68,7 +69,7 @@ test("uses the same-origin API and current web route wiring", async () => {
   assert.match(bridge, /const OUTPUT_ROOT = path\.join\(COMFY_ROOT, "output"\)/);
   assert.match(bridge, /pathname === "\/api\/prompt"/);
   assert.match(bridge, /pathname === "\/api\/runtime"/);
-  assert.match(bridge, /pathname === "\/api\/img2img"/);
+  assert.match(bridgeRoutes, /pathname === "\/api\/img2img"/);
   assert.match(bridge, /pathname === "\/api\/assets"/);
   assert.doesNotMatch(bridge, /STUDIO_OUTPUT_ROOT/);
   assert.match(h3Instruction, /integrated_multimodal_description/);

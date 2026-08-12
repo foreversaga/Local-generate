@@ -39,7 +39,7 @@ test("long-video routes report that the response was handled", async () => {
   assert.equal(response.status, 200);
   assert.equal(await handleLongVideoRoute(apiRequest("GET", "/api/health"), apiResponse(), {}), false);
   const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
-  assert.match(bridge, /if \(handled \|\| res\.headersSent\) return/);
+  assert.match(bridge, /if \(handledByDomainRouter \|\| res\.headersSent\) return/);
 });
 
 test("rejects Windows reserved names and traversal", async () => {

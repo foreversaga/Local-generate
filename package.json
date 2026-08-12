@@ -10,8 +10,8 @@
     "restart:web": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "node --test tests/*.test.mjs",
-    "test:unit": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:unit": "node --test --test-concurrency=1 tests/*.test.mjs",
     "web:smoke": "node --test tests/webui-smoke.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern data/lora-training/runtime",
     "db:generate": "drizzle-kit generate"
