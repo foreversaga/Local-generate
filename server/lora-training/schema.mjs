@@ -11,7 +11,7 @@ export const JOB_STATUSES = Object.freeze([
 ]);
 
 export const CAPTION_REVIEW_MODES = Object.freeze(['auto', 'manual']);
-export const TRAINABLE_MODEL_FAMILIES = Object.freeze(['sdxl', 'illustrious']);
+export const TRAINABLE_MODEL_FAMILIES = Object.freeze(['sdxl', 'illustrious', 'z-image']);
 export const LORA_MODEL_FAMILIES = Object.freeze(['sdxl', 'illustrious', 'sd15', 'z-image', 'wan22-animate']);
 export const MODEL_FAMILIES = TRAINABLE_MODEL_FAMILIES;
 export const REGISTRY_STATUSES = Object.freeze(['available', 'unavailable']);

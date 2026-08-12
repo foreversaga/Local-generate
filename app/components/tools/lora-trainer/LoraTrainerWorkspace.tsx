@@ -86,10 +86,21 @@ function fallbackOutputName(value: string) {
 
 function resolvedTrainingConfig(config: LoraTrainingConfig, triggerDraft: string): LoraTrainingConfig {
   const parsed = parseTriggerWordsDraft(triggerDraft);
-  return {
+  const resolved = {
     ...config,
     triggerWords: parsed.values.length ? parsed.values : [fallbackTriggerWord(config.characterName || config.outputName)],
   };
+  return config.family === "z-image"
+    ? {
+      ...resolved,
+      overrides: (() => {
+        const zImageOverrides = { ...config.overrides };
+        delete zImageOverrides.epochs;
+        return { ...Z_IMAGE_SAFE_OVERRIDES, ...zImageOverrides };
+      })(),
+      zImageConfig: { ...Z_IMAGE_SAFE_CONFIG, ...config.zImageConfig },
+    }
+    : resolved;
 }
 
 const STAGES: { id: Stage; label: string; short: string }[] = [
@@ -112,6 +123,42 @@ const DEFAULT_CONFIG: LoraTrainingConfig = {
   triggerWords: [],
   overrides: { rank: 16, alpha: 16, learningRate: 0.0001, epochs: 10, batchSize: 1, resolution: 1024, seed: 42 },
 };
+
+const TRAINABLE_FAMILY_PROFILES: Record<LoraFamily, { baseProfile: string; presetId: string }> = {
+  sdxl: { baseProfile: "sdxl-base-1.0", presetId: "sdxl-character-balanced" },
+  illustrious: { baseProfile: "wai-illustrious", presetId: "illustrious-character-balanced" },
+  "z-image": { baseProfile: "z-image-turbo", presetId: "z-image" },
+};
+
+const Z_IMAGE_SAFE_OVERRIDES: NonNullable<LoraTrainingConfig["overrides"]> = {
+  rank: 4,
+  alpha: 4,
+  learningRate: 0.0001,
+  steps: 1000,
+  batchSize: 1,
+  resolution: 1024,
+  mixedPrecision: "bf16",
+  savePrecision: "bf16",
+  lowVram: true,
+  layerOffloading: true,
+};
+
+const Z_IMAGE_SAFE_CONFIG: NonNullable<LoraTrainingConfig["zImageConfig"]> = {
+  gradientCheckpointing: true,
+  cacheLatents: true,
+  aspectRatioBuckets: true,
+};
+
+const Z_IMAGE_ONLY_OVERRIDE_KEYS = [
+  "mixedPrecision",
+  "savePrecision",
+  "lowVram",
+  "layerOffloading",
+  "steps",
+  "resolution",
+] as const;
+
+type NumericOverrideKey = "rank" | "alpha" | "learningRate" | "epochs" | "steps" | "batchSize" | "resolution" | "seed";
 
 function stageForJob(job: LoraJob | null): Stage {
   if (!job) return "dataset";
@@ -511,6 +558,28 @@ export function LoraTrainerWorkspace() {
     setPreflight(null);
   }
 
+  function selectFamily(family: LoraFamily) {
+    const profile = TRAINABLE_FAMILY_PROFILES[family];
+    setConfig((current) => {
+      const overrides = { ...current.overrides };
+      if (family === "z-image") {
+        Object.assign(overrides, Z_IMAGE_SAFE_OVERRIDES);
+        delete overrides.epochs;
+      } else {
+        for (const key of Z_IMAGE_ONLY_OVERRIDE_KEYS) delete overrides[key];
+        if (overrides.epochs === undefined) overrides.epochs = 10;
+      }
+      return {
+        ...current,
+        family,
+        ...profile,
+        overrides,
+        ...(family === "z-image" ? { zImageConfig: Z_IMAGE_SAFE_CONFIG } : { zImageConfig: undefined }),
+      };
+    });
+    setPreflight(null);
+  }
+
   function patchCharacterName(value: string) {
     patchConfig("characterName", value);
     if (!outputNameCustomizedRef.current) {
@@ -540,7 +609,7 @@ export function LoraTrainerWorkspace() {
     patchConfig("outputName", value);
   }
 
-  function patchOverride(key: keyof NonNullable<LoraTrainingConfig["overrides"]>, raw: string) {
+  function patchOverride(key: NumericOverrideKey, raw: string) {
     const value = Number(raw);
     setConfig((current) => ({ ...current, overrides: { ...current.overrides, [key]: Number.isFinite(value) ? value : undefined } }));
     setPreflight(null);
@@ -853,21 +922,24 @@ export function LoraTrainerWorkspace() {
           {stage === "config" && <section className={styles.panel} aria-labelledby="config-title">
             <header className={styles.sectionHeader}><div><span>03 / 設定與檢查</span><h2 id="config-title">確認訓練設定</h2><p>先從簡化設定開始；進階值會由伺服器允許清單與範圍再次驗證。</p></div></header>
             <div className={styles.formGrid}>
-              <label className={styles.field}><span>模型系列</span><select value={config.family} onChange={(event) => { const family = event.target.value as LoraFamily; patchConfig("family", family); patchConfig("baseProfile", family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious"); patchConfig("presetId", family === "sdxl" ? "sdxl-character-balanced" : "illustrious-character-balanced"); }}><option value="sdxl">SDXL</option><option value="illustrious">Illustrious</option></select></label>
-              <label className={styles.field}><span>基礎模型設定檔</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
-              <label className={styles.field}><span>預設樣式</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>角色 · 平衡</option><option value={`${config.family}-style-balanced`}>風格 · 平衡</option></select></label>
+              <label className={styles.field}><span>模型系列</span><select value={config.family} onChange={(event) => selectFamily(event.target.value as LoraFamily)}><option value="sdxl">SDXL</option><option value="illustrious">Illustrious</option><option value="z-image">Z-Image</option></select></label>
+              <label className={styles.field}><span>基礎模型設定檔</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : config.family === "illustrious" ? <option value="wai-illustrious">WAI Illustrious</option> : <option value="z-image-turbo">Z-Image Turbo</option>}</select></label>
+              <label className={styles.field}><span>預設樣式</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}>{config.family === "z-image" ? <option value="z-image">Z-Image Turbo · 角色</option> : <><option value={`${config.family}-character-balanced`}>角色 · 平衡</option><option value={`${config.family}-style-balanced`}>風格 · 平衡</option></>}</select></label>
               <label className={styles.field}><span>角色名稱</span><input id="lora-character-name" value={config.characterName} aria-invalid={!config.characterName.trim()} aria-describedby="character-name-help" onChange={(event) => patchCharacterName(event.target.value)} /><small id="character-name-help">訓練後的角色顯示名稱；觸發詞預設會跟隨此名稱。</small></label>
               <label className={styles.field}><span>LoRA 檔名</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchOutputName(event.target.value)} /><small id="output-name-help">預設跟隨角色名稱或第一個觸發詞；手動修改後會保留自訂檔名。</small></label>
               <label className={styles.fieldWide}><span>觸發詞</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => patchTriggerDraft(event.target.value)} placeholder={config.characterName || "my_character"} /><small id="trigger-words-help">生成提示詞時使用；預設為角色名稱，可用逗號分隔多個觸發詞。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
             </div>
             <details className={styles.details}><summary>進階設定</summary><div className={styles.advancedGrid}>
-              <NumberField label="Rank" value={config.overrides?.rank} min={1} max={256} onChange={(value) => patchOverride("rank", value)} />
-              <NumberField label="Alpha" value={config.overrides?.alpha} min={1} max={256} onChange={(value) => patchOverride("alpha", value)} />
-              <NumberField label="學習率" value={config.overrides?.learningRate} min={0.000001} max={0.01} step={0.000001} onChange={(value) => patchOverride("learningRate", value)} />
-              <NumberField label="訓練輪數" value={config.overrides?.epochs} min={1} max={100} onChange={(value) => patchOverride("epochs", value)} />
-              <NumberField label="批次大小" value={config.overrides?.batchSize} min={1} max={16} onChange={(value) => patchOverride("batchSize", value)} />
-              <NumberField label={FIELD_LABELS.seed} value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
-            </div></details>
+               <NumberField label="Rank" value={config.overrides?.rank} min={config.family === "z-image" ? 4 : 1} max={config.family === "z-image" ? 8 : 256} step={config.family === "z-image" ? 4 : 1} onChange={(value) => patchOverride("rank", value)} />
+               <NumberField label="Alpha" value={config.overrides?.alpha} min={1} max={256} onChange={(value) => patchOverride("alpha", value)} />
+               <NumberField label="學習率" value={config.overrides?.learningRate} min={0.000001} max={0.01} step={0.000001} onChange={(value) => patchOverride("learningRate", value)} />
+               {config.family !== "z-image" && <NumberField label="訓練輪數" value={config.overrides?.epochs} min={1} max={100} onChange={(value) => patchOverride("epochs", value)} />}
+               {config.family === "z-image" && <NumberField label="訓練步數" value={config.overrides?.steps} min={1} max={10000000} onChange={(value) => patchOverride("steps", value)} />}
+               <NumberField label="批次大小" value={config.overrides?.batchSize} min={1} max={16} onChange={(value) => patchOverride("batchSize", value)} />
+               {config.family === "z-image" && <NumberField label="解析度" value={config.overrides?.resolution} min={256} max={2048} step={64} onChange={(value) => patchOverride("resolution", value)} />}
+               <NumberField label={FIELD_LABELS.seed} value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
+               {config.family === "z-image" && <p className={styles.setupHint}>Z-Image Turbo 安全 preset：bf16、gradient checkpointing、latent cache、low-VRAM/offload；Rank 建議 4 或 8。</p>}
+             </div></details>
             {preflight && <div className={styles.checks} aria-live="polite">{preflight.checks.map((check, index) => <div key={check.id || check.name || index} data-status={check.status}><strong>{check.label || check.name || `檢查 ${index + 1}`}</strong><span>{check.message || check.status}</span></div>)}</div>}
                 <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊後會導向檢查結果。` : job ? "訓練前檢查會確認執行環境、圖片描述、檢查點、磁碟與 GPU 狀態。" : "設定會在建立工作時送出；開始前仍可返回訓練資料增減圖片。"}</span>{canQueueJob && <button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={job ? checkAndQueue : beginTraining} disabled={Boolean(busy)}>{busy === "preflight" ? "檢查並排程中…" : busy === "start" ? "建立工作中…" : job ? "檢查並開始訓練" : "開始訓練"}</button>}</div>
           </section>}

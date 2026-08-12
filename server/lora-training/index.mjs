@@ -13,3 +13,4 @@ export * from './artifact-target.mjs';
 export * from './presets.mjs';
 export * from './health.mjs';
 export * from './service.mjs';
+export * from './backends/z-image-ai-toolkit.mjs';

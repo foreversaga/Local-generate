@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
+import { resolveZImageTrainingCommand, resolveZImageTrainingParameters } from './backends/z-image-ai-toolkit.mjs';
 
 const PRESET_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'presets');
 export const PRESET_ALIASES = Object.freeze({
@@ -10,6 +11,8 @@ export const PRESET_ALIASES = Object.freeze({
   illustrious: 'illustrious',
   'illustrious-character-balanced': 'illustrious',
   'illustrious-style-balanced': 'illustrious',
+  'z-image': 'z-image',
+  'z-image-turbo': 'z-image',
 });
 export const PRESET_IDS = Object.freeze(Object.keys(PRESET_ALIASES));
 const MIXED_PRECISIONS = new Set(['no', 'fp16', 'bf16']);
@@ -136,6 +139,7 @@ function presetFamily(preset) {
  */
 export async function resolveTrainingParameters({ preset, family, parameters = {} } = {}, options = {}) {
   const loaded = await loadPreset(preset, options);
+  if (loaded.canonicalId === 'z-image') return resolveZImageTrainingParameters({ family, preset: loaded.selectedId, parameters });
   return resolveLoadedTrainingParameters(loaded, { family, parameters });
 }
 
@@ -170,6 +174,14 @@ export async function resolveTrainingCommand(request, options = {}) {
     if (!SAFE_PATH_REQUEST_KEYS.has(key) && SECRET_NAME.test(key)) throw new TypeError('secrets must be supplied through the runner environment');
   }
   const preset = await loadPreset(request.preset, options);
+  if (preset.canonicalId === 'z-image') {
+    return resolveZImageTrainingCommand({
+      ...request,
+      family: request.family,
+      preset: preset.canonicalId,
+      selectedPreset: preset.selectedId,
+    }, options.zImage ?? options);
+  }
   const parameterResolution = resolveLoadedTrainingParameters(preset, {
     family: request.family,
     parameters: request.parameters ?? {},
