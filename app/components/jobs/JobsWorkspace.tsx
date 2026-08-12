@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ACTION_LABELS, jobStatusLabel, sourceLabel } from "../../lib/ui-copy.mjs";
 import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-client";
 import styles from "./JobsWorkspace.module.css";
 
@@ -23,7 +24,7 @@ export function JobsWorkspace() {
         const snapshot = await fetchUnifiedJobs();
         if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); setError(""); }
       } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : "Unable to load jobs.");
+        if (active) setError(reason instanceof Error ? reason.message : "無法載入工作。");
       } finally {
         if (active) setLoading(false);
       }
@@ -42,22 +43,22 @@ export function JobsWorkspace() {
 
   return (
     <div className={styles.workspace}>
-      <section className={styles.toolbar} aria-label="Job filters">
+      <section className={styles.toolbar} aria-label="工作篩選">
         <label className={styles.searchField}>
-          <span className="sr-only">Search jobs</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, id, source…" />
+          <span className="sr-only">搜尋工作</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋標題、識別碼或來源" />
         </label>
-        <div className={styles.filters} role="group" aria-label="Filter by source">
+        <div className={styles.filters} role="group" aria-label="依來源篩選">
           {SOURCE_OPTIONS.map((option) => (
             <button key={option} type="button" className={source === option ? styles.filterActive : ""} aria-pressed={source === option} onClick={() => setSource(option)}>
-              {option === "all" ? "All sources" : sourceLabel(option)}
+              {sourceLabel(option)}
             </button>
           ))}
         </div>
-        <div className={styles.filters} role="group" aria-label="Filter by status">
+        <div className={styles.filters} role="group" aria-label="依狀態篩選">
           {STATUS_OPTIONS.map((option) => (
             <button key={option} type="button" className={status === option ? styles.filterActive : ""} aria-pressed={status === option} onClick={() => setStatus(option)}>
-              {option === "all" ? "All" : statusLabel(option)}
+              {option === "all" ? "全部" : jobStatusLabel(option)}
             </button>
           ))}
         </div>
@@ -66,16 +67,16 @@ export function JobsWorkspace() {
       {error && <div className={styles.error} role="alert">{error}</div>}
       {sourceErrors.length > 0 && (
         <div className={styles.sourceWarning} role="status" aria-live="polite">
-          <strong>Some job sources are unavailable.</strong>
-          <span>{sourceErrors.map((item) => `${sourceLabel(item.source)}: ${item.message}`).join(" · ")}</span>
+          <strong>部分工作來源無法使用。</strong>
+          <span>{sourceErrors.map((item) => `${sourceLabel(item.source)}：${item.message}`).join(" · ")}</span>
         </div>
       )}
-      <div className={styles.summaryLine} aria-live="polite">{loading ? "Loading jobs…" : sourceErrors.length > 0 ? `${visible.length} jobs shown · ${sourceErrors.length} source${sourceErrors.length === 1 ? "" : "s"} unavailable` : `${visible.length} jobs · ${jobs.filter((job) => job.status === "queued" || job.status === "running").length} active`}</div>
+      <div className={styles.summaryLine} aria-live="polite">{loading ? "載入工作中…" : sourceErrors.length > 0 ? `顯示 ${visible.length} 項工作 · ${sourceErrors.length} 個來源無法使用` : `${visible.length} 項工作 · ${jobs.filter((job) => job.status === "queued" || job.status === "running").length} 項進行中`}</div>
 
       <div className={styles.list}>
         {visible.map((job) => <JobRow key={`${job.source}:${job.id}`} job={job} />)}
-        {!loading && visible.length === 0 && sourceErrors.length === 0 && <div className={styles.empty}>No jobs match the current filters.</div>}
-        {!loading && visible.length === 0 && sourceErrors.length > 0 && <div className={styles.empty}>Job counts are incomplete while unavailable sources are being retried.</div>}
+        {!loading && visible.length === 0 && sourceErrors.length === 0 && <div className={styles.empty}>沒有符合目前篩選條件的工作。</div>}
+        {!loading && visible.length === 0 && sourceErrors.length > 0 && <div className={styles.empty}>來源暫時無法使用，工作數量不完整；系統會繼續重試。</div>}
       </div>
     </div>
   );
@@ -87,7 +88,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
     <article className={styles.jobCard}>
       <div className={styles.jobMain}>
         <div className={styles.jobHeader}>
-          <StatusBadge status={job.status} />
+          <StatusBadge status={job.status} source={job.source} />
           <span className={styles.source}>{sourceLabel(job.source)}</span>
           <time className={styles.time}>{formatDate(job.updatedAt || job.createdAt)}</time>
         </div>
@@ -95,7 +96,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
         <p>{job.subtitle || job.stage}</p>
         {(job.status === "queued" || job.status === "running") && (
           <div className={styles.progressWrap}>
-            <div className={styles.progressTrack} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% complete`}>
+            <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}>
               <span style={{ width: `${progress}%` }} />
             </div>
             <span>{progress}%{job.etaMs ? ` · ETA ${formatDuration(job.etaMs)}` : ""}</span>
@@ -103,18 +104,13 @@ function JobRow({ job }: { job: UnifiedJob }) {
         )}
         {job.error && <p className={styles.jobError}>{job.error}</p>}
       </div>
-      <a className={styles.detailLink} href={`/app/jobs/${encodeURIComponent(job.id)}?source=${encodeURIComponent(job.source)}`}>Details <span aria-hidden="true">→</span></a>
+      <a className={styles.detailLink} href={`/app/jobs/${encodeURIComponent(job.id)}?source=${encodeURIComponent(job.source)}`}>{ACTION_LABELS.details} <span aria-hidden="true">→</span></a>
     </article>
   );
 }
 
-export function StatusBadge({ status }: { status: string }) {
-  return <span className={`${styles.badge} ${styles[`badge_${status}`] || ""}`}>{statusLabel(status)}</span>;
+export function StatusBadge({ status, source }: { status: string; source?: string }) {
+  return <span className={`${styles.badge} ${styles[`badge_${status}`] || ""}`}>{jobStatusLabel(status, source)}</span>;
 }
-
-function statusLabel(status: string) {
-  return ({ queued: "Queued", running: "Running", complete: "Complete", partial: "Partial", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] || status;
-}
-function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I", lora: "LoRA 訓練" } as Record<string, string>)[source] || source; }
 function formatDate(value: string) { if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(); }
-function formatDuration(ms: number) { const seconds = Math.max(0, Math.round(ms / 1000)); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }
+function formatDuration(ms: number) { const seconds = Math.max(0, Math.round(ms / 1000)); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }

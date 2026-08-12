@@ -5,15 +5,15 @@ import { primaryRouteForPath, routeTitle } from "../app/lib/webui-routes.mjs";
 
 test("route contract accepts both external /app paths and internal base-path-free paths", () => {
   assert.equal(primaryRouteForPath("/"), "create");
-  assert.equal(routeTitle("/"), "Create");
+  assert.equal(routeTitle("/"), "建立");
   assert.equal(primaryRouteForPath("/app/create/single"), "create");
   assert.equal(primaryRouteForPath("/create/single"), "create");
   assert.equal(primaryRouteForPath("/jobs/job-123"), "jobs");
   assert.equal(primaryRouteForPath("/tools/image-to-image"), "tools");
   assert.equal(primaryRouteForPath("/tools"), "tools");
-  assert.equal(routeTitle("/tools"), "Tools");
-  assert.equal(routeTitle("/create/long"), "Create / Long");
-  assert.equal(routeTitle("/tools/upscale"), "Upscale");
+  assert.equal(routeTitle("/tools"), "工具");
+  assert.equal(routeTitle("/create/long"), "建立 / 長影片");
+  assert.equal(routeTitle("/tools/upscale"), "工具 / 影片升頻");
 });
 
 test("dev RSC module paths keep one /app prefix", async () => {

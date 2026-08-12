@@ -24,7 +24,7 @@ test("library picker and preview dialogs preserve keyboard/a11y contracts", asyn
   assert.match(picker, /fetchAssetLibrary\(assetSource\)/);
   assert.match(picker, /setFolderRecords\(next\.folders\)/);
   assert.match(picker, /buildAssetNavigation\(scopedAssets, currentPath, scopedFolders, kind\)/);
-  assert.match(picker, /訓練素材（專案 input）/);
+  assert.match(picker, /訓練素材/);
   assert.match(picker, /multiple && !query\.trim\(\) && navigation\.directAssets\.length > 0/);
   assert.match(picker, /function toggleAllCurrentFolder\(\)/);
   assert.match(picker, /setSelected\(\(current\) =>/);
@@ -41,8 +41,8 @@ test("library picker and preview dialogs preserve keyboard/a11y contracts", asyn
   assert.match(library, /onClick=\{\(event\) => event\.target === event\.currentTarget && closePreview\(\)\}/);
   assert.match(library, /const \[currentPath, setCurrentPath\] = useState<string\[\]>\(\[\]\)/);
   assert.match(library, /navigation\.folders\.map/);
-  assert.match(library, /aria-label="Current asset folder"/);
-  assert.match(library, /aria-label=\{`Open folder \$\{folder\.path\.join\("\/"\)\}`\}/);
+  assert.match(library, /aria-label="目前素材資料夾"/);
+  assert.match(library, /aria-label=\{`開啟資料夾 \$\{folder\.path\.join\("\/"\)\}`\}/);
   assert.match(navigation, /export function buildAssetNavigation/);
   assert.match(navigation, /folderRecords/);
   assert.match(styles, /\.copy\{grid-template-columns:44px minmax\(0,1fr\)\}\.checkbox\{width:44px;height:44px\}/);

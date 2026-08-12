@@ -16,6 +16,7 @@ import {
   scaleImageResolution,
 } from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
+import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
 import { uploadAssets } from "../library/asset-client";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
@@ -160,12 +161,12 @@ export function SingleCreateForm() {
       })
       .catch((error: unknown) => {
         if (resolutionRequestRef.current !== requestId) return;
-        const reason = error instanceof Error ? error.message : "The image dimensions could not be read.";
+        const reason = error instanceof Error ? error.message : "無法讀取圖片尺寸。";
         setWidth("");
         setHeight("");
         setResolutionInfo(null);
         setResolutionStatus("error");
-        setResolutionError(`Unable to read dimensions for ${resolutionAssetName}. ${reason} Choose another image or enter a manual output size.`);
+        setResolutionError(`無法讀取 ${resolutionAssetName} 的尺寸。${reason} 請選擇其他圖片或手動輸入輸出尺寸。`);
       });
 
     return () => {
@@ -608,7 +609,7 @@ export function SingleCreateForm() {
     <div className={styles.layout}>
       <nav className={styles.sectionNav} aria-label="Single Create sections">
         <a href="#single-source-section">來源</a>
-        <a href="#single-prompt-section">Prompt</a>
+        <a href="#single-prompt-section">提示詞</a>
         <a href="#single-setup-section">設定</a>
         <a href="#single-review-section">檢查</a>
       </nav>
@@ -665,7 +666,7 @@ export function SingleCreateForm() {
           </div>
         </FormSection>
 
-        <FormSection id="single-prompt-section" code="02 / PROMPT" title="Prompt" icon="spark">
+        <FormSection id="single-prompt-section" code="02 / 提示詞" title={FIELD_LABELS.prompt} icon="spark">
           <div className={styles.fieldStack}>
             <SinglePromptAssistant
               mode={mode}
@@ -679,7 +680,7 @@ export function SingleCreateForm() {
               onNegativePromptGenerated={setNegativePrompt}
             />
             <label className={`${styles.field} ${visibleFieldError("prompt") ? styles.fieldInvalid : ""}`}>
-              <span className={styles.fieldLabel}>H3 Prompt</span>
+              <span className={styles.fieldLabel}>H3 提示詞</span>
               <textarea
                 id="single-prompt"
                 className={styles.textarea}
@@ -694,30 +695,30 @@ export function SingleCreateForm() {
               <span id="single-prompt-helper" className={styles.counterRow}>
                 <span className={styles.helper}>可直接貼入既有 H3 prompt；影片替換模式不套用 H3 字數上限。</span>
                 <span className={`${styles.counter} ${mode !== "replace" && prompt.length >= 6500 ? styles.counterWarning : ""}`} aria-live="polite">
-                  {mode === "replace" ? `${prompt.length} chars` : `${prompt.length} / ${H3_PROMPT_MAX_CHARS}`}
+                  {mode === "replace" ? `${prompt.length} 字` : `${prompt.length} / ${H3_PROMPT_MAX_CHARS}`}
                 </span>
               </span>
               <FieldError id="single-prompt-error" message={visibleFieldError("prompt")} />
             </label>
 
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>負面提示詞 <span className={styles.optional}>選填</span></span>
+              <span className={styles.fieldLabel}>{FIELD_LABELS.negativePrompt} <span className={styles.optional}>選填</span></span>
               <textarea
                 className={`${styles.textarea} ${styles.negativeTextarea}`}
                 value={negativePrompt}
-                placeholder="blurry, flicker, watermark…"
+                placeholder="模糊、閃爍、浮水印…"
                 onChange={(event) => setNegativePrompt(event.target.value)}
               />
-              <span className={styles.helper}>沿用既有 `/api/generate` payload，不改 backend semantics。</span>
+              <span className={styles.helper}>沿用既有生成 API 內容，不改變後端行為。</span>
             </label>
           </div>
         </FormSection>
 
-        <FormSection id="single-setup-section" code="03 / RENDER SETUP" title="生成設定" icon="frames">
+        <FormSection id="single-setup-section" code="03 / 生成設定" title="生成設定" icon="frames">
           <div className={styles.fieldStack}>
             <div className={styles.fieldGrid}>
               <label className={styles.field}>
-                <span className={styles.fieldLabel}>模型 profile</span>
+                <span className={styles.fieldLabel}>{FIELD_LABELS.modelProfile}</span>
                 <select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>
                   {availableModels.map((option) => (
                     <option key={option.value} value={option.value}>{option.label} · {option.note}</option>
@@ -728,7 +729,7 @@ export function SingleCreateForm() {
               {mode === "replace" && (
                 <>
                   <label className={`${styles.field} ${visibleFieldError("characterLoraName") ? styles.fieldInvalid : ""}`}>
-                    <span className={styles.fieldLabel}>角色 LoRA <span className={styles.optional}>optional</span></span>
+                    <span className={styles.fieldLabel}>角色 LoRA <span className={styles.optional}>選填</span></span>
                     <input
                       id="single-character-lora"
                       className={styles.input}
@@ -870,7 +871,7 @@ export function SingleCreateForm() {
 
             <div className={styles.compactGrid}>
               <label className={`${styles.field} ${visibleFieldError("steps") ? styles.fieldInvalid : ""}`}>
-                <span className={styles.fieldLabel}>Steps</span>
+                <span className={styles.fieldLabel}>{FIELD_LABELS.steps}</span>
                 <input
                   id="single-steps"
                   className={styles.input}
@@ -887,7 +888,7 @@ export function SingleCreateForm() {
               </label>
 
               <label className={`${styles.field} ${visibleFieldError("seed") ? styles.fieldInvalid : ""}`}>
-                <span className={styles.fieldLabel}>Seed</span>
+                <span className={styles.fieldLabel}>{FIELD_LABELS.seed}</span>
                 <input
                   id="single-seed"
                   className={styles.input}
@@ -900,7 +901,7 @@ export function SingleCreateForm() {
                   onBlur={() => markTouched("seed")}
                   onChange={(event) => setSeed(numberDraft(event.target.value))}
                 />
-                <button type="button" className={styles.secondaryButton} onClick={randomizeSeed}><Icon name="shuffle" />隨機 Seed</button>
+                <button type="button" className={styles.secondaryButton} onClick={randomizeSeed}><Icon name="shuffle" />隨機種子</button>
                 <FieldError id="single-seed-error" message={visibleFieldError("seed")} />
               </label>
 
@@ -934,15 +935,15 @@ export function SingleCreateForm() {
 
       <aside id="single-review-section" className={styles.summary} aria-label="生成摘要">
         <section className={styles.summaryCard}>
-          <div className={styles.summaryLabel}>Review</div>
-          <h2 className={styles.summaryTitle}>Single render</h2>
+          <div className={styles.summaryLabel}>生成摘要</div>
+          <h2 className={styles.summaryTitle}>單次生成</h2>
           <AssetPreview asset={previewAsset} />
           <div className={styles.summaryRows}>
             <SummaryRow label="模式" value={modeOption.label} />
             <SummaryRow label="模型" value={selectedModel?.label || modelProfile} />
             <SummaryRow label="尺寸" value={`${width || "—"} × ${height || "—"}`} />
             <SummaryRow label="長度" value={`${duration.toFixed(1)} 秒`} />
-            <SummaryRow label="Steps / Seed" value={`${steps || "—"} / ${seed === "" ? "—" : seed}`} />
+            <SummaryRow label="採樣步數 / 隨機種子" value={`${steps || "—"} / ${seed === "" ? "—" : seed}`} />
             <SummaryRow label="數量" value={renderCount === "" ? "—" : String(renderCount)} />
             <SummaryRow label="素材" value={assetSummary(mode, referenceImage, referenceImages, lastFrameImage, sourceVideo)} />
             {mode === "replace" && characterLoraName.trim() && (
@@ -952,7 +953,7 @@ export function SingleCreateForm() {
         </section>
 
           <section id="single-validation-summary" className={styles.summaryCard} aria-live="polite">
-          <div className={styles.validationLabel}>Validation</div>
+          <div className={styles.validationLabel}>檢查結果</div>
           <ul className={styles.validationList}>
             {validationIssues.length ? validationIssues.map((issue) => (
               <li key={`${issue.field}:${issue.message}`} className={styles.validationItem}>
@@ -1328,16 +1329,16 @@ function defaultResolutionForMode(mode: Mode) {
 }
 
 function resolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | null) {
-  if (status === "loading") return "Reading source image dimensions…";
-  if (status === "error") return "Image dimensions unavailable; output dimensions were cleared.";
-  if (status === "manual") return "Manual output resolution; the values shown here will be submitted.";
+  if (status === "loading") return "正在讀取來源圖片尺寸…";
+  if (status === "error") return "無法取得圖片尺寸；已清除輸出尺寸。";
+  if (status === "manual") return "手動輸出解析度；目前顯示的尺寸會送出。";
   if (status === "adjusted" && info) {
-    return `Source ${info.originalWidth} × ${info.originalHeight}; ${info.scalePercent}% scale; output ${info.width} × ${info.height} on the ${info.grid}px model grid.`;
+    return `來源 ${info.originalWidth} × ${info.originalHeight}；縮放 ${info.scalePercent}%；輸出 ${info.width} × ${info.height}，符合 ${info.grid}px 模型網格。`;
   }
   if (status === "auto" && info) {
-    return `Source ${info.originalWidth} × ${info.originalHeight}; ${info.scalePercent}% scale; output ${info.width} × ${info.height}.`;
+    return `來源 ${info.originalWidth} × ${info.originalHeight}；縮放 ${info.scalePercent}%；輸出 ${info.width} × ${info.height}。`;
   }
-  return "Default output resolution; select an image to calculate the final size.";
+  return "預設輸出解析度；選擇圖片後會計算最終尺寸。";
 }
 
 function assetKey(asset: Asset) {

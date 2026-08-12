@@ -10,13 +10,15 @@
  * }} WebUiRoute
  */
 
+import { NAV_LABELS } from "./ui-copy.mjs";
+
 /** @type {readonly WebUiRoute[]} */
 export const WEB_UI_ROUTES = Object.freeze([
-  Object.freeze({ id: "create", label: "Create", href: "/app/create" }),
-  Object.freeze({ id: "jobs", label: "Jobs", href: "/app/jobs" }),
-  Object.freeze({ id: "library", label: "Library", href: "/app/library" }),
-  Object.freeze({ id: "tools", label: "Tools", href: "/app/tools" }),
-  Object.freeze({ id: "settings", label: "Settings", href: "/app/settings" }),
+  Object.freeze({ id: "create", label: NAV_LABELS.create, href: "/app/create" }),
+  Object.freeze({ id: "jobs", label: NAV_LABELS.jobs, href: "/app/jobs" }),
+  Object.freeze({ id: "library", label: NAV_LABELS.library, href: "/app/library" }),
+  Object.freeze({ id: "tools", label: NAV_LABELS.tools, href: "/app/tools" }),
+  Object.freeze({ id: "settings", label: NAV_LABELS.settings, href: "/app/settings" }),
 ]);
 
 /** @type {readonly (readonly [PrimaryRouteId, string])[]} */
@@ -48,14 +50,14 @@ export function primaryRouteForPath(pathname) {
 export function routeTitle(pathname) {
   const normalizedPath = normalizePath(pathname);
 
-  if (normalizedPath === "/app/create/single") return "Create / Single";
-  if (normalizedPath === "/app/create/long") return "Create / Long";
-  if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return "Job Detail";
-  if (normalizedPath === "/app/tools/upscale") return "Upscale";
-  if (normalizedPath === "/app/tools/image-to-image") return "Image to Image";
-  if (normalizedPath === "/app/tools/lora-trainer") return "LoRA Trainer";
+  if (normalizedPath === "/app/create/single") return "建立 / 單次影片";
+  if (normalizedPath === "/app/create/long") return "建立 / 長影片";
+  if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return "工作詳情";
+  if (normalizedPath === "/app/tools/upscale") return "工具 / 影片升頻";
+  if (normalizedPath === "/app/tools/image-to-image") return "工具 / 以圖生圖";
+  if (normalizedPath === "/app/tools/lora-trainer") return "工具 / LoRA 訓練";
 
-  return WEB_UI_ROUTES.find((route) => route.id === primaryRouteForPath(normalizedPath))?.label ?? "Create";
+  return WEB_UI_ROUTES.find((route) => route.id === primaryRouteForPath(normalizedPath))?.label ?? NAV_LABELS.create;
 }
 
 /**

@@ -106,34 +106,34 @@ function positiveInteger(value) {
 }
 
 function jobTitle(raw, source) {
-  if (source === "long") return raw?.title || "Long Video";
-  if (source === "upscale") return `Upscale · ${raw?.sourceName || "Video"}`;
-  if (source === "img2img") return `Image to Image · ${raw?.sourceName || "Image"}`;
+  if (source === "long") return raw?.title || "長影片";
+  if (source === "upscale") return `影片升頻 · ${raw?.sourceName || "影片"}`;
+  if (source === "img2img") return `以圖生圖 · ${raw?.sourceName || "圖片"}`;
   if (source === "lora") {
     const name = raw?.displayName || raw?.outputName || raw?.config?.outputName || raw?.slug;
-    return name ? String(name) : "LoRA training";
+    return name ? String(name) : "LoRA 訓練";
   }
   const mode = String(raw?.mode || "video").toUpperCase();
   const prompt = String(raw?.prompt || "").trim();
-  return prompt ? `${mode} · ${prompt.slice(0, 58)}${prompt.length > 58 ? "…" : ""}` : `${mode} generation`;
+  return prompt ? `${mode} · ${prompt.slice(0, 58)}${prompt.length > 58 ? "…" : ""}` : `${mode} 影片生成`;
 }
 
 function jobSubtitle(raw, source) {
-  if (source === "long") return `${raw?.segments?.length || 0} segments · ${raw?.duration || 0}s`;
-  if (source === "upscale") return `${raw?.scale || 2}× video upscale`;
+  if (source === "long") return `${raw?.segments?.length || 0} 個片段 · ${raw?.duration || 0} 秒`;
+  if (source === "upscale") return `${raw?.scale || 2}× 影片升頻`;
   if (source === "img2img") {
     const count = positiveInteger(raw?.batchCount);
     const completed = nonNegativeInteger(raw?.completedCount);
     const failed = nonNegativeInteger(raw?.failedCount);
-    const summary = count && count > 1 ? `${completed}/${count} complete${failed ? `, ${failed} failed` : ""}` : "";
-    return [raw?.model || "Image generation", summary].filter(Boolean).join(" 繚 ");
+    const summary = count && count > 1 ? `${completed}/${count} 項完成${failed ? `，${failed} 項失敗` : ""}` : "";
+    return [raw?.model || "圖片生成", summary].filter(Boolean).join(" 繚 ");
   }
   if (source === "lora") {
     const family = raw?.family || raw?.training?.family || raw?.config?.family || "LoRA";
     const imageCount = Number(raw?.dataset?.imageCount ?? raw?.imageCount);
-    return [`${String(family).toLocaleUpperCase()} LoRA`, Number.isFinite(imageCount) && imageCount > 0 ? `${imageCount} images` : ""].filter(Boolean).join(" · ");
+    return [`${String(family).toLocaleUpperCase()} LoRA`, Number.isFinite(imageCount) && imageCount > 0 ? `${imageCount} 張圖片` : ""].filter(Boolean).join(" · ");
   }
-  return [raw?.modelProfile, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.duration ? `${raw.duration}s` : ""].filter(Boolean).join(" · ");
+  return [raw?.modelProfile, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.duration ? `${raw.duration} 秒` : ""].filter(Boolean).join(" · ");
 }
 
 function outputRef(raw, source, artifact = null) {
@@ -164,10 +164,10 @@ function retryable(raw, source) {
 const LORA_STAGE_LABELS = {
   draft: "草稿",
   ready: "準備完成",
-  captioning: "產生 captions",
-  captions_ready: "Captions 完成",
-  caption_review: "等待確認 captions",
-  caption_failed: "Caption 失敗",
+  captioning: "產生說明文字（Caption）",
+  captions_ready: "說明文字已完成",
+  caption_review: "等待確認說明文字",
+  caption_failed: "說明文字產生失敗",
   preflight: "訓練前檢查",
   preflight_ready: "訓練前檢查完成",
   preflight_failed: "訓練前檢查失敗",

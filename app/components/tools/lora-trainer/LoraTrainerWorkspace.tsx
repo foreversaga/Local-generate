@@ -3,6 +3,7 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AssetPickerButton } from "../../library/AssetPickerButton";
 import { assetKey, assetUrl, type StudioAsset, uploadAssets } from "../../library/asset-client";
+import { FIELD_LABELS, jobStatusLabel } from "../../../lib/ui-copy.mjs";
 import {
   artifactDownloadUrl,
   cancelLoraJob,
@@ -52,7 +53,7 @@ function parseTriggerWordsDraft(raw: string) {
       seen.add(key);
       return true;
     });
-  return { values, error: values.length > MAX_TRIGGER_WORDS ? `Trigger words 最多只能有 ${MAX_TRIGGER_WORDS} 個。` : "" };
+  return { values, error: values.length > MAX_TRIGGER_WORDS ? `觸發詞最多只能有 ${MAX_TRIGGER_WORDS} 個。` : "" };
 }
 
 function fallbackTriggerWord(outputName: string) {
@@ -77,8 +78,8 @@ function resolvedTrainingConfig(config: LoraTrainingConfig, triggerDraft: string
 }
 
 const STAGES: { id: Stage; label: string; short: string }[] = [
-  { id: "dataset", label: "Dataset", short: "01" },
-  { id: "captions", label: "Captions", short: "02" },
+  { id: "dataset", label: "訓練資料", short: "01" },
+  { id: "captions", label: "圖片描述", short: "02" },
   { id: "config", label: "設定與檢查", short: "03" },
   { id: "progress", label: "訓練進度", short: "04" },
   { id: "artifact", label: "完成", short: "05" },
@@ -121,19 +122,10 @@ function getServerLocationSearch() {
   return "";
 }
 
-function statusLabel(status?: string) {
-  const labels: Record<string, string> = {
-    draft: "草稿", captioning: "產生 captions", caption_review: "等待確認", caption_failed: "Caption 失敗",
-    preflight_failed: "檢查未通過", queued: "已排入佇列", training: "訓練中", cancelling: "正在取消",
-    cancelled: "已取消", installing: "安裝模型", completed: "已完成", failed: "訓練失敗", interrupted: "訓練中斷",
-  };
-  return status ? labels[status] || status : "尚未建立";
-}
-
 function friendlyError(reason: unknown, fallback: string) {
   const message = reason instanceof Error ? reason.message : fallback;
   return /triggerWords/i.test(message)
-    ? "Trigger words 必須是 1–20 個不重複且安全的值。"
+    ? "觸發詞必須是 1–20 個不重複且安全的值。"
     : message;
 }
 
@@ -159,16 +151,16 @@ function focusLoraField(id: string) {
 
 function healthCheckLabel(name: string) {
   const normalized = name.toLowerCase().replaceAll("_", "-");
-  if (normalized.includes("python") || normalized.includes("venv")) return "Python runtime";
-  if (normalized.includes("trainer") || normalized.includes("sd-scripts")) return "Trainer";
-  if (normalized.includes("checkpoint") || normalized.includes("base-profile") || normalized.includes("base-model")) return "Base checkpoint";
-  if (normalized.includes("lora-output") || normalized.includes("output") || normalized.includes("trained-root")) return "LoRA output";
-  return name || "Runtime check";
+  if (normalized.includes("python") || normalized.includes("venv")) return "Python 執行環境";
+  if (normalized.includes("trainer") || normalized.includes("sd-scripts")) return "訓練器";
+  if (normalized.includes("checkpoint") || normalized.includes("base-profile") || normalized.includes("base-model")) return "基礎模型檢查點";
+  if (normalized.includes("lora-output") || normalized.includes("output") || normalized.includes("trained-root")) return "LoRA 輸出目錄";
+  return name || "執行環境檢查";
 }
 
 function healthCheckPriority(check: LoraTrainingHealthCheck) {
   const label = healthCheckLabel(check.name);
-  return ["Python runtime", "Trainer", "Base checkpoint", "LoRA output"].indexOf(label) + 1 || 5;
+  return ["Python 執行環境", "訓練器", "基礎模型檢查點", "LoRA 輸出目錄"].indexOf(label) + 1 || 5;
 }
 
 function importantFailedChecks(health: LoraTrainingHealth | null) {
@@ -249,16 +241,16 @@ export function LoraTrainerWorkspace() {
   const healthBlocked = currentHealth?.ok === false;
   const failedHealthChecks = useMemo(() => importantFailedChecks(currentHealth), [currentHealth]);
   const healthBlockReason = healthBlocked
-    ? `Trainer health 尚需設定${failedHealthChecks.length ? `：${failedHealthChecks.map((check) => healthCheckLabel(check.name)).join("、")}` : ""}。`
+    ? `訓練環境尚需設定${failedHealthChecks.length ? `：${failedHealthChecks.map((check) => healthCheckLabel(check.name)).join("、")}` : ""}。`
     : "";
   const healthDisplayState = healthLoading ? "checking" : healthNetworkWarning ? "warning" : currentHealth?.ok ? "ready" : "blocked";
   const healthTitle = healthDisplayState === "ready"
-    ? "Trainer 已就緒"
+    ? "訓練環境已就緒"
     : healthDisplayState === "blocked"
-      ? "Trainer 尚需設定"
+      ? "訓練環境尚需設定"
       : healthDisplayState === "warning"
-        ? "無法確認 Trainer readiness"
-        : "正在檢查 Trainer readiness";
+        ? "無法確認訓練環境狀態"
+        : "正在檢查訓練環境狀態";
   const hasMeasuredProgress = Number.isFinite(job?.training.totalSteps) && (job?.training.totalSteps || 0) > 0;
   const progress = hasMeasuredProgress
     ? Math.min(100, Math.round(((job?.training.step || 0) / (job?.training.totalSteps || 1)) * 100))
@@ -303,7 +295,7 @@ export function LoraTrainerWorkspace() {
       if (page === 1) setCaptionPageCursors([null]);
       setError("");
     } catch (reason) {
-      setError(friendlyError(reason, "無法載入 captions。"));
+      setError(friendlyError(reason, "無法載入圖片描述。"));
     } finally {
       setBusy("");
     }
@@ -333,7 +325,7 @@ export function LoraTrainerWorkspace() {
         if (!cancelled) setHealthResource({
           key: requestKey,
           status: "error",
-          error: friendlyError(reason, "無法連線 Trainer health endpoint。"),
+          error: friendlyError(reason, "無法連線訓練環境檢查服務。"),
         });
       },
     );
@@ -392,7 +384,7 @@ export function LoraTrainerWorkspace() {
         setError("");
       },
       (reason) => {
-        if (!cancelled) setError(friendlyError(reason, "無法載入 captions。"));
+        if (!cancelled) setError(friendlyError(reason, "無法載入圖片描述。"));
       },
     );
 
@@ -464,13 +456,13 @@ export function LoraTrainerWorkspace() {
     const parsedTriggerWords = parseTriggerWordsDraft(triggerDraft);
     if (parsedTriggerWords.error) {
       setTriggerError(parsedTriggerWords.error);
-      setError("請先修正 Trigger words，再開始訓練。");
+      setError("請先修正觸發詞，再開始訓練。");
       setStage("config");
       focusLoraField("trigger-words");
       return;
     }
     if (healthBlocked) {
-      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
+      setError(`${healthBlockReason} 請先完成上方檢查項目。`);
       focusLoraField("lora-health-summary");
       return;
     }
@@ -489,7 +481,7 @@ export function LoraTrainerWorkspace() {
       commitJob(started);
       setStage(stageForJob(started));
       // The start response is canonical; any conflict below can safely refetch it.
-      setNotice(mode === "manual" ? "已建立工作；caption 完成後請逐一檢查並確認。" : "已建立工作，系統會自動檢查並排入訓練。所需時間依 GPU 與佇列而定。 ");
+      setNotice(mode === "manual" ? "已建立工作；圖片描述完成後請逐一檢查並確認。" : "已建立工作，系統會自動檢查並排入訓練。所需時間依 GPU 與佇列而定。 ");
     } catch (reason) {
       await reportActionError(reason, "無法開始 LoRA 訓練。", createdId);
     } finally { setBusy(""); unlockAction(actionKey); }
@@ -498,7 +490,7 @@ export function LoraTrainerWorkspace() {
   async function saveCaption(record: CaptionRecord) {
     if (!job) return;
     const value = (captionDrafts[record.imageId] || "").trim();
-    if (!value) { setError("Caption 不可為空白。"); return; }
+    if (!value) { setError("圖片描述不可為空白。"); return; }
     const actionKey = `caption:${record.imageId}`;
     if (!tryLockAction(actionKey)) return;
     setBusy(`caption-${record.imageId}`);
@@ -506,7 +498,7 @@ export function LoraTrainerWorkspace() {
       commitJob(await updateCaption(job.id, record.imageId, value, job.revision));
       setNotice(`已儲存 ${record.imageFile}。`); setError("");
       await loadCaptionPage(job.id, undefined, 1);
-    } catch (reason) { await reportActionError(reason, "Caption 儲存失敗。", job.id); }
+    } catch (reason) { await reportActionError(reason, "圖片描述儲存失敗。", job.id); }
     finally { setBusy(""); unlockAction(actionKey); }
   }
 
@@ -519,7 +511,7 @@ export function LoraTrainerWorkspace() {
       commitJob(await retryCaption(job.id, record.imageId, job.revision));
       setNotice(`正在重新產生 ${record.imageFile}。`); setError("");
       await loadCaptionPage(job.id, undefined, 1);
-    } catch (reason) { await reportActionError(reason, "無法重試 caption。", job.id); }
+    } catch (reason) { await reportActionError(reason, "無法重試圖片描述。", job.id); }
     finally { setBusy(""); unlockAction(actionKey); }
   }
 
@@ -533,8 +525,8 @@ export function LoraTrainerWorkspace() {
       const next = await confirmCaptions(job.id, job.revision);
       confirmedJob = next;
       commitJob(next);
-      setStage(stageForJob(next)); setNotice("Captions 已鎖定，可以執行訓練前檢查。"); setError("");
-    } catch (reason) { await reportActionError(reason, "無法確認 captions。", job.id); }
+      setStage(stageForJob(next)); setNotice("圖片描述已鎖定，可以執行訓練前檢查。"); setError("");
+    } catch (reason) { await reportActionError(reason, "無法確認圖片描述。", job.id); }
     finally { setBusy(""); unlockAction(actionKey); if (confirmedJob) setStage(stageForJob(confirmedJob)); }
   }
 
@@ -548,7 +540,7 @@ export function LoraTrainerWorkspace() {
     const parsedTriggerWords = parseTriggerWordsDraft(triggerDraft);
     if (parsedTriggerWords.error) {
       setTriggerError(parsedTriggerWords.error);
-      setError("請先修正 Trigger words，再開始訓練。");
+      setError("請先修正觸發詞，再開始訓練。");
       setStage("config");
       focusLoraField("trigger-words");
       return;
@@ -560,7 +552,7 @@ export function LoraTrainerWorkspace() {
       return;
     }
     if (healthBlocked) {
-      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
+      setError(`${healthBlockReason} 請先完成上方檢查項目。`);
       focusLoraField("lora-health-summary");
       return;
     }
@@ -630,9 +622,9 @@ export function LoraTrainerWorkspace() {
             <p>{healthDisplayState === "ready"
               ? `${selectedFamily.toUpperCase()} · ${selectedBaseProfile} 可開始訓練。`
               : healthDisplayState === "blocked"
-                ? "完成下列 runtime 與模型設定後才能開始訓練。"
+                ? "完成下列執行環境與模型設定後才能開始訓練。"
                 : healthDisplayState === "warning"
-                  ? `${healthNetworkWarning} 此連線錯誤不阻擋提交，正式 preflight 仍會再次檢查。`
+                  ? `${healthNetworkWarning} 此連線錯誤不阻擋提交，正式檢查仍會再次執行。`
                   : `正在確認 ${selectedFamily.toUpperCase()} · ${selectedBaseProfile}。`}</p>
           </div>
           <span className={styles.readinessProfile}>{selectedFamily} / {selectedBaseProfile}</span>
@@ -640,7 +632,7 @@ export function LoraTrainerWorkspace() {
         {healthBlocked && failedHealthChecks.length > 0 && <ul className={styles.readinessChecks}>
           {failedHealthChecks.map((check) => <li key={check.name}><strong>{healthCheckLabel(check.name)}</strong><span>{healthCheckDetail(check)}</span></li>)}
         </ul>}
-        {healthBlocked && <p className={styles.setupHint}>先執行 <code>scripts/setup-lora-trainer.ps1</code>，再確認 Python runtime、trainer、base checkpoint 與 LoRA output 目錄。</p>}
+        {healthBlocked && <p className={styles.setupHint}>先執行 <code>scripts/setup-lora-trainer.ps1</code>，再確認 Python 執行環境、訓練器、基礎模型檢查點與 LoRA 輸出目錄。</p>}
       </section>
 
       {(error || notice || job?.error) && <div className={styles.feedback} aria-live="polite">
@@ -652,80 +644,80 @@ export function LoraTrainerWorkspace() {
       <div className={styles.layout}>
         <main className={styles.main}>
           {stage === "dataset" && <section className={styles.panel} aria-labelledby="dataset-title">
-            <header className={styles.sectionHeader}><div><span>01 / Dataset</span><h2 id="dataset-title">選擇訓練圖片</h2><p>建議使用 10–30 張主體一致、構圖與角度有變化的清晰圖片。</p></div><span className={styles.count}>{assets.length} / 50</span></header>
+            <header className={styles.sectionHeader}><div><span>01 / 訓練資料</span><h2 id="dataset-title">選擇訓練圖片</h2><p>建議使用 10–30 張主體一致、構圖與角度有變化的清晰圖片。</p></div><span className={styles.count}>{assets.length} / 50</span></header>
             <div className={styles.assetGrid}>
               {assets.map((asset) => <article key={assetKey(asset)} className={styles.assetCard}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- Dynamic local bridge asset. */}
                 <img src={assetUrl(asset)} alt="" />
                 <div><strong title={asset.name}>{asset.name}</strong><button type="button" onClick={() => setAssets((items) => items.filter((item) => assetKey(item) !== assetKey(asset)))} aria-label={`移除 ${asset.name}`}>移除</button></div>
               </article>)}
-              {!assets.length && <div className={styles.empty}><strong>尚未選擇圖片</strong><span>從 Library 挑選，或上傳本機 JPG、PNG、WebP。</span></div>}
+              {!assets.length && <div className={styles.empty}><strong>尚未選擇圖片</strong><span>從素材庫挑選，或上傳本機 JPG、PNG、WebP。</span></div>}
             </div>
             <div className={styles.actions}>
               <AssetPickerButton triggerId="lora-asset-picker" assetSource="training" kind="image" multiple max={50} selectedKeys={selectedKeys} onSelect={chooseAssets} label="選擇訓練素材" />
               <input ref={uploadRef} className={styles.hiddenInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={handleUpload} />
               <button className={styles.secondaryButton} type="button" onClick={() => uploadRef.current?.click()} disabled={busy === "upload"}>{busy === "upload" ? "上傳中…" : "上傳本機圖片"}</button>
             </div>
-            <fieldset className={styles.modePicker}><legend>Caption review mode</legend>
-              <label htmlFor="caption-mode-auto"><input id="caption-mode-auto" type="radio" name="caption-mode" value="auto" checked={mode === "auto"} onChange={() => setMode("auto")} />Auto<span><small>通過 schema 驗證後自動 preflight 與排程。</small></span></label>
-              <label htmlFor="caption-mode-manual"><input id="caption-mode-manual" type="radio" name="caption-mode" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} />Manual<span><small>逐張編輯、重試並確認 captions 後再訓練。</small></span></label>
+            <fieldset className={styles.modePicker}><legend>圖片描述檢查模式</legend>
+              <label htmlFor="caption-mode-auto"><input id="caption-mode-auto" type="radio" name="caption-mode" value="auto" checked={mode === "auto"} onChange={() => setMode("auto")} />自動<span><small>通過結構驗證後自動執行檢查並排程。</small></span></label>
+              <label htmlFor="caption-mode-manual"><input id="caption-mode-manual" type="radio" name="caption-mode" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} />手動<span><small>逐張編輯、重試並確認圖片描述後再訓練。</small></span></label>
             </fieldset>
-                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊開始後會導向 readiness。` : "建立後可用網址中的 job ID 恢復進度。"}</span><button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={beginTraining} disabled={Boolean(busy)}>{busy === "start" ? "建立工作中…" : "開始訓練"}</button></div>
+                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊開始後會導向檢查結果。` : "建立後可用網址中的工作編號恢復進度。"}</span><button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={beginTraining} disabled={Boolean(busy)}>{busy === "start" ? "建立工作中…" : "開始訓練"}</button></div>
           </section>}
 
           {stage === "captions" && <section className={styles.panel} aria-labelledby="captions-title">
-            <header className={styles.sectionHeader}><div><span>02 / Captions</span><h2 id="captions-title">檢查圖片描述</h2><p>{job?.status === "captioning" ? "Gemma 正在產生描述，完成後會自動更新。" : "修正錯誤或不準確的描述；每張圖片都必須有有效 caption。"}</p></div><span className={styles.count}>{job?.captions.confirmed || 0} / {job?.captions.total || 0}</span></header>
-            {busy === "captions" && !captions.length && <p className={styles.muted}>載入 captions…</p>}
+            <header className={styles.sectionHeader}><div><span>02 / 圖片描述</span><h2 id="captions-title">檢查圖片描述</h2><p>{job?.status === "captioning" ? "Gemma 正在產生描述，完成後會自動更新。" : "修正錯誤或不準確的描述；每張圖片都必須有有效的圖片描述。"}</p></div><span className={styles.count}>{job?.captions.confirmed || 0} / {job?.captions.total || 0}</span></header>
+            {busy === "captions" && !captions.length && <p className={styles.muted}>載入圖片描述中…</p>}
             <div className={styles.captionList}>{captions.map((record) => {
               const fieldId = `caption-${record.imageId}`; const errorId = `${fieldId}-error`; const itemBusy = busy === `caption-${record.imageId}`;
               return <article key={record.imageId} className={styles.captionCard}>
-                <div className={styles.captionMeta}><strong>{record.imageFile}</strong><span data-status={record.status}>{record.status}</span><small>嘗試 {record.attempts} 次 · {record.model}</small></div>
-                <label htmlFor={fieldId}>Caption</label><textarea id={fieldId} value={captionDrafts[record.imageId] ?? record.caption} aria-invalid={record.status === "failed"} aria-describedby={record.error ? errorId : undefined} onChange={(event) => setCaptionDrafts((items) => ({ ...items, [record.imageId]: event.target.value }))} />
+                <div className={styles.captionMeta}><strong>{record.imageFile}</strong><span data-status={record.status}>{jobStatusLabel(record.status, "lora")}</span><small>嘗試 {record.attempts} 次 · {record.model}</small></div>
+                <label htmlFor={fieldId}>圖片描述</label><textarea id={fieldId} value={captionDrafts[record.imageId] ?? record.caption} aria-invalid={record.status === "failed"} aria-describedby={record.error ? errorId : undefined} onChange={(event) => setCaptionDrafts((items) => ({ ...items, [record.imageId]: event.target.value }))} />
                 {record.error && <p id={errorId} className={styles.inlineError}>{record.error.message}</p>}
                 <div className={styles.cardActions}><button type="button" className={styles.secondaryButton} onClick={() => void saveCaption(record)} disabled={itemBusy}>儲存</button><button type="button" className={styles.textButton} onClick={() => void retryOneCaption(record)} disabled={itemBusy}>重新產生</button></div>
               </article>;
             })}</div>
             <div className={styles.pagination}><button type="button" className={styles.secondaryButton} disabled={captionPage === 1 || busy === "captions"} onClick={() => { if (!job || captionPage === 1) return; const previousPage = captionPage - 1; const previousCursor = captionPageCursors[previousPage - 1]; setCaptionPageCursors((items) => items.slice(0, previousPage)); void loadCaptionPage(job.id, previousCursor || undefined, previousPage); }}>上一頁</button><span>第 {captionPage} 頁</span><button type="button" className={styles.secondaryButton} disabled={!captionCursor || busy === "captions"} onClick={() => { if (!job || !captionCursor) return; setCaptionPageCursors((items) => [...items.slice(0, captionPage), captionCursor]); void loadCaptionPage(job.id, captionCursor, captionPage + 1); }}>下一頁</button></div>
-            {job?.captionReviewMode === "manual" && job.status === "caption_review" && <div className={styles.primaryRow}><span>確認後 captions 將鎖定；仍有 failed 項目時伺服器會拒絕。</span><button className={styles.primaryButton} type="button" onClick={confirmCaptionReview} disabled={Boolean(busy)}>確認全部 Captions</button></div>}
+            {job?.captionReviewMode === "manual" && job.status === "caption_review" && <div className={styles.primaryRow}><span>確認後圖片描述將鎖定；仍有失敗項目時伺服器會拒絕。</span><button className={styles.primaryButton} type="button" onClick={confirmCaptionReview} disabled={Boolean(busy)}>確認全部圖片描述</button></div>}
           </section>}
 
           {stage === "config" && <section className={styles.panel} aria-labelledby="config-title">
-            <header className={styles.sectionHeader}><div><span>03 / Config &amp; Preflight</span><h2 id="config-title">確認訓練設定</h2><p>先從簡化設定開始；進階值會由伺服器 allowlist 與範圍再次驗證。</p></div></header>
+            <header className={styles.sectionHeader}><div><span>03 / 設定與檢查</span><h2 id="config-title">確認訓練設定</h2><p>先從簡化設定開始；進階值會由伺服器允許清單與範圍再次驗證。</p></div></header>
             <div className={styles.formGrid}>
               <label className={styles.field}><span>模型系列</span><select value={config.family} onChange={(event) => { const family = event.target.value as LoraFamily; patchConfig("family", family); patchConfig("baseProfile", family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious"); patchConfig("presetId", family === "sdxl" ? "sdxl-character-balanced" : "illustrious-character-balanced"); }}><option value="sdxl">SDXL</option><option value="illustrious">Illustrious</option></select></label>
-              <label className={styles.field}><span>Base profile</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
-              <label className={styles.field}><span>Preset</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>Character · Balanced</option><option value={`${config.family}-style-balanced`}>Style · Balanced</option></select></label>
+              <label className={styles.field}><span>基礎模型設定檔</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
+              <label className={styles.field}><span>預設樣式</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>角色 · 平衡</option><option value={`${config.family}-style-balanced`}>風格 · 平衡</option></select></label>
               <label className={styles.field}><span>模型名稱</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
-              <label className={styles.fieldWide}><span>Trigger words</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => { const next = event.target.value; const parsed = parseTriggerWordsDraft(next); setTriggerDraft(next); setTriggerError(parsed.error); patchConfig("triggerWords", parsed.values); }} placeholder="my_character, custom_style" /><small id="trigger-words-help">生成時需在提示詞使用；留白會自動採 LoRA 名稱。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
+              <label className={styles.fieldWide}><span>觸發詞</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => { const next = event.target.value; const parsed = parseTriggerWordsDraft(next); setTriggerDraft(next); setTriggerError(parsed.error); patchConfig("triggerWords", parsed.values); }} placeholder="my_character, custom_style" /><small id="trigger-words-help">生成時需在提示詞使用；留白會自動採 LoRA 名稱。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
             </div>
             <details className={styles.details}><summary>進階設定</summary><div className={styles.advancedGrid}>
               <NumberField label="Rank" value={config.overrides?.rank} min={1} max={256} onChange={(value) => patchOverride("rank", value)} />
               <NumberField label="Alpha" value={config.overrides?.alpha} min={1} max={256} onChange={(value) => patchOverride("alpha", value)} />
-              <NumberField label="Learning rate" value={config.overrides?.learningRate} min={0.000001} max={0.01} step={0.000001} onChange={(value) => patchOverride("learningRate", value)} />
-              <NumberField label="Epochs" value={config.overrides?.epochs} min={1} max={100} onChange={(value) => patchOverride("epochs", value)} />
-              <NumberField label="Batch size" value={config.overrides?.batchSize} min={1} max={16} onChange={(value) => patchOverride("batchSize", value)} />
-              <NumberField label="Seed" value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
+              <NumberField label="學習率" value={config.overrides?.learningRate} min={0.000001} max={0.01} step={0.000001} onChange={(value) => patchOverride("learningRate", value)} />
+              <NumberField label="訓練輪數" value={config.overrides?.epochs} min={1} max={100} onChange={(value) => patchOverride("epochs", value)} />
+              <NumberField label="批次大小" value={config.overrides?.batchSize} min={1} max={16} onChange={(value) => patchOverride("batchSize", value)} />
+              <NumberField label={FIELD_LABELS.seed} value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
             </div></details>
             {preflight && <div className={styles.checks} aria-live="polite">{preflight.checks.map((check, index) => <div key={check.id || check.name || index} data-status={check.status}><strong>{check.label || check.name || `檢查 ${index + 1}`}</strong><span>{check.message || check.status}</span></div>)}</div>}
-                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊後會導向 readiness。` : job ? "Preflight 會確認 runtime、caption、checkpoint、磁碟與 GPU readiness。" : "設定會在建立工作時送出；開始前仍可返回 Dataset 增減圖片。"}</span>{canQueueJob && <button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={job ? checkAndQueue : beginTraining} disabled={Boolean(busy)}>{busy === "preflight" ? "檢查並排程中…" : busy === "start" ? "建立工作中…" : job ? "檢查並開始訓練" : "開始訓練"}</button>}</div>
+                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊後會導向檢查結果。` : job ? "訓練前檢查會確認執行環境、圖片描述、檢查點、磁碟與 GPU 狀態。" : "設定會在建立工作時送出；開始前仍可返回訓練資料增減圖片。"}</span>{canQueueJob && <button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={job ? checkAndQueue : beginTraining} disabled={Boolean(busy)}>{busy === "preflight" ? "檢查並排程中…" : busy === "start" ? "建立工作中…" : job ? "檢查並開始訓練" : "開始訓練"}</button>}</div>
           </section>}
 
           {stage === "progress" && <section className={styles.panel} aria-labelledby="progress-title" aria-live="polite">
-            <header className={styles.sectionHeader}><div><span>04 / Progress</span><h2 id="progress-title">{statusLabel(job?.status)}</h2><p>關閉此頁不會中斷工作；使用目前網址可回到同一個 job。</p></div><span className={styles.statusChip} data-status={job?.status}>{job?.status || "unknown"}</span></header>
-            <div className={styles.progressSummary}><div className={styles.progressNumber}>{hasMeasuredProgress || job?.status === "installing" || job?.status === "completed" ? <>{progress}<span>%</span></> : <span aria-label="訓練進度尚未開始">{progressStateLabel}</span>}</div><div className={styles.progressBody}><div className={styles.progressTrack} role="progressbar" aria-label="訓練完成度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><dl><div><dt>Step</dt><dd>{job?.training.step ?? "—"} / {job?.training.totalSteps ?? "—"}</dd></div><div><dt>Epoch</dt><dd>{job?.training.epoch ?? "—"}</dd></div><div><dt>Loss</dt><dd>{job?.training.loss?.toFixed(4) ?? "—"}</dd></div><div><dt>ETA</dt><dd>{formatEta(job?.training.etaSeconds)}</dd></div></dl></div></div>
+            <header className={styles.sectionHeader}><div><span>04 / 訓練進度</span><h2 id="progress-title">{jobStatusLabel(job?.status, "lora")}</h2><p>關閉此頁不會中斷工作；使用目前網址可回到同一個工作。</p></div><span className={styles.statusChip} data-status={job?.status}>{jobStatusLabel(job?.status, "lora")}</span></header>
+            <div className={styles.progressSummary}><div className={styles.progressNumber}>{hasMeasuredProgress || job?.status === "installing" || job?.status === "completed" ? <>{progress}<span>%</span></> : <span aria-label="訓練進度尚未開始">{progressStateLabel}</span>}</div><div className={styles.progressBody}><div className={styles.progressTrack} role="progressbar" aria-label="訓練完成度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><dl><div><dt>步數</dt><dd>{job?.training.step ?? "—"} / {job?.training.totalSteps ?? "—"}</dd></div><div><dt>訓練輪數</dt><dd>{job?.training.epoch ?? "—"}</dd></div><div><dt>損失</dt><dd>{job?.training.loss?.toFixed(4) ?? "—"}</dd></div><div><dt>預估剩餘</dt><dd>{formatEta(job?.training.etaSeconds)}</dd></div></dl></div></div>
             <div className={styles.jobError}>{job?.error && <><strong>{job.error.code}</strong><span>{job.error.message}</span>{job.error.field && <small>請檢查：{job.error.field}</small>}</>}</div>
             <div className={styles.actions}>{job && ["queued", "training", "cancelling"].includes(job.status) && <button className={styles.dangerButton} type="button" onClick={cancelJob} disabled={Boolean(busy) || job.status === "cancelling"}>取消訓練</button>}{job && ["failed", "cancelled", "interrupted"].includes(job.status) && <button className={styles.primaryButton} type="button" onClick={retryJob} disabled={Boolean(busy)}>{busy === "retry" ? "建立重試中…" : "重試訓練"}</button>}</div>
           </section>}
 
           {stage === "artifact" && <section className={styles.panel} aria-labelledby="artifact-title">
-            <header className={styles.sectionHeader}><div><span>05 / Artifact</span><h2 id="artifact-title">LoRA 已可使用</h2><p>模型已驗證並安裝到 ComfyUI 的 trained LoRA 目錄。</p></div><span className={styles.successMark} aria-hidden="true">✓</span></header>
-            <dl className={styles.artifactGrid}><Meta label="Registry ID" value={artifact?.registryId || job?.artifact?.registryId} /><Meta label="Family" value={artifact?.family || job?.training.family} /><Meta label="Base profile" value={artifact?.baseProfile || job?.training.baseProfile} /><Meta label="Size" value={formatBytes(artifact?.sizeBytes || job?.artifact?.sizeBytes)} /><Meta label="SHA-256" value={artifact?.sha256 || job?.artifact?.sha256} wide /><Meta label="Trigger words" value={artifact?.triggerWords?.join(", ") || "—"} wide /></dl>
-            <details className={styles.details}><summary>Provenance</summary><pre>{JSON.stringify(artifact?.provenance || job?.provenance || {}, null, 2)}</pre></details>
-            <div className={styles.primaryRow}><a className={styles.secondaryButton} href={job ? artifact?.downloadUrl || artifactDownloadUrl(job.id) : undefined}>下載 .safetensors</a><a className={styles.primaryButton} href={`/app/tools/image-to-image${artifact?.registryId || job?.artifact?.registryId ? `?lora=${encodeURIComponent(artifact?.registryId || job?.artifact?.registryId || "")}` : ""}`}>前往 Image to Image</a></div>
+            <header className={styles.sectionHeader}><div><span>05 / 模型產物</span><h2 id="artifact-title">LoRA 已可使用</h2><p>模型已驗證並安裝到 ComfyUI 的 trained LoRA 目錄。</p></div><span className={styles.successMark} aria-hidden="true">✓</span></header>
+            <dl className={styles.artifactGrid}><Meta label="註冊編號" value={artifact?.registryId || job?.artifact?.registryId} /><Meta label="模型系列" value={artifact?.family || job?.training.family} /><Meta label="基礎模型設定檔" value={artifact?.baseProfile || job?.training.baseProfile} /><Meta label="檔案大小" value={formatBytes(artifact?.sizeBytes || job?.artifact?.sizeBytes)} /><Meta label="SHA-256" value={artifact?.sha256 || job?.artifact?.sha256} wide /><Meta label="觸發詞" value={artifact?.triggerWords?.join(", ") || "—"} wide /></dl>
+            <details className={styles.details}><summary>來源資訊</summary><pre>{JSON.stringify(artifact?.provenance || job?.provenance || {}, null, 2)}</pre></details>
+            <div className={styles.primaryRow}><a className={styles.secondaryButton} href={job ? artifact?.downloadUrl || artifactDownloadUrl(job.id) : undefined}>下載 .safetensors</a><a className={styles.primaryButton} href={`/app/tools/image-to-image${artifact?.registryId || job?.artifact?.registryId ? `?lora=${encodeURIComponent(artifact?.registryId || job?.artifact?.registryId || "")}` : ""}`}>前往以圖生圖</a></div>
           </section>}
         </main>
 
-        <aside className={styles.summary} aria-label="目前工作摘要"><span>Current job</span><strong>{job ? statusLabel(job.status) : "尚未建立"}</strong><dl><div><dt>Job ID</dt><dd title={job?.id}>{job?.id || "—"}</dd></div><div><dt>Dataset</dt><dd>{job?.dataset.imageCount ?? assets.length} images</dd></div><div><dt>Mode</dt><dd>{job?.captionReviewMode || mode}</dd></div><div><dt>Family</dt><dd>{job?.training.family || config.family}</dd></div><div><dt>Attempt</dt><dd>{job?.training.attempt ?? "—"}</dd></div></dl>{job && canonicalStage !== stage && <button type="button" className={styles.textButton} onClick={() => setStage(canonicalStage)}>回到目前步驟</button>}</aside>
+        <aside className={styles.summary} aria-label="目前工作摘要"><span>目前工作</span><strong>{job ? jobStatusLabel(job.status, "lora") : "尚未建立"}</strong><dl><div><dt>工作編號</dt><dd title={job?.id}>{job?.id || "—"}</dd></div><div><dt>訓練資料</dt><dd>{job?.dataset.imageCount ?? assets.length} 張圖片</dd></div><div><dt>模式</dt><dd>{job?.captionReviewMode === "manual" ? "手動" : "自動"}</dd></div><div><dt>模型系列</dt><dd>{job?.training.family || config.family}</dd></div><div><dt>嘗試次數</dt><dd>{job?.training.attempt ?? "—"}</dd></div></dl>{job && canonicalStage !== stage && <button type="button" className={styles.textButton} onClick={() => setStage(canonicalStage)}>回到目前步驟</button>}</aside>
       </div>
     </div>
   );

@@ -15,6 +15,7 @@ import {
   reconcileStudioSettings,
 } from "../../lib/studio-settings.mjs";
 import { uploadAssets } from "../library/asset-client";
+import { FIELD_LABELS, jobStatusLabel } from "../../lib/ui-copy.mjs";
 import styles from "./LongCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
@@ -386,7 +387,7 @@ export function LongCreateForm() {
         })),
       });
       const payload = (await response.json().catch(() => ({}))) as { plan?: LongPlan } & ApiError;
-      if (!response.ok || !payload.plan) throw new Error(apiError(payload, "Long-video plan failed."));
+      if (!response.ok || !payload.plan) throw new Error(apiError(payload, "長影片規劃失敗。"));
       const nextPlan = payload.plan;
       setPlan(nextPlan);
       setPlanDirty(false);
@@ -448,7 +449,7 @@ export function LongCreateForm() {
       })),
     });
     const payload = (await response.json().catch(() => ({}))) as { job?: LongJob } & ApiError;
-    if (!response.ok || !payload.job) throw new Error(apiError(payload, "Unable to save long-video job."));
+    if (!response.ok || !payload.job) throw new Error(apiError(payload, "無法儲存長影片工作。"));
     setJob(payload.job);
     setPlan(payload.job);
     setPlanDirty(false);
@@ -473,14 +474,14 @@ export function LongCreateForm() {
     setError("");
     setNotice("");
     if (!canInteract) return;
-    const firstIssue = baseIssues[0] || (!outputFolder.trim() ? { field: "outputFolder", message: "Output folder is required." } : null);
+    const firstIssue = baseIssues[0] || (!outputFolder.trim() ? { field: "outputFolder", message: "請輸入輸出資料夾。" } : null);
     if (firstIssue) {
       setError(firstIssue.message);
       focusLongValidationField(firstIssue.field);
       return;
     }
     if (!providerReady) {
-      setError("Planner 尚未就緒；請先確認 Ollama 或 Codex CLI readiness。 ");
+      setError("規劃工具尚未就緒；請先確認 Ollama 或 Codex CLI 是否可用。");
       document.getElementById("long-provider-status")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
@@ -490,7 +491,7 @@ export function LongCreateForm() {
       const saved = await savePlan(readyPlan);
       const response = await fetch(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(saved.id)}/start`, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as { job?: LongJob } & ApiError;
-      if (!response.ok || !payload.job) throw new Error(apiError(payload, "Unable to start long-video job."));
+      if (!response.ok || !payload.job) throw new Error(apiError(payload, "無法開始長影片工作。"));
       setJob(payload.job);
       router.push(`/app/jobs/${encodeURIComponent(payload.job.id)}`);
     } catch (startError) {
@@ -518,26 +519,26 @@ export function LongCreateForm() {
     setTitle(""); setOutputFolder(""); setInputType("text"); setReferenceMode("continuity"); setReferences([]);
     setBrief(""); setNegativePrompt(""); setTimelineMode("auto"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); setWidth(736); setHeight(416); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
-    setPlan(null); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前 Long Create 編輯狀態；已保存工作未刪除。" );
+    setPlan(null); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
   }
 
   const visibleIssues = attempted ? submitIssues : [];
 
   return (
     <div className={styles.layout}>
-      <nav className={styles.sectionNav} aria-label="Long Create sections">
+      <nav className={styles.sectionNav} aria-label="長影片建立區段">
         <a href="#long-story">故事</a><a href="#long-planner">規劃</a><a href="#long-segments">分段</a><a href="#long-review">檢查</a>
       </nav>
 
       <div className={styles.formColumn}>
-        <LongSection id="long-story" code="01 / STORY + SOURCE" title="故事與來源">
+        <LongSection id="long-story" code="01 / 故事與來源" title="故事與來源">
           <div className={styles.twoColumns}>
             <Field label="標題"><input className={styles.input} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="兩段式故事" /></Field>
             <Field label="輸出資料夾" error={attempted ? issuesByField.get("outputFolder") : ""}><input id="long-output-folder" className={styles.input} value={outputFolder} onChange={(event) => setOutputFolder(event.target.value)} placeholder="my-sequence-001" /></Field>
           </div>
-          <div className={styles.segmented} role="group" aria-label="Long-video input type">
+          <div className={styles.segmented} role="group" aria-label="長影片起點類型">
             <button type="button" className={inputType === "text" ? styles.active : ""} aria-pressed={inputType === "text"} onClick={() => { setInputType("text"); markPlanDirty(); }}>文字起點</button>
-            <button type="button" className={inputType === "image" ? styles.active : ""} aria-pressed={inputType === "image"} onClick={() => { setInputType("image"); markPlanDirty(); }}>圖片起點 / first_frame</button>
+            <button type="button" className={inputType === "image" ? styles.active : ""} aria-pressed={inputType === "image"} onClick={() => { setInputType("image"); markPlanDirty(); }}>從圖片開始</button>
           </div>
           {inputType === "image" && (
             <div className={styles.referencePanel}>
@@ -565,13 +566,13 @@ export function LongCreateForm() {
           </Field>
         </LongSection>
 
-        <LongSection id="long-planner" code="02 / PLANNER + TIMELINE" title="Planner 與時間軸">
+        <LongSection id="long-planner" code="02 / 規劃與時間軸" title="規劃與時間軸">
           <div id="long-provider-status" className={styles.providerRow} tabIndex={-1}>
             <div className={styles.segmented} role="group" aria-label="長影片規劃 provider">
               <button type="button" className={promptProvider === "ollama" ? styles.active : ""} aria-pressed={promptProvider === "ollama"} onClick={() => { setPromptProvider("ollama"); markPlanDirty(); }}>Ollama</button>
               <button type="button" className={promptProvider === "codex" ? styles.active : ""} aria-pressed={promptProvider === "codex"} onClick={() => { setPromptProvider("codex"); markPlanDirty(); }}>Codex CLI</button>
             </div>
-            <span className={`${styles.providerStatus} ${providerReady ? styles.ready : ""}`}><i />{providerReady ? "Ready" : "Unavailable"}</span>
+            <span className={`${styles.providerStatus} ${providerReady ? styles.ready : ""}`}><i />{providerReady ? "已就緒" : "無法使用"}</span>
           </div>
           {promptProvider === "ollama" ? <Field label="Ollama 模型"><select className={styles.select} value={effectiveOllamaModel} disabled={!visibleOllamaModels.length} onChange={(event) => { setOllamaModel(event.target.value); markPlanDirty(); }}>{visibleOllamaModels.length ? visibleOllamaModels.map((model) => <option key={model} value={model}>{model}</option>) : <option value={ollamaModel}>沒有可用模型</option>}</select></Field> : <div className={styles.twoColumns}><Field label="Codex 模型"><select className={styles.select} value={effectiveCodexModel} onChange={(event) => { setCodexModel(event.target.value); markPlanDirty(); }}>{codexModels.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}</option>)}</select></Field><Field label="Reasoning"><select className={styles.select} value={effectiveReasoning} onChange={(event) => { setReasoningEffort(event.target.value); markPlanDirty(); }}>{reasoningOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field></div>}
           <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} aria-pressed={timelineMode === "auto"} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} aria-pressed={timelineMode === "manual"} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
@@ -580,36 +581,36 @@ export function LongCreateForm() {
             <Field label="目標單段長度（秒）" error={attempted ? issuesByField.get("segmentDurationHint") : ""}><input id="long-segment-duration" className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationHint} onChange={(event) => { setSegmentDurationHint(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
           </div>
           {timelineMode === "manual" && <Field label="手動時間軸" helper="例如：[0 - 5] Opening；[5 - 10] Ending" error={attempted ? issuesByField.get("timelineText") : ""}><textarea id="long-timeline" className={styles.textarea} value={timeline} onChange={(event) => { setTimeline(event.target.value); markPlanDirty(); }} /></Field>}
-          <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "規劃失敗。"))}>{planning ? "規劃中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡與 H3 Prompt`}</button>
+          <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "規劃失敗。"))}>{planning ? "規劃中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡與 H3 提示詞`}</button>
           {planDirty && plan && <p className={styles.stale} role="status">規劃輸入已變更；保存或開始前會重新規劃。</p>}
         </LongSection>
 
-        <LongSection id="long-segments" code="03 / SEGMENT REVIEW" title={`分段檢查 · ${plan?.segments.length || 0} 段`}>
+        <LongSection id="long-segments" code="03 / 片段檢查" title={`片段檢查 · ${plan?.segments.length || 0} 段`}>
           {!plan && <div className={styles.empty}>尚無分段提示詞。先完成 Planner，再在此逐段檢查與編輯。</div>}
           {plan?.segments.map((segment, index) => <article className={styles.segmentCard} key={segment.id || index}>
-            <div className={styles.segmentHeading}><div><span>Segment {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || (index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
+            <div className={styles.segmentHeading}><div><span>片段 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || (index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
             <div className={styles.twoColumns}><Field label="分鏡描述"><textarea className={styles.compactTextarea} value={segment.description} onChange={(event) => updateSegment(index, { description: event.target.value })} /></Field><Field label="段尾狀態"><textarea className={styles.compactTextarea} value={segment.endingState || ""} onChange={(event) => updateSegment(index, { endingState: event.target.value })} /></Field></div>
-            <Field label="H3 Prompt"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
+            <Field label="H3 提示詞"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
             <Field label="此段負面提示詞" helper="空白則使用全片設定。"><textarea className={styles.compactTextarea} value={segment.negativePrompt || ""} onChange={(event) => updateSegment(index, { negativePrompt: event.target.value })} /></Field>
           </article>)}
         </LongSection>
 
-        <LongSection id="long-setup" code="04 / RENDER SETUP" title="生成設定">
-          <div className={styles.twoColumns}><Field label="模型 profile"><select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field><Field label="Seam"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">Keep duplicate frame</option><option value="drop_next_first_frame" disabled>Drop next first frame (unsupported)</option></select></Field></div>
-          <div className={styles.fourColumns}><Field label="寬" error={attempted ? issuesByField.get("width") : ""}><input id="long-width" className={styles.input} type="number" min={32} max={2048} step={32} value={width} onChange={(event) => setWidth(numberDraft(event.target.value))} /></Field><Field label="高" error={attempted ? issuesByField.get("height") : ""}><input id="long-height" className={styles.input} type="number" min={32} max={2048} step={32} value={height} onChange={(event) => setHeight(numberDraft(event.target.value))} /></Field><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input id="long-steps" className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input id="long-seed" className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機 Seed">↻</button></div></Field></div>
+        <LongSection id="long-setup" code="04 / 生成設定" title="生成設定">
+          <div className={styles.twoColumns}><Field label="模型設定檔"><select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field><Field label="接縫處理"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">保留重複畫面</option><option value="drop_next_first_frame" disabled>移除下一段首幀（目前不支援）</option></select></Field></div>
+          <div className={styles.fourColumns}><Field label={FIELD_LABELS.width} error={attempted ? issuesByField.get("width") : ""}><input id="long-width" className={styles.input} type="number" min={32} max={2048} step={32} value={width} onChange={(event) => setWidth(numberDraft(event.target.value))} /></Field><Field label={FIELD_LABELS.height} error={attempted ? issuesByField.get("height") : ""}><input id="long-height" className={styles.input} type="number" min={32} max={2048} step={32} value={height} onChange={(event) => setHeight(numberDraft(event.target.value))} /></Field><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input id="long-steps" className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input id="long-seed" className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機種子">↻</button></div></Field></div>
         </LongSection>
       </div>
 
-      <aside id="long-review" className={styles.summary} aria-label="Long Create review">
+      <aside id="long-review" className={styles.summary} aria-label="長影片生成摘要">
         <section className={styles.summaryCard}>
-          <span className={styles.eyebrow}>Review</span><h2>Long Video</h2>
-          <div className={styles.summaryRows}><Summary label="來源" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="時間軸" value={timelineMode === "auto" ? `${duration || "—"} 秒 / auto` : "manual"} /><Summary label="分段" value={`${plan?.segments.length || 0} 段`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="Provider" value={promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel} /></div>
-          {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{job.status}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>開啟 Job</a></div>}
+          <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
+          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="時間軸" value={timelineMode === "auto" ? `${duration || "—"} 秒 / 自動` : "手動"} /><Summary label="分段" value={`${plan?.segments.length || 0} 段`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="提示詞提供者" value={promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel} /></div>
+          {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long")}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>
-          <span className={styles.eyebrow}>Validation</span>
+          <span className={styles.eyebrow}>檢查結果</span>
           <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}><button type="button" className={styles.validationLink} onClick={() => focusLongValidationField(issue.field)}>× {issue.message}</button></li>) : <li className={styles.valid}>✓ 基本欄位可提交；若尚未規劃會先自動規劃。</li>}</ul>
-          <div className={styles.providerSummary}><span className={`${styles.statusDot} ${providerReady ? styles.online : ""}`} />{providerReady ? "Planner ready" : "Planner unavailable"}</div>
+          <div className={styles.providerSummary}><span className={`${styles.statusDot} ${providerReady ? styles.online : ""}`} />{providerReady ? "規劃工具已就緒" : "規劃工具無法使用"}</div>
           {error && <p className={styles.errorBox} role="alert">{error}</p>}{notice && <p className={styles.notice} role="status">{notice}</p>}
           <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button>
           <div className={styles.secondaryActions}><button type="button" disabled={!canSave} onClick={() => void saveDraft()}>{saving ? "保存中…" : "保存草稿"}</button><button type="button" disabled={activeJob || saving || planning} onClick={clearEditor}>清除設定</button></div>
@@ -660,7 +661,19 @@ function Field({ label, helper, error, children }: { label: string; helper?: str
         : childProps["aria-describedby"],
     })
     : children;
-  return <label className={`${styles.field} ${error ? styles.fieldInvalid : ""}`}><span className={styles.label}>{label}</span>{control}{helper && <span className={styles.helper}>{helper}</span>}<InlineError id={errorId} message={error} /></label>;
+  return <label className={`${styles.field} ${error ? styles.fieldInvalid : ""}`}><span className={styles.label}>{fieldLabel(label)}</span>{control}{helper && <span className={styles.helper}>{helper}</span>}<InlineError id={errorId} message={error} /></label>;
+}
+
+function fieldLabel(label: string) {
+  return ({
+    Prompt: FIELD_LABELS.prompt,
+    "Negative Prompt": FIELD_LABELS.negativePrompt,
+    Seed: FIELD_LABELS.seed,
+    Steps: FIELD_LABELS.steps,
+    Reasoning: FIELD_LABELS.reasoning,
+    "H3 Prompt": "H3 提示詞",
+    "Model profile": FIELD_LABELS.modelProfile,
+  } as Record<string, string>)[label] || label;
 }
 
 function InlineError({ id, message }: { id?: string; message?: string }) { return message ? <span id={id} className={styles.inlineError} role="alert">{message}</span> : null; }

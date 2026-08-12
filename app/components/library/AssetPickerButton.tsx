@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ACTION_LABELS, SOURCE_LABELS } from "../../lib/ui-copy.mjs";
 import { assetKey, assetUrl, fetchAssetLibrary, type AssetSource, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./AssetPickerButton.module.css";
@@ -24,7 +25,7 @@ export function AssetPickerButton({
     multiple = false,
     max = 1,
     selectedKeys = [],
-    label = "Browse Library",
+    label = ACTION_LABELS.browseLibrary,
     triggerId,
     onSelect,
 }: Props) {
@@ -41,8 +42,8 @@ export function AssetPickerButton({
     const triggerRef = useRef<HTMLButtonElement>(null);
     const dialogRef = useRef<HTMLDivElement>(null);
     const selectedKeysSignature = JSON.stringify(selectedKeys);
-    const sourceLabel = assetSource === "training" ? "訓練素材（專案 input）" : "Asset Picker";
-    const breadcrumbLabel = assetSource === "training" ? "訓練素材" : root ?? "All assets";
+    const sourceLabel = assetSource === "training" ? "訓練素材" : "素材選擇器";
+    const breadcrumbLabel = assetSource === "training" ? "訓練素材" : SOURCE_LABELS[root || "all"] || "全部素材";
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -56,7 +57,7 @@ export function AssetPickerButton({
 
         void fetchAssetLibrary(assetSource)
             .then((next) => { setAssets(next.assets); setFolderRecords(next.folders); setError(""); })
-            .catch((reason) => setError(reason instanceof Error ? reason.message : "Unable to load assets."))
+            .catch((reason) => setError(reason instanceof Error ? reason.message : "無法載入素材。"))
             .finally(() => setLoading(false));
 
         const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -169,13 +170,13 @@ export function AssetPickerButton({
             </button>
             {open && (
                 <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closeDialog()}>
-                    <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label="Asset picker">
+                    <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label="素材選擇器">
                         <header>
                             <div>
                                 <span>{sourceLabel}</span>
-                                <strong>{multiple ? `Select up to ${max}` : "Select one asset"}</strong>
+                                <strong>{multiple ? `最多選取 ${max} 項素材` : "選取一項素材"}</strong>
                             </div>
-                            <button type="button" onClick={closeDialog} aria-label="Close asset picker">×</button>
+                            <button type="button" onClick={closeDialog} aria-label="關閉素材選擇器">×</button>
                         </header>
 
                         <div className={styles.navigation}>
@@ -184,11 +185,11 @@ export function AssetPickerButton({
                                 className={styles.backButton}
                                 onClick={() => setCurrentPath((path) => path.slice(0, -1))}
                                 disabled={!currentPath.length || Boolean(query.trim())}
-                                aria-label="Back to parent folder"
+                                aria-label="返回上一層資料夾"
                             >
-                                Back
+                                {ACTION_LABELS.back}
                             </button>
-                            <nav className={styles.breadcrumbs} aria-label="Current asset folder">
+                            <nav className={styles.breadcrumbs} aria-label="目前素材資料夾">
                                 <button
                                     type="button"
                                     className={styles.breadcrumb}
@@ -226,17 +227,17 @@ export function AssetPickerButton({
                                     {allCurrentFolderSelected ? "取消全選圖片" : "全選圖片"}
                                 </button>
                             )}
-                            {query.trim() && <span className={styles.searchStatus}>Searching all folders</span>}
+                            {query.trim() && <span className={styles.searchStatus}>搜尋全部資料夾</span>}
                         </div>
 
                         <label className={styles.search}>
-                            <span className="sr-only">Search assets</span>
-                            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search recent assets…" />
+                            <span className="sr-only">搜尋素材</span>
+                            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋最近素材…" />
                         </label>
 
                         <div className={styles.body}>
                             <div className={styles.grid}>
-                                {loading && <p>Loading…</p>}
+                                {loading && <p>載入中…</p>}
                                 {error && <p className={styles.error} role="alert">{error}</p>}
                                 {!query.trim() && navigation.folders.map((folder) => (
                                     <article key={`folder:${folder.path.join("/")}`} className={styles.folderCard}>
@@ -244,12 +245,12 @@ export function AssetPickerButton({
                                             type="button"
                                             className={styles.folderButton}
                                             onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
-                                            aria-label={`Open folder ${folder.path.join("/")}`}
+                                            aria-label={`開啟資料夾 ${folder.path.join("/")}`}
                                         >
-                                            <span className={styles.folderIcon} aria-hidden="true">Folder</span>
+                                            <span className={styles.folderIcon} aria-hidden="true">資料夾</span>
                                             <span className={styles.folderCopy}>
                                                 <strong>{folder.path[folder.path.length - 1]}</strong>
-                                                <small>{folder.count} selectable {folder.count === 1 ? "asset" : "assets"}{folder.roots.size > 1 ? ` · ${[...folder.roots].join("/")}` : ""}</small>
+                                                <small>{folder.count} 項可選素材{folder.roots.size > 1 ? ` · ${[...folder.roots].map((value) => SOURCE_LABELS[value] || value).join("/")}` : ""}</small>
                                             </span>
                                             <span className={styles.folderArrow} aria-hidden="true">›</span>
                                         </button>
@@ -277,7 +278,7 @@ export function AssetPickerButton({
                                                 </span>
                                                 <span className={styles.copy}>
                                                     <strong title={asset.name}>{asset.name}</strong>
-                                                    <small>{asset.root} · {asset.kind}</small>
+                                                    <small>{SOURCE_LABELS[asset.root] || "素材"} · {asset.kind === "image" ? "圖片" : "影片"}</small>
                                                 </span>
                                                 <span className={styles.check} aria-hidden="true">{checked ? "✓" : ""}</span>
                                             </button>
@@ -285,23 +286,23 @@ export function AssetPickerButton({
                                                 type="button"
                                                 className={styles.previewButton}
                                                 onClick={() => setPreview(asset)}
-                                                aria-label={`Preview ${asset.name}`}
+                                                aria-label={`預覽 ${asset.name}`}
                                             >
-                                                Preview
+                                                {ACTION_LABELS.preview}
                                             </button>
                                         </article>
                                     );
                                 })}
                                 {!loading && !error && !navigation.folders.length && !visibleAssets.length && (
                                     <p className={styles.empty}>
-                                        {query.trim() ? "No matching assets." : "This folder has no selectable assets."}
+                                        {query.trim() ? "沒有符合的素材。" : "此資料夾沒有可選取的素材。"}
                                     </p>
                                 )}
                             </div>
 
                             {preview && (
-                                <aside className={styles.preview} aria-label={`Preview ${preview.name}`}>
-                                    <button type="button" onClick={() => setPreview(null)}>Close preview</button>
+                                <aside className={styles.preview} aria-label={`預覽 ${preview.name}`}>
+                                    <button type="button" onClick={() => setPreview(null)}>{ACTION_LABELS.close}預覽</button>
                                     {preview.kind === "image"
                                         ? <>
                                             {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
@@ -316,9 +317,9 @@ export function AssetPickerButton({
                         </div>
 
                         <footer>
-                            <span aria-live="polite">{selected.size} selected</span>
+                            <span aria-live="polite">已選取 {selected.size} 項</span>
                             <span className={styles.selectionNotice} role="status" aria-live="polite">{selectionNotice}</span>
-                            <button type="button" className={styles.confirm} disabled={!selected.size} onClick={confirm}>Use selected</button>
+                            <button type="button" className={styles.confirm} disabled={!selected.size} onClick={confirm}>{ACTION_LABELS.useSelected}</button>
                         </footer>
                     </div>
                 </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ACTION_LABELS, SOURCE_LABELS } from "../../lib/ui-copy.mjs";
 import { assetKey, assetUrl, deleteAsset, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./LibraryWorkspace.module.css";
@@ -62,7 +63,7 @@ export function LibraryWorkspace() {
             setFolderRecords(library.folders);
             setError("");
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "Unable to load assets.");
+            setError(reason instanceof Error ? reason.message : "無法載入素材。");
         }
     }
 
@@ -95,7 +96,7 @@ export function LibraryWorkspace() {
             setSelected(new Set());
             await refresh();
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "Delete failed.");
+            setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
         } finally {
             setBusy(false);
         }
@@ -115,7 +116,7 @@ export function LibraryWorkspace() {
             if (preview && assetKey(preview) === assetKey(asset)) closePreview();
             await refresh();
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "Delete failed.");
+            setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
         } finally {
             setBusy(false);
         }
@@ -129,7 +130,7 @@ export function LibraryWorkspace() {
             await uploadAssets(files);
             await refresh();
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "Upload failed.");
+            setError(reason instanceof Error ? reason.message : "上傳素材失敗。");
         } finally {
             setBusy(false);
         }
@@ -138,19 +139,19 @@ export function LibraryWorkspace() {
     return (
         <div className={styles.workspace}>
             <section className={styles.toolbar}>
-                <div className={styles.tabs} role="group" aria-label="Asset root">
+                <div className={styles.tabs} role="group" aria-label="素材分類">
                     {(["all", "input", "output"] as const).map((item) => (
                         <button key={item} type="button" className={root === item ? styles.active : ""} aria-pressed={root === item} onClick={() => { setRoot(item); setCurrentPath([]); setQuery(""); }}>
-                            {item}
+                            {SOURCE_LABELS[item] || item}
                         </button>
                     ))}
                 </div>
                 <label className={styles.search}>
-                    <span className="sr-only">Search assets</span>
-                    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assets…" />
+                    <span className="sr-only">搜尋素材</span>
+                    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋素材…" />
                 </label>
                 <label className={styles.upload}>
-                    Upload
+                    上傳素材
                     <input
                         className={styles.fileInput}
                         type="file"
@@ -164,7 +165,7 @@ export function LibraryWorkspace() {
                     />
                 </label>
                 <button type="button" className={styles.delete} disabled={!selected.size || busy} onClick={() => void removeSelected()}>
-                    Delete {selected.size ? `(${selected.size})` : ""}
+                    刪除{selected.size ? `（${selected.size}）` : ""}
                 </button>
             </section>
 
@@ -175,13 +176,13 @@ export function LibraryWorkspace() {
                     className={styles.backButton}
                     onClick={() => setCurrentPath((path) => path.slice(0, -1))}
                     disabled={!currentPath.length || Boolean(query.trim())}
-                    aria-label="Back to parent folder"
+                    aria-label="返回上一層資料夾"
                 >
-                    Back
+                    {ACTION_LABELS.back}
                 </button>
-                <nav className={styles.breadcrumbs} aria-label="Current asset folder">
+                <nav className={styles.breadcrumbs} aria-label="目前素材資料夾">
                     <button type="button" className={styles.breadcrumb} onClick={() => setCurrentPath([])} aria-current={!currentPath.length ? "page" : undefined}>
-                        {root}
+                        {SOURCE_LABELS[root] || "全部素材"}
                     </button>
                     {currentPath.map((segment, index) => {
                         const path = currentPath.slice(0, index + 1);
@@ -196,9 +197,9 @@ export function LibraryWorkspace() {
                         );
                     })}
                 </nav>
-                {query.trim() && <span className={styles.searchStatus}>Searching all folders</span>}
+                {query.trim() && <span className={styles.searchStatus}>搜尋全部資料夾</span>}
             </div>
-            <div className={styles.meta}>{visibleAssets.length} assets{navigation.folders.length && !query.trim() ? ` 繚 ${navigation.folders.length} folders` : ""}</div>
+            <div className={styles.meta}>{visibleAssets.length} 項素材{navigation.folders.length && !query.trim() ? ` · ${navigation.folders.length} 個資料夾` : ""}</div>
 
             <div className={styles.grid}>
                 {!query.trim() && navigation.folders.map((folder) => (
@@ -207,12 +208,12 @@ export function LibraryWorkspace() {
                             type="button"
                             className={styles.folderButton}
                             onClick={() => { setCurrentPath(folder.path); setPreview(null); }}
-                            aria-label={`Open folder ${folder.path.join("/")}`}
+                            aria-label={`開啟資料夾 ${folder.path.join("/")}`}
                         >
-                            <span className={styles.folderIcon} aria-hidden="true">Folder</span>
+                            <span className={styles.folderIcon} aria-hidden="true">資料夾</span>
                             <span className={styles.folderCopy}>
                                 <strong>{folder.path[folder.path.length - 1]}</strong>
-                                <small>{folder.count} {folder.count === 1 ? "asset" : "assets"}{folder.roots.size > 1 ? ` 繚 ${[...folder.roots].join("/")}` : ""}</small>
+                                <small>{folder.count} 項素材{folder.roots.size > 1 ? ` · ${[...folder.roots].map((value) => SOURCE_LABELS[value] || value).join("／")}` : ""}</small>
                             </span>
                             <span className={styles.folderArrow} aria-hidden="true">→</span>
                         </button>
@@ -226,7 +227,7 @@ export function LibraryWorkspace() {
                                 type="button"
                                 className={styles.previewButton}
                                 onClick={(event) => openPreview(asset, event.currentTarget)}
-                                aria-label={`Preview ${asset.name}`}
+                                aria-label={`預覽 ${asset.name}`}
                             >
                                 {asset.kind === "image"
                                     ? <>
@@ -240,7 +241,7 @@ export function LibraryWorkspace() {
                             <div className={styles.copy}>
                                 <label className={styles.checkbox}>
                                     <input type="checkbox" checked={checked} onChange={() => toggle(asset)} />
-                                    <span className="sr-only">Select {asset.name}</span>
+                                    <span className="sr-only">選取 {asset.name}</span>
                                 </label>
                                 <div>
                                     <strong title={asset.name}>{asset.name}</strong>
@@ -248,19 +249,19 @@ export function LibraryWorkspace() {
                                 </div>
                             </div>
                             <div className={styles.actions}>
-                                <a href={assetUrl(asset)} download>Download</a>
-                                <button type="button" onClick={() => void removeAsset(asset)}>Delete</button>
+                                <a href={assetUrl(asset)} download>{ACTION_LABELS.downloadResult}</a>
+                                <button type="button" onClick={() => void removeAsset(asset)}>刪除</button>
                             </div>
                         </article>
                     );
                 })}
-                {!visibleAssets.length && !navigation.folders.length && !error && <p className={styles.empty}>This folder has no assets.</p>}
+                {!visibleAssets.length && !navigation.folders.length && !error && <p className={styles.empty}>此資料夾沒有素材。</p>}
             </div>
 
             {preview && (
                 <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closePreview()}>
-                    <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label={`Preview ${preview.name}`}>
-                        <button type="button" onClick={closePreview} aria-label="Close preview">×</button>
+                    <div ref={dialogRef} className={styles.dialog} role="dialog" aria-modal="true" aria-label={`預覽 ${preview.name}`}>
+                        <button type="button" onClick={closePreview} aria-label="關閉預覽">×</button>
                         {preview.kind === "image"
                             ? <>
                                 {/* eslint-disable-next-line @next/next/no-img-element -- Bridge asset URLs are dynamic and served without Next image metadata. */}
@@ -271,8 +272,8 @@ export function LibraryWorkspace() {
                             </video>}
                         <strong>{preview.name}</strong>
                         <div className={styles.previewActions}>
-                            <a href={assetUrl(preview)} download>Download</a>
-                            <button type="button" onClick={() => void removeAsset(preview)} disabled={busy}>Delete</button>
+                            <a href={assetUrl(preview)} download>{ACTION_LABELS.downloadResult}</a>
+                            <button type="button" onClick={() => void removeAsset(preview)} disabled={busy}>刪除</button>
                         </div>
                     </div>
                 </div>

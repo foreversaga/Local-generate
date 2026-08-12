@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { activeJobCount } from "../../lib/job-adapter.mjs";
+import { ACTION_LABELS, jobStatusLabel } from "../../lib/ui-copy.mjs";
 import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-client";
 import styles from "./RecentJobsDrawer.module.css";
 
@@ -41,19 +42,19 @@ export function RecentJobsDrawer() {
   return (
     <div className={styles.root}>
       <button ref={buttonRef} type="button" className={styles.trigger} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span className={styles.pulse} aria-hidden="true" /> Jobs {active > 0 && <span className={styles.count}>{active}</span>}
+        <span className={styles.pulse} aria-hidden="true" /> 工作 {active > 0 && <span className={styles.count}>{active}</span>}
       </button>
       {open && (
         <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
-          <div ref={panelRef} className={styles.panel} role="dialog" aria-modal="true" aria-label="Recent jobs">
-            <div className={styles.header}><div><span>Recent jobs</span><strong>{active} active</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="Close recent jobs">×</button></div>
-            {sourceErrors.length > 0 && <p className={styles.warning} role="status">Some job sources are unavailable; this list is incomplete.</p>}
+          <div ref={panelRef} className={styles.panel} role="dialog" aria-modal="true" aria-label="最近工作">
+            <div className={styles.header}><div><span>最近工作</span><strong>{active} 項進行中</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="關閉最近工作">×</button></div>
+            {sourceErrors.length > 0 && <p className={styles.warning} role="status">部分工作來源無法使用；清單不完整。</p>}
             <div className={styles.list}>
-              {jobs.slice(0, 5).map((job) => <a key={`${job.source}:${job.id}`} href={`/app/jobs/${encodeURIComponent(job.id)}?source=${job.source}`}><span className={`${styles.dot} ${styles[`dot_${job.status}`] || ""}`} /><span><strong>{job.title}</strong><small>{job.status} · {job.progress}%</small></span></a>)}
-              {!jobs.length && sourceErrors.length === 0 && <p>No jobs yet.</p>}
-              {!jobs.length && sourceErrors.length > 0 && <p>Jobs cannot be counted while sources are unavailable.</p>}
+              {jobs.slice(0, 5).map((job) => <a key={`${job.source}:${job.id}`} href={`/app/jobs/${encodeURIComponent(job.id)}?source=${job.source}`}><span className={`${styles.dot} ${styles[`dot_${job.status}`] || ""}`} /><span><strong>{job.title}</strong><small>{jobStatusLabel(job.status, job.source)} · {job.progress}%</small></span></a>)}
+              {!jobs.length && sourceErrors.length === 0 && <p>目前沒有工作。</p>}
+              {!jobs.length && sourceErrors.length > 0 && <p>來源無法使用時無法統計工作。</p>}
             </div>
-            <a className={styles.all} href="/app/jobs">View all jobs →</a>
+            <a className={styles.all} href="/app/jobs">{ACTION_LABELS.viewAll}工作 →</a>
           </div>
         </div>
       )}

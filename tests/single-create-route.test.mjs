@@ -28,8 +28,8 @@ test("renders the routed Single Create UI after Vinext build", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /Single Video/);
-  assert.match(html, /Prompt Assistant/);
+  assert.match(html, /單次影片/);
+  assert.match(html, /提示詞助理/);
   assert.match(html, /single-prompt/);
   assert.match(html, /文字生片/);
   assert.match(html, /多圖參考生片/);

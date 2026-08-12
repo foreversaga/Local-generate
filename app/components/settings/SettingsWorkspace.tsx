@@ -21,12 +21,12 @@ import { formatVram } from "./vram.mjs";
 import styles from "./SettingsWorkspace.module.css";
 
 const REASONING_OPTIONS = [
-  { value: "low", label: "Low", note: "最快" },
-  { value: "medium", label: "Medium", note: "平衡" },
-  { value: "high", label: "High", note: "更完整" },
-  { value: "xhigh", label: "XHigh", note: "深度" },
-  { value: "max", label: "Max", note: "最高" },
-  { value: "ultra", label: "Ultra", note: "自動分工" },
+  { value: "low", label: "低", note: "最快" },
+  { value: "medium", label: "中", note: "平衡" },
+  { value: "high", label: "高", note: "更完整" },
+  { value: "xhigh", label: "極高", note: "深度" },
+  { value: "max", label: "最高", note: "最高" },
+  { value: "ultra", label: "極致", note: "自動分工" },
 ] as const;
 
 const CODEX_FALLBACK = [
@@ -59,7 +59,7 @@ function sameSettings(left: SettingsModel, right: SettingsModel) {
 }
 
 function StatusBadge({ value, pending = false }: { value?: boolean; pending?: boolean }) {
-  const label = pending ? "Checking" : value ? "Online" : "Offline";
+  const label = pending ? "檢查中" : value ? "已連線" : "未連線";
   return <span className={`${styles.statusBadge} ${pending ? styles.pending : value ? styles.online : styles.offline}`}>{label}</span>;
 }
 
@@ -80,12 +80,12 @@ export function SettingsWorkspace() {
     const errors: string[] = [];
     let nextHealth: StudioHealth | null = null;
     if (healthResult.status === "fulfilled") nextHealth = healthResult.value;
-    else errors.push(errorMessage(healthResult.reason, "Service health unavailable."));
+    else errors.push(errorMessage(healthResult.reason, "服務狀態無法取得。"));
     if (runtimeResult.status === "fulfilled") {
       setRuntime(runtimeResult.value.runtime || null);
       if (!nextHealth && runtimeResult.value.health) nextHealth = runtimeResult.value.health;
     } else {
-      errors.push(errorMessage(runtimeResult.reason, "Runtime status unavailable."));
+      errors.push(errorMessage(runtimeResult.reason, "執行環境狀態無法取得。"));
     }
     if (nextHealth) setHealth(nextHealth);
     setStatusError(errors.join(" "));
@@ -170,7 +170,7 @@ export function SettingsWorkspace() {
       setStatusError("");
     } catch (reason) {
       if (reason instanceof SettingsApiError && reason.payload.health) setHealth(reason.payload.health);
-      setRuntimeError(errorMessage(reason, "Runtime switch failed."));
+      setRuntimeError(errorMessage(reason, "切換執行環境失敗。"));
     } finally {
       setSwitching(false);
     }
@@ -181,7 +181,7 @@ export function SettingsWorkspace() {
       <section className={styles.panel} aria-labelledby="runtime-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>MODEL RUNTIME</span>
+            <span className={styles.eyebrow}>模型執行環境</span>
             <h2 id="runtime-title">執行環境</h2>
           </div>
           <StatusBadge value={!statusLoading && Boolean(health?.comfy?.online && health?.ollama?.online)} pending={statusLoading} />
@@ -190,7 +190,7 @@ export function SettingsWorkspace() {
           <div className={styles.runtimeCopy}>
             <strong>{runtimeMode === "remote" ? "Vast RTX 5090" : "本機 GPU"}</strong>
             <span>{runtimeMode === "remote" ? "ComfyUI 18188 · Ollama 11435" : "ComfyUI 8188 · Ollama 11434"}</span>
-            {activeOperations > 0 && <small>目前有 {activeOperations} 個 runtime operation，切換可能被拒絕。</small>}
+            {activeOperations > 0 && <small>目前有 {activeOperations} 個執行中工作，切換可能被拒絕。</small>}
           </div>
           <div className={styles.runtimeButtons} role="group" aria-label="模型執行位置">
             <button type="button" className={runtimeMode === "local" ? styles.activeButton : styles.secondaryButton} onClick={() => void handleRuntimeSwitch("local")} disabled={runtimeBusy || runtimeMode === "local"} aria-pressed={runtimeMode === "local"}>本機</button>
@@ -203,36 +203,36 @@ export function SettingsWorkspace() {
       <section className={styles.panel} aria-labelledby="services-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>SERVICE STATUS</span>
+            <span className={styles.eyebrow}>服務狀態</span>
             <h2 id="services-title">服務狀態</h2>
           </div>
           <button type="button" className={styles.textButton} onClick={() => void refreshStatus()} disabled={statusLoading}>{statusLoading ? "檢查中…" : "重新檢查"}</button>
         </div>
         {statusError && <p className={styles.error} role="alert">{statusError}</p>}
         <dl className={styles.statusGrid}>
-          <div><dt>Bridge</dt><dd><StatusBadge value={health?.bridge} pending={statusLoading} /></dd></div>
+          <div><dt>本機橋接服務</dt><dd><StatusBadge value={health?.bridge} pending={statusLoading} /></dd></div>
           <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd><small>{health?.comfy?.url || "—"}</small></div>
           <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd><small>{health?.ollama?.url || "—"}</small></div>
-          <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "skill ready" : "—")}</small></div>
+          <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "技能已就緒" : "—")}</small></div>
         </dl>
         <div className={styles.deviceList}>
-          <strong>ComfyUI devices</strong>
-          {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `Device ${index + 1}`} · free {formatVram(device.vram_free ?? device.free_memory)} / total {formatVram(device.vram_total ?? device.total_memory)}</span>) : <span>尚未回報 GPU 資訊</span>}
+          <strong>ComfyUI 裝置</strong>
+          {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `裝置 ${index + 1}`} · 可用 {formatVram(device.vram_free ?? device.free_memory)} / 總計 {formatVram(device.vram_total ?? device.total_memory)}</span>) : <span>尚未回報 GPU 資訊</span>}
         </div>
       </section>
 
       <section className={styles.panel} aria-labelledby="defaults-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>PROMPT DEFAULTS</span>
-            <h2 id="defaults-title">Prompt provider 與模型預設</h2>
+            <span className={styles.eyebrow}>提示詞預設</span>
+            <h2 id="defaults-title">提示詞提供者與模型預設</h2>
           </div>
-          <span className={styles.storageNote}>{settingsHydrated ? saveNotice || `Local · ${STUDIO_SETTINGS_STORAGE_KEY}` : "載入中…"}</span>
+          <span className={styles.storageNote}>{settingsHydrated ? saveNotice || `本機 · ${STUDIO_SETTINGS_STORAGE_KEY}` : "載入中…"}</span>
         </div>
-        <p className={styles.helper}>這些偏好會寫入此瀏覽器的 version 1 設定；目前不改變既有 Create payload，供後續 consumer integration 使用。</p>
+        <p className={styles.helper}>這些偏好會寫入此瀏覽器的版本 1 設定；目前不改變既有建立工作內容，供後續流程整合使用。</p>
         <div className={styles.formGrid}>
           <label className={styles.field}>
-            <span>Prompt provider</span>
+            <span>提示詞提供者</span>
             <select value={settings.promptProvider} onChange={(event) => updateSettings({ promptProvider: event.target.value as "ollama" | "codex" })}>
               <option value="ollama">Ollama</option>
               <option value="codex">Codex CLI</option>
@@ -240,25 +240,25 @@ export function SettingsWorkspace() {
             <small>{settings.promptProvider === "ollama" ? (health?.ollama?.online ? "Ollama 在線" : "Ollama 尚未就緒") : (codexReady ? "Codex CLI 與 skill 就緒" : "需要 Codex CLI 與 h3-prompt-writing skill")}</small>
           </label>
           <label className={styles.field}>
-            <span>Ollama model</span>
+            <span>Ollama 模型</span>
             <select value={settings.ollamaModel} onChange={(event) => updateSettings({ ollamaModel: event.target.value })}>
-              {ollamaOptions.map((model) => <option key={model} value={model}>{model}{ollamaModels.includes(model) ? " · installed" : " · default"}</option>)}
+              {ollamaOptions.map((model) => <option key={model} value={model}>{model}{ollamaModels.includes(model) ? " · 已安裝" : " · 預設"}</option>)}
             </select>
-            <small>{ollamaModels.length ? `${ollamaModels.length} 個 health models` : "尚未取得安裝清單，保留目前預設"}</small>
+            <small>{ollamaModels.length ? `${ollamaModels.length} 個可用模型` : "尚未取得安裝清單，保留目前預設"}</small>
           </label>
           <label className={styles.field}>
-            <span>Codex model</span>
+            <span>Codex 模型</span>
             <select value={settings.codexModel} onChange={(event) => updateSettings({ codexModel: event.target.value })}>
               {codexOptions.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}{model.note ? ` · ${model.note}` : ""}</option>)}
             </select>
-            <small>{health?.codex?.models?.length ? `${health.codex.models.length} 個 cache models` : "使用內建 fallback catalog"}</small>
+            <small>{health?.codex?.models?.length ? `${health.codex.models.length} 個快取模型` : "使用內建備援清單"}</small>
           </label>
           <label className={styles.field}>
-            <span>Codex reasoning</span>
+            <span>推理強度（Codex）</span>
             <select value={settings.codexReasoningEffort} onChange={(event) => updateSettings({ codexReasoningEffort: event.target.value })}>
               {reasoningOptions.map((value: string) => <option key={value} value={value}>{REASONING_OPTIONS.find((option) => option.value === value)?.label || value}</option>)}
             </select>
-            <small>會依所選 Codex model 支援程度 reconcile。</small>
+            <small>會依所選 Codex 模型支援程度自動調整。</small>
           </label>
         </div>
       </section>
@@ -266,15 +266,15 @@ export function SettingsWorkspace() {
       <section className={styles.panel} aria-labelledby="runtime-details-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>RUNTIME DETAILS</span>
+            <span className={styles.eyebrow}>執行環境詳情</span>
             <h2 id="runtime-details-title">目前端點</h2>
           </div>
         </div>
         <dl className={styles.endpointGrid}>
-          <div><dt>Active mode</dt><dd>{runtimeMode}</dd></div>
+          <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
           <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
           <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
-          <div><dt>Runtime operations</dt><dd>{activeOperations}</dd></div>
+          <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
         </dl>
       </section>
     </div>

@@ -68,13 +68,13 @@ export function validateSingleRender(input) {
   issues.push(...validateDimension(input.width, "width", "影片寬度", dimensionGrid));
   issues.push(...validateDimension(input.height, "height", "影片高度", dimensionGrid));
   issues.push(...validateNumber(input.steps, "steps", {
-    label: "Steps",
+    label: "採樣步數（Steps）",
     min: 1,
     max: 80,
     integer: true,
   }));
   issues.push(...validateNumber(input.seed, "seed", {
-    label: "Seed",
+    label: "隨機種子（Seed）",
     min: 0,
     max: 2147483647,
     integer: true,

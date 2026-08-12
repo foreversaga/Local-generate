@@ -69,7 +69,7 @@ test("job adapter integrates LoRA status, training progress, ETA, artifact and a
   assert.equal(queued.progress, 0, "caption completion must not make a queued training job complete");
   assert.equal(queued.canCancel, true);
   assert.match(queued.title, /my-character-lora/);
-  assert.match(queued.subtitle, /39 images/);
+  assert.match(queued.subtitle, /39 張圖片/);
 
   const training = adaptJob({ id: "lora-running", status: "training", training: { step: 25, totalSteps: 100, eta: "01:30" } }, "lora");
   assert.equal(training.status, "running");

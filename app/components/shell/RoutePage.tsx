@@ -34,7 +34,7 @@ export function RouteCard({
   title,
   description,
   href,
-  actionLabel = "Open",
+  actionLabel = "開啟工具",
 }: RouteCardProps) {
   return (
     <a className={styles.card} href={href}>

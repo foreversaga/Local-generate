@@ -84,8 +84,8 @@ test("Single Create derives final output resolution from the current image and r
   assert.match(form, /resolutionRequestRef\.current !== requestId/);
   assert.match(form, /setWidth\(""\);\s*setHeight\(""\);/);
   assert.match(form, /data-resolution-status=\{resolutionStatus\}/);
-  assert.match(form, /Manual output resolution; the values shown here will be submitted/);
-  assert.match(form, /Unable to read dimensions for/);
+  assert.match(form, /手動輸入輸出尺寸/);
+  assert.match(form, /無法讀取 .* 的尺寸/);
   assert.match(form, /onChange=\{\(event\) => updateResolutionDimension\("width", numberDraft\(event\.target\.value\)\)\}/);
   assert.match(form, /onChange=\{\(event\) => updateResolutionDimension\("height", numberDraft\(event\.target\.value\)\)\}/);
   assert.match(form, /onClearReference=\{\(\) => \{\s*setReferenceImage\(null\);\s*resetResolutionToDefault\(\);/);

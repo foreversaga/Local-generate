@@ -100,7 +100,7 @@ export function buildLongSaveRequest(input) {
 export function validateLongCreate(input) {
   const issues = [];
   if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
-  if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "圖片起點需要 first_frame 參考圖。" });
+  if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "從圖片開始時需要至少一張起始參考圖片。" });
   if (input.timelineMode === "manual") {
     if (!String(input.timelineText || "").trim()) issues.push({ field: "timelineText", message: "手動時間軸模式需要至少兩段分鏡。" });
     else if (parseLongTimelineDraft(input.timelineText, []).length < 2) issues.push({ field: "timelineText", message: "手動時間軸至少需要兩段有效時間範圍。" });
@@ -115,7 +115,7 @@ export function validateLongCreate(input) {
   if (input.requireSavedPlan) {
     if (!input.plan) issues.push({ field: "plan", message: "請先產生分鏡與 H3 提示詞。" });
     else if (input.planDirty) issues.push({ field: "plan", message: "規劃輸入已變更，請重新產生分鏡。" });
-    if (!String(input.outputFolder || "").trim()) issues.push({ field: "outputFolder", message: "Output folder is required." });
+    if (!String(input.outputFolder || "").trim()) issues.push({ field: "outputFolder", message: "請輸入輸出資料夾。" });
   }
   return issues;
 }

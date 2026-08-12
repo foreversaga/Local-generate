@@ -11,10 +11,10 @@ test("LoRA Trainer is discoverable from Tools and mounts its workspace route", a
     read("../app/lib/webui-routes.mjs"),
   ]);
 
-  assert.match(tools, /title="LoRA Trainer"[\s\S]*href="\/app\/tools\/lora-trainer"[\s\S]*actionLabel="Open trainer"/);
+  assert.match(tools, /title="LoRA 訓練"[\s\S]*href="\/app\/tools\/lora-trainer"[\s\S]*actionLabel="開啟工具"/);
   assert.match(page, /import \{ LoraTrainerWorkspace \}/);
   assert.match(page, /<LoraTrainerWorkspace \/>/);
-  assert.match(routes, /normalizedPath === "\/app\/tools\/lora-trainer"\) return "LoRA Trainer"/);
+  assert.match(routes, /normalizedPath === "\/app\/tools\/lora-trainer"\) return "工具 \/ LoRA 訓練"/);
 });
 
 test("LoRA Trainer keeps the multi-image, auto/manual, and one-click start contract", async () => {
@@ -45,7 +45,7 @@ test("LoRA Trainer exposes caption, progress, artifact, consumer, and accessibil
     read("../app/components/tools/lora-trainer/lora-training-client.ts"),
   ]);
 
-  assert.match(workspace, /<label htmlFor=\{fieldId\}>Caption<\/label><textarea id=\{fieldId\}/);
+  assert.match(workspace, /<label htmlFor=\{fieldId\}>圖片描述<\/label><textarea id=\{fieldId\}/);
   assert.match(workspace, /aria-invalid=\{record\.status === "failed"\}/);
   assert.match(workspace, /aria-describedby=\{record\.error \? errorId : undefined\}/);
   assert.match(workspace, /onClick=\{confirmCaptionReview\}/);
@@ -53,11 +53,11 @@ test("LoRA Trainer exposes caption, progress, artifact, consumer, and accessibil
   assert.match(workspace, /aria-labelledby="progress-title" aria-live="polite"/);
   assert.match(workspace, /role="progressbar"/);
   assert.match(workspace, /aria-valuemin=\{0\} aria-valuemax=\{100\} aria-valuenow=\{progress\}/);
-  for (const label of ["Step", "Epoch", "Loss", "ETA"]) assert.match(workspace, new RegExp(`<dt>${label}</dt>`));
+  for (const label of ["步數", "訓練輪數", "損失", "預估剩餘"]) assert.match(workspace, new RegExp(`<dt>${label}</dt>`));
 
-  assert.match(workspace, /<Meta label="Registry ID"/);
+  assert.match(workspace, /<Meta label="註冊編號"/);
   assert.match(workspace, /<Meta label="SHA-256"/);
-  assert.match(workspace, /<summary>Provenance<\/summary>/);
+  assert.match(workspace, /<summary>來源資訊<\/summary>/);
   assert.match(workspace, /artifactDownloadUrl\(job\.id\)/);
   assert.match(workspace, /href=\{`\/app\/tools\/image-to-image\$\{[\s\S]*`\}/);
   assert.match(workspace, /\?lora=\$\{encodeURIComponent\(/);

@@ -90,7 +90,7 @@ test("Long validation covers story, images, timeline and render setup", () => {
   };
   assert.deepEqual(validateLongCreate(base), []);
   assert.match(validateLongCreate({ ...base, inputText: "" })[0].message, /故事描述/);
-  assert.match(validateLongCreate({ ...base, inputType: "image" })[0].message, /first_frame/);
+  assert.match(validateLongCreate({ ...base, inputType: "image" })[0].message, /起始參考圖片/);
   assert.match(validateLongCreate({ ...base, timelineMode: "manual", timelineText: "one" })[0].message, /至少需要兩段/);
   assert.match(validateLongCreate({ ...base, width: 750 })[0].message, /32 的倍數/);
 });

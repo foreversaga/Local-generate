@@ -70,11 +70,11 @@ test("primary WebUI routes match the approved navigation", () => {
   assert.deepEqual(
     WEB_UI_ROUTES.map(({ id, label, href }) => ({ id, label, href })),
     [
-      { id: "create", label: "Create", href: "/app/create" },
-      { id: "jobs", label: "Jobs", href: "/app/jobs" },
-      { id: "library", label: "Library", href: "/app/library" },
-      { id: "tools", label: "Tools", href: "/app/tools" },
-      { id: "settings", label: "Settings", href: "/app/settings" },
+      { id: "create", label: "建立", href: "/app/create" },
+      { id: "jobs", label: "工作", href: "/app/jobs" },
+      { id: "library", label: "素材庫", href: "/app/library" },
+      { id: "tools", label: "工具", href: "/app/tools" },
+      { id: "settings", label: "設定", href: "/app/settings" },
     ],
   );
 });
@@ -91,13 +91,13 @@ test("route mapping keeps nested routes on the correct primary navigation item",
 });
 
 test("route titles identify important child pages", () => {
-  assert.equal(routeTitle("/app/create"), "Create");
-  assert.equal(routeTitle("/app/create/single"), "Create / Single");
-  assert.equal(routeTitle("/app/create/long"), "Create / Long");
-  assert.equal(routeTitle("/app/jobs/job-123"), "Job Detail");
-  assert.equal(routeTitle("/app/tools"), "Tools");
-  assert.equal(routeTitle("/app/tools/upscale"), "Upscale");
-  assert.equal(routeTitle("/app/tools/image-to-image"), "Image to Image");
+  assert.equal(routeTitle("/app/create"), "建立");
+  assert.equal(routeTitle("/app/create/single"), "建立 / 單次影片");
+  assert.equal(routeTitle("/app/create/long"), "建立 / 長影片");
+  assert.equal(routeTitle("/app/jobs/job-123"), "工作詳情");
+  assert.equal(routeTitle("/app/tools"), "工具");
+  assert.equal(routeTitle("/app/tools/upscale"), "工具 / 影片升頻");
+  assert.equal(routeTitle("/app/tools/image-to-image"), "工具 / 以圖生圖");
 });
 
 test("valid t2v render has no validation issues", () => {

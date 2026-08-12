@@ -28,6 +28,7 @@ import {
     type Img2ImgRuntimeMode,
     type Img2ImgSubmitInput,
 } from "./img2img-client";
+import { ACTION_LABELS, FIELD_LABELS, jobStatusLabel, readinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
 import styles from "./ImageToImageWorkspace.module.css";
 
 const IMG2IMG_MODELS = [
@@ -39,7 +40,7 @@ const IMG2IMG_MODELS = [
         cfg: "1",
         denoise: 0.65,
         loraFamily: "SDXL",
-        loraHint: "SDXL LoRA only. 真人起始 0.55–0.75；動漫 0.7–0.9。",
+        loraHint: "僅支援 SDXL LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: false,
     },
     {
@@ -50,7 +51,7 @@ const IMG2IMG_MODELS = [
         cfg: "7",
         denoise: 0.65,
         loraFamily: "SD1.5",
-        loraHint: "SD1.5 LoRA only. 真人起始 0.55–0.75；動漫 0.7–0.9。",
+        loraHint: "僅支援 SD1.5 LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: false,
     },
     {
@@ -61,7 +62,7 @@ const IMG2IMG_MODELS = [
         cfg: "1",
         denoise: 0.33,
         loraFamily: "Z-Image",
-        loraHint: "Z-Image-trained LoRA only；真人起始 0.55–0.75，動漫 0.7–0.9。",
+        loraHint: "僅支援以 Z-Image 訓練的 LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: true,
     },
     {
@@ -72,7 +73,7 @@ const IMG2IMG_MODELS = [
         cfg: "7",
         denoise: 0.65,
         loraFamily: "SDXL",
-        loraHint: "SDXL LoRA only. 真人起始 0.55–0.75；動漫 0.7–0.9。",
+        loraHint: "僅支援 SDXL LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: true,
     },
 ] as const;
@@ -128,20 +129,7 @@ function itemParameter(item: Img2ImgItem, key: BaseValueKey, fallback: number) {
 }
 
 function itemStatusLabel(status: string) {
-    switch (status) {
-        case "completed":
-        case "complete":
-            return "Completed";
-        case "failed":
-        case "error":
-            return "Failed";
-        case "running":
-            return "Running";
-        case "queued":
-            return "Queued";
-        default:
-            return status || "Unknown";
-    }
+    return jobStatusLabel(status, "img2img");
 }
 
 function modelOption(value: string) {
@@ -169,14 +157,14 @@ function modelSupportsPromptImages(model: string) {
     return normalized.includes("-vl") || normalized.includes("gemma3") || normalized.includes("gemma4") || normalized.includes("gemma3n");
 }
 
-const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機 runtime。";
+const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機執行環境。";
 
 function parseNumberDraft(raw: string, label: string, min: number, max: number, integer = false, step?: number) {
     if (!raw.trim()) return `${label} 必須填寫。`;
     const value = Number(raw);
     const aligned = step === undefined || Math.abs((value - min) / step - Math.round((value - min) / step)) <= 1e-8;
     if (!Number.isFinite(value) || (integer && !Number.isInteger(value)) || value < min || value > max || !aligned) {
-        if (Number.isFinite(value) && aligned === false && value >= min && value <= max) return `${label} must align to step ${step}.`;
+        if (Number.isFinite(value) && aligned === false && value >= min && value <= max) return `${label} 必須符合步進值 ${step}。`;
         return `${label} 必須介於 ${min} 與 ${max}${integer ? " 的整數" : ""}。`;
     }
     return null;
@@ -193,7 +181,7 @@ function characterLoraNameError(raw: string) {
         || normalized.includes("\0")
         || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
     ) {
-        return "Character LoRA must be a safe relative path under ComfyUI/models/loras.";
+        return "角色 LoRA 必須是 ComfyUI/models/loras 下的安全相對路徑。";
     }
     return null;
 }
@@ -210,21 +198,9 @@ function apiErrorMessage(payload: PromptApiPayload, fallback: string) {
     return code ? `${code}: ${message}` : message;
 }
 
-function statusLabel(job: Img2ImgJob | null) {
-    if (job?.status === "cancelling") return job.stage ? `Cancelling · ${job.stage}` : "Cancelling";
-    if (job?.status === "interrupted") return job.stage ? `Interrupted · ${job.stage}` : "Interrupted";
+function localizedJobStatusLabel(job: Img2ImgJob | null) {
     if (!job) return "尚未開始生成";
-    const label = job.status === "partial"
-        ? "Partial"
-        : job.status === "completed"
-        ? "已完成"
-        : job.status === "failed"
-            ? "生成失敗"
-            : job.status === "cancelled"
-                ? "已取消"
-                : job.status === "running"
-                    ? "正在生成"
-                    : "等待處理";
+    const label = jobStatusLabel(job.status, "img2img");
     return job.stage ? `${label} · ${job.stage}` : label;
 }
 
@@ -299,7 +275,7 @@ export function ImageToImageWorkspace() {
             setHealth(readinessResult.value);
             setHealthError("");
         } else {
-            setHealthError(errorMessage(readinessResult.reason, "無法取得 ComfyUI readiness。"));
+            setHealthError(errorMessage(readinessResult.reason, "無法取得 ComfyUI 檢查結果。"));
         }
         if (runtimeResult.status === "fulfilled") {
             setRuntimeMode(runtimeResult.value);
@@ -363,7 +339,7 @@ export function ImageToImageWorkspace() {
             setHistory(sorted);
             setHistoryError("");
         } catch (reason) {
-            setHistoryError(errorMessage(reason, "Unable to load image-to-image history."));
+            setHistoryError(errorMessage(reason, "無法載入以圖生圖歷史紀錄。"));
         } finally {
             setHistoryLoading(false);
         }
@@ -389,7 +365,7 @@ export function ImageToImageWorkspace() {
                 const next = await fetchImg2ImgJob(trackedJobId);
                 if (active) {
                     setJob(next);
-                    if (next.status === "partial") setError(next.error || "Some batch images failed.");
+                    if (next.status === "partial") setError(next.error || "部分批次圖片生成失敗。");
                     if (next.status === "failed") setError(next.error || "以圖生圖失敗。 ");
                 }
             } catch (reason) {
@@ -418,7 +394,7 @@ export function ImageToImageWorkspace() {
     const characterLoraOptions = characterLoraRegistry.model === model ? characterLoraRegistry.values : [];
     const characterLoraNameIssue = characterLoraNameError(characterLoraName);
     const characterLoraStrengthIssue = characterLoraName.trim()
-        ? parseNumberDraft(characterLoraStrength, "LoRA strength", 0, 2, false, 0.05)
+        ? parseNumberDraft(characterLoraStrength, FIELD_LABELS.loraStrength, 0, 2, false, 0.05)
         : null;
     const visiblePromptModels = promptHealth?.ollama?.models || [];
     const effectivePromptModel = visiblePromptModels.includes(promptModel)
@@ -429,7 +405,7 @@ export function ImageToImageWorkspace() {
     const characterLoraRequested = Boolean(characterLoraName.trim());
     const characterLoraReady = !characterLoraRequested || Boolean(health?.profiles?.[model]?.loraAvailable);
     const characterLoraReadinessMessage = characterLoraRequested && health && !characterLoraReady
-        ? `ComfyUI does not expose ${health.profiles?.[model]?.loraLoader || "the required LoRA loader"} for this model.`
+        ? `ComfyUI 未提供此模型所需的 LoRA 載入器（${health.profiles?.[model]?.loraLoader || "未指定"}）。`
         : "";
     const optionAvailable = (value: string) => {
         if (healthLoading) return true;
@@ -438,7 +414,7 @@ export function ImageToImageWorkspace() {
     const readinessBlockingMessage = !modelRuntimeReady
         ? LOCAL_ONLY_MODEL_MESSAGE
         : characterLoraReadinessMessage || (health ? img2ImgReadinessMessage(health, model) : "");
-    const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選 checkpoint 均可用。" : "尚未取得 ComfyUI readiness；提交時會再次檢查。 ");
+    const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選模型設定檔均可用。" : "尚未取得 ComfyUI 檢查結果；提交時會再次檢查。 ");
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
@@ -457,9 +433,9 @@ export function ImageToImageWorkspace() {
                 const itemSteps = itemParameter(item, "steps", Number(record.steps));
                 const itemCfg = itemParameter(item, "cfg", Number(record.cfg));
                 const itemSeed = itemParameter(item, "seed", Number(record.seed));
-                return `denoise ${itemDenoise} steps ${itemSteps} cfg ${itemCfg} seed ${itemSeed}`;
+                return `重繪強度 ${itemDenoise} 採樣步數 ${itemSteps} CFG ${itemCfg} 隨機種子 ${itemSeed}`;
             }).join(" ");
-            const baseParameters = `denoise ${record.denoise} steps ${record.steps} cfg ${record.cfg} seed ${record.seed}`;
+            const baseParameters = `重繪強度 ${record.denoise} 採樣步數 ${record.steps} CFG ${record.cfg} 隨機種子 ${record.seed}`;
             return `${record.id} ${record.prompt} ${record.model} ${record.characterLoraName || ""} ${record.characterLoraStrength ?? ""} ${baseParameters} ${itemParameters}`.toLowerCase().includes(needle);
         });
     }, [history, historyQuery]);
@@ -513,19 +489,19 @@ export function ImageToImageWorkspace() {
 
     async function generatePrompt() {
         if (!source || source.kind !== "image") {
-            setError("Please choose a source image first.");
+            setError("請先選擇來源圖片。");
             return;
         }
         if (!promptDescription.trim()) {
-            setError("Enter an image transformation description first.");
+            setError("請先輸入圖片轉換描述。");
             return;
         }
         if (!promptProviderReady) {
-            setError("Ollama is unavailable or has no installed prompt model.");
+            setError("Ollama 無法使用，或尚未安裝提示詞模型。");
             return;
         }
         if (!modelSupportsPromptImages(effectivePromptModel)) {
-            setError(`Prompt model ${effectivePromptModel} does not support image understanding; choose a vision model.`);
+            setError(`提示詞模型 ${effectivePromptModel} 不支援圖片理解，請選擇視覺模型。`);
             return;
         }
         if (promptBusy || uploading || submitting || retrying || active) return;
@@ -548,14 +524,14 @@ export function ImageToImageWorkspace() {
                 }),
             });
             const payload = await response.json().catch(() => ({})) as PromptApiPayload;
-            if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama did not return a prompt."));
+            if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama 沒有回傳提示詞。"));
             if (!payload.prompt?.trim() || !payload.negativePrompt?.trim()) {
-                throw new Error("Ollama returned an invalid response; both positive and negative prompts are required.");
+                throw new Error("Ollama 回傳的結果格式不完整；正向與負向提示詞都必須存在。" );
             }
             setPrompt(payload.prompt.trim());
             setNegativePrompt(payload.negativePrompt.trim());
         } catch (reason) {
-            setError(errorMessage(reason, "Unable to generate an image-to-image prompt."));
+            setError(errorMessage(reason, "無法產生以圖生圖提示詞。"));
         } finally {
             setPromptBusy(false);
         }
@@ -579,26 +555,26 @@ export function ImageToImageWorkspace() {
         if (characterLoraNameIssue) return characterLoraNameIssue;
         if (characterLoraStrengthIssue) return characterLoraStrengthIssue;
         if (!modelRuntimeReady) return LOCAL_ONLY_MODEL_MESSAGE;
-        if (!readinessReady) return readinessBlockingMessage || "尚未取得可用的 ComfyUI readiness 或所選 checkpoint。";
+        if (!readinessReady) return readinessBlockingMessage || "尚未取得可用的 ComfyUI 檢查結果或所選模型設定檔。";
         if (readinessBlockingMessage) return readinessBlockingMessage;
         const batchError = parseNumberDraft(batchCount, "生成張數", 1, 20, true);
         if (batchError) return batchError;
         for (const key of Object.keys(RANGE_BOUNDS) as RandomRangeKey[]) {
             const bounds = RANGE_BOUNDS[key];
             const draft = randomRanges[key];
-            const minError = parseNumberDraft(draft.min, `${key} range min`, bounds.min, bounds.max, bounds.integer, bounds.step);
+            const minError = parseNumberDraft(draft.min, `${FIELD_LABELS[key === "denoise" ? "denoise" : key === "steps" ? "steps" : "cfg"]} 最小值`, bounds.min, bounds.max, bounds.integer, bounds.step);
             if (minError) return minError;
-            const maxError = parseNumberDraft(draft.max, `${key} range max`, bounds.min, bounds.max, bounds.integer, bounds.step);
+            const maxError = parseNumberDraft(draft.max, `${FIELD_LABELS[key === "denoise" ? "denoise" : key === "steps" ? "steps" : "cfg"]} 最大值`, bounds.min, bounds.max, bounds.integer, bounds.step);
             if (maxError) return maxError;
-            if (Number(draft.min) > Number(draft.max)) return `${key} range min must be less than or equal to max.`;
+            if (Number(draft.min) > Number(draft.max)) return `${FIELD_LABELS[key === "denoise" ? "denoise" : key === "steps" ? "steps" : "cfg"]} 的最小值不可大於最大值。`;
         }
         const denoiseError = parseNumberDraft(String(denoise), "重繪強度", 0.01, 1);
         if (denoiseError) return denoiseError;
-        const stepsError = parseNumberDraft(steps, "Steps", 1, 50, true);
+        const stepsError = parseNumberDraft(steps, FIELD_LABELS.steps, 1, 50, true);
         if (stepsError) return stepsError;
         const cfgError = parseNumberDraft(cfg, "CFG", 0, 20);
         if (cfgError) return cfgError;
-        return parseNumberDraft(seed, "Seed", 0, 2147483647, true);
+        return parseNumberDraft(seed, FIELD_LABELS.seed, 0, 2147483647, true);
     }
 
     function firstValidationField() {
@@ -612,21 +588,22 @@ export function ImageToImageWorkspace() {
         for (const key of Object.keys(RANGE_BOUNDS) as RandomRangeKey[]) {
             const bounds = RANGE_BOUNDS[key];
             const draft = randomRanges[key];
-            if (parseNumberDraft(draft.min, `${key} range min`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Min`;
-            if (parseNumberDraft(draft.max, `${key} range max`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Max`;
+            const fieldLabel = FIELD_LABELS[key === "denoise" ? "denoise" : key === "steps" ? "steps" : "cfg"];
+            if (parseNumberDraft(draft.min, `${fieldLabel} 最小值`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Min`;
+            if (parseNumberDraft(draft.max, `${fieldLabel} 最大值`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Max`;
             if (Number(draft.min) > Number(draft.max)) return `${key}Min`;
         }
         if (parseNumberDraft(String(denoise), "重繪強度", 0.01, 1)) return "denoise";
-        if (parseNumberDraft(steps, "Steps", 1, 50, true)) return "steps";
+        if (parseNumberDraft(steps, FIELD_LABELS.steps, 1, 50, true)) return "steps";
         if (parseNumberDraft(cfg, "CFG", 0, 20)) return "cfg";
-        if (parseNumberDraft(seed, "Seed", 0, 2147483647, true)) return "seed";
+        if (parseNumberDraft(seed, FIELD_LABELS.seed, 0, 2147483647, true)) return "seed";
         return "";
     }
 
     function requestBody(): Img2ImgSubmitInput {
         const sourceRoot = source?.root;
         if (sourceRoot && !isImg2ImgAssetRoot(sourceRoot)) {
-            throw new Error("Image-to-image only supports input or output assets.");
+            throw new Error("以圖生圖只支援素材或生成結果。" );
         }
         return {
             sourceName: source?.name || "",
@@ -678,7 +655,7 @@ export function ImageToImageWorkspace() {
         try {
             setJob(await cancelImg2ImgJob(job.id));
         } catch (reason) {
-            setError(errorMessage(reason, "Unable to cancel image-to-image job."));
+            setError(errorMessage(reason, "無法取消以圖生圖工作。"));
         } finally {
             setCancelling(false);
         }
@@ -709,7 +686,7 @@ export function ImageToImageWorkspace() {
             await deleteAsset(output);
             setJob(null);
         } catch (reason) {
-            setError(errorMessage(reason, "Unable to delete the image-to-image result."));
+            setError(errorMessage(reason, "無法刪除以圖生圖結果。"));
         } finally {
             setDeleting(false);
         }
@@ -725,7 +702,7 @@ export function ImageToImageWorkspace() {
                 ? { ...previous, items: previous.items?.map((candidate) => candidate.index === item.index ? { ...candidate, output: undefined } : candidate) }
                 : previous);
         } catch (reason) {
-            setError(errorMessage(reason, "Unable to delete the image-to-image result."));
+            setError(errorMessage(reason, "無法刪除以圖生圖結果。"));
         } finally {
             setDeleting(false);
         }
@@ -737,7 +714,7 @@ export function ImageToImageWorkspace() {
                 <section className={styles.panel} aria-labelledby="img2img-source-title">
                     <div className={styles.sectionHeader}>
                         <div>
-                            <span className={styles.eyebrow}>SOURCE IMAGE</span>
+                            <span className={styles.eyebrow}>來源圖片</span>
                             <h2 id="img2img-source-title">來源圖片</h2>
                         </div>
                         <span className={styles.sectionCode}>PNG · JPG · WEBP</span>
@@ -748,18 +725,18 @@ export function ImageToImageWorkspace() {
                             <img src={assetUrl(source)} alt={`以圖生圖來源：${source.name}`} />
                             <div className={styles.sourceMeta}>
                                 <strong title={source.name}>{source.name}</strong>
-                                <span>{source.root} · {source.mime || "image"}</span>
+                                <span>{sourceLabel(source.root)} · {source.mime || "圖片"}</span>
                                 <button type="button" className={styles.secondaryButton} onClick={() => { setSource(null); setJob(null); setError(""); }}>移除來源</button>
                             </div>
                         </div>
                     ) : (
                         <div className={styles.emptySource}>
                             <strong>選擇或上傳一張圖片</strong>
-                            <span>可使用 input 或 output 素材。</span>
+                            <span>可從素材庫選擇素材或上傳圖片。</span>
                         </div>
                     )}
                     <div className={styles.sourceActions}>
-                        <AssetPickerButton triggerId="img2img-source-picker" kind="image" selectedKeys={selectedKey} label="從 Library 選取" onSelect={selectSource} />
+                        <AssetPickerButton triggerId="img2img-source-picker" kind="image" selectedKeys={selectedKey} label={ACTION_LABELS.browseLibrary} onSelect={selectSource} />
                         <button type="button" className={styles.secondaryButton} onClick={() => inputRef.current?.click()} disabled={uploading}>
                             {uploading ? "上傳中…" : "上傳圖片"}
                         </button>
@@ -770,17 +747,17 @@ export function ImageToImageWorkspace() {
                 <section className={styles.panel} aria-labelledby="img2img-readiness-title">
                     <div className={styles.sectionHeader}>
                         <div>
-                            <span className={styles.eyebrow}>COMFYUI READINESS</span>
+                        <span className={styles.eyebrow}>ComfyUI 狀態</span>
                             <h2 id="img2img-readiness-title">執行環境</h2>
                         </div>
-                        <span className={`${styles.statusChip} ${styles[readinessState]}`}>{readinessState === "ready" ? "Ready" : readinessState === "checking" ? "Checking" : "Needs attention"}</span>
+                        <span className={`${styles.statusChip} ${styles[readinessState]}`}>{readinessLabel(readinessState === "blocked" ? "needs_attention" : readinessState)}</span>
                     </div>
-                    <p className={styles.helper} aria-live="polite" aria-atomic="true">{readinessMessage || "ComfyUI、必要節點與所選 checkpoint 均可用。"}</p>
+                    <p className={styles.helper} aria-live="polite" aria-atomic="true">{readinessMessage || "ComfyUI、必要節點與所選模型設定檔均可用。"}</p>
                     {healthError && <p className={styles.error} role="alert">{healthError}</p>}
                     <dl className={styles.readinessList}>
-                        <div><dt>ComfyUI</dt><dd>{health?.comfyUi === false ? "Offline" : health?.comfyUi ? "Online" : "—"}</dd></div>
-                        <div><dt>Model</dt><dd>{modelReady ? "Available" : "Missing"}</dd></div>
-                        <div><dt>Nodes</dt><dd>{Object.values(health?.nodes || {}).filter(Boolean).length}/{Object.keys(health?.nodes || {}).length || "—"}</dd></div>
+                        <div><dt>ComfyUI</dt><dd>{health?.comfyUi === false ? "未連線" : health?.comfyUi ? "已連線" : "—"}</dd></div>
+                        <div><dt>模型</dt><dd>{modelReady ? "可用" : "缺少"}</dd></div>
+                        <div><dt>節點</dt><dd>{Object.values(health?.nodes || {}).filter(Boolean).length}/{Object.keys(health?.nodes || {}).length || "—"}</dd></div>
                     </dl>
                     <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading}>{healthLoading ? "檢查中…" : "重新檢查"}</button>
                 </section>
@@ -789,26 +766,26 @@ export function ImageToImageWorkspace() {
             <section className={styles.panel} aria-labelledby="img2img-prompt-title">
                 <div className={styles.sectionHeader}>
                     <div>
-                        <span className={styles.eyebrow}>PROMPT</span>
+                        <span className={styles.eyebrow}>提示詞</span>
                         <h2 id="img2img-prompt-title">提示詞與設定</h2>
                     </div>
-                    <span className={styles.sectionCode}>IMAGE TO IMAGE</span>
+                    <span className={styles.sectionCode}>以圖生圖</span>
                 </div>
                 <div className={styles.formGrid}>
                     <label className={styles.fieldWide}>
-                        <span>Prompt description for Ollama</span>
+                        <span>給 Ollama 的提示詞描述</span>
                         <textarea
                             id="img2img-description"
                             value={promptDescription}
                             maxLength={4000}
                             rows={3}
-                            placeholder="Describe how the source image should be transformed."
+                            placeholder="描述來源圖片要如何轉換。"
                             aria-describedby="img2img-description-help"
                             onChange={(event) => { setPromptDescription(event.target.value); if (error) setError(""); }}
                         />
                         <small id="img2img-description-help">
-                            Ollama will inspect the source image and write positive and negative prompts.
-                            {promptProviderReady ? ` Model: ${effectivePromptModel}` : " Vision model unavailable."}
+                            Ollama 會分析來源圖片並產生正面與負面提示詞。
+                            {promptProviderReady ? ` 模型：${effectivePromptModel}` : " 視覺模型無法使用。"}
                         </small>
                     </label>
                     <button
@@ -818,30 +795,30 @@ export function ImageToImageWorkspace() {
                         disabled={promptBusy || uploading || submitting || retrying || active}
                         aria-busy={promptBusy}
                     >
-                        {promptBusy ? "Generating prompt…" : "Use Ollama to generate prompt"}
+                        {promptBusy ? "產生提示詞中…" : "使用 Ollama 產生提示詞"}
                     </button>
                     <label className={styles.fieldWide}>
-                        <span>正向提示詞 <em>*</em></span>
+                        <span>{FIELD_LABELS.prompt} <em>*</em></span>
                         <textarea id="img2img-prompt" value={prompt} maxLength={4000} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
                         <small>{prompt.length}/4000</small>
                     </label>
                     <label className={styles.fieldWide}>
-                        <span>負向提示詞（可選）</span>
-                        <textarea id="img2img-negative-prompt" value={negativePrompt} maxLength={4000} rows={3} placeholder="blurry, low quality, artifacts" onChange={(event) => setNegativePrompt(event.target.value)} />
+                        <span>{FIELD_LABELS.negativePrompt}（選填）</span>
+                        <textarea id="img2img-negative-prompt" value={negativePrompt} maxLength={4000} rows={3} placeholder="模糊、低畫質、瑕疵" onChange={(event) => setNegativePrompt(event.target.value)} />
                     </label>
                     <label className={styles.field}>
-                        <span>模型</span>
+                        <span>{FIELD_LABELS.model}</span>
                         <select id="img2img-model" value={model} disabled={active} onChange={(event) => updateModel(event.target.value as ModelValue)}>
                             {visibleModels.map((item) => {
                                 const available = optionAvailable(item.value);
-                                return <option key={item.value} value={item.value} disabled={!available}>{item.label}{available ? "" : " · Unavailable"}</option>;
+                                return <option key={item.value} value={item.value} disabled={!available}>{item.label}{available ? "" : " · 無法使用"}</option>;
                             })}
                         </select>
                         <small>{selectedModel?.note || "尚未選擇可用模型。"}</small>
-                        {runtimeMode !== "local" && <small>本機限定模型會在 local runtime 就緒後顯示。</small>}
+                        {runtimeMode !== "local" && <small>本機限定模型會在本機執行環境就緒後顯示。</small>}
                     </label>
                     <label className={styles.field}>
-                        <span>角色 LoRA <em>optional</em></span>
+                        <span>角色 LoRA <em>（選填）</em></span>
                         <input
                             id="img2img-character-lora"
                             type="text"
@@ -859,13 +836,13 @@ export function ImageToImageWorkspace() {
                             {characterLoraOptions.map((name) => <option key={name} value={name} />)}
                         </datalist>
                         <small id="img2img-character-lora-help">
-                            {selectedModel?.loraHint || "Choose a LoRA trained for this model family; Wan2.2 Animate LoRA is not compatible."}
-                            {characterLoraOptions.length ? " Discovered LoRAs are suggestions; manual relative paths are also accepted." : " LoRA discovery unavailable; enter a models/loras relative path manually."}
+                            {selectedModel?.loraHint || "請選擇以此模型系列訓練的 LoRA；Wan2.2 Animate LoRA 不相容。"}
+                            {characterLoraOptions.length ? " 已找到的 LoRA 僅供選擇，也可以手動輸入相對路徑。" : "目前無法探索 LoRA，請手動輸入 models/loras 下的相對路徑。"}
                         </small>
                         {characterLoraNameIssue && <small id="img2img-character-lora-error" className={styles.error} role="alert">{characterLoraNameIssue}</small>}
                     </label>
                     <label className={styles.field}>
-                        <span>LoRA strength <strong>{characterLoraStrength.trim() ? Number(characterLoraStrength).toFixed(2) : "—"}</strong></span>
+                        <span>{FIELD_LABELS.loraStrength} <strong>{characterLoraStrength.trim() ? Number(characterLoraStrength).toFixed(2) : "—"}</strong></span>
                         <input
                             id="img2img-character-lora-strength"
                             type="number"
@@ -879,40 +856,40 @@ export function ImageToImageWorkspace() {
                             onChange={(event) => setCharacterLoraStrength(event.target.value)}
                         />
                         <small id="img2img-character-lora-strength-help">
-                            Range 0–2, default 0.75; clear the LoRA name to omit both fields.
+                            範圍 0–2，預設 0.75；移除 LoRA 名稱即可不使用此設定。
                         </small>
                         {characterLoraStrengthIssue && <small id="img2img-character-lora-strength-error" className={styles.error} role="alert">{characterLoraStrengthIssue}</small>}
                     </label>
                     <label className={styles.field}>
-                        <span>重繪強度 <strong>{denoise.toFixed(2)}</strong></span>
+                        <span>{FIELD_LABELS.denoise} <strong>{denoise.toFixed(2)}</strong></span>
                         <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
                         <small>越高越偏離原圖；0.45–0.70 通常較平衡。</small>
                     </label>
                     <label className={styles.field}>
-                        <span>Steps</span>
+                        <span>{FIELD_LABELS.steps}</span>
                         <input id="img2img-steps" type="number" min="1" max="50" step="1" value={steps} disabled={active} onChange={(event) => updateBaseValue("steps", event.target.value)} />
                     </label>
                     <label className={styles.field}>
-                        <span>CFG</span>
+                        <span>{FIELD_LABELS.cfg}</span>
                         <input id="img2img-cfg" type="number" min="0" max="20" step="0.5" value={cfg} disabled={active} onChange={(event) => updateBaseValue("cfg", event.target.value)} />
                     </label>
                     <label className={styles.field}>
-                        <span>Seed</span>
+                        <span>{FIELD_LABELS.seed}</span>
                         <input id="img2img-seed" type="number" min="0" max="2147483647" step="1" value={seed} disabled={active || Number(batchCount) > 1} onChange={(event) => updateBaseValue("seed", event.target.value)} aria-describedby="img2img-seed-help" />
                         <button
                             type="button"
                             className={styles.secondaryButton}
                             onClick={randomizeSeed}
                             disabled={active || Number(batchCount) > 1}
-                            aria-label="Randomize Seed"
-                            title="Randomize Seed"
+                            aria-label="隨機產生種子"
+                            title="隨機產生種子"
                         >
-                            ↻ Random Seed
+                            ↻ 隨機種子
                         </button>
-                        <small id="img2img-seed-help">{Number(batchCount) > 1 ? "批次模式會為每張圖片自動產生隨機 Seed。" : "單張生成時使用此 Seed。"}</small>
+                        <small id="img2img-seed-help">{Number(batchCount) > 1 ? "批次模式會為每張圖片自動產生隨機種子。" : "單張生成時使用此隨機種子。"}</small>
                     </label>
                     <label className={styles.field}>
-                        <span>生成張數</span>
+                        <span>{FIELD_LABELS.batchCount}</span>
                         <input
                             id="img2img-batch-count"
                             type="number"
@@ -933,7 +910,7 @@ export function ImageToImageWorkspace() {
                             {(Object.keys(RANGE_BOUNDS) as RandomRangeKey[]).map((key) => {
                                 const bounds = RANGE_BOUNDS[key];
                                 const range = randomRanges[key];
-                                const label = key === "denoise" ? "Denoise" : key === "cfg" ? "CFG" : key[0].toUpperCase() + key.slice(1);
+                                const label = FIELD_LABELS[key === "denoise" ? "denoise" : key === "steps" ? "steps" : "cfg"];
                                 return (
                                     <div className={styles.rangeRow} key={key}>
                                         <span>{label}</span>
@@ -947,7 +924,7 @@ export function ImageToImageWorkspace() {
                                                 step={bounds.step}
                                                 value={range.min}
                                                 disabled={active}
-                                                aria-label={`${label} range minimum`}
+                                                aria-label={`${label}最小值`}
                                                 onChange={(event) => updateRandomRange(key, "min", event.target.value)}
                                             />
                                         </label>
@@ -962,7 +939,7 @@ export function ImageToImageWorkspace() {
                                                 step={bounds.step}
                                                 value={range.max}
                                                 disabled={active}
-                                                aria-label={`${label} range maximum`}
+                                                aria-label={`${label}最大值`}
                                                 onChange={(event) => updateRandomRange(key, "max", event.target.value)}
                                             />
                                         </label>
@@ -974,40 +951,40 @@ export function ImageToImageWorkspace() {
                 </div>
                     <div className={styles.submitRow} data-form-valid={canStart}>
                         <div>
-                            <p className={styles.helper}>{submitAttempted && !canStart ? "請修正下方問題後再試。" : "提示詞可手動輸入；生成工作會交由 Jobs 追蹤。"}</p>
+                            <p className={styles.helper}>{submitAttempted && !canStart ? "請先修正檢查結果，再開始生成。" : "設定完成後，提交會建立可追蹤的工作。"}</p>
                             {error && <p className={styles.error} role="alert">{error}</p>}
                         </div>
                     <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby="img2img-readiness-title">
-                        {uploading ? "上傳圖片中…" : submitting ? "正在排程…" : active ? "圖片生成中…" : "開始以圖生圖"}
+                        {uploading ? "上傳中…" : submitting ? "建立工作中…" : active ? "生成中…" : "開始生成"}
                     </button>
                 </div>
             </section>
 
-            {canCancel && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : "Cancel generation"}</button>}
-            {job?.status === "cancelling" && <p className={styles.helper}>Stopping the current image generation…</p>}
+            {canCancel && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "取消中…" : ACTION_LABELS.cancel}</button>}
+            {job?.status === "cancelling" && <p className={styles.helper}>正在停止目前的圖片生成工作…</p>}
             <section className={styles.panel} aria-labelledby="img2img-job-title">
                 <div className={styles.sectionHeader}>
                     <div>
-                        <span className={styles.eyebrow}>JOB STATUS</span>
+                        <span className={styles.eyebrow}>工作狀態</span>
                         <h2 id="img2img-job-title">生成進度</h2>
                     </div>
                     {job && <span className={styles.sectionCode}>{job.id}</span>}
                 </div>
                 <div className={styles.statusLine} aria-live="polite">
-                    <strong>{statusLabel(job)}</strong>
+                    <strong>{localizedJobStatusLabel(job)}</strong>
                     {job && <span>{progress}%</span>}
                 </div>
                 {job?.characterLoraName && <p className={styles.helper}>LoRA: {job.characterLoraName} · {Number(job.characterLoraStrength ?? 0.75).toFixed(2)}</p>}
-                {job && batchTotal > 1 && <p className={styles.batchSummary} aria-live="polite">{completedCount}/{batchTotal} completed{failedCount ? ` · ${failedCount} failed` : ""}</p>}
+                {job && batchTotal > 1 && <p className={styles.batchSummary} aria-live="polite">{completedCount}/{batchTotal} 已完成{failedCount ? ` · ${failedCount} 張失敗` : ""}</p>}
                 {job && <div className={styles.progressTrack} role="progressbar" aria-label="以圖生圖進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
-                {canRetry && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={retrying}>{retrying ? "重試中…" : "Retry"}</button>}
+                {canRetry && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={retrying}>{retrying ? "重試中…" : ACTION_LABELS.retry}</button>}
             </section>
 
             {job && isBatchJob && job.items && job.items.length > 0 && (
                 <section className={styles.outputCard} aria-labelledby="img2img-batch-output-title">
                     <div className={styles.sectionHeader}>
                         <div>
-                            <span className={styles.eyebrow}>BATCH OUTPUT</span>
+                        <span className={styles.eyebrow}>批次結果</span>
                             <h2 id="img2img-batch-output-title">每張結果</h2>
                         </div>
                         <span className={styles.sectionCode}>{completedCount}/{batchTotal}</span>
@@ -1025,10 +1002,10 @@ export function ImageToImageWorkspace() {
                                         <span className={styles.statusChip}>{itemStatusLabel(item.status)}</span>
                                     </div>
                                     <dl className={styles.itemParameters}>
-                                        <div><dt>Denoise</dt><dd>{itemDenoise.toFixed(2)}</dd></div>
-                                        <div><dt>Steps</dt><dd>{itemSteps}</dd></div>
+                                        <div><dt>{FIELD_LABELS.denoise}</dt><dd>{itemDenoise.toFixed(2)}</dd></div>
+                                        <div><dt>{FIELD_LABELS.steps}</dt><dd>{itemSteps}</dd></div>
                                         <div><dt>CFG</dt><dd>{itemCfg}</dd></div>
-                                        <div><dt>Seed</dt><dd>{itemSeed}</dd></div>
+                                        <div><dt>{FIELD_LABELS.seed}</dt><dd>{itemSeed}</dd></div>
                                     </dl>
                                     {item.output && (
                                         <>
@@ -1054,10 +1031,10 @@ export function ImageToImageWorkspace() {
                 <section className={styles.outputCard} aria-labelledby="img2img-output-title">
                     <div className={styles.sectionHeader}>
                         <div>
-                            <span className={styles.eyebrow}>OUTPUT</span>
+                        <span className={styles.eyebrow}>生成結果</span>
                             <h2 id="img2img-output-title">生成結果</h2>
                         </div>
-                        <span className={styles.statusChip + " " + styles.ready}>Saved to Library</span>
+                        <span className={styles.statusChip + " " + styles.ready}>已儲存至素材庫</span>
                     </div>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img className={styles.outputImage} src={assetUrl(job.output)} alt={`以圖生圖結果：${job.output.name}`} />
@@ -1073,7 +1050,7 @@ export function ImageToImageWorkspace() {
                         >
                             {deleting ? "刪除中…" : "刪除結果"}
                         </button>
-                        <a className={styles.secondaryButton} href={`/app/library`} >開啟 Library</a>
+                        <a className={styles.secondaryButton} href={`/app/library`} >開啟素材庫</a>
                         <a className={styles.secondaryButton} href={`${assetUrl(job.output)}&download=1`} download={job.output.name.split("/").pop() || job.output.name}>下載圖片</a>
                     </div>
                 </section>
@@ -1082,7 +1059,7 @@ export function ImageToImageWorkspace() {
             <section className={styles.panel} aria-labelledby="img2img-history-title">
                 <div className={styles.sectionHeader}>
                     <div>
-                        <span className={styles.eyebrow}>HISTORY</span>
+                        <span className={styles.eyebrow}>歷史紀錄</span>
                         <h2 id="img2img-history-title">圖生圖歷史</h2>
                     </div>
                     <button type="button" className={styles.textButton} onClick={() => void refreshHistory(historyQuery)} disabled={historyLoading} aria-label="重新整理圖生圖歷史">
@@ -1090,7 +1067,7 @@ export function ImageToImageWorkspace() {
                     </button>
                 </div>
                 <label className={styles.historySearch}>
-                    <span>搜尋 job、提示詞、模型或 seed</span>
+                    <span>搜尋工作編號、提示詞、模型或隨機種子</span>
                     <input type="search" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜尋歷史" aria-label="搜尋圖生圖歷史" />
                 </label>
                 {historyError && <p className={styles.error} role="alert">{historyError}</p>}
@@ -1104,24 +1081,24 @@ export function ImageToImageWorkspace() {
                         return (
                             <article className={styles.historyCard} key={record.id}>
                                 <button type="button" className={styles.historyToggle} onClick={() => setExpandedHistory((previous) => ({ ...previous, [record.id]: !expanded }))} aria-expanded={expanded}>
-                                    <span><strong>{record.id}</strong><small>{record.model || "Image generation"} · {record.prompt?.slice(0, 80) || "No prompt"}</small></span>
-                                    <span>{record.status} · {recordCount} 張</span>
+                                    <span><strong>{record.id}</strong><small>{record.model || "圖片生成"} · {record.prompt?.slice(0, 80) || "沒有提示詞"}</small></span>
+                                    <span>{jobStatusLabel(record.status, "img2img")} · {recordCount} 張</span>
                                 </button>
                                 {expanded && (
                                     <div className={styles.historyDetails}>
                                         <p>{record.prompt}</p>
-                                        <small>Seed: {recordSeeds || record.seed}</small>
+                                        <small>{FIELD_LABELS.seed}：{recordSeeds || record.seed}</small>
                                         {record.characterLoraName && <small>LoRA: {record.characterLoraName} · {Number(record.characterLoraStrength ?? 0.75).toFixed(2)}</small>}
                                         {record.error && <p className={styles.error}>{record.error}</p>}
                                         {recordItems.map((item) => (
                                             <div className={styles.historyItem} key={item.index}>
-                                                <span>#{item.index + 1} · {item.status} · seed {item.parameters?.seed ?? record.seed}</span>
+                                                <span>第 {item.index + 1} 張 · {itemStatusLabel(item.status)} · {FIELD_LABELS.seed} {item.parameters?.seed ?? record.seed}</span>
                                                 {item.output && <a href={assetUrl(item.output)} target="_blank" rel="noreferrer">開啟輸出</a>}
                                                 <dl className={styles.itemParameters}>
-                                                    <div><dt>Denoise</dt><dd>{itemParameter(item, "denoise", Number(record.denoise)).toFixed(2)}</dd></div>
-                                                    <div><dt>Steps</dt><dd>{itemParameter(item, "steps", Number(record.steps))}</dd></div>
+                                                    <div><dt>{FIELD_LABELS.denoise}</dt><dd>{itemParameter(item, "denoise", Number(record.denoise)).toFixed(2)}</dd></div>
+                                                    <div><dt>{FIELD_LABELS.steps}</dt><dd>{itemParameter(item, "steps", Number(record.steps))}</dd></div>
                                                     <div><dt>CFG</dt><dd>{itemParameter(item, "cfg", Number(record.cfg))}</dd></div>
-                                                    <div><dt>Seed</dt><dd>{itemParameter(item, "seed", Number(record.seed))}</dd></div>
+                                                    <div><dt>{FIELD_LABELS.seed}</dt><dd>{itemParameter(item, "seed", Number(record.seed))}</dd></div>
                                                 </dl>
                                                 {item.error && <span className={styles.error}>{item.error}</span>}
                                             </div>
@@ -1172,7 +1149,7 @@ function focusImg2ImgValidation(field: string) {
 
 async function assetToPromptImage(asset: StudioAsset) {
     const response = await fetch(assetUrl(asset));
-    if (!response.ok) throw new Error("Unable to read the source image.");
+    if (!response.ok) throw new Error("無法讀取來源圖片。" );
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
     try {
@@ -1180,7 +1157,7 @@ async function assetToPromptImage(asset: StudioAsset) {
         image.src = objectUrl;
         await new Promise<void>((resolve, reject) => {
             image.onload = () => resolve();
-            image.onerror = () => reject(new Error("Unable to decode the source image."));
+            image.onerror = () => reject(new Error("無法解碼來源圖片。"));
         });
         const maxDimension = 1024;
         const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));

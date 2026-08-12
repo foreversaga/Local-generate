@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
 import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
+import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
 import {
   STUDIO_SETTINGS_DEFAULTS,
   loadStudioSettings,
@@ -97,12 +98,12 @@ const CODEX_MODEL_CATALOG: readonly CodexModelOption[] = [
 ] as const;
 
 const REASONING_OPTIONS = [
-  { value: "low", label: "Low", note: "最快" },
-  { value: "medium", label: "Medium", note: "平衡" },
-  { value: "high", label: "High", note: "更完整" },
-  { value: "xhigh", label: "XHigh", note: "深度" },
-  { value: "max", label: "Max", note: "最高" },
-  { value: "ultra", label: "Ultra", note: "自動分工" },
+  { value: "low", label: "低", note: "最快" },
+  { value: "medium", label: "中", note: "平衡" },
+  { value: "high", label: "高", note: "更完整" },
+  { value: "xhigh", label: "極高", note: "深度" },
+  { value: "max", label: "最高", note: "最高" },
+  { value: "ultra", label: "極致", note: "自動分工" },
 ] as const;
 
 export function SinglePromptAssistant({
@@ -330,10 +331,10 @@ export function SinglePromptAssistant({
     <section className={styles.assistant} aria-labelledby="single-prompt-assistant-title">
       <div className={styles.header}>
         <div>
-          <span className={styles.eyebrow}>Prompt Assistant</span>
-          <h3 id="single-prompt-assistant-title" className={styles.title}>從描述產生 {formatLabel} Prompt</h3>
+          <span className={styles.eyebrow}>提示詞助理（Prompt）</span>
+          <h3 id="single-prompt-assistant-title" className={styles.title}>從描述產生 {formatLabel} 提示詞</h3>
         </div>
-        <button type="button" className={styles.refreshButton} onClick={() => void refreshHealth()} aria-label="重新檢查 Prompt provider 狀態" title="重新檢查 provider">
+        <button type="button" className={styles.refreshButton} onClick={() => void refreshHealth()} aria-label="重新檢查提示詞提供者狀態" title="重新檢查提示詞提供者">
           <Icon name="refresh" />
         </button>
       </div>
@@ -351,12 +352,12 @@ export function SinglePromptAssistant({
             if (attempted) setError("");
           }}
         />
-        <span id="single-prompt-brief-helper" className={styles.helper}>可用中文描述；產出後仍可直接編輯下方 H3 Prompt。</span>
+        <span id="single-prompt-brief-helper" className={styles.helper}>可用中文描述；產出後仍可直接編輯下方 H3 提示詞。</span>
         {briefError && <p id="single-prompt-brief-error" className={styles.error} role="alert"><Icon name="close" />{briefError}</p>}
       </label>
 
       <div className={styles.providerRow}>
-        <div className={styles.providerSwitch} role="group" aria-label="Prompt 生成來源">
+        <div className={styles.providerSwitch} role="group" aria-label="提示詞生成來源">
           <button type="button" className={provider === "ollama" ? styles.providerActive : ""} aria-pressed={provider === "ollama"} onClick={() => { setProvider("ollama"); setError(""); }}>
             Ollama
           </button>
@@ -366,7 +367,7 @@ export function SinglePromptAssistant({
         </div>
         <span className={`${styles.status} ${providerReady ? styles.statusReady : ""}`}>
           <span className={styles.statusDot} aria-hidden="true" />
-          {providerReady ? "Ready" : "Unavailable"}
+          {providerReady ? "已就緒" : "無法使用"}
         </span>
       </div>
 
@@ -387,7 +388,7 @@ export function SinglePromptAssistant({
             </select>
           </label>
           <label className={styles.field}>
-            <span className={styles.label}>Reasoning</span>
+            <span className={styles.label}>{FIELD_LABELS.reasoning}</span>
             <select className={styles.select} value={effectiveReasoning} disabled={busy} onChange={(event) => setReasoningEffort(event.target.value)}>
               {REASONING_OPTIONS.filter((option) => supportedReasoning.includes(option.value)).map((option) => (
                 <option key={option.value} value={option.value}>{option.label} · {option.note}</option>

@@ -31,10 +31,10 @@ test("renders the Create landing at the public root", async () => {
   const html = await response.text();
   assert.match(html, /<title>H3 Studio/);
   assert.match(html, /H3 STUDIO/);
-  assert.match(html, /Single Video/);
-  assert.match(html, /Long Video/);
-  assert.match(html, /START FROM ASSET/);
-  assert.match(html, /RECENT JOBS/);
+  assert.match(html, /單次影片/);
+  assert.match(html, /長影片/);
+  assert.match(html, /從素材開始/);
+  assert.match(html, /最近工作/);
   assert.doesNotMatch(html, /id="prompt"/);
   assert.doesNotMatch(html, /LOCAL RENDER CONSOLE|LOCAL VIDEO LAB|8787|local bridge/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);

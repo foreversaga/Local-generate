@@ -44,7 +44,7 @@ export function AppShell({ children }: AppShellProps) {
           <span className={styles.brandName}>H3 STUDIO</span>
         </a>
 
-        <div className={styles.navLabel}>Workspace</div>
+        <div className={styles.navLabel}>工作區</div>
         <nav className={styles.nav}>
           {WEB_UI_ROUTES.map((route) => {
             const active = route.id === activeRoute;
@@ -63,8 +63,8 @@ export function AppShell({ children }: AppShellProps) {
         </nav>
 
         <div className={styles.sidebarFooter}>
-          Local-first workspace<br />
-          Existing generation APIs remain unchanged during migration.
+          本機優先工作區<br />
+          既有生成服務介面在遷移期間維持不變。
         </div>
       </aside>
 

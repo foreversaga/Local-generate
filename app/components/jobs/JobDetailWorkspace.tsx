@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
+import { ACTION_LABELS, sourceLabel } from "../../lib/ui-copy.mjs";
 import { fetchUnifiedJobs, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import styles from "./JobsWorkspace.module.css";
@@ -26,7 +27,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
 
   useEffect(() => {
     let active = true;
-    const poll = async () => { if (!active) return; try { await refresh(); } catch (reason) { if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "Unable to load job."); } } };
+    const poll = async () => { if (!active) return; try { await refresh(); } catch (reason) { if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "無法載入工作。"); } } };
     void poll();
     const timer = window.setInterval(poll, 2500);
     return () => { active = false; window.clearInterval(timer); };
@@ -45,51 +46,50 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         await refresh();
       }
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Action failed."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "工作操作失敗。"); }
     finally { setBusy(""); }
   }
 
-  if (loading) return <div className={styles.empty}>Loading job…</div>;
+  if (loading) return <div className={styles.empty}>載入工作中…</div>;
   if (!job && sourceUnavailable) {
     return (
       <div className={styles.error} role="alert">
-        <strong>Job source unavailable.</strong>
+        <strong>工作來源無法使用。</strong>
         <p>{sourceLabel(sourceUnavailable.source)}: {sourceUnavailable.message}</p>
-        <a href="/app/jobs" className={styles.backLink}>← All jobs</a>
+        <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
       </div>
     );
   }
-  if (!job) return <div className={styles.error} role="alert">Job not found.</div>;
+  if (!job) return <div className={styles.error} role="alert">找不到工作。</div>;
   const outputHref = jobOutputHref(job);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
-        <div className={styles.jobHeader}><StatusBadge status={job.status} /><span className={styles.source}>{job.source === "lora" ? "LoRA 訓練" : job.source}</span></div>
+        <div className={styles.jobHeader}><StatusBadge status={job.status} source={job.source} /><span className={styles.source}>{sourceLabel(job.source)}</span></div>
         <h2>{job.title}</h2>
         <p>{job.subtitle}</p>
         <dl className={styles.metaGrid}>
           <div><dt>ID</dt><dd>{job.id}</dd></div>
-          <div><dt>Stage</dt><dd>{job.stage}</dd></div>
-          <div><dt>Progress</dt><dd>{progress}%</dd></div>
-          <div><dt>Updated</dt><dd>{job.updatedAt || "—"}</dd></div>
+          <div><dt>階段</dt><dd>{job.stage}</dd></div>
+          <div><dt>進度</dt><dd>{progress}%</dd></div>
+          <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
         </dl>
-        {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% complete`}><span style={{ width: `${progress}%` }} /></div>}
-        {job.artifact && <p className={styles.helper}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA artifact"}{job.artifact.registryId ? ` · registry ${job.artifact.registryId}` : ""}</p>}
+        {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}><span style={{ width: `${progress}%` }} /></div>}
+        {job.artifact && <p className={styles.helper}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}{job.artifact.registryId ? ` · 註冊編號 ${job.artifact.registryId}` : ""}</p>}
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
         {error && <div className={styles.error} role="alert">{error}</div>}
       </section>
       <aside className={styles.actionCard}>
-        <div className={styles.actionTitle}>Actions</div>
-        {job.canCancel && <button type="button" className={styles.dangerButton} disabled={Boolean(busy)} onClick={() => void action("cancel")}>{busy === "cancel" ? "Cancelling…" : "Cancel"}</button>}
-        {job.canPause && <button type="button" disabled={Boolean(busy)} onClick={() => void action("pause")}>Pause</button>}
-        {job.canResume && <button type="button" disabled={Boolean(busy)} onClick={() => void action("resume")}>Resume</button>}
-        {job.canRetry && <button type="button" disabled={Boolean(busy)} onClick={() => void action("retry")}>{busy === "retry" ? "Retrying…" : "Retry"}</button>}
-        {outputHref && <a href={outputHref} className={styles.outputButton}>{job.source === "lora" ? "下載成品" : "Open output"}</a>}
-        <a href="/app/jobs" className={styles.backLink}>← All jobs</a>
-        {(job.source === "upscale" || job.source === "img2img") && !job.canCancel && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>The existing tool API does not expose a cancel endpoint; this UI does not fake cancellation.</p>}
+        <div className={styles.actionTitle}>工作操作</div>
+        {job.canCancel && <button type="button" className={styles.dangerButton} disabled={Boolean(busy)} onClick={() => void action("cancel")}>{busy === "cancel" ? "取消中…" : ACTION_LABELS.cancel}</button>}
+        {job.canPause && <button type="button" disabled={Boolean(busy)} onClick={() => void action("pause")}>{ACTION_LABELS.pause}</button>}
+        {job.canResume && <button type="button" disabled={Boolean(busy)} onClick={() => void action("resume")}>{ACTION_LABELS.resume}</button>}
+        {job.canRetry && <button type="button" disabled={Boolean(busy)} onClick={() => void action("retry")}>{busy === "retry" ? "重試中…" : ACTION_LABELS.retry}</button>}
+        {outputHref && <a href={outputHref} className={styles.outputButton}>{job.source === "lora" ? ACTION_LABELS.downloadResult : ACTION_LABELS.openOutput}</a>}
+        <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
+        {(job.source === "upscale" || job.source === "img2img") && !job.canCancel && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>目前工具服務未提供取消端點，因此此頁不會顯示虛假的取消結果。</p>}
       </aside>
     </div>
   );
 }
-function sourceLabel(source: string) { return ({ video: "Single", long: "Long", upscale: "Upscale", img2img: "I2I", lora: "LoRA" } as Record<string, string>)[source] || source; }
