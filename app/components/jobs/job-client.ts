@@ -35,25 +35,7 @@ export async function performJobAction(job: UnifiedJob, action: "cancel" | "paus
     return request(`${BRIDGE_URL}/api/lora-training/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
   }
   if (job.source === "upscale" && (action === "cancel" || action === "retry")) return request(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
-  if (job.source === "img2img" && action === "retry") {
-    const body: Record<string, unknown> = {
-      sourceName: job.raw.sourceName,
-      sourceRoot: job.raw.sourceRoot,
-      prompt: job.raw.prompt,
-      negativePrompt: job.raw.negativePrompt,
-      model: job.raw.model,
-      denoise: job.raw.denoise,
-      steps: job.raw.steps,
-      cfg: job.raw.cfg,
-      seed: job.raw.seed,
-    };
-    if (typeof job.raw.characterLoraId === "string" && job.raw.characterLoraId) body.characterLoraId = job.raw.characterLoraId;
-    if (typeof job.raw.characterLoraName === "string" && job.raw.characterLoraName) body.characterLoraName = job.raw.characterLoraName;
-    if (Number.isFinite(job.raw.characterLoraStrength)) body.characterLoraStrength = job.raw.characterLoraStrength;
-    if (Number.isInteger(job.raw.batchCount)) body.batchCount = job.raw.batchCount;
-    if (job.raw.randomRanges && typeof job.raw.randomRanges === "object") body.randomRanges = job.raw.randomRanges;
-    return request(`${BRIDGE_URL}/api/img2img`, "POST", body);
-  }
+  if (job.source === "img2img" && (action === "cancel" || action === "retry")) return request(`${BRIDGE_URL}/api/img2img/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
   throw new Error("This action is not supported by the existing backend contract.");
 }
 

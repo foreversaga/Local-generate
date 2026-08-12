@@ -904,9 +904,9 @@ async function runtimeBusyReason() {
   if (activeRuntimeOperations > 0) return "A model request is being admitted.";
   if (activeGenerationId || generationQueue.length || jobProcesses.size) return "A video generation is queued or running.";
   const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
-  if (seedJobs.some((job) => ["queued", "running"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
+  if (seedJobs.some((job) => ["queued", "running", "cancelling"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
   const img2imgJobs = typeof img2imgController?.getJobs === "function" ? img2imgController.getJobs() : [];
-  if (img2imgJobs.some((job) => ["queued", "running"].includes(job?.status))) return "An image-to-image job is queued or running.";
+  if (img2imgJobs.some((job) => ["queued", "running", "cancelling"].includes(job?.status))) return "An image-to-image job is queued or running.";
   const sequenceJobs = await listLongVideoJobs().catch(() => null);
   if (!Array.isArray(sequenceJobs)) return "Long-video job state could not be verified.";
   if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return "A long-video job is active.";
@@ -3455,7 +3455,7 @@ async function activeInputAssetUse(relativeName) {
     const target = inputAssetKey("input", relativeName);
     if (!Array.isArray(img2imgJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
     for (const job of img2imgJobs) {
-      if (!["queued", "running"].includes(job?.status)) continue;
+      if (!["queued", "running", "cancelling"].includes(job?.status)) continue;
       if (job?.sourceRoot !== "input" || typeof job?.sourceName !== "string") continue;
       let sourceName;
       try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
@@ -3521,7 +3521,7 @@ async function activeAssetUse(rootName, relativeName) {
     if (!Array.isArray(img2imgJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
     const target = inputAssetKey("output", relativeName);
     for (const job of img2imgJobs) {
-      if (!["queued", "running"].includes(job?.status)) continue;
+      if (!["queued", "running", "cancelling"].includes(job?.status)) continue;
       if (job?.sourceRoot !== "output" || typeof job?.sourceName !== "string") continue;
       let sourceName;
       try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }

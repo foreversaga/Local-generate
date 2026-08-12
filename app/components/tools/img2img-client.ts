@@ -2,7 +2,7 @@ import type { StudioAsset } from "../library/asset-client";
 
 const BRIDGE_URL = "/app";
 
-export type Img2ImgStatus = "queued" | "running" | "completed" | "failed" | "partial" | "cancelled";
+export type Img2ImgStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "partial" | "cancelled" | "interrupted";
 
 export type Img2ImgRandomRange = {
     min: number;
@@ -32,6 +32,7 @@ export type Img2ImgItem = {
     error?: string;
     startedAt?: string | null;
     completedAt?: string | null;
+    promptId?: string;
 };
 
 export type Img2ImgRuntimeMode = "local" | "remote";
@@ -85,6 +86,13 @@ export type Img2ImgJob = {
     createdAt?: string;
     startedAt?: string | null;
     completedAt?: string | null;
+    cancelReason?: string;
+    cancelledAt?: string | null;
+    attempt?: number;
+    retryOf?: string;
+    recoverable?: boolean;
+    recovery?: { reason?: string; previousStatus?: string; recoveredAt?: string } | null;
+    provenance?: Record<string, unknown> | null;
 };
 
 export type Img2ImgSubmitInput = {
@@ -210,12 +218,30 @@ export async function fetchImg2ImgJobs(query = "") {
     return payload.job ? [payload.job] : [];
 }
 
+export async function cancelImg2ImgJob(id: string, reason = "Cancelled by user.") {
+    const response = await fetch(`${BRIDGE_URL}/api/img2img/jobs/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+    });
+    const payload = await readPayload(response);
+    if (!response.ok || !payload.job) throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to cancel image-to-image job."), response.status, payload);
+    return payload.job;
+}
+
+export async function retryImg2ImgJob(id: string) {
+    const response = await fetch(`${BRIDGE_URL}/api/img2img/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+    const payload = await readPayload(response);
+    if (!response.ok || !payload.job) throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to retry image-to-image job."), response.status, payload);
+    return payload.job;
+}
+
 export function isImg2ImgActive(job?: Img2ImgJob | null) {
-    return Boolean(job && (job.status === "queued" || job.status === "running"));
+    return Boolean(job && (job.status === "queued" || job.status === "running" || job.status === "cancelling"));
 }
 
 export function isImg2ImgRetryable(job?: Img2ImgJob | null) {
-    return Boolean(job && (job.status === "failed" || job.status === "cancelled"));
+    return Boolean(job && (job.status === "failed" || job.status === "partial" || job.status === "cancelled" || job.status === "interrupted"));
 }
 
 export function img2ImgReadinessMessage(health: Img2ImgHealth | undefined, selectedModel: string) {

@@ -38,7 +38,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     try {
       const result = await performJobAction(job, name) as { job?: { id?: string } };
       const nextId = typeof result?.job?.id === "string" ? result.job.id : "";
-      if (name === "retry" && ["lora", "video", "upscale"].includes(job.source) && nextId && nextId !== job.id) {
+      if (name === "retry" && ["lora", "video", "upscale", "img2img"].includes(job.source) && nextId && nextId !== job.id) {
         router.replace(`/app/jobs/${encodeURIComponent(nextId)}?source=${encodeURIComponent(job.source)}`);
         await refresh(nextId, job.source);
       } else {

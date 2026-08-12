@@ -555,8 +555,29 @@ export function parseImg2ImgHistory(payload, promptId = "") {
   return { state: "running" };
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function cancellationError() {
+  return makeError("Image-to-image cancellation requested.", 499, "IMG2IMG_CANCELLED");
+}
+
+function assertNotCancelled(job) {
+  if (job?.cancelRequested) throw cancellationError();
+}
+
+function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.reject(cancellationError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      reject(cancellationError());
+    };
+    function done() {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
 }
 
 function publicJob(job) {
@@ -580,6 +601,11 @@ function publicJob(job) {
     steps: job.steps,
     cfg: job.cfg,
     seed: job.seed,
+    ...(job.cancelReason ? { cancelReason: job.cancelReason } : {}),
+    ...(Number.isInteger(job.attempt) ? { attempt: job.attempt } : {}),
+    ...(job.retryOf ? { retryOf: job.retryOf } : {}),
+    ...(job.recoverable ? { recoverable: true } : {}),
+    ...(job.recovery ? { recovery: structuredClone(job.recovery) } : {}),
     batchCount: job.batchCount || 1,
     randomRanges: job.randomRanges ? Object.fromEntries(Object.entries(job.randomRanges).map(([name, range]) => [name, { ...range }])) : undefined,
     completedCount: Number(job.completedCount || 0),
@@ -587,6 +613,7 @@ function publicJob(job) {
     items: Array.isArray(job.items) ? job.items.map((item) => ({
       index: item.index,
       status: item.status,
+      ...(item.promptId ? { promptId: item.promptId } : {}),
       ...(item.parameters ? { parameters: { ...item.parameters } } : { parameters: null }),
       output: item.output ? { ...item.output } : null,
       error: item.error || null,
@@ -628,6 +655,7 @@ export function createImg2ImgController({
   const jobStore = store || createImg2ImgStore({ root: storeRoot });
   const jobs = new Map();
   const queue = [];
+  const runtimes = new Map();
   let active = null;
   let storeLoaded = false;
   let storeLoading = null;
@@ -644,11 +672,73 @@ export function createImg2ImgController({
         } catch {
           throw makeError("Unable to load image-to-image job history.", 503, "IMG2IMG_PERSISTENCE_FAILED");
         }
-        for (const job of persisted) {
-          if (!job?.id) continue;
+        const recoveredAt = isoNow(now());
+        for (const persistedJob of persisted) {
+          if (!persistedJob?.id) continue;
+          const job = { ...persistedJob };
+          const previousStatus = String(job.status || "queued");
+          const items = Array.isArray(job.items) ? job.items.map((item) => ({ ...item })) : [];
+          if (previousStatus === "running") {
+            for (const item of items) {
+              if (["running", "cancelling"].includes(item.status)) {
+                item.status = "interrupted";
+                item.stage = "Interrupted";
+                item.error = item.error || "Image generation was interrupted by a bridge restart.";
+                item.completedAt = null;
+              }
+            }
+            job.status = "interrupted";
+            job.stage = "Interrupted";
+            job.recoverable = true;
+            job.error = job.error || "Image-to-image was interrupted by a bridge restart; retry is available.";
+            job.recovery = { reason: "bridge_restart", previousStatus, recoveredAt };
+            job.cancelRequested = false;
+            job.completedAt = null;
+            job.items = items;
+            job.completedCount = items.filter((item) => item.status === "completed").length;
+            job.failedCount = items.filter((item) => item.status === "failed").length;
+            job.updatedAt = recoveredAt;
+            await jobStore.save(job);
+          } else if (previousStatus === "cancelling" || job.cancelRequested) {
+            for (const item of items) {
+              if (!["completed", "failed"].includes(item.status)) {
+                item.status = "cancelled";
+                item.stage = "Cancelled";
+                item.completedAt = item.completedAt || recoveredAt;
+              }
+            }
+            job.status = "cancelled";
+            job.stage = "Cancelled";
+            job.cancelRequested = false;
+            job.cancelReason = job.cancelReason || "Image-to-image cancellation was persisted before the bridge restarted.";
+            job.recovery = { reason: "bridge_restart_cancelled", previousStatus, recoveredAt };
+            job.completedAt = job.completedAt || recoveredAt;
+            job.items = items;
+            job.completedCount = items.filter((item) => item.status === "completed").length;
+            job.failedCount = items.filter((item) => item.status === "failed").length;
+            job.updatedAt = recoveredAt;
+            await jobStore.save(job);
+          } else if (previousStatus === "queued") {
+            for (const item of items) {
+              if (["running", "cancelling", "interrupted"].includes(item.status)) {
+                item.status = "queued";
+                item.stage = "Queued";
+                item.error = null;
+                item.progress = 0;
+                item.startedAt = null;
+                item.completedAt = null;
+              }
+            }
+            job.recovery = { reason: "bridge_restart", previousStatus, recoveredAt };
+            job.items = items;
+            job.updatedAt = recoveredAt;
+            await jobStore.save(job);
+          }
           jobs.set(String(job.id), job);
+          if (job.status === "queued") queue.push(job);
         }
         storeLoaded = true;
+        pump();
       }).finally(() => {
         storeLoading = null;
       });
@@ -682,22 +772,27 @@ export function createImg2ImgController({
     await pendingPersistence.get(String(id));
   }
 
-  async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
+  async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs, signal) {
+    if (signal?.aborted) throw cancellationError();
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const onAbort = signal && controller ? () => controller.abort() : null;
+    signal?.addEventListener?.("abort", onAbort, { once: true });
     let response;
     try {
       response = await fetchImpl(comfyUrl + endpoint, { ...init, ...(controller ? { signal: controller.signal } : {}) });
     } catch (error) {
+      if (signal?.aborted) throw cancellationError();
       throw makeError(`ComfyUI request failed: ${errorMessage(error)}`, 503, "COMFY_UNAVAILABLE");
     } finally {
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
     }
     return response;
   }
 
-  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
-    const response = await request(endpoint, init, timeoutMs);
+  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs, signal) {
+    const response = await request(endpoint, init, timeoutMs, signal);
     const text = await response.text();
     let payload;
     try { payload = JSON.parse(text || "{}"); } catch { payload = { raw: text }; }
@@ -737,8 +832,9 @@ export function createImg2ImgController({
     return { loadName, path: target, created: true };
   }
 
-  async function uploadRemoteInput(job, source) {
+  async function uploadRemoteInput(job, source, signal) {
     if (typeof FormData !== "function" || typeof Blob !== "function") throw makeError("Remote image upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
+    assertNotCancelled(job);
     const extension = path.posix.extname(source.cleanName).toLowerCase();
     const uploadName = `${job.id}${extension}`;
     const form = new FormData();
@@ -746,7 +842,7 @@ export function createImg2ImgController({
     form.append("subfolder", "h3-studio-img2img");
     form.append("type", "input");
     form.append("overwrite", "true");
-    const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000);
+    const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000, signal);
     const uploaded = safeArtifact({ filename: payload.name || uploadName, subfolder: payload.subfolder || "h3-studio-img2img", type: payload.type || "input" });
     if (!uploaded) throw makeError("ComfyUI returned an invalid uploaded image path.", 502, "UPLOAD_RESPONSE_INVALID");
     return { loadName: uploaded.relativeName, created: false };
@@ -760,10 +856,12 @@ export function createImg2ImgController({
     if (stat?.isFile()) await fsApi.unlink(candidate).catch(() => {});
   }
 
-  async function waitForHistory(job, promptId, onProgress = null) {
+  async function waitForHistory(job, promptId, onProgress = null, signal) {
     const started = Date.now();
     while (true) {
-      const parsed = parseImg2ImgHistory(await requestJson(`/history/${encodeURIComponent(promptId)}`), promptId);
+      assertNotCancelled(job);
+      const parsed = parseImg2ImgHistory(await requestJson(`/history/${encodeURIComponent(promptId)}`, {}, requestTimeoutMs, signal), promptId);
+      assertNotCancelled(job);
       if (parsed.state === "failed") throw makeError(parsed.error, 502, "COMFY_EXECUTION_FAILED");
       if (parsed.state === "completed" && parsed.artifact) return parsed.artifact;
       if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveImage artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
@@ -775,7 +873,7 @@ export function createImg2ImgController({
         job.progress = progress;
         job.stage = "Generating image";
       }
-      await sleep(pollIntervalMs);
+      await sleep(pollIntervalMs, signal);
     }
   }
 
@@ -788,9 +886,10 @@ export function createImg2ImgController({
     return typeof toAsset === "function" ? toAsset("output", relativeName) : { root: "output", name: relativeName, kind: "image" };
   }
 
-  async function downloadRemoteArtifact(job, artifact, itemIndex = 0) {
+  async function downloadRemoteArtifact(job, artifact, itemIndex = 0, signal) {
+    assertNotCancelled(job);
     const query = new URLSearchParams({ filename: artifact.filename, subfolder: artifact.subfolder, type: artifact.type });
-    const response = await request(`/view?${query.toString()}`, {}, 60_000);
+    const response = await request(`/view?${query.toString()}`, {}, 60_000, signal);
     if (!response.ok) throw makeError(`Unable to download generated image: HTTP ${response.status}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
     const extension = path.posix.extname(artifact.filename).toLowerCase();
     const suffix = job.batchCount > 1 ? `-${String(itemIndex + 1).padStart(2, "0")}` : "";
@@ -799,6 +898,7 @@ export function createImg2ImgController({
     if (!inside(outputRoot, candidate)) throw makeError("Downloaded image path is unsafe.", 500, "OUTPUT_PATH_INVALID");
     await fsApi.mkdir(path.dirname(candidate), { recursive: true });
     await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
+    assertNotCancelled(job);
     return typeof toAsset === "function" ? toAsset("output", localName) : { root: "output", name: localName, kind: "image" };
   }
 
@@ -814,8 +914,10 @@ export function createImg2ImgController({
     return `img2img/h3_img2img_${job.id.slice(0, 8)}${suffix}`;
   }
 
-  async function runItem(job, item, itemIndex, parameters) {
+  async function runItem(job, item, itemIndex, parameters, runtime) {
     let staged = null;
+    runtime.itemIndex = itemIndex;
+    runtime.promptId = "";
     item.parameters = { ...parameters };
     item.status = "running";
     item.progress = 4;
@@ -825,9 +927,12 @@ export function createImg2ImgController({
     updateParentProgress(job, itemIndex, item.progress, item.stage);
     await persistJob(job);
     try {
+      assertNotCancelled(job);
       const profile = assertModelForRuntime(job.model, { remote });
       if (typeof beforeRun === "function") await beforeRun(job);
+      assertNotCancelled(job);
       const readiness = await checkReadiness();
+      assertNotCancelled(job);
       if (!readiness.ready || !readiness.models[job.model]) {
         const detail = readiness.profiles?.[job.model]?.reason === "REQUIRED_NODE_MISSING"
           ? `Required ComfyUI nodes for ${profile.workflow} are unavailable.`
@@ -846,9 +951,11 @@ export function createImg2ImgController({
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       await persistJob(job);
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
-      if (remote) staged = await uploadRemoteInput(job, source);
+      assertNotCancelled(job);
+      if (remote) staged = await uploadRemoteInput(job, source, runtime.abortController?.signal);
       else if (job.sourceRoot === "output") staged = await copyOutputToLocalInput(job, source);
       else staged = { loadName: source.cleanName, created: false };
+      assertNotCancelled(job);
       const graph = buildImg2ImgPrompt({
         ...job,
         ...parameters,
@@ -859,75 +966,138 @@ export function createImg2ImgController({
       item.stage = "Submitting ComfyUI workflow";
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       await persistJob(job);
+      assertNotCancelled(job);
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: graph, client_id: clientId }),
-      });
+      }, requestTimeoutMs, runtime.abortController?.signal);
       const promptId = submitted.prompt_id || submitted.promptId;
       if (!promptId) throw makeError("ComfyUI rejected the image workflow.", 502, "COMFY_PROMPT_REJECTED");
+      runtime.promptId = String(promptId);
+      item.promptId = runtime.promptId;
       item.progress = 28;
       item.stage = "Generating image";
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       await persistJob(job);
-      const artifact = await waitForHistory(job, String(promptId), async (progress, stage) => {
+      const artifact = await waitForHistory(job, runtime.promptId, async (progress, stage) => {
         item.progress = progress;
         item.stage = stage;
         updateParentProgress(job, itemIndex, progress, stage);
         await persistJob(job);
-      });
+      }, runtime.abortController?.signal);
+      runtime.promptId = "";
+      assertNotCancelled(job);
       item.progress = 94;
       item.stage = remote ? "Downloading image" : "Registering image";
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       item.output = remote
-        ? await downloadRemoteArtifact(job, artifact, itemIndex)
+        ? await downloadRemoteArtifact(job, artifact, itemIndex, runtime.abortController?.signal)
         : await registerLocalArtifact(artifact);
+      assertNotCancelled(job);
       item.progress = 100;
       item.status = "completed";
       item.stage = "Completed";
       item.completedAt = isoNow(now());
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       await persistJob(job);
-      return true;
+      return { success: true, cancelled: false };
     } catch (error) {
+      if (job.cancelRequested || error?.code === "IMG2IMG_CANCELLED") {
+        item.status = "cancelled";
+        item.stage = "Cancelled";
+        item.error = null;
+        item.completedAt = isoNow(now());
+        updateParentProgress(job, itemIndex, item.progress, item.stage);
+        await persistJob(job);
+        return { success: false, cancelled: true };
+      }
       item.status = "failed";
       item.stage = "Failed";
       item.error = errorMessage(error);
       item.completedAt = isoNow(now());
       updateParentProgress(job, itemIndex, 100, item.stage);
       await persistJob(job);
-      return false;
+      return { success: false, cancelled: false };
     } finally {
+      runtime.promptId = "";
       await cleanupLocalTemp(staged);
     }
   }
 
+  function hasItemParameters(item) {
+    return item?.parameters
+      && Object.keys(IMG2IMG_PARAMETER_RULES).every((key) => Number.isFinite(Number(item.parameters[key])));
+  }
+
+  function parametersForItem(job, item, itemIndex) {
+    if (hasItemParameters(item)) return { ...item.parameters };
+    const baseParameters = { denoise: job.denoise, steps: job.steps, cfg: job.cfg, seed: job.seed };
+    if (job.batchCount === 1) return baseParameters;
+    return itemIndex === 0
+      ? { ...baseParameters, seed: sampleRandomRange("seed", IMG2IMG_SEED_RANGE, randomSource) }
+      : randomizeParameters(job.randomRanges, randomSource);
+  }
+
+  function cancelRemainingItems(job) {
+    const cancelledAt = isoNow(now());
+    for (const item of job.items || []) {
+      if (["completed", "failed", "cancelled"].includes(item.status)) continue;
+      item.status = "cancelled";
+      item.stage = "Cancelled";
+      item.error = null;
+      item.completedAt = item.completedAt || cancelledAt;
+    }
+    job.completedCount = (job.items || []).filter((item) => item.status === "completed").length;
+    job.failedCount = (job.items || []).filter((item) => item.status === "failed").length;
+    job.progress = Math.round((job.completedCount / Math.max(1, job.batchCount)) * 100);
+  }
+
   async function runJob(job) {
+    const abortController = typeof AbortController === "function" ? new AbortController() : null;
+    const runtime = { abortController, promptId: "", itemIndex: -1 };
+    runtimes.set(job.id, runtime);
     try {
+      job.completedCount = (job.items || []).filter((item) => item.status === "completed" && item.output).length;
+      job.failedCount = (job.items || []).filter((item) => item.status === "failed").length;
+      if (!job.output) {
+        const preservedOutput = (job.items || []).find((item) => item.status === "completed" && item.output)?.output;
+        if (preservedOutput) job.output = { ...preservedOutput };
+      }
       job.status = "running";
       job.startedAt = isoNow(now());
       job.error = undefined;
-      job.progress = 0;
+      job.recoverable = false;
+      job.progress = Math.round((Number(job.completedCount || 0) / Math.max(1, job.batchCount)) * 100);
       job.stage = "Preparing batch";
       await persistJob(job);
       for (let itemIndex = 0; itemIndex < job.batchCount; itemIndex += 1) {
         const item = job.items[itemIndex];
-        const baseParameters = { denoise: job.denoise, steps: job.steps, cfg: job.cfg, seed: job.seed };
-        const parameters = job.batchCount === 1
-          ? baseParameters
-          : itemIndex === 0
-            ? { ...baseParameters, seed: sampleRandomRange("seed", IMG2IMG_SEED_RANGE, randomSource) }
-            : randomizeParameters(job.randomRanges, randomSource);
-        const succeeded = await runItem(job, item, itemIndex, parameters);
-        if (succeeded) {
+        if (item.status === "completed" && item.output) continue;
+        if (job.cancelRequested) {
+          cancelRemainingItems(job);
+          break;
+        }
+        const result = await runItem(job, item, itemIndex, parametersForItem(job, item, itemIndex), runtime);
+        if (result.success) {
           job.completedCount += 1;
           if (!job.output && item.output) job.output = { ...item.output };
-        } else {
+        } else if (!result.cancelled) {
           job.failedCount += 1;
         }
         await persistJob(job);
+        if (result.cancelled || job.cancelRequested) {
+          cancelRemainingItems(job);
+          break;
+        }
       }
-      if (job.completedCount === job.batchCount) job.status = "completed";
+      if (job.cancelRequested) {
+        cancelRemainingItems(job);
+        job.status = "cancelled";
+        job.stage = "Cancelled";
+        job.cancelReason = job.cancelReason || "Cancelled by user.";
+        job.cancelledAt = isoNow(now());
+      } else if (job.completedCount === job.batchCount) job.status = "completed";
       else if (job.failedCount === job.batchCount) job.status = "failed";
       else job.status = "partial";
       if (job.status === "failed" || job.status === "partial") {
@@ -936,16 +1106,30 @@ export function createImg2ImgController({
           ? failures[0].error
           : `${failures.length} of ${job.batchCount} image generations failed.`;
       }
-      job.progress = 100;
-      job.stage = job.status === "completed" ? "Completed" : job.status === "partial" ? "Partial" : "Failed";
+      job.progress = job.status === "cancelled"
+        ? Math.round((job.completedCount / Math.max(1, job.batchCount)) * 100)
+        : 100;
+      job.stage = job.status === "completed" ? "Completed" : job.status === "partial" ? "Partial" : job.status === "cancelled" ? "Cancelled" : "Failed";
       job.completedAt = isoNow(now());
+      job.cancelRequested = false;
       await persistJob(job);
     } catch (error) {
-      job.status = "failed";
-      job.stage = "Failed";
-      job.error = errorMessage(error);
+      if (job.cancelRequested || error?.code === "IMG2IMG_CANCELLED") {
+        cancelRemainingItems(job);
+        job.status = "cancelled";
+        job.stage = "Cancelled";
+        job.cancelReason = job.cancelReason || "Cancelled by user.";
+        job.cancelledAt = isoNow(now());
+        job.cancelRequested = false;
+      } else {
+        job.status = "failed";
+        job.stage = "Failed";
+        job.error = errorMessage(error);
+      }
       job.completedAt = isoNow(now());
       await persistJob(job);
+    } finally {
+      runtimes.delete(job.id);
     }
   }
 
@@ -961,7 +1145,7 @@ export function createImg2ImgController({
     }, 0);
   }
 
-  async function enqueue(input = {}) {
+  async function enqueue(input = {}, internal = {}) {
     await ensureStoreLoaded();
     const model = String(input.model || IMG2IMG_MODELS[0]);
     const profile = assertModelForRuntime(model, { remote });
@@ -987,6 +1171,7 @@ export function createImg2ImgController({
       seed: baseSeed,
     });
     const randomRanges = normalizeRandomRanges(input.randomRanges, parameters);
+    const preservedItems = Array.isArray(internal.items) ? internal.items : null;
     const job = {
       id: String(idFactory()),
       status: "queued",
@@ -1001,7 +1186,7 @@ export function createImg2ImgController({
         characterLoraName,
         characterLoraStrength,
         ...(resolvedLora?.registry?.id ? { characterLoraId: resolvedLora.registry.id } : {}),
-        loraProvenance: resolvedLora?.registry ? {
+        loraProvenance: internal.loraProvenance || (resolvedLora?.registry ? {
           registryId: resolvedLora.registry.id,
           displayName: resolvedLora.registry.displayName,
           relativePath: resolvedLora.registry.relativePath,
@@ -1009,7 +1194,7 @@ export function createImg2ImgController({
           baseProfile: resolvedLora.registry.baseProfile,
           sha256: resolvedLora.registry.sha256,
           triggerWords: resolvedLora.registry.triggerWords,
-        } : { relativePath: characterLoraName, legacy: true },
+        } : { relativePath: characterLoraName, legacy: true }),
       } : {}),
       denoise: parameters.denoise,
       steps: parameters.steps,
@@ -1019,22 +1204,65 @@ export function createImg2ImgController({
       randomRanges,
       completedCount: 0,
       failedCount: 0,
-      items: Array.from({ length: batchCount }, (_, index) => ({
-        index,
-        status: "queued",
-        parameters: null,
-        output: null,
-        error: null,
-        progress: 0,
-        stage: "Queued",
-        startedAt: null,
-        completedAt: null,
-      })),
+      items: Array.from({ length: batchCount }, (_, index) => {
+        const preserved = preservedItems?.[index];
+        if (preserved?.status === "completed" && preserved.output) {
+          return {
+            index,
+            status: "completed",
+            parameters: preserved.parameters ? { ...preserved.parameters } : null,
+            output: { ...preserved.output },
+            error: null,
+            progress: 100,
+            stage: "Completed",
+            startedAt: preserved.startedAt || null,
+            completedAt: preserved.completedAt || null,
+          };
+        }
+        return {
+          index,
+          status: "queued",
+          parameters: null,
+          output: null,
+          error: null,
+          progress: 0,
+          stage: "Queued",
+          startedAt: null,
+          completedAt: null,
+        };
+      }),
       createdAt: isoNow(now()),
       updatedAt: isoNow(now()),
       startedAt: null,
       completedAt: null,
+      cancelRequested: false,
+      cancelReason: "",
+      cancelledAt: null,
+      recoverable: false,
+      recovery: null,
+      attempt: Number.isInteger(internal.attempt) ? internal.attempt : 1,
+      ...(internal.retryOf ? { retryOf: internal.retryOf } : {}),
+      provenance: internal.provenance || {
+        request: {
+          sourceName,
+          sourceRoot,
+          prompt,
+          negativePrompt: String(input.negativePrompt || "").trim(),
+          model,
+          characterLoraName: characterLoraName || null,
+          characterLoraStrength,
+          denoise: parameters.denoise,
+          steps: parameters.steps,
+          cfg: parameters.cfg,
+          seed: parameters.seed,
+          batchCount,
+          randomRanges,
+        },
+        attempt: 1,
+      },
     };
+    job.completedCount = job.items.filter((item) => item.status === "completed").length;
+    job.output = job.items.find((item) => item.output)?.output || undefined;
     // Validate the full graph contract before admitting the job.
     buildImg2ImgPrompt(job);
     await persistJob(job, { required: true });
@@ -1044,9 +1272,94 @@ export function createImg2ImgController({
     return publicJob(job);
   }
 
+  async function cancelJob(id, reason = "Cancelled by user.") {
+    await ensureStoreLoaded();
+    const key = String(id);
+    const job = jobs.get(key) || await jobStore.read(key);
+    await waitForPersistence(key);
+    if (!job) throw makeError("Image-to-image job not found.", 404, "IMG2IMG_JOB_NOT_FOUND");
+    if (["completed", "failed", "partial", "cancelled", "interrupted"].includes(job.status)) {
+      throw makeError(`Image-to-image job cannot be cancelled from ${job.status}.`, 409, "IMG2IMG_CANCEL_NOT_ALLOWED");
+    }
+    if (job.status === "cancelling") return publicJob(job);
+    job.cancelRequested = true;
+    job.cancelReason = errorMessage(reason, "Cancelled by user.");
+    const runtime = runtimes.get(key);
+    const queued = job.status === "queued" && active !== job;
+    if (queued) {
+      const index = queue.findIndex((queuedJob) => queuedJob.id === key);
+      if (index >= 0) queue.splice(index, 1);
+      for (const item of job.items || []) {
+        if (!["completed", "failed"].includes(item.status)) {
+          item.status = "cancelled";
+          item.stage = "Cancelled";
+          item.completedAt = isoNow(now());
+        }
+      }
+      job.status = "cancelled";
+      job.stage = "Cancelled";
+      job.cancelRequested = false;
+      job.cancelledAt = isoNow(now());
+      job.completedAt = job.completedAt || job.cancelledAt;
+      await persistJob(job, { required: true });
+      return publicJob(job);
+    }
+    job.status = "cancelling";
+    job.stage = "Cancelling image generation";
+    await persistJob(job, { required: true });
+    runtime?.abortController?.abort();
+    if (runtime?.promptId) await request("/interrupt", { method: "POST" }, requestTimeoutMs).catch(() => null);
+    return publicJob(job);
+  }
+
+  async function retryJob(id) {
+    await ensureStoreLoaded();
+    const source = jobs.get(String(id)) || await jobStore.read(String(id));
+    if (!source) throw makeError("Image-to-image job not found.", 404, "IMG2IMG_JOB_NOT_FOUND");
+    if (!["failed", "partial", "cancelled", "interrupted"].includes(source.status)) {
+      throw makeError("Only failed, partial, cancelled, or interrupted image-to-image jobs can be retried.", 409, "IMG2IMG_JOB_NOT_RETRYABLE");
+    }
+    const nextAttempt = Math.max(1, Number(source.attempt || source.provenance?.attempt || 1) + 1);
+    const retryItems = Array.isArray(source.items) ? source.items : [];
+    const body = {
+      sourceName: source.sourceName,
+      sourceRoot: source.sourceRoot,
+      prompt: source.prompt,
+      negativePrompt: source.negativePrompt,
+      model: source.model,
+      characterLoraId: source.characterLoraId,
+      characterLoraName: source.characterLoraName,
+      characterLoraStrength: source.characterLoraStrength,
+      denoise: source.denoise,
+      steps: source.steps,
+      cfg: source.cfg,
+      seed: source.seed,
+      batchCount: source.batchCount,
+      randomRanges: source.randomRanges,
+    };
+    return await enqueue(body, {
+      attempt: nextAttempt,
+      retryOf: source.id,
+      items: retryItems,
+      loraProvenance: source.loraProvenance ? structuredClone(source.loraProvenance) : undefined,
+      provenance: {
+        request: structuredClone(source.provenance?.request || body),
+        attempt: nextAttempt,
+        retryOf: source.id,
+        originalId: source.provenance?.originalId || source.id,
+        skippedCompletedItems: retryItems.filter((item) => item.status === "completed" && item.output).map((item) => item.index),
+      },
+    });
+  }
+
   async function handleRoute(req, res, { pathname = new URL(req.url || "/", "http://localhost").pathname, readJson, sendJson, sendError } = {}) {
+    const respond = sendJson || ((response, status, payload) => {
+      response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(payload));
+    });
+    const fail = sendError || ((response, status, message, code) => respond(response, status, { error: message, ...(code ? { code } : {}) }));
     if (req.method === "GET" && pathname === "/api/img2img/health") {
-      sendJson(res, 200, await checkReadiness());
+      respond(res, 200, await checkReadiness());
       return true;
     }
     if (req.method === "POST" && pathname === "/api/img2img") {
@@ -1058,7 +1371,7 @@ export function createImg2ImgController({
         if (requestedLoraName) normalizeCharacterLoraStrength(body?.characterLoraStrength);
         const readiness = await checkReadiness();
         if (!readiness.ready || !readiness.models[requestedModel]) {
-          sendJson(res, 503, {
+          respond(res, 503, {
             error: !readiness.ready
               ? "Image-to-image is not ready."
               : `Image model ${requestedModel} is not ready on this runtime.`,
@@ -1067,16 +1380,30 @@ export function createImg2ImgController({
           return true;
         }
         if (requestedLoraName && !readiness.profiles?.[requestedModel]?.loraAvailable) {
-          sendJson(res, 503, {
+          respond(res, 503, {
             error: `ComfyUI does not provide the ${readiness.profiles?.[requestedModel]?.loraLoader || "LoRA"} node required for a character LoRA with ${requestedModel}.`,
             code: "IMG2IMG_LORA_NOT_READY",
             health: readiness,
           });
           return true;
         }
-        sendJson(res, 202, { job: await enqueue(body) });
+        respond(res, 202, { job: await enqueue(body) });
       } catch (error) {
-        sendError(res, Number.isInteger(error?.status) ? error.status : 400, errorMessage(error), error?.code);
+        fail(res, Number.isInteger(error?.status) ? error.status : 400, errorMessage(error), error?.code);
+      }
+      return true;
+    }
+    const actionMatch = pathname.match(/^\/api\/img2img\/jobs\/([^/]+)\/(cancel|retry)$/);
+    if (req.method === "POST" && actionMatch) {
+      const id = decodeURIComponent(actionMatch[1]);
+      try {
+        const body = typeof readJson === "function" ? await readJson(req) : {};
+        const job = actionMatch[2] === "cancel"
+          ? await cancelJob(id, body?.reason || body?.cancelReason || "Cancelled by user.")
+          : await retryJob(id);
+        respond(res, actionMatch[2] === "retry" ? 201 : 200, { job });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 400, errorMessage(error), error?.code);
       }
       return true;
     }
@@ -1087,13 +1414,13 @@ export function createImg2ImgController({
         const records = await jobStore.list();
         const merged = new Map(records.map((job) => [String(job.id), job]));
         for (const job of jobs.values()) merged.set(String(job.id), job);
-        sendJson(res, 200, {
+        respond(res, 200, {
           jobs: [...merged.values()]
             .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
             .map(publicJob),
         });
       } catch {
-        sendError(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
+        fail(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
       }
       return true;
     }
@@ -1104,10 +1431,10 @@ export function createImg2ImgController({
         const job = jobs.get(id) || await jobStore.read(id);
         await waitForPersistence(id);
         if (job && !jobs.has(id)) jobs.set(id, job);
-        if (!job) sendError(res, 404, "Image-to-image job not found.");
-        else sendJson(res, 200, { job: publicJob(job) });
+        if (!job) fail(res, 404, "Image-to-image job not found.");
+        else respond(res, 200, { job: publicJob(job) });
       } catch {
-        sendError(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
+        fail(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
       }
       return true;
     }
@@ -1135,6 +1462,8 @@ export function createImg2ImgController({
       return [...merged.values()].sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))).map(publicJob);
     },
     handleRoute,
+    cancel: cancelJob,
+    retry: retryJob,
     active: () => active ? publicJob(active) : null,
   };
 }

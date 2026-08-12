@@ -15,6 +15,7 @@ import {
   normalizeImageAssetName,
   parseImg2ImgHistory,
 } from "../server/image-generation/img2img.mjs";
+import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs";
 
 const CHECKPOINT_MODELS = IMG2IMG_MODELS.filter((model) => IMG2IMG_MODEL_PROFILES[model].workflow === "checkpoint");
 const WAI_MODEL = "waiIllustriousSDXL_v170.safetensors";
@@ -351,6 +352,7 @@ test("remote controller rejects local-only model profiles before queueing", asyn
       remote: true,
       inputRoot,
       outputRoot,
+      storeRoot: path.join(root, "records"),
       fetchImpl: async () => { throw new Error("remote guard should run before ComfyUI requests"); },
     });
     await assert.rejects(
@@ -617,7 +619,7 @@ test("batch controller records partial failures and continues with later items",
       storeRoot,
       fetchImpl,
       pollIntervalMs: 1,
-      idFactory: () => "partial-job-1",
+      idFactory: (() => { const ids = ["partial-job-1", "partial-retry-1"]; return () => ids.shift(); })(),
       toAsset: async (_root, name) => ({ root: "output", name, kind: "image" }),
     });
     const queued = await controller.enqueue({ sourceName: "source.png", prompt: "restyled", batchCount: 3 });
@@ -633,9 +635,29 @@ test("batch controller records partial failures and continues with later items",
     assert.match(job.items[1].error, /simulated second image failure/);
     assert.equal(job.items[2].status, "completed");
     assert.equal(promptCount, 3);
+    const preservedFirstOutput = job.items[0].output.name;
+    const preservedThirdOutput = job.items[2].output.name;
     const persisted = await createImg2ImgController({ inputRoot, outputRoot, storeRoot, fetchImpl }).getJob(queued.id);
     assert.equal(persisted.status, "partial");
     assert.equal(persisted.failedCount, 1);
+    const retryResponse = apiResponse();
+    await controller.handleRoute({ method: "POST", url: `/api/img2img/jobs/${queued.id}/retry` }, retryResponse, { readJson: async () => ({}) });
+    assert.equal(retryResponse.status, 201);
+    const retry = retryResponse.body.job;
+    assert.equal(retry.retryOf, queued.id);
+    assert.equal(retry.attempt, 2);
+    assert.equal(retry.completedCount, 2);
+    let retried = retry;
+    for (let count = 0; count < 1000 && !["completed", "failed", "partial"].includes(retried.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      retried = await controller.getJob(retry.id);
+    }
+    assert.equal(retried.status, "completed", retried.error);
+    assert.equal(retried.completedCount, 3);
+    assert.equal(retried.failedCount, 0);
+    assert.equal(promptCount, 4, "retry should only submit the previously failed item");
+    assert.equal(retried.items[0].output.name, preservedFirstOutput);
+    assert.equal(retried.items[2].output.name, preservedThirdOutput);
     await new Promise((resolve) => setTimeout(resolve, 20));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -660,6 +682,130 @@ test("batch request rejects invalid count and unaligned random ranges", async ()
       (error) => error?.status === 400 && error?.code === "RANDOM_RANGE_INVALID",
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restart recovers queued and running jobs without ghost state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-recovery-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  const storeRoot = path.join(root, "records");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  const store = createImg2ImgStore({ root: storeRoot });
+  const base = {
+    sourceName: "source.png",
+    sourceRoot: "input",
+    prompt: "restart recovery",
+    negativePrompt: "",
+    model: IMG2IMG_MODELS[0],
+    denoise: 0.65,
+    steps: 4,
+    cfg: 1,
+    seed: 11,
+    batchCount: 2,
+    randomRanges: { denoise: { min: 0.65, max: 0.65 }, steps: { min: 4, max: 4 }, cfg: { min: 1, max: 1 } },
+    completedCount: 1,
+    failedCount: 0,
+    items: [
+      { index: 0, status: "completed", parameters: { denoise: 0.65, steps: 4, cfg: 1, seed: 11 }, output: { root: "output", name: "img2img/kept.png", kind: "image" }, progress: 100, stage: "Completed", startedAt: "2026-08-12T03:00:00.000Z", completedAt: "2026-08-12T03:01:00.000Z" },
+      { index: 1, status: "running", parameters: { denoise: 0.65, steps: 4, cfg: 1, seed: 12 }, output: null, progress: 30, stage: "Generating image", startedAt: "2026-08-12T03:01:00.000Z", completedAt: null },
+    ],
+    createdAt: "2026-08-12T03:00:00.000Z",
+    startedAt: "2026-08-12T03:00:00.000Z",
+    completedAt: null,
+    status: "running",
+  };
+  await store.save({ ...base, id: "running-recovery" });
+  await store.save({ ...base, id: "queued-recovery", status: "queued", items: base.items.map((item) => ({ ...item, status: "queued", output: null, progress: 0, stage: "Queued" })), completedCount: 0 });
+  const controller = createImg2ImgController({ inputRoot, outputRoot, storeRoot, store, fetchImpl: async () => { throw new Error("queued recovery is intentionally not executed in this fixture"); } });
+  const running = await controller.getJob("running-recovery");
+  assert.equal(running.status, "interrupted");
+  assert.equal(running.recoverable, true);
+  assert.equal(running.recovery.reason, "bridge_restart");
+  assert.equal(running.completedCount, 1);
+  assert.equal(running.items[0].output.name, "img2img/kept.png");
+  let queued = await controller.getJob("queued-recovery");
+  for (let count = 0; count < 100 && queued.status === "queued"; count += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    queued = await controller.getJob("queued-recovery");
+  }
+  assert.notEqual(queued.status, "queued");
+  for (let count = 0; count < 100 && controller.active(); count += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await rm(root, { recursive: true, force: true });
+});
+
+test("queued cancellation is durable and does not submit a ComfyUI prompt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-cancel-queue-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const beforeRunStarted = new Promise((resolve) => { started = resolve; });
+  let beforeRunCount = 0;
+  let promptCount = 0;
+  const fetchImpl = async (url) => {
+    const endpoint = String(url).replace("http://cancel-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") {
+      promptCount += 1;
+      return response({ prompt_id: `cancel-prompt-${promptCount}` });
+    }
+    if (endpoint.startsWith("/history/")) return response({});
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://cancel-comfy",
+    inputRoot,
+    outputRoot,
+    fetchImpl,
+    pollIntervalMs: 1,
+    idFactory: (() => { const ids = ["active-cancel-job", "queued-cancel-job"]; return () => ids.shift(); })(),
+    beforeRun: async () => {
+      beforeRunCount += 1;
+      if (beforeRunCount === 1) {
+        started();
+        await gate;
+      }
+    },
+  });
+  try {
+    const active = await controller.enqueue({ sourceName: "source.png", prompt: "active", batchCount: 1 });
+    await beforeRunStarted;
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "queued", batchCount: 1 });
+    const queuedCancelResponse = apiResponse();
+    await controller.handleRoute({ method: "POST", url: `/api/img2img/jobs/${queued.id}/cancel` }, queuedCancelResponse, {
+      readJson: async () => ({ reason: "No longer needed" }),
+    });
+    const cancelled = queuedCancelResponse.body.job;
+    assert.equal(queuedCancelResponse.status, 200);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal((await controller.getJob(queued.id)).cancelReason, "No longer needed");
+    assert.equal(promptCount, 0);
+    const activeCancelResponse = apiResponse();
+    await controller.handleRoute({ method: "POST", url: `/api/img2img/jobs/${active.id}/cancel` }, activeCancelResponse, {
+      readJson: async () => ({ reason: "stop active" }),
+    });
+    assert.equal(activeCancelResponse.status, 200);
+    release();
+    let final = await controller.getJob(active.id);
+    for (let count = 0; count < 100 && final.status !== "cancelled"; count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      final = await controller.getJob(active.id);
+    }
+    assert.equal(final.status, "cancelled");
+  } finally {
+    release();
     await rm(root, { recursive: true, force: true });
   }
 });

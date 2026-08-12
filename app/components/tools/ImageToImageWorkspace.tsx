@@ -12,6 +12,7 @@ import {
     fetchImg2ImgHealth,
     fetchImg2ImgJob,
     fetchImg2ImgJobs,
+    cancelImg2ImgJob,
     fetchImg2ImgLoras,
     fetchImg2ImgRuntime,
     img2ImgReadinessMessage,
@@ -19,6 +20,7 @@ import {
     isImg2ImgRetryable,
     Img2ImgApiError,
     submitImg2Img,
+    retryImg2ImgJob,
     type Img2ImgHealth,
     type Img2ImgItem,
     type Img2ImgJob,
@@ -209,6 +211,8 @@ function apiErrorMessage(payload: PromptApiPayload, fallback: string) {
 }
 
 function statusLabel(job: Img2ImgJob | null) {
+    if (job?.status === "cancelling") return job.stage ? `Cancelling · ${job.stage}` : "Cancelling";
+    if (job?.status === "interrupted") return job.stage ? `Interrupted · ${job.stage}` : "Interrupted";
     if (!job) return "尚未開始生成";
     const label = job.status === "partial"
         ? "Partial"
@@ -259,6 +263,7 @@ export function ImageToImageWorkspace() {
     const [uploading, setUploading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [retrying, setRetrying] = useState(false);
+    const [cancelling, setCancelling] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
     const inputRef = useRef<HTMLInputElement>(null);
@@ -376,7 +381,7 @@ export function ImageToImageWorkspace() {
     const trackedJobId = job?.id;
     const trackedJobStatus = job?.status;
     useEffect(() => {
-        if (!trackedJobId || !["queued", "running"].includes(trackedJobStatus || "")) return;
+        if (!trackedJobId || !["queued", "running", "cancelling"].includes(trackedJobStatus || "")) return;
         let active = true;
         const poll = async () => {
             try {
@@ -399,7 +404,7 @@ export function ImageToImageWorkspace() {
     }, [trackedJobId, trackedJobStatus]);
 
     useEffect(() => {
-        if (!trackedJobId || !["completed", "failed", "partial", "cancelled"].includes(trackedJobStatus || "")) return;
+        if (!trackedJobId || !["completed", "failed", "partial", "cancelled", "interrupted"].includes(trackedJobStatus || "")) return;
         const timer = window.setTimeout(() => void refreshHistory(historyQuery), 0);
         return () => window.clearTimeout(timer);
     }, [trackedJobId, trackedJobStatus, historyQuery, refreshHistory]);
@@ -436,6 +441,7 @@ export function ImageToImageWorkspace() {
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
+    const canCancel = Boolean(job && (job.status === "queued" || job.status === "running") && !cancelling && !retrying);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
     const batchTotal = Math.max(1, Math.min(20, Number(job?.batchCount || batchCount) || 1));
     const completedCount = Number.isFinite(Number(job?.completedCount)) ? Number(job?.completedCount) : 0;
@@ -636,17 +642,25 @@ export function ImageToImageWorkspace() {
         }
     }
 
+    async function cancel() {
+        if (!job || !canCancel) return;
+        setCancelling(true);
+        setError("");
+        try {
+            setJob(await cancelImg2ImgJob(job.id));
+        } catch (reason) {
+            setError(errorMessage(reason, "Unable to cancel image-to-image job."));
+        } finally {
+            setCancelling(false);
+        }
+    }
+
     async function retry() {
         if (!job || !canRetry) return;
-        const validationError = validateForm();
-        if (validationError) {
-            setError(validationError);
-            return;
-        }
         setRetrying(true);
         setError("");
         try {
-            const next = await submitImg2Img(requestBody());
+            const next = await retryImg2ImgJob(job.id);
             setJob(next);
             if (next.status === "failed") setError(next.error || "以圖生圖失敗。 ");
         } catch (reason) {
@@ -937,6 +951,8 @@ export function ImageToImageWorkspace() {
                 </div>
             </section>
 
+            {canCancel && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : "Cancel generation"}</button>}
+            {job?.status === "cancelling" && <p className={styles.helper}>Stopping the current image generation…</p>}
             <section className={styles.panel} aria-labelledby="img2img-job-title">
                 <div className={styles.sectionHeader}>
                     <div>
@@ -952,7 +968,6 @@ export function ImageToImageWorkspace() {
                 {job?.characterLoraName && <p className={styles.helper}>LoRA: {job.characterLoraName} · {Number(job.characterLoraStrength ?? 0.75).toFixed(2)}</p>}
                 {job && batchTotal > 1 && <p className={styles.batchSummary} aria-live="polite">{completedCount}/{batchTotal} completed{failedCount ? ` · ${failedCount} failed` : ""}</p>}
                 {job && <div className={styles.progressTrack} role="progressbar" aria-label="以圖生圖進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
-                {job && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>目前 API 沒有取消 endpoint；此頁不會偽造取消操作。</p>}
                 {canRetry && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={retrying}>{retrying ? "重試中…" : "Retry"}</button>}
             </section>
 

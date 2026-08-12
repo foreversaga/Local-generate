@@ -147,13 +147,14 @@ function canCancel(raw, source) {
   if (source === "video") return ["queued", "running", "cancelling"].includes(status);
   if (source === "long") return ["queued", "running", "paused", "assembling"].includes(status);
   if (source === "upscale") return ["queued", "running", "cancelling"].includes(status);
+  if (source === "img2img") return ["queued", "running", "cancelling"].includes(status);
   if (source === "lora") return ["captioning", "queued", "training", "installing"].includes(status);
   return false;
 }
 
 function retryable(raw, source) {
   const status = normalizeJobStatus(raw?.status);
-  if (!["error", "cancelled"].includes(status)) return false;
+  if (!["error", "partial", "cancelled"].includes(status)) return false;
   if (source === "video") return ["failed", "interrupted", "canceled", "cancelled", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "lora") return ["failed", "preflight_failed", "caption_failed", "canceled", "cancelled", "interrupted", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "long" || source === "upscale" || source === "img2img") return true;
