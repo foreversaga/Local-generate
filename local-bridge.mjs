@@ -31,6 +31,8 @@ import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
 import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
+import { createRuntimeContext } from "./server/runtime/runtime-context.mjs";
+import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
 
@@ -86,16 +88,16 @@ const LOCAL_COMFY_URL = (process.env.LOCAL_COMFY_URL || (INITIAL_REMOTE_MODE ? "
 const LOCAL_OLLAMA_URL = (process.env.LOCAL_OLLAMA_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:11434" : process.env.OLLAMA_URL) || "http://127.0.0.1:11434").replace(/\/$/, "");
 const REMOTE_COMFY_URL = (process.env.REMOTE_COMFY_URL || (INITIAL_REMOTE_MODE ? process.env.COMFY_URL : "") || "http://127.0.0.1:18188").replace(/\/$/, "");
 const REMOTE_OLLAMA_URL = (process.env.REMOTE_OLLAMA_URL || (INITIAL_REMOTE_MODE ? process.env.OLLAMA_URL : "") || "http://127.0.0.1:11435").replace(/\/$/, "");
-let COMFY_REMOTE = INITIAL_REMOTE_MODE;
-let COMFY_URL = COMFY_REMOTE ? REMOTE_COMFY_URL : LOCAL_COMFY_URL;
-let OLLAMA_URL = COMFY_REMOTE ? REMOTE_OLLAMA_URL : LOCAL_OLLAMA_URL;
-let runtimeSwitching = false;
-let activeRuntimeOperations = 0;
+const runtimeContext = createRuntimeContext({
+  initialMode: INITIAL_REMOTE_MODE ? "remote" : "local",
+  local: { comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL },
+  remote: { comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL },
+});
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
-const defaultOllamaModel = () => COMFY_REMOTE ? GEMMA4_OLLAMA_MODEL : QWEN_OLLAMA_MODEL;
+const defaultOllamaModel = () => runtimeContext.isRemote ? GEMMA4_OLLAMA_MODEL : QWEN_OLLAMA_MODEL;
 const CODEX_CLI = process.env.CODEX_CLI_PATH || (process.platform === "win32" ? "codex.cmd" : "codex");
 const CODEX_HOME = path.resolve(
   process.env.CODEX_HOME || path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), ".codex"),
@@ -142,9 +144,9 @@ const ollamaCoordinator = createOllamaCoordinator({
 const continuationPromptFinalizer = createContinuationPromptFinalizer({
   ollamaCoordinator,
   getModel: ({ job } = {}) => job?.ollamaModel || defaultOllamaModel(),
-  getOllamaUrl: () => OLLAMA_URL,
-  getComfyUrl: () => COMFY_URL,
-  getRemoteComfy: () => COMFY_REMOTE,
+  getOllamaUrl: () => runtimeContext.ollamaUrl,
+  getComfyUrl: () => runtimeContext.comfyUrl,
+  getRemoteComfy: () => runtimeContext.isRemote,
 });
 const timingHistoryReady = fs
   .readFile(TIMING_HISTORY_FILE, "utf8")
@@ -443,9 +445,9 @@ async function persistPromptError({ stage, endpoint, payload, error }) {
       payload,
       error,
       runtime: {
-        mode: COMFY_REMOTE ? "remote" : "local",
-        comfyUrl: COMFY_URL,
-        ollamaUrl: OLLAMA_URL,
+        mode: runtimeContext.mode,
+        comfyUrl: runtimeContext.comfyUrl,
+        ollamaUrl: runtimeContext.ollamaUrl,
       },
     });
   } catch (logError) {
@@ -859,10 +861,8 @@ function makeRuntimeError(code, message, status = 400, details = {}) {
   return error;
 }
 
-function runtimeTarget(remote = COMFY_REMOTE) {
-  return remote
-    ? { mode: "remote", remote: true, comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL }
-    : { mode: "local", remote: false, comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL };
+function runtimeTarget(remote = runtimeContext.isRemote) {
+  return runtimeContext.target(remote ? "remote" : "local");
 }
 
 async function probeRuntimeTarget(remote) {
@@ -899,7 +899,7 @@ async function startRuntimeServices(remote) {
 }
 
 async function runtimeBusyReason() {
-  if (activeRuntimeOperations > 0) return "A model request is being admitted.";
+  if (runtimeContext.activeOperations > 0) return "A model request is being admitted.";
   if (activeGenerationId || generationQueue.length || jobProcesses.size) return "A video generation is queued or running.";
   const seedJobs = typeof seedvr2Controller?.getJobs === "function" ? seedvr2Controller.getJobs() : [];
   if (seedJobs.some((job) => ["queued", "running", "cancelling"].includes(job?.status))) return "A SeedVR2 job is queued or running.";
@@ -921,54 +921,26 @@ async function releaseRuntimeGpu(target) {
 }
 
 async function switchRuntimeMode(mode) {
-  const remote = mode === "remote";
-  if (!remote && mode !== "local") throw makeRuntimeError("RUNTIME_MODE_INVALID", "Runtime mode must be local or remote.", 400);
-  if (runtimeSwitching) throw makeRuntimeError("RUNTIME_SWITCH_BUSY", "A runtime switch is already in progress.", 409);
-  runtimeSwitching = true;
-  try {
-    const busy = await runtimeBusyReason();
-    if (busy) throw makeRuntimeError("RUNTIME_IN_USE", `Cannot switch model runtime: ${busy}`, 409);
-    if (remote === COMFY_REMOTE) return await probeRuntimeTarget(remote);
-
-    let target = await probeRuntimeTarget(remote);
-    if (!target.comfyOnline || !target.ollamaOnline) {
-      await startRuntimeServices(remote);
-      target = await probeRuntimeTarget(remote);
-    }
-    if (!target.comfyOnline || !target.ollamaOnline) {
-      throw makeRuntimeError(
-        "RUNTIME_UNAVAILABLE",
-        `${remote ? "Vast" : "Local"} runtime is unavailable (ComfyUI: ${target.comfyOnline ? "online" : "offline"}, Ollama: ${target.ollamaOnline ? "online" : "offline"}).`,
-        503,
-        target,
-      );
-    }
-
-    await releaseRuntimeGpu(runtimeTarget(COMFY_REMOTE));
-    COMFY_REMOTE = remote;
-    COMFY_URL = target.comfyUrl;
-    OLLAMA_URL = target.ollamaUrl;
-    seedvr2Controller = createSeedVR2ControllerForRuntime();
-    img2imgController = createImg2ImgControllerForRuntime();
-    return target;
-  } finally {
-    runtimeSwitching = false;
-  }
+  return runtimeContext.switchMode(mode, {
+    busyReason: runtimeBusyReason,
+    probe: probeRuntimeTarget,
+    startServices: startRuntimeServices,
+    releaseGpu: releaseRuntimeGpu,
+    onSwitched: async () => {
+      loraTrainingServicePromise = undefined;
+      seedvr2Controller = createSeedVR2ControllerForRuntime();
+      img2imgController = createImg2ImgControllerForRuntime();
+    },
+  });
 }
 
 async function withRuntimeOperation(operation) {
-  if (runtimeSwitching) throw makeRuntimeError("RUNTIME_SWITCH_BUSY", "Model runtime is switching; try again shortly.", 409);
-  activeRuntimeOperations += 1;
-  try {
-    return await operation();
-  } finally {
-    activeRuntimeOperations = Math.max(0, activeRuntimeOperations - 1);
-  }
+  return runtimeContext.withOperation(operation);
 }
 
 async function releaseComfyForOllama(target = {}) {
-  const remoteComfy = target.remoteComfy ?? COMFY_REMOTE;
-  const comfyUrl = String(target.comfyUrl || COMFY_URL).replace(/\/$/, "");
+  const remoteComfy = target.remoteComfy ?? runtimeContext.isRemote;
+  const comfyUrl = String(target.comfyUrl || runtimeContext.comfyUrl).replace(/\/$/, "");
   if (!remoteComfy) return;
   try {
     await fetchJson(comfyUrl + "/free", {
@@ -987,8 +959,8 @@ async function releaseOllamaForComfy() {
 
 async function health() {
   const [ollama, comfy, codex, python] = await Promise.all([
-    fetchJson(OLLAMA_URL + "/api/tags").catch(() => null),
-    fetchJson(COMFY_URL + "/system_stats").catch(() => null),
+    fetchJson(runtimeContext.ollamaUrl + "/api/tags").catch(() => null),
+    fetchJson(runtimeContext.comfyUrl + "/system_stats").catch(() => null),
     codexStatus(),
     resolveBridgePython(),
   ]);
@@ -1009,16 +981,10 @@ async function health() {
       .stat(H3_ROOT)
       .then((value) => value.isDirectory())
       .catch(() => false),
-    ollama: { online: Boolean(ollama), url: OLLAMA_URL, models },
+    ollama: { online: Boolean(ollama), url: runtimeContext.ollamaUrl, models },
     codex,
-    comfy: { online: Boolean(comfy), url: COMFY_URL, remote: COMFY_REMOTE, devices },
-    runtime: {
-      mode: COMFY_REMOTE ? "remote" : "local",
-      switching: runtimeSwitching,
-      activeOperations: activeRuntimeOperations,
-      local: { comfyUrl: LOCAL_COMFY_URL, ollamaUrl: LOCAL_OLLAMA_URL },
-      remote: { comfyUrl: REMOTE_COMFY_URL, ollamaUrl: REMOTE_OLLAMA_URL },
-    },
+    comfy: { online: Boolean(comfy), url: runtimeContext.comfyUrl, remote: runtimeContext.isRemote, devices },
+    runtime: runtimeContext.snapshot(),
     paths: {
       h3Root: H3_ROOT,
       comfyRoot: COMFY_ROOT,
@@ -1203,9 +1169,9 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
 
 async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] }) {
   const response = await ollamaCoordinator.generate({
-    ollamaUrl: OLLAMA_URL,
-    comfyUrl: COMFY_URL,
-    remoteComfy: COMFY_REMOTE,
+    ollamaUrl: runtimeContext.ollamaUrl,
+    comfyUrl: runtimeContext.comfyUrl,
+    remoteComfy: runtimeContext.isRemote,
     model,
     body: {
       system,
@@ -1847,7 +1813,7 @@ async function listLoras({ family = "", profile = "", consumer = "" } = {}) {
     return { loras: [], items: [], available: true, registryVersion: 0 };
   }
   const [objectInfoResult, registryResult] = await Promise.allSettled([
-    fetchJson(COMFY_URL + "/object_info", {}, 5000),
+    fetchJson(runtimeContext.comfyUrl + "/object_info", {}, 5000),
     loraRegistryStore.readRegistry(),
   ]);
   const objectInfo = objectInfoResult.status === "fulfilled" ? objectInfoResult.value : null;
@@ -1945,7 +1911,7 @@ let loraTrainingServicePromise;
 
 async function probeCaptionOllama() {
   try {
-    const response = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(`${runtimeContext.ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
     if (!response.ok) {
       return { ok: false, model: OLLAMA_CAPTION_MODEL, message: `Ollama tags probe returned HTTP ${response.status}.` };
     }
@@ -1997,8 +1963,8 @@ async function getLoraTrainingService() {
           candidateRoots: candidateRoots ?? [COMFY_ROOT, H3_ROOT],
         }),
         comfyRoot: COMFY_ROOT,
-        comfyUrl: COMFY_URL,
-        ollamaUrl: OLLAMA_URL,
+        comfyUrl: runtimeContext.comfyUrl,
+        ollamaUrl: runtimeContext.ollamaUrl,
         ollamaModel: OLLAMA_CAPTION_MODEL,
         ollamaProbe: probeCaptionOllama,
         comfyLoraDirectory: path.join(COMFY_ROOT, "models", "loras", "trained"),
@@ -2827,7 +2793,7 @@ async function startGeneration(payload, internal = {}) {
     if (!inputImagePath && !inputVideoPath) {
       throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
     }
-    if (!COMFY_REMOTE && !(await fs.stat(REF2VA_MODEL).catch(() => null))) {
+    if (!runtimeContext.isRemote && !(await fs.stat(REF2VA_MODEL).catch(() => null))) {
       throw new Error(
         `尚未安裝 Ref2VA diffusion model：${REF2VA_MODEL_NAME}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
       );
@@ -2977,7 +2943,7 @@ async function startGeneration(payload, internal = {}) {
       "--model-profile",
       modelProfile,
       "--comfy-url",
-      COMFY_URL,
+      runtimeContext.comfyUrl,
     ];
     if (characterLoraName) {
       args.push(
@@ -2987,7 +2953,7 @@ async function startGeneration(payload, internal = {}) {
         String(characterLoraStrength),
       );
     }
-    if (COMFY_REMOTE) args.push("--remote-comfy");
+    if (runtimeContext.isRemote) args.push("--remote-comfy");
   } else {
     args = [
       GENERATOR,
@@ -3010,9 +2976,9 @@ async function startGeneration(payload, internal = {}) {
       "--model-profile",
       modelProfile,
       "--comfy-url",
-      COMFY_URL,
+      runtimeContext.comfyUrl,
     ];
-    if (COMFY_REMOTE) {
+    if (runtimeContext.isRemote) {
       args.push("--remote-comfy", "--sage-attention", "sageattn3");
     }
     if (inputImagePath && mode !== "ref2v") args.push("--input-image", inputImagePath);
@@ -3731,8 +3697,8 @@ async function deleteMediaAsset(rootName, relativeName, {
 
 function createSeedVR2ControllerForRuntime() {
   return createSeedVR2Controller({
-    comfyUrl: COMFY_URL,
-    remote: COMFY_REMOTE,
+    comfyUrl: runtimeContext.comfyUrl,
+    remote: runtimeContext.isRemote,
     comfyRoot: COMFY_ROOT,
     inputRoot: INPUT_ROOT,
     outputRoot: OUTPUT_ROOT,
@@ -3742,8 +3708,8 @@ function createSeedVR2ControllerForRuntime() {
 
 function createImg2ImgControllerForRuntime() {
   return createImg2ImgController({
-    comfyUrl: COMFY_URL,
-    remote: COMFY_REMOTE,
+    comfyUrl: runtimeContext.comfyUrl,
+    remote: runtimeContext.isRemote,
     inputRoot: INPUT_ROOT,
     outputRoot: OUTPUT_ROOT,
     toAsset,
@@ -3762,6 +3728,23 @@ function createImg2ImgControllerForRuntime() {
 let seedvr2Controller = createSeedVR2ControllerForRuntime();
 let img2imgController = createImg2ImgControllerForRuntime();
 
+const domainRouter = createBridgeDomainRouter({
+  getSeedVR2Controller: () => seedvr2Controller,
+  getImg2ImgController: () => img2imgController,
+  handleLoraTrainingRoute,
+  handleLongVideoRoute,
+  planSequence: planSequenceWithPromptProvider,
+  runSequence,
+  startSequenceGeneration,
+  checkMediaTools,
+  outputRoot: OUTPUT_ROOT,
+  ollamaCoordinator,
+  continuationPromptFinalizer,
+  runtimeContext,
+  withAssetLifecycleLock,
+  withRuntimeOperation,
+});
+
 async function route(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, jsonHeaders());
@@ -3773,7 +3756,7 @@ async function route(req, res) {
 
   if (pathname === "/api/runtime") {
     if (req.method === "GET") {
-      sendJson(res, 200, { runtime: await probeRuntimeTarget(COMFY_REMOTE), health: await health() });
+      sendJson(res, 200, { runtime: await probeRuntimeTarget(runtimeContext.isRemote), health: await health() });
       return;
     }
     if (req.method === "POST") {
@@ -3794,38 +3777,8 @@ async function route(req, res) {
     sendError(res, 405, "Runtime endpoint only supports GET and POST.");
     return;
   }
-
-  if (pathname === "/api/upscale" || pathname.startsWith("/api/upscale/")) {
-    const dispatch = () => seedvr2Controller.handleRoute(req, res, {
-      pathname,
-      readJson,
-      sendJson,
-      sendError,
-    });
-    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
-    if (handled || res.headersSent) return;
-  }
-
-  if (pathname === "/api/sequences" || pathname.startsWith("/api/sequences/")) {
-    const dispatch = () => handleLongVideoRoute(req, res, {
-      plan: planSequenceWithPromptProvider,
-      planOptions: { ollamaUrl: OLLAMA_URL, comfyUrl: COMFY_URL, remoteComfy: COMFY_REMOTE, ollamaCoordinator },
-      outputOptions: { root: OUTPUT_ROOT },
-      preflight: () => checkMediaTools(),
-      runJob: (job, deps) => runSequence(job, {
-        ...deps,
-        finalizePrompt: deps.finalizePrompt || continuationPromptFinalizer,
-        generate: startSequenceGeneration,
-      }),
-    });
-    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
-    if (handled || res.headersSent) return;
-  }
-
-  if (pathname === "/api/lora-training/assets" || pathname === "/api/lora-training/health" || pathname.startsWith("/api/lora-training/jobs")) {
-    const handled = await handleLoraTrainingRoute(req, res, { pathname, requestUrl });
-    if (handled || res.headersSent) return;
-  }
+  const handledByDomainRouter = await domainRouter.dispatch({ req, res, pathname, requestUrl, readJson, sendJson, sendError });
+  if (handledByDomainRouter || res.headersSent) return;
 
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, await health());
@@ -3942,16 +3895,6 @@ async function route(req, res) {
     return;
   }
 
-  if (pathname === "/api/img2img" || pathname.startsWith("/api/img2img/")) {
-    const dispatch = () => img2imgController.handleRoute(req, res, {
-      pathname,
-      readJson,
-      sendJson,
-      sendError,
-    });
-    const handled = await (req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch)));
-    if (handled || res.headersSent) return;
-  }
   if (req.method === "POST" && pathname === "/api/prompt") {
     let payload = null;
     try {
@@ -4054,9 +3997,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   server.listen(PORT, BRIDGE_HOST, () => {
   // Standalone launcher removed; this module is mounted by the web server.
   console.log("MiniMax project: " + H3_ROOT);
-  console.log("ComfyUI: " + COMFY_URL);
-  console.log("Ollama: " + OLLAMA_URL);
-  console.log("Remote ComfyUI mode: " + COMFY_REMOTE);
+  console.log("ComfyUI: " + runtimeContext.comfyUrl);
+  console.log("Ollama: " + runtimeContext.ollamaUrl);
+  console.log("Remote ComfyUI mode: " + runtimeContext.isRemote);
   });
 }
 
