@@ -97,6 +97,12 @@ Invoke-WebRequest -Uri http://127.0.0.1:8787/app/api/health -UseBasicParsing -Ti
 
 只有當任務要求模型或生成流程驗證時，才使用 `C:\Users\forev\minimax-h3-local\scripts\run-smoke-test.ps1`；執行前先確認使用者允許模型運算與輸出檔案變更。
 
+## Git commit privilege rule
+
+- For an explicitly authorized local commit on Windows, run the `.git`-writing portion (`git add` and `git commit`) with `sandbox_permissions: "require_escalated"` by default, using a narrow justification for the requested commit.
+- Keep the staged path list explicit; never include `.worktrees/` or other unreviewed files merely because elevated access is being used.
+- This rule does not authorize `push`, `pull`, remote writes, service restarts, or any other operation beyond the user-requested local commit.
+
 ## Luna 重用與低延遲
 
 - Closely related follow-up work should reuse the same Luna via `followup_task`; do not repeatedly create a new Luna for a single-point query.

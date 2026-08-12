@@ -14,7 +14,7 @@ function pathsFor(root) {
 
 function fakePng() { return Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]); }
 
-async function createFixture({ createRunner, executeTraining } = {}) {
+async function createFixture({ createRunner, executeTraining, installArtifact } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'h3-lora-diagnostics-'));
   const paths = pathsFor(root);
   await mkdir(paths.cache, { recursive: true });
@@ -35,6 +35,7 @@ async function createFixture({ createRunner, executeTraining } = {}) {
     resolveCommand: async ({ outputDirectory, outputName, datasetDirectory }) => ({ command: 'fake-trainer', args: ['--train_data_dir', datasetDirectory, '--output_dir', outputDirectory, '--output_name', outputName], cwd: root, shell: false, preset: 'sdxl' }),
     createRunner,
     executeTraining,
+    installArtifact,
   });
   await service.initialize();
   const created = await service.create({ slug: 'diagnostic-job', displayName: 'Diagnostic job', family: 'sdxl', triggerWords: ['subject'], sourceAssetIds: ['input:source.png'], config: { family: 'sdxl', baseProfile: 'sdxl-base-1-0', outputName: 'diagnostic' } });
@@ -79,6 +80,37 @@ test('missing artifact is a distinct terminal error after a zero exit', async ()
     assert.equal(details.job.status, 'failed');
     assert.equal(details.job.config.orchestration.error.code, 'ARTIFACT_MISSING');
     assert.match(details.job.config.orchestration.error.message, /artifact/i);
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('artifact install failure persists bounded artifact diagnostics', async () => {
+  const value = await createFixture({
+    executeTraining: async ({ outputDirectory }) => {
+      const artifactPath = path.join(outputDirectory, 'diagnostic.safetensors');
+      await writeFile(artifactPath, Buffer.from('artifact'));
+      return { code: 0, artifactPath };
+    },
+    installArtifact: async () => {
+      const error = Object.assign(new Error("EPERM: copyfile 'C:\\private\\source.safetensors' -> 'C:\\target\\.diagnostic.safetensors.tmp'"), {
+        code: 'EPERM',
+        details: { operation: 'copy', phase: 'artifact-staging', attempts: 5, retryable: true, sourcePath: 'C:\\private\\source.safetensors' },
+      });
+      throw error;
+    },
+  });
+  try {
+    const details = await value.service.get(value.jobId);
+    assert.equal(details.job.status, 'failed');
+    assert.equal(details.job.config.orchestration.error.code, 'EPERM');
+    assert.equal(details.job.config.orchestration.error.details.operation, 'copy');
+    const diagnosticPath = path.join(value.paths.jobs, value.jobId, 'logs', 'trainer-attempt-1.json');
+    const diagnostic = JSON.parse(await readFile(diagnosticPath, 'utf8'));
+    assert.equal(diagnostic.phase, 'artifact');
+    assert.equal(diagnostic.error.code, 'EPERM');
+    assert.match(diagnostic.error.details, /artifact-staging/);
+    assert.doesNotMatch(diagnostic.error.details, /C:\\private/);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }

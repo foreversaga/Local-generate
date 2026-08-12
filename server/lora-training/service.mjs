@@ -69,6 +69,12 @@ function safeDiagnosticText(value, maximum = TRAINER_DIAGNOSTIC_TEXT_LIMIT) {
     .slice(0, maximum);
 }
 
+function safeDiagnosticDetails(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  try { return safeDiagnosticText(JSON.stringify(value), 2048); }
+  catch { return '[UNSERIALIZABLE]'; }
+}
+
 function safeDiagnosticPath(value, jobDirectory) {
   if (typeof value !== 'string' || !value) return value == null ? null : safeDiagnosticText(value, 512);
   const absolute = path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
@@ -189,7 +195,13 @@ export function createLoraTrainingService(options = {}) {
         signal: typeof result?.signal === 'string' ? safeDiagnosticText(result.signal, 64) : null,
         stdoutTail: resultTail(result, 'stdout'),
         stderrTail: resultTail(result, 'stderr'),
-        ...(error ? { error: { code: safeDiagnosticText(error.code ?? 'TRAINER_FAILED', 80), message: safeDiagnosticText(error.message, 512) } } : {}),
+        ...(error ? {
+          error: {
+            code: safeDiagnosticText(error.code ?? 'TRAINER_FAILED', 80),
+            message: safeDiagnosticText(error.message, 512),
+            ...(safeDiagnosticDetails(error.details) ? { details: safeDiagnosticDetails(error.details) } : {}),
+          },
+        } : {}),
       };
       const filePath = resolveSafeChild(logsDirectory, `trainer-attempt-${attempt}.json`);
       await atomicWriteJson(filePath, diagnostics);
@@ -444,27 +456,33 @@ export function createLoraTrainingService(options = {}) {
     }
     await mkdir(targetDirectory, { recursive: true });
     let registryRecord;
-    const installed = await (options.installArtifact ?? installTrainingArtifact)({
-      job: { ...job, status: 'succeeded' }, source, targetDirectory,
-      fileName: `${outputName}.safetensors`,
-      registerArtifact: async (artifact) => {
-        registryRecord = await registry.register({
-          relativePath: artifact.fileName,
-          family: job.family,
-          baseProfile: config.baseProfile,
-          displayName: job.displayName,
-          triggerWords: job.triggerWords,
-          hash: artifact.sha256,
-          size: artifact.size,
-          status: 'available',
-          provenance: {
-            jobId: job.id, attempt: config.orchestration?.attempt ?? 1,
-            presetId: resolved.preset, baseModel: baseModel.path,
-            datasetRevision: (await dataset.readManifest(job.id)).revision,
-          },
-        });
-      },
-    });
+    let installed;
+    try {
+      installed = await (options.installArtifact ?? installTrainingArtifact)({
+        job: { ...job, status: 'succeeded' }, source, targetDirectory,
+        fileName: `${outputName}.safetensors`,
+        registerArtifact: async (artifact) => {
+          registryRecord = await registry.register({
+            relativePath: artifact.fileName,
+            family: job.family,
+            baseProfile: config.baseProfile,
+            displayName: job.displayName,
+            triggerWords: job.triggerWords,
+            hash: artifact.sha256,
+            size: artifact.size,
+            status: 'available',
+            provenance: {
+              jobId: job.id, attempt: config.orchestration?.attempt ?? 1,
+              presetId: resolved.preset, baseModel: baseModel.path,
+              datasetRevision: (await dataset.readManifest(job.id)).revision,
+            },
+          });
+        },
+      });
+    } catch (error) {
+      await persistTrainerDiagnostics({ job, config, jobDirectory, resolved, result: runResult, error, startedAt, finishedAt, phase: 'artifact' });
+      throw error;
+    }
     await controller.onQueueStateChange({
       jobId: job.id, status: 'running',
       progress: { stage: 'installed' },
