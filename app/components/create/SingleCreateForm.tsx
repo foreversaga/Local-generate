@@ -836,7 +836,7 @@ export function SingleCreateForm() {
                         step={1}
                         value={resolutionScale}
                         aria-label="來源圖片縮放比例"
-                        onChange={(event) => applyResolutionScale(Number(event.target.value))}
+                        onInput={(event) => applyResolutionScale(Number(event.currentTarget.value))}
                       />
                       <span className={styles.scaleTicks} aria-hidden="true"><span>10%</span><span>50%</span><span>100%</span></span>
                     </label>
