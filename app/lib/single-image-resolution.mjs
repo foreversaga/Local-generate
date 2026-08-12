@@ -2,6 +2,8 @@ const MIN_DIMENSION = 32;
 const MAX_DIMENSION = 2048;
 const H3_GRID = 32;
 const ANIMATE_GRID = 16;
+const MIN_SCALE_PERCENT = 10;
+const MAX_SCALE_PERCENT = 100;
 
 /**
  * @typedef {{ width: number; height: number }} ImageDimensions
@@ -12,6 +14,7 @@ const ANIMATE_GRID = 16;
  *   originalWidth: number;
  *   originalHeight: number;
  *   grid: number;
+ *   scalePercent: number;
  *   scaled: boolean;
  *   adjusted: boolean;
  * }} NormalizedImageResolution
@@ -26,6 +29,18 @@ const ANIMATE_GRID = 16;
  */
 export function resolutionGridForMode(mode) {
   return mode === "replace" ? ANIMATE_GRID : H3_GRID;
+}
+
+/**
+ * Keep the resolution slider bounded to a percentage of the source image.
+ * A value outside the range is clamped so keyboard input and restored drafts
+ * cannot create an invalid request.
+ *
+ * @param {number} value
+ */
+export function clampResolutionScale(value) {
+  if (!Number.isFinite(value)) return MAX_SCALE_PERCENT;
+  return Math.min(MAX_SCALE_PERCENT, Math.max(MIN_SCALE_PERCENT, Math.round(value)));
 }
 
 /**
@@ -70,25 +85,81 @@ export function readImageDimensions(url, ImageConstructor = globalThis.Image) {
  * @returns {NormalizedImageResolution}
  */
 export function normalizeImageResolution(width, height, mode) {
+  return scaleImageResolution(width, height, mode, MAX_SCALE_PERCENT);
+}
+
+/**
+ * Scale an intrinsic image resolution and then fit it to the model's legal
+ * dimensions. The percentage is applied to the original pixels, so 50% of a
+ * 3024px source is 1512px before legal-grid rounding; 100% is capped only
+ * when the model maximum would otherwise be exceeded.
+ *
+ * @param {number} width
+ * @param {number} height
+ * @param {string} mode
+ * @param {number} scalePercent
+ * @returns {NormalizedImageResolution & { scalePercent: number }}
+ */
+export function scaleImageResolution(width, height, mode, scalePercent = MAX_SCALE_PERCENT) {
   if (!isValidDimension(width) || !isValidDimension(height)) {
     throw new Error("The selected image has invalid dimensions.");
   }
 
   const grid = resolutionGridForMode(mode);
-  const scale = Math.min(1, MAX_DIMENSION / width, MAX_DIMENSION / height);
-  const scaledWidth = width * scale;
-  const scaledHeight = height * scale;
-  const normalizedWidth = clampToLegalGrid(scaledWidth, grid);
-  const normalizedHeight = clampToLegalGrid(scaledHeight, grid);
+  const normalizedScalePercent = clampResolutionScale(scalePercent);
+  const scaledWidth = width * normalizedScalePercent / MAX_SCALE_PERCENT;
+  const scaledHeight = height * normalizedScalePercent / MAX_SCALE_PERCENT;
+  const constrained = fitToLegalCanvas(scaledWidth, scaledHeight, grid);
 
   return {
     originalWidth: width,
     originalHeight: height,
-    width: normalizedWidth,
-    height: normalizedHeight,
+    width: constrained.width,
+    height: constrained.height,
     grid,
-    scaled: scale < 1,
-    adjusted: normalizedWidth !== width || normalizedHeight !== height,
+    scalePercent: normalizedScalePercent,
+    scaled: normalizedScalePercent < MAX_SCALE_PERCENT || constrained.scale < 1,
+    adjusted: constrained.width !== width || constrained.height !== height || normalizedScalePercent < MAX_SCALE_PERCENT,
+  };
+}
+
+/**
+ * Normalize one manually edited dimension without changing the other field.
+ * The UI uses this for the unlocked aspect-ratio mode and for the secondary
+ * dimension while the user edits a locked pair.
+ *
+ * @param {number} value
+ * @param {string} mode
+ */
+export function normalizeResolutionDimension(value, mode) {
+  if (!Number.isFinite(value)) return value;
+  return clampToLegalGrid(value, resolutionGridForMode(mode));
+}
+
+/**
+ * Estimate the slider value represented by an already edited output pair.
+ * Values at or above the source dimensions map back to 100%; this keeps the
+ * slider from becoming misleading after legal-grid rounding.
+ *
+ * @param {number} sourceWidth
+ * @param {number} sourceHeight
+ * @param {number} width
+ * @param {number} height
+ */
+export function resolutionScaleForDimensions(sourceWidth, sourceHeight, width, height) {
+  if (![sourceWidth, sourceHeight, width, height].every(isValidDimension)) {
+    return MAX_SCALE_PERCENT;
+  }
+  const scale = Math.min(width / sourceWidth, height / sourceHeight) * MAX_SCALE_PERCENT;
+  return clampResolutionScale(scale);
+}
+
+function fitToLegalCanvas(width, height, grid) {
+  const scale = Math.min(1, MAX_DIMENSION / width, MAX_DIMENSION / height);
+  return {
+    width: clampToLegalGrid(width * scale, grid),
+    height: clampToLegalGrid(height * scale, grid),
+    scale,
   };
 }
 

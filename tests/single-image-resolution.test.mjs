@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clampResolutionScale,
   normalizeImageResolution,
+  normalizeResolutionDimension,
   readImageDimensions,
   resolutionGridForMode,
+  resolutionScaleForDimensions,
+  scaleImageResolution,
 } from "../app/lib/single-image-resolution.mjs";
 
 test("image resolution uses the H3 grid and preserves landscape, portrait, and square ratios", () => {
@@ -14,6 +18,7 @@ test("image resolution uses the H3 grid and preserves landscape, portrait, and s
     width: 1600,
     height: 896,
     grid: 32,
+    scalePercent: 100,
     scaled: false,
     adjusted: true,
   });
@@ -29,6 +34,23 @@ test("image resolution caps oversized sources before snapping to the legal grid"
   assert.equal(normalized.height, 1536);
   assert.equal(normalized.scaled, true);
   assert.equal(normalized.adjusted, true);
+});
+
+test("resolution scale follows the source percentage and stays on the model grid", () => {
+  assert.equal(clampResolutionScale(0), 10);
+  assert.equal(clampResolutionScale(150), 100);
+  assert.deepEqual(scaleImageResolution(3024, 4032, "i2v", 50), {
+    originalWidth: 3024,
+    originalHeight: 4032,
+    width: 1504,
+    height: 2016,
+    grid: 32,
+    scalePercent: 50,
+    scaled: true,
+    adjusted: true,
+  });
+  assert.equal(normalizeResolutionDimension(756, "i2v"), 768);
+  assert.equal(resolutionScaleForDimensions(1600, 900, 1600, 896), 100);
 });
 
 test("Wan Animate uses its 16px grid without stretching the source ratio", () => {

@@ -276,6 +276,47 @@
   align-items: end;
 }
 
+.resolutionControls {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.resolutionMeta,
+.scaleTicks,
+.resolutionActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scaleTicks {
+  margin-top: -8px;
+}
+
+.lockToggle {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lockToggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--lime);
+}
+
 .iconButton,
 .secondaryButton,
 .uploadButton,
@@ -753,6 +794,13 @@
 @media (max-width: 420px) {
   .modeGrid {
     grid-template-columns: 1fr;
+  }
+
+  .resolutionMeta,
+  .resolutionActions {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .resolutionRow {

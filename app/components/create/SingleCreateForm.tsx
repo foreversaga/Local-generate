@@ -8,8 +8,12 @@ import {
   buildSingleRenderRequest,
 } from "../../lib/single-render-request.mjs";
 import {
+  clampResolutionScale,
   normalizeImageResolution,
+  normalizeResolutionDimension,
   readImageDimensions,
+  resolutionScaleForDimensions,
+  scaleImageResolution,
 } from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
 import { uploadAssets } from "../library/asset-client";
@@ -31,6 +35,7 @@ type ResolutionInfo = {
   width: number;
   height: number;
   grid: number;
+  scalePercent: number;
   scaled: boolean;
   adjusted: boolean;
 };
@@ -85,6 +90,9 @@ export function SingleCreateForm() {
   const [height, setHeight] = useState<NumberDraft>(416);
   const [resolutionStatus, setResolutionStatus] = useState<ResolutionStatus>("default");
   const [resolutionInfo, setResolutionInfo] = useState<ResolutionInfo | null>(null);
+  const [resolutionScale, setResolutionScale] = useState(100);
+  const [aspectLocked, setAspectLocked] = useState(true);
+  const [resolutionFlipped, setResolutionFlipped] = useState(false);
   const [resolutionError, setResolutionError] = useState("");
   const resolutionRequestRef = useRef(0);
   const [duration, setDuration] = useState(5);
@@ -131,6 +139,9 @@ export function SingleCreateForm() {
 
     queueMicrotask(() => {
       if (resolutionRequestRef.current !== requestId) return;
+      setResolutionScale(100);
+      setAspectLocked(true);
+      setResolutionFlipped(false);
       setWidth("");
       setHeight("");
       setResolutionInfo(null);
@@ -390,6 +401,15 @@ export function SingleCreateForm() {
     markManualResolution();
     setWidth(height);
     setHeight(width);
+    setResolutionFlipped((current) => !current);
+    if (typeof width === "number" && typeof height === "number") {
+      setResolutionInfo((current) => current ? {
+        ...current,
+        width: height,
+        height: width,
+        adjusted: true,
+      } : current);
+    }
   }
 
   function resetResolutionToDefault(nextMode: Mode = mode) {
@@ -398,6 +418,9 @@ export function SingleCreateForm() {
     setWidth(fallback.width);
     setHeight(fallback.height);
     setResolutionInfo(null);
+    setResolutionScale(100);
+    setAspectLocked(true);
+    setResolutionFlipped(false);
     setResolutionError("");
     setResolutionStatus("default");
   }
@@ -405,8 +428,66 @@ export function SingleCreateForm() {
   function markManualResolution() {
     resolutionRequestRef.current += 1;
     setResolutionStatus("manual");
-    setResolutionInfo(null);
     setResolutionError("");
+  }
+
+  function applyResolutionScale(value: number) {
+    if (!resolutionInfo) return;
+    const nextScale = clampResolutionScale(value);
+    const sourceWidth = resolutionFlipped ? resolutionInfo.originalHeight : resolutionInfo.originalWidth;
+    const sourceHeight = resolutionFlipped ? resolutionInfo.originalWidth : resolutionInfo.originalHeight;
+    const scaled = scaleImageResolution(sourceWidth, sourceHeight, mode, nextScale);
+    setResolutionScale(nextScale);
+    setWidth(scaled.width);
+    setHeight(scaled.height);
+    setResolutionInfo((current) => current ? {
+      ...current,
+      width: scaled.width,
+      height: scaled.height,
+      grid: scaled.grid,
+      scalePercent: nextScale,
+      scaled: scaled.scaled,
+      adjusted: scaled.adjusted || resolutionFlipped,
+    } : current);
+    setResolutionStatus(scaled.adjusted || resolutionFlipped ? "adjusted" : "auto");
+  }
+
+  function updateResolutionDimension(axis: "width" | "height", nextValue: NumberDraft) {
+    markManualResolution();
+    if (nextValue === "" || !Number.isFinite(nextValue)) {
+      if (axis === "width") setWidth(nextValue);
+      else setHeight(nextValue);
+      return;
+    }
+
+    const nextNumber = nextValue as number;
+    const sourceWidth = resolutionInfo
+      ? (resolutionFlipped ? resolutionInfo.originalHeight : resolutionInfo.originalWidth)
+      : 0;
+    const sourceHeight = resolutionInfo
+      ? (resolutionFlipped ? resolutionInfo.originalWidth : resolutionInfo.originalHeight)
+      : 0;
+    if (!aspectLocked || !resolutionInfo || !sourceWidth || !sourceHeight) {
+      if (axis === "width") setWidth(nextNumber);
+      else setHeight(nextNumber);
+      return;
+    }
+
+    const otherValue = axis === "width"
+      ? normalizeResolutionDimension(nextNumber * sourceHeight / sourceWidth, mode)
+      : normalizeResolutionDimension(nextNumber * sourceWidth / sourceHeight, mode);
+    const nextWidth = axis === "width" ? nextNumber : otherValue;
+    const nextHeight = axis === "height" ? nextNumber : otherValue;
+    setWidth(nextWidth);
+    setHeight(nextHeight);
+    setResolutionScale(resolutionScaleForDimensions(sourceWidth, sourceHeight, nextWidth, nextHeight));
+    setResolutionInfo((current) => current ? {
+      ...current,
+      width: nextWidth,
+      height: nextHeight,
+      scalePercent: resolutionScaleForDimensions(sourceWidth, sourceHeight, nextWidth, nextHeight),
+      adjusted: true,
+    } : current);
   }
 
   function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, key: string) {
@@ -707,10 +788,7 @@ export function SingleCreateForm() {
                       aria-invalid={Boolean(visibleFieldError("width"))}
                       aria-describedby={visibleFieldError("width") ? "single-width-error" : undefined}
                       onBlur={() => markTouched("width")}
-                      onChange={(event) => {
-                        markManualResolution();
-                        setWidth(numberDraft(event.target.value));
-                      }}
+                      onChange={(event) => updateResolutionDimension("width", numberDraft(event.target.value))}
                     />
                     <FieldError id="single-width-error" message={visibleFieldError("width")} />
                   </label>
@@ -732,14 +810,41 @@ export function SingleCreateForm() {
                       aria-invalid={Boolean(visibleFieldError("height"))}
                       aria-describedby={visibleFieldError("height") ? "single-height-error" : undefined}
                       onBlur={() => markTouched("height")}
-                      onChange={(event) => {
-                        markManualResolution();
-                        setHeight(numberDraft(event.target.value));
-                      }}
+                      onChange={(event) => updateResolutionDimension("height", numberDraft(event.target.value))}
                     />
                     <FieldError id="single-height-error" message={visibleFieldError("height")} />
                   </label>
                 </div>
+                {resolutionInfo && (
+                  <div className={styles.resolutionControls}>
+                    <div className={styles.resolutionMeta}>
+                      <span>原始圖片 {resolutionInfo.originalWidth} × {resolutionInfo.originalHeight}</span>
+                      <span>輸出尺寸 {width || "—"} × {height || "—"}</span>
+                    </div>
+                    <label className={styles.field}>
+                      <span className={styles.rangeHeader}>
+                        <span className={styles.fieldLabel}>縮放比例</span>
+                        <span className={styles.rangeValue}>{resolutionScale}%</span>
+                      </span>
+                      <input
+                        id="single-resolution-scale"
+                        className={styles.range}
+                        type="range"
+                        min={10}
+                        max={100}
+                        step={1}
+                        value={resolutionScale}
+                        aria-label="來源圖片縮放比例"
+                        onChange={(event) => applyResolutionScale(Number(event.target.value))}
+                      />
+                      <span className={styles.scaleTicks} aria-hidden="true"><span>10%</span><span>50%</span><span>100%</span></span>
+                    </label>
+                    <label className={styles.lockToggle}>
+                      <input type="checkbox" checked={aspectLocked} onChange={(event) => setAspectLocked(event.target.checked)} />
+                      <span>鎖定來源比例</span>
+                    </label>
+                  </div>
+                )}
                 <span
                   id="single-resolution-status"
                   className={styles.helper}
@@ -1227,10 +1332,10 @@ function resolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | n
   if (status === "error") return "Image dimensions unavailable; output dimensions were cleared.";
   if (status === "manual") return "Manual output resolution; the values shown here will be submitted.";
   if (status === "adjusted" && info) {
-    return `Auto from ${info.originalWidth} × ${info.originalHeight}; final ${info.width} × ${info.height} preserves aspect ratio on the ${info.grid}px model grid.`;
+    return `Source ${info.originalWidth} × ${info.originalHeight}; ${info.scalePercent}% scale; output ${info.width} × ${info.height} on the ${info.grid}px model grid.`;
   }
   if (status === "auto" && info) {
-    return `Auto from source image; final ${info.width} × ${info.height}.`;
+    return `Source ${info.originalWidth} × ${info.originalHeight}; ${info.scalePercent}% scale; output ${info.width} × ${info.height}.`;
   }
   return "Default output resolution; select an image to calculate the final size.";
 }
