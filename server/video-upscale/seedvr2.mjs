@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createSeedVR2JobStore } from "./seedvr2-store.mjs";
 
 /**
  * The two files below are deliberately constants.  The model combo returned by
@@ -9,6 +10,8 @@ import path from "node:path";
  */
 export const SEEDVR2_UNET_NAME = "seedvr2_3b_int8_convrot.safetensors";
 export const SEEDVR2_VAE_NAME = "seedvr2_ema_vae_fp16.safetensors";
+export const SEEDVR2_PROFILE = "seedvr2_3b_int8";
+export const SEEDVR2_PROFILE_LABEL = "SeedVR2 3B Int8";
 
 export const SEEDVR2_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
@@ -291,8 +294,21 @@ function responsePayload(response, text) {
   }
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.reject(makeError("SeedVR2 cancellation requested.", 499, "SEEDVR2_CANCELLED"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      reject(makeError("SeedVR2 cancellation requested.", 499, "SEEDVR2_CANCELLED"));
+    };
+    function done() {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
 }
 
 async function fileExists(filePath, fsApi = fs) {
@@ -304,26 +320,74 @@ async function realPathOrResolved(filePath, fsApi = fs) {
   return fsApi.realpath(filePath).catch(() => path.resolve(filePath));
 }
 
+function cloneValue(value) {
+  if (value === undefined) return undefined;
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value));
+  }
+}
+
 function publicJob(job) {
-  const output = job.output ? { ...job.output } : undefined;
+  const output = job.output ? cloneValue(job.output) : undefined;
+  const source = job.source && typeof job.source === "object"
+    ? cloneValue(job.source)
+    : { name: job.sourceName, root: job.sourceRoot };
   return {
     id: job.id,
     status: job.status,
     progress: job.progress,
     stage: job.stage,
+    source,
     sourceName: job.sourceName,
     sourceRoot: job.sourceRoot,
     scale: job.scale,
-    ...(output ? { output } : {}),
-    ...(job.error ? { error: job.error } : {}),
+    profile: job.profile,
+    seed: job.seed,
+    prompt: cloneValue(job.prompt),
+    ...(job.promptId ? { promptId: job.promptId } : {}),
+    output: output || null,
+    error: job.error || "",
+    ...(job.cancelReason ? { cancelReason: job.cancelReason } : {}),
+    ...(job.recoverable ? { recoverable: true } : {}),
+    ...(job.recovery ? { recovery: cloneValue(job.recovery) } : {}),
+    ...(Number.isInteger(job.attempt) ? { attempt: job.attempt } : {}),
+    ...(job.retryOf ? { retryOf: job.retryOf } : {}),
+    ...(job.provenance ? { provenance: cloneValue(job.provenance) } : {}),
     createdAt: job.createdAt,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
+    ...(job.cancelledAt ? { cancelledAt: job.cancelledAt } : {}),
+    ...(job.updatedAt ? { updatedAt: job.updatedAt } : {}),
+    ...(job.timestamps ? { timestamps: cloneValue(job.timestamps) } : {}),
   };
 }
 
 function uniqueId() {
   return randomUUID();
+}
+
+function cancellationError() {
+  return makeError("SeedVR2 cancellation requested.", 499, "SEEDVR2_CANCELLED");
+}
+
+function assertNotCancelled(job) {
+  if (job?.cancelRequested) throw cancellationError();
+}
+
+function boundedSeed(value, fallback = null) {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric > 2_147_483_647) return fallback;
+  return numeric;
+}
+
+function normalizeProfile(value) {
+  const profile = String(value || SEEDVR2_PROFILE).trim();
+  if (![SEEDVR2_PROFILE, SEEDVR2_PROFILE_LABEL].includes(profile)) {
+    throw makeError("SeedVR2 profile is invalid.", 400, "PROFILE_INVALID");
+  }
+  return SEEDVR2_PROFILE;
 }
 
 export function createSeedVR2Controller({
@@ -337,6 +401,7 @@ export function createSeedVR2Controller({
   fsApi = fs,
   now = () => new Date(),
   idFactory = uniqueId,
+  jobStore = createSeedVR2JobStore(),
   requestTimeoutMs = 15_000,
   pollIntervalMs = 1_000,
   maxPollMs = 0,
@@ -350,25 +415,99 @@ export function createSeedVR2Controller({
   };
   const jobs = new Map();
   const queue = [];
+  const runtimes = new Map();
+  const pendingPersistence = new Map();
   let active = null;
+  let storeLoaded = false;
+  let storeLoading = null;
 
-  async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
+  async function ensureStoreLoaded() {
+    if (storeLoaded) return;
+    if (!storeLoading) {
+      storeLoading = Promise.resolve().then(async () => {
+        const recovered = typeof jobStore.recover === "function"
+          ? await jobStore.recover({ ownerId: `seedvr2-bridge-${process.pid}`, recoveredAt: isoNow(now()) })
+          : { jobs: await jobStore.list(), requeued: [] };
+        for (const job of recovered.jobs || []) {
+          if (job?.id) jobs.set(String(job.id), job);
+        }
+        for (const job of (recovered.requeued || []).sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+          const queuedJob = job?.id ? jobs.get(String(job.id)) || job : null;
+          if (queuedJob && !queue.some((queued) => queued.id === queuedJob.id)) queue.push(queuedJob);
+        }
+        storeLoaded = true;
+        pump();
+        if (typeof jobStore.prune === "function") {
+          await jobStore.prune({ maxTerminalJobs: 100 }).catch((error) => {
+            console.warn("[seedvr2] retention warning", error?.message || error);
+          });
+        }
+        return recovered;
+      }).finally(() => {
+        storeLoading = null;
+      });
+    }
+    await storeLoading;
+  }
+
+  async function persistJob(job, { required = false } = {}) {
+    const key = String(job.id);
+    const updatedAt = isoNow(now());
+    const snapshot = cloneValue({ ...job, updatedAt });
+    const previous = pendingPersistence.get(key) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      try {
+        const saved = await jobStore.save(snapshot);
+        if (jobs.get(key) === job) Object.assign(job, saved);
+        return saved;
+      } catch (error) {
+        if (required) throw makeError(`Unable to persist SeedVR2 job: ${asErrorMessage(error)}`, 503, "SEEDVR2_PERSISTENCE_FAILED");
+        console.warn(`[seedvr2] job persistence warning ${key}:`, error?.message || error);
+        return null;
+      }
+    });
+    const tracked = operation.finally(() => {
+      if (pendingPersistence.get(key) === tracked) pendingPersistence.delete(key);
+    }).catch(() => {});
+    pendingPersistence.set(key, tracked);
+    return await operation;
+  }
+
+  async function waitForPersistence(id) {
+    await pendingPersistence.get(String(id));
+  }
+
+  async function flushPersistence() {
+    await Promise.all([...pendingPersistence.values()].map((pending) => pending.catch(() => null)));
+  }
+
+  async function updateJob(job, patch, options) {
+    Object.assign(job, patch);
+    return await persistJob(job, options);
+  }
+
+  async function request(endpoint, init = {}, timeoutMs = requestTimeoutMs, signal) {
     if (typeof fetchImpl !== "function") throw makeError("ComfyUI transport is unavailable.", 503, "COMFY_UNAVAILABLE");
+    if (signal?.aborted) throw cancellationError();
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const onAbort = signal && controller ? () => controller.abort() : null;
+    signal?.addEventListener?.("abort", onAbort, { once: true });
     let response;
     try {
       response = await fetchImpl(comfyUrl + endpoint, { ...init, ...(controller ? { signal: controller.signal } : {}) });
     } catch (error) {
+      if (signal?.aborted) throw cancellationError();
       throw makeError(`ComfyUI request failed: ${asErrorMessage(error)}`, 503, "COMFY_UNAVAILABLE");
     } finally {
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
     }
     return response;
   }
 
-  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs) {
-    const response = await request(endpoint, init, timeoutMs);
+  async function requestJson(endpoint, init = {}, timeoutMs = requestTimeoutMs, signal) {
+    const response = await request(endpoint, init, timeoutMs, signal);
     const text = typeof response?.text === "function" ? await response.text() : undefined;
     const payload = await responsePayload(response, text);
     if (!response?.ok) {
@@ -405,8 +544,6 @@ export function createSeedVR2Controller({
 
   async function stageOutputSource(job, source) {
     const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
-    // Keep the temporary file visible to LoadVideo's input combo (and make it
-    // unambiguous in diagnostics) while retaining UUID-derived uniqueness.
     const relativeName = `seedvr2_temp_${job.id}${extension}`;
     const candidate = path.resolve(inputRoot, relativeName);
     const inputReal = await realPathOrResolved(inputRoot, fsApi);
@@ -417,8 +554,6 @@ export function createSeedVR2Controller({
     try {
       await fsApi.copyFile(source.path, candidate, fsApi.constants?.COPYFILE_EXCL);
     } catch (error) {
-      // Some test doubles do not expose constants or copyFile flags.  The name
-      // is UUID-derived, so a second attempt without the optional flag is safe.
       if (error?.code !== "EEXIST") await fsApi.copyFile(source.path, candidate);
     }
     const createdPath = await fsApi.realpath(candidate).catch(() => null);
@@ -426,10 +561,11 @@ export function createSeedVR2Controller({
     return { loadName: relativeName, path: createdPath, created: true };
   }
 
-  async function uploadRemoteInput(job, source) {
+  async function uploadRemoteInput(job, source, signal) {
     if (typeof FormData !== "function" || typeof Blob !== "function") {
       throw makeError("Remote video upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
     }
+    assertNotCancelled(job);
     const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
     const uploadName = `seedvr2_temp_${sanitizeFilenamePrefix(job.id)}${extension}`;
     let bytes;
@@ -438,12 +574,13 @@ export function createSeedVR2Controller({
     } catch (error) {
       throw makeError(`Unable to read source video for remote upload: ${asErrorMessage(error)}`, 502, "SOURCE_READ_FAILED");
     }
+    assertNotCancelled(job);
     const form = new FormData();
     form.append("image", new Blob([bytes], { type: VIDEO_MIME_TYPES[extension] || "application/octet-stream" }), uploadName);
     form.append("subfolder", "h3-studio-seedvr2");
     form.append("type", "input");
     form.append("overwrite", "true");
-    const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000);
+    const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000, signal);
     const uploaded = artifactRelativeName({
       filename: payload?.name || uploadName,
       subfolder: typeof payload?.subfolder === "string" ? payload.subfolder : "h3-studio-seedvr2",
@@ -463,8 +600,6 @@ export function createSeedVR2Controller({
       const stat = await fsApi.stat(candidateReal).catch(() => null);
       if (stat?.isFile()) await fsApi.unlink(candidateReal);
     } catch {
-      // A cleanup safety failure must never replace a successful output.  Keep
-      // a bounded internal warning for diagnostics; public job shape is stable.
       job.cleanupWarning = "temporary input cleanup skipped";
       console.warn("[seedvr2] temporary input cleanup skipped");
     }
@@ -489,7 +624,7 @@ export function createSeedVR2Controller({
     return { name: clean, root: "output", kind: "video" };
   }
 
-  async function downloadRemoteArtifact(job, artifact) {
+  async function downloadRemoteArtifact(job, artifact, signal) {
     const metadata = artifact && typeof artifact === "object"
       ? artifact
       : { filename: artifact, subfolder: "", type: "output" };
@@ -498,15 +633,11 @@ export function createSeedVR2Controller({
     if (metadata.type && metadata.type !== "output") throw makeError("ComfyUI returned a non-output artifact.", 502, "OUTPUT_ARTIFACT_INVALID");
     const filename = String(metadata.filename).replaceAll("\\", "/");
     const subfolder = String(metadata.subfolder || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
-    const query = new URLSearchParams({
-      filename,
-      subfolder,
-      type: "output",
-    });
-    const response = await request(`/view?${query.toString()}`, {}, 60_000);
+    const query = new URLSearchParams({ filename, subfolder, type: "output" });
+    const response = await request(`/view?${query.toString()}`, {}, 60_000, signal);
     if (!response?.ok) throw makeError(`Unable to download generated video: HTTP ${response?.status || 0}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
     if (typeof response.arrayBuffer !== "function") throw makeError("ComfyUI returned an unreadable video artifact.", 502, "OUTPUT_DOWNLOAD_FAILED");
-
+    assertNotCancelled(job);
     const extension = path.posix.extname(relativeName).toLowerCase();
     const localName = `seedvr2/${outputPrefix(job)}${extension}`;
     const candidate = path.resolve(outputRoot, localName);
@@ -520,14 +651,17 @@ export function createSeedVR2Controller({
     await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
     const createdReal = await fsApi.realpath(candidate).catch(() => null);
     if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    assertNotCancelled(job);
     if (typeof toAsset === "function") return await toAsset("output", localName);
     return { name: localName, root: "output", kind: "video" };
   }
 
-  async function waitForHistory(job, promptId) {
+  async function waitForHistory(job, promptId, signal) {
     const started = Date.now();
     while (true) {
-      const payload = await requestJson(`/history/${encodeURIComponent(promptId)}`);
+      assertNotCancelled(job);
+      const payload = await requestJson(`/history/${encodeURIComponent(promptId)}`, {}, requestTimeoutMs, signal);
+      assertNotCancelled(job);
       const parsed = parseSeedVR2History(payload, promptId);
       if (parsed.state === "failed") throw makeError(parsed.error || "ComfyUI reported an execution error.", 502, "COMFY_EXECUTION_FAILED");
       const artifact = parsed.state === "completed" ? historyArtifact(payload, promptId) : null;
@@ -537,70 +671,111 @@ export function createSeedVR2Controller({
       if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out while waiting for ComfyUI output.", 504, "COMFY_POLL_TIMEOUT");
       job.progress = Math.min(90, Math.max(25, 25 + Math.floor(Math.min(65, elapsed / 4000))));
       job.stage = "Processing SeedVR2";
-      await sleep(pollIntervalMs);
+      await persistJob(job);
+      await sleep(pollIntervalMs, signal);
     }
   }
 
   async function runJob(job) {
     let staged = null;
     let succeeded = false;
+    let failure = null;
+    const abortController = typeof AbortController === "function" ? new AbortController() : null;
+    const runtime = { abortController, promptId: "" };
+    runtimes.set(job.id, runtime);
     try {
-      job.status = "running";
-      job.startedAt = isoNow(now());
-      job.progress = 5;
-      job.stage = "Checking SeedVR2 readiness";
+      assertNotCancelled(job);
+      await updateJob(job, {
+        status: "running",
+        startedAt: isoNow(now()),
+        completedAt: null,
+        cancelledAt: null,
+        error: "",
+        progress: 5,
+        stage: "Checking SeedVR2 readiness",
+      });
       const readiness = await checkReadiness();
+      assertNotCancelled(job);
       if (!readiness.ready) throw makeError("SeedVR2 is unavailable: required ComfyUI nodes or model files are missing.", 503, "SEEDVR2_NOT_READY");
 
-      job.progress = 12;
-      job.stage = "Validating source video";
+      await updateJob(job, { progress: 12, stage: "Validating source video" });
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
+      assertNotCancelled(job);
       let loadName = source.cleanName;
       if (remote) {
-        job.progress = 16;
-        job.stage = "Uploading source video";
-        staged = await uploadRemoteInput(job, source);
+        await updateJob(job, { progress: 16, stage: "Uploading source video" });
+        staged = await uploadRemoteInput(job, source, abortController?.signal);
         loadName = staged.loadName;
       } else if (job.sourceRoot === "output") {
-        job.progress = 16;
-        job.stage = "Staging source video";
+        await updateJob(job, { progress: 16, stage: "Staging source video" });
         staged = await stageOutputSource(job, source);
         loadName = staged.loadName;
       }
+      assertNotCancelled(job);
 
-      const prompt = buildSeedVR2Prompt({ sourceName: loadName, filenamePrefix: outputPrefix(job), unetName: SEEDVR2_UNET_NAME, vaeName: SEEDVR2_VAE_NAME });
-      job.progress = 20;
-      job.stage = "Submitting ComfyUI workflow";
+      const prompt = buildSeedVR2Prompt({
+        sourceName: loadName,
+        filenamePrefix: outputPrefix(job),
+        unetName: SEEDVR2_UNET_NAME,
+        vaeName: SEEDVR2_VAE_NAME,
+        seed: job.seed,
+      });
+      await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
+      assertNotCancelled(job);
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, client_id: clientId }),
-      });
+      }, requestTimeoutMs, abortController?.signal);
       const promptId = submitted?.prompt_id || submitted?.promptId;
       if (!promptId) {
         const rejection = submitted?.error || submitted?.node_errors;
         throw makeError(rejection ? `ComfyUI rejected the workflow: ${asErrorMessage(rejection)}` : "ComfyUI did not return a prompt id.", 502, "COMFY_PROMPT_REJECTED");
       }
-      job.progress = 25;
-      job.stage = "Processing SeedVR2";
-      const artifact = await waitForHistory(job, String(promptId));
-      job.progress = 92;
-      job.stage = remote ? "Downloading output video" : "Registering output video";
-      job.output = remote ? await downloadRemoteArtifact(job, artifact) : await artifactAsset(artifact.relativeName || artifact);
-      job.progress = 100;
+      runtime.promptId = String(promptId);
+      await updateJob(job, { promptId: runtime.promptId, progress: 25, stage: "Processing SeedVR2", provenance: { ...job.provenance, submittedAt: isoNow(now()) } });
+      const artifact = await waitForHistory(job, runtime.promptId, abortController?.signal);
+      assertNotCancelled(job);
+      await updateJob(job, { progress: 92, stage: remote ? "Downloading output video" : "Registering output video" });
+      const output = remote
+        ? await downloadRemoteArtifact(job, artifact, abortController?.signal)
+        : await artifactAsset(artifact.relativeName || artifact);
+      assertNotCancelled(job);
+      await updateJob(job, { output, progress: 100 });
       succeeded = true;
     } catch (error) {
-      job.progress = Math.min(100, Math.max(job.progress, 1));
-      job.error = asErrorMessage(error);
+      failure = error;
+      if (!job.cancelRequested && error?.code !== "SEEDVR2_CANCELLED") {
+        job.error = asErrorMessage(error);
+        job.progress = Math.min(100, Math.max(job.progress, 1));
+        await persistJob(job);
+      }
     } finally {
       await cleanupStagedTemp(staged, job);
-      job.completedAt = isoNow(now());
-      if (succeeded) {
-        job.stage = "Completed";
-        job.status = "completed";
+      runtimes.delete(job.id);
+      const cancelled = Boolean(job.cancelRequested) || failure?.code === "SEEDVR2_CANCELLED";
+      if (cancelled) {
+        const cancelledAt = isoNow(now());
+        await updateJob(job, {
+          status: "cancelled",
+          stage: "Cancelled",
+          completedAt: cancelledAt,
+          cancelledAt,
+          cancelRequested: false,
+          output: null,
+          error: "",
+          cancelReason: job.cancelReason || "Cancelled by user.",
+        });
+      } else if (succeeded) {
+        await updateJob(job, { status: "completed", stage: "Completed", progress: 100, completedAt: isoNow(now()), cancelRequested: false });
       } else {
-        job.stage = "Failed";
-        job.status = "failed";
+        await updateJob(job, {
+          status: "failed",
+          stage: "Failed",
+          completedAt: isoNow(now()),
+          cancelRequested: false,
+          error: job.error || asErrorMessage(failure),
+        });
       }
     }
   }
@@ -608,9 +783,11 @@ export function createSeedVR2Controller({
   function pump() {
     if (active || !queue.length) return;
     const next = queue.shift();
+    if (!next || next.status === "cancelled" || next.cancelRequested) {
+      pump();
+      return;
+    }
     active = next;
-    // Keep the 202 response observably `queued`; execution starts on the next
-    // turn while the queue remains single-active.
     setTimeout(() => {
       void runJob(next).finally(() => {
         if (active === next) active = null;
@@ -619,34 +796,182 @@ export function createSeedVR2Controller({
     }, 0);
   }
 
-  async function enqueue({ sourceName, sourceRoot = "input", scale = 2 } = {}) {
-    if (!["input", "output"].includes(sourceRoot)) throw makeError("sourceRoot must be input or output.", 400, "SOURCE_ROOT_INVALID");
-    if (scale !== 2) throw makeError("SeedVR2 upscale currently supports scale=2 only.", 400, "SCALE_INVALID");
-    const cleanName = normalizeVideoAssetName(sourceName);
-    // Reject missing assets at admission time; the worker revalidates again in
-    // case a user deletes/replaces the file while it waits in the queue.
-    await resolveAsset(sourceRoot, cleanName);
-    const job = {
-      id: String(idFactory()),
+  function createJob({ sourceName, sourceRoot, scale = 2, profile = SEEDVR2_PROFILE, seed, attempt = 1, retryOf = "", provenance = null } = {}) {
+    const id = String(idFactory());
+    const createdAt = isoNow(now());
+    const request = {
+      sourceName,
+      sourceRoot,
+      scale: 2,
+      profile,
+      seed,
+    };
+    return {
+      id,
       status: "queued",
       progress: 0,
       stage: "Queued",
-      sourceName: cleanName,
+      source: { name: sourceName, root: sourceRoot },
+      sourceName,
       sourceRoot,
-      scale: 2,
-      createdAt: isoNow(now()),
+      scale,
+      profile,
+      seed,
+      prompt: null,
+      output: null,
+      error: "",
+      createdAt,
       startedAt: null,
       completedAt: null,
+      updatedAt: createdAt,
+      cancelledAt: null,
+      cancelReason: "",
+      cancelRequested: false,
+      attempt,
+      ...(retryOf ? { retryOf } : {}),
+      recoverable: false,
+      recovery: null,
+      promptId: "",
+      provenance: provenance || {
+        request,
+        attempt,
+        ...(retryOf ? { retryOf, originalId: retryOf } : { originalId: id }),
+        submittedAt: createdAt,
+      },
     };
+  }
+
+  async function enqueue(input = {}) {
+    await ensureStoreLoaded();
+    const sourceRoot = String(input.sourceRoot || "input");
+    if (!["input", "output"].includes(sourceRoot)) throw makeError("sourceRoot must be input or output.", 400, "SOURCE_ROOT_INVALID");
+    if (Number(input.scale) !== 2) throw makeError("SeedVR2 upscale currently supports scale=2 only.", 400, "SCALE_INVALID");
+    const profile = normalizeProfile(input.profile);
+    const cleanName = normalizeVideoAssetName(input.sourceName);
+    const seed = boundedSeed(input.seed, Math.floor(Math.random() * 2_147_483_648));
+    await resolveAsset(sourceRoot, cleanName);
+    const job = createJob({ sourceName: cleanName, sourceRoot, scale: 2, profile, seed });
+    await persistJob(job, { required: true });
     jobs.set(job.id, job);
     queue.push(job);
     pump();
     return publicJob(job);
   }
 
+  async function readJob(id) {
+    const key = String(id);
+    await waitForPersistence(key);
+    const inMemory = jobs.get(key);
+    if (inMemory) return inMemory;
+    const persisted = await jobStore.read?.(key);
+    if (persisted) jobs.set(key, persisted);
+    return persisted || null;
+  }
+
   async function getJob(id) {
-    const job = jobs.get(String(id));
+    await ensureStoreLoaded();
+    const job = await readJob(id);
     return job ? publicJob(job) : null;
+  }
+
+  async function listJobs() {
+    await ensureStoreLoaded();
+    await flushPersistence();
+    const records = typeof jobStore.list === "function" ? await jobStore.list() : [];
+    const merged = new Map(records.map((job) => [String(job.id), job]));
+    for (const job of jobs.values()) merged.set(String(job.id), job);
+    return [...merged.values()]
+      .sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)))
+      .slice(0, 100)
+      .map(publicJob);
+  }
+
+  async function cancelJob(id, reason = "Cancelled by user.") {
+    await ensureStoreLoaded();
+    const job = await readJob(id);
+    if (!job) throw makeError("SeedVR2 job not found.", 404, "SEEDVR2_JOB_NOT_FOUND");
+    if (["completed", "failed", "cancelled", "interrupted"].includes(job.status)) {
+      throw makeError(`SeedVR2 job cannot be cancelled from ${job.status}.`, 409, "SEEDVR2_CANCEL_NOT_ALLOWED");
+    }
+    if (job.status === "cancelling") return publicJob(job);
+    const cancelReason = asErrorMessage(reason, "Cancelled by user.");
+    job.cancelReason = cancelReason;
+    job.cancelRequested = true;
+    const isQueued = job.status === "queued";
+    const runtime = runtimes.get(job.id);
+    if (isQueued) {
+      const index = queue.findIndex((queued) => queued.id === job.id);
+      if (index >= 0) queue.splice(index, 1);
+      if (active !== job) {
+        const cancelledAt = isoNow(now());
+        await updateJob(job, {
+          status: "cancelled",
+          stage: "Cancelled",
+          completedAt: cancelledAt,
+          cancelledAt,
+          cancelRequested: false,
+        });
+        return publicJob(job);
+      }
+    }
+    job.status = "cancelling";
+    job.stage = "Cancelling SeedVR2";
+    await persistJob(job, { required: true });
+    runtime?.abortController?.abort();
+    if (runtime?.promptId) {
+      await request("/interrupt", { method: "POST" }, requestTimeoutMs).catch(() => null);
+    }
+    return publicJob(job);
+  }
+
+  async function retryJob(id) {
+    await ensureStoreLoaded();
+    const source = await readJob(id);
+    if (!source) throw makeError("SeedVR2 job not found.", 404, "SEEDVR2_JOB_NOT_FOUND");
+    if (["queued", "running", "cancelling"].includes(source.status)) {
+      throw makeError("Active SeedVR2 jobs cannot be retried.", 409, "SEEDVR2_JOB_ACTIVE");
+    }
+    if (!["failed", "cancelled", "interrupted"].includes(source.status)) {
+      throw makeError("Only failed, cancelled, or interrupted SeedVR2 jobs can be retried.", 409, "SEEDVR2_JOB_NOT_RETRYABLE");
+    }
+    await resolveAsset(source.sourceRoot, source.sourceName);
+    const attempt = Math.max(1, Number(source.attempt || source.provenance?.attempt || 1) + 1);
+    const retryOf = source.id;
+    const request = source.provenance?.request || {
+      sourceName: source.sourceName,
+      sourceRoot: source.sourceRoot,
+      scale: source.scale,
+      profile: source.profile,
+      seed: source.seed,
+    };
+    const job = createJob({
+      sourceName: source.sourceName,
+      sourceRoot: source.sourceRoot,
+      scale: 2,
+      profile: source.profile || SEEDVR2_PROFILE,
+      seed: boundedSeed(source.seed, 0),
+      attempt,
+      retryOf,
+      provenance: {
+        request: {
+          sourceName: request.sourceName || source.sourceName,
+          sourceRoot: request.sourceRoot || source.sourceRoot,
+          scale: 2,
+          profile: request.profile || source.profile || SEEDVR2_PROFILE,
+          seed: boundedSeed(request.seed, boundedSeed(source.seed, 0)),
+        },
+        attempt,
+        retryOf,
+        originalId: source.provenance?.originalId || source.id,
+        ...(source.provenance?.reason ? { reason: source.provenance.reason } : {}),
+        submittedAt: isoNow(now()),
+      },
+    });
+    await persistJob(job, { required: true });
+    jobs.set(job.id, job);
+    queue.push(job);
+    pump();
+    return publicJob(job);
   }
 
   async function handleRoute(req, res, { pathname = new URL(req.url || "/", "http://localhost").pathname, readJson, sendJson, sendError } = {}) {
@@ -655,7 +980,7 @@ export function createSeedVR2Controller({
       response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
       response.end(body);
     });
-    const fail = sendError || ((response, status, message) => respond(response, status, { error: message }));
+    const fail = sendError || ((response, status, message, code) => respond(response, status, { error: message, ...(code ? { code } : {}) }));
     if (req.method === "GET" && pathname === "/api/upscale/health") {
       respond(res, 200, await checkReadiness());
       return true;
@@ -671,27 +996,49 @@ export function createSeedVR2Controller({
         respond(res, 202, { job: await enqueue(body) });
       } catch (error) {
         const status = Number.isInteger(error?.status) ? error.status : 400;
-        fail(res, status, asErrorMessage(error, "Unable to queue SeedVR2 upscale."));
+        fail(res, status, asErrorMessage(error, "Unable to queue SeedVR2 upscale."), error?.code);
+      }
+      return true;
+    }
+    const actionMatch = pathname.match(/^\/api\/upscale\/jobs\/([^/]+)\/(cancel|retry)$/);
+    if (req.method === "POST" && actionMatch) {
+      const id = decodeURIComponent(actionMatch[1]);
+      try {
+        const body = typeof readJson === "function" ? await readJson(req) : {};
+        const job = actionMatch[2] === "cancel"
+          ? await cancelJob(id, body?.reason || body?.cancelReason || "Cancelled by user.")
+          : await retryJob(id);
+        respond(res, actionMatch[2] === "retry" ? 201 : 200, { job });
+      } catch (error) {
+        const status = Number.isInteger(error?.status) ? error.status : 400;
+        fail(res, status, asErrorMessage(error, `Unable to ${actionMatch[2]} SeedVR2 job.`), error?.code);
       }
       return true;
     }
     if (req.method === "GET" && pathname === "/api/upscale/jobs") {
-      const list = [...jobs.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 100).map(publicJob);
-      respond(res, 200, { jobs: list });
+      try {
+        respond(res, 200, { jobs: await listJobs() });
+      } catch (error) {
+        fail(res, 503, asErrorMessage(error, "Unable to load SeedVR2 job history."), error?.code || "SEEDVR2_PERSISTENCE_FAILED");
+      }
       return true;
     }
     if (req.method === "GET" && pathname.startsWith("/api/upscale/jobs/")) {
       const id = decodeURIComponent(pathname.slice("/api/upscale/jobs/".length));
-      const job = await getJob(id);
-      if (!job) {
-        fail(res, 404, "SeedVR2 job not found.");
-        return true;
+      try {
+        const job = await getJob(id);
+        if (!job) fail(res, 404, "SeedVR2 job not found.", "SEEDVR2_JOB_NOT_FOUND");
+        else respond(res, 200, { job });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 503, asErrorMessage(error, "Unable to load SeedVR2 job history."), error?.code);
       }
-      respond(res, 200, { job });
       return true;
     }
     return false;
   }
+
+  const ready = ensureStoreLoaded();
+  ready.catch((error) => console.error("[seedvr2] startup recovery failed", error?.message || error));
 
   return {
     buildPrompt: buildSeedVR2Prompt,
@@ -699,6 +1046,10 @@ export function createSeedVR2Controller({
     enqueue,
     getJob,
     getJobs: () => [...jobs.values()].map(publicJob),
+    listJobs,
+    cancel: cancelJob,
+    retry: retryJob,
+    ready: () => ready,
     handleRoute,
     publicJob,
     parseHistory: parseSeedVR2History,

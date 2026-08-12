@@ -146,6 +146,7 @@ function canCancel(raw, source) {
   const status = String(raw?.status || "").toLowerCase();
   if (source === "video") return ["queued", "running", "cancelling"].includes(status);
   if (source === "long") return ["queued", "running", "paused", "assembling"].includes(status);
+  if (source === "upscale") return ["queued", "running", "cancelling"].includes(status);
   if (source === "lora") return ["captioning", "queued", "training", "installing"].includes(status);
   return false;
 }

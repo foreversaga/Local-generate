@@ -3,7 +3,14 @@ import { assetUrl, type StudioAsset } from "../library/asset-client";
 export const UPSCALE_SCALE = 2 as const;
 const BRIDGE_URL = "/app";
 
-export type UpscaleJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type UpscaleJobStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
+
+export type UpscaleJobRecovery = {
+    reason?: string;
+    previousStatus?: string;
+    recoveredBy?: string;
+    recoveredAt?: string | null;
+};
 
 export type UpscaleJob = {
     id: string;
@@ -12,12 +19,26 @@ export type UpscaleJob = {
     stage: string;
     sourceName: string;
     sourceRoot?: "input" | "output";
+    source?: { name: string; root: "input" | "output" };
     scale: number;
-    output?: StudioAsset;
+    profile?: string;
+    seed?: number;
+    prompt?: Record<string, unknown> | null;
+    promptId?: string;
+    output?: StudioAsset | null;
     error?: string;
+    cancelReason?: string;
+    attempt?: number;
+    retryOf?: string;
+    recoverable?: boolean;
+    recovery?: UpscaleJobRecovery | null;
+    provenance?: Record<string, unknown> | null;
     createdAt?: string | null;
     startedAt?: string | null;
     completedAt?: string | null;
+    cancelledAt?: string | null;
+    updatedAt?: string | null;
+    timestamps?: Record<string, string | null>;
 };
 
 export type UpscaleHealth = {
@@ -82,6 +103,24 @@ export async function submitUpscale(source: Pick<StudioAsset, "name" | "root">):
 
 export async function fetchUpscaleJob(id: string): Promise<UpscaleJob> {
     const response = await fetch(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(id)}`, { cache: "no-store" });
+    const payload = await readJson<{ job?: UpscaleJob }>(response);
+    if (!payload.job) throw new UpscaleApiError("Upscale job was not returned.", response.status);
+    return payload.job;
+}
+
+export async function cancelUpscaleJob(id: string, reason = "Cancelled by user."): Promise<UpscaleJob> {
+    const response = await fetch(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+    });
+    const payload = await readJson<{ job?: UpscaleJob }>(response);
+    if (!payload.job) throw new UpscaleApiError("Upscale job was not returned.", response.status);
+    return payload.job;
+}
+
+export async function retryUpscaleJob(id: string): Promise<UpscaleJob> {
+    const response = await fetch(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
     const payload = await readJson<{ job?: UpscaleJob }>(response);
     if (!payload.job) throw new UpscaleApiError("Upscale job was not returned.", response.status);
     return payload.job;

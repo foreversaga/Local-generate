@@ -34,7 +34,7 @@ export async function performJobAction(job: UnifiedJob, action: "cancel" | "paus
   if (job.source === "lora" && (action === "cancel" || action === "retry")) {
     return request(`${BRIDGE_URL}/api/lora-training/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
   }
-  if (job.source === "upscale" && action === "retry") return request(`${BRIDGE_URL}/api/upscale`, "POST", { sourceName: job.raw.sourceName, sourceRoot: job.raw.sourceRoot, scale: job.raw.scale });
+  if (job.source === "upscale" && (action === "cancel" || action === "retry")) return request(`${BRIDGE_URL}/api/upscale/jobs/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "img2img" && action === "retry") {
     const body: Record<string, unknown> = {
       sourceName: job.raw.sourceName,

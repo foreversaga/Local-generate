@@ -3439,7 +3439,7 @@ async function activeInputAssetUse(relativeName) {
     const target = inputAssetKey("input", relativeName);
     if (!Array.isArray(seedJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
     for (const job of seedJobs) {
-      if (!["queued", "running"].includes(job?.status)) continue;
+      if (!["queued", "running", "cancelling"].includes(job?.status)) continue;
       if (job?.sourceRoot !== "input") continue;
       let sourceName;
       try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
@@ -3506,7 +3506,7 @@ async function activeAssetUse(rootName, relativeName) {
     if (!Array.isArray(seedJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
     const target = inputAssetKey("output", relativeName);
     for (const job of seedJobs) {
-      if (!["queued", "running"].includes(job?.status)) continue;
+      if (!["queued", "running", "cancelling"].includes(job?.status)) continue;
       if (!['input', 'output'].includes(job?.sourceRoot) || typeof job?.sourceName !== "string") return { blocked: true, code: "ASSET_USE_UNKNOWN" };
       let sourceName;
       try { sourceName = canonicalInputAssetName(job.sourceName); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }

@@ -6,6 +6,8 @@ import { assetKey, uploadAssets, type StudioAsset } from "../library/asset-clien
 import {
     fetchUpscaleHealth,
     fetchUpscaleJob,
+    cancelUpscaleJob,
+    retryUpscaleJob,
     submitUpscale,
     UPSCALE_SCALE,
     upscaleAssetHref,
@@ -15,8 +17,8 @@ import {
 } from "./upscale-client";
 import styles from "./UpscaleWorkspace.module.css";
 
-const ACTIVE_STATUSES = new Set(["queued", "running"]);
-const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 export function UpscaleWorkspace() {
     const [source, setSource] = useState<StudioAsset | null>(null);
@@ -25,7 +27,7 @@ export function UpscaleWorkspace() {
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
     const [error, setError] = useState("");
-    const [busy, setBusy] = useState<"upload" | "submit" | "retry" | "">("");
+    const [busy, setBusy] = useState<"upload" | "submit" | "cancel" | "retry" | "">("");
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
@@ -107,11 +109,24 @@ export function UpscaleWorkspace() {
         setBusy("retry");
         setError("");
         try {
-            const next = await submitUpscale({ name: job.sourceName, root: job.sourceRoot || "input" });
+            const next = await retryUpscaleJob(job.id);
             setJob(next);
         } catch (reason) {
             if (reason instanceof UpscaleApiError && reason.health) setHealth(reason.health);
             setError(reason instanceof Error ? reason.message : "Unable to retry SeedVR2 upscale.");
+        } finally {
+            setBusy("");
+        }
+    }
+
+    async function cancel() {
+        if (!job || !active || busy || job.status === "cancelling") return;
+        setBusy("cancel");
+        setError("");
+        try {
+            setJob(await cancelUpscaleJob(job.id));
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : "Unable to cancel SeedVR2 upscale.");
         } finally {
             setBusy("");
         }
@@ -144,7 +159,7 @@ export function UpscaleWorkspace() {
     }, [active, job?.id]);
 
     const statusLabel = job
-        ? `${job.status === "completed" ? "Complete" : job.status === "failed" ? "Failed" : job.status === "cancelled" ? "Cancelled" : job.status === "running" ? "Processing" : "Queued"}${job.stage ? ` · ${job.stage}` : ""}`
+        ? `${job.status === "completed" ? "Complete" : job.status === "failed" ? "Failed" : job.status === "cancelled" ? "Cancelled" : job.status === "interrupted" ? "Interrupted" : job.status === "cancelling" ? "Cancelling" : job.status === "running" ? "Processing" : "Queued"}${job.stage ? ` · ${job.stage}` : ""}`
         : "Ready to upscale";
     const readinessLabel = healthLoading ? "Checking readiness…" : health?.ready ? "Ready" : "Unavailable";
 
@@ -221,8 +236,9 @@ export function UpscaleWorkspace() {
                         </div>
                         {job && <div className={styles.progressTrack} role="progressbar" aria-label="SeedVR2 progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
                     </div>
-                    {job && (job.status === "failed" || job.status === "cancelled") && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={!canRetry}>{busy === "retry" ? "Retrying…" : "Retry upscale"}</button>}
-                    {active && <p className={styles.helper}>The existing SeedVR2 API does not expose cancellation; this workspace leaves the active job intact.</p>}
+                    {active && job?.status !== "cancelling" && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={Boolean(busy)}>{busy === "cancel" ? "Cancelling…" : "Cancel upscale"}</button>}
+                    {job && (job.status === "failed" || job.status === "cancelled" || job.status === "interrupted") && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={!canRetry}>{busy === "retry" ? "Retrying…" : "Retry upscale"}</button>}
+                    {job?.status === "cancelling" && <p className={styles.helper}>Stopping the active SeedVR2 workflow…</p>}
                 </div>
             </section>
 

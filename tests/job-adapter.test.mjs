@@ -11,9 +11,9 @@ test("job adapter normalizes backend statuses into five UI states", () => {
   assert.equal(normalizeJobStatus("cancelled"), "cancelled");
 });
 
-test("job adapter preserves source-specific actions without inventing unsupported cancel APIs", () => {
+test("job adapter exposes only the actions backed by each source contract", () => {
   assert.equal(adaptJob({ id: "v", status: "running" }, "video").canCancel, true);
-  assert.equal(adaptJob({ id: "u", status: "running", sourceName: "a.mp4" }, "upscale").canCancel, false);
+  assert.equal(adaptJob({ id: "u", status: "running", sourceName: "a.mp4" }, "upscale").canCancel, true);
   assert.equal(adaptJob({ id: "i", status: "failed", sourceName: "a.png" }, "img2img").canRetry, true);
   const interrupted = adaptJob({ id: "v-recoverable", status: "interrupted", recoverable: true, attempt: 1 }, "video");
   assert.equal(interrupted.status, "error");

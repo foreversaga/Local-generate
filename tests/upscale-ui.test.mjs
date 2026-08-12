@@ -23,7 +23,7 @@ test("Upscale workspace keeps the SeedVR2 source, readiness, polling, and retry 
   assert.match(source, /fetchUpscaleJob/);
   assert.match(source, /1500/);
   assert.match(source, /Retry upscale/);
-  assert.match(source, /does not expose cancellation/);
+  assert.match(source, /Cancel upscale/);
   assert.match(source, /role="progressbar"/);
   assert.match(styles, /\.textButton\{min-height:44px/);
   assert.match(styles, /\.textLink\{display:inline-flex;min-height:44px/);
@@ -37,5 +37,7 @@ test("Upscale client sends fixed 2x requests and exposes output media URLs", asy
   assert.match(source, /sourceRoot: source\.root/);
   assert.match(source, /scale: UPSCALE_SCALE/);
   assert.match(source, /\/api\/upscale\/jobs\/\$\{encodeURIComponent\(id\)\}/);
+  assert.match(source, /\/api\/upscale\/jobs\/\$\{encodeURIComponent\(id\)\}\/cancel/);
+  assert.match(source, /\/api\/upscale\/jobs\/\$\{encodeURIComponent\(id\)\}\/retry/);
   assert.match(source, /\/media\?root=/);
 });
