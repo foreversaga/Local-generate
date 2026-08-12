@@ -175,6 +175,7 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
       const preflight = details.job.config.orchestration.preflight;
       assert.equal(preflight.status, "pass");
       assert.ok(preflight.checks.every(({ status }) => status === "pass"));
+      assert.equal(preflight.checks.find(({ id }) => id === "artifactTarget")?.status, "pass");
     }
 
     const listed = await service.list({ status: "succeeded" });

@@ -15,6 +15,7 @@ export function createPreflightService({
   ollamaUrl = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434',
   ollamaModel = process.env.OLLAMA_CAPTION_MODEL ?? 'gemma4',
   checkTrainer = async () => ({ ok: false, message: 'trainer runtime adapter is not configured' }),
+  checkArtifactTarget = async () => ({ ok: true, status: 'warning', message: 'artifact target checker is not configured' }),
   resolveBaseModel = async () => null,
   paths = LORA_PATHS,
   presetOptions = {},
@@ -129,6 +130,16 @@ export function createPreflightService({
       const baseModel = await resolveBaseModel({ family, baseProfile, job });
       checks.push(result('baseModel', baseModel ? 'pass' : 'fail', baseModel ? 'base model resolved' : 'base model could not be resolved', baseModel ? { baseProfile, ...baseModel } : { baseProfile }));
     } catch (error) { checks.push(result('baseModel', 'fail', error.message)); }
+
+    try {
+      const artifactTarget = await checkArtifactTarget({ job, config, family, resolvedConfig });
+      const targetStatus = artifactTarget?.status === 'warning'
+        ? 'warning'
+        : artifactTarget?.ok
+          ? 'pass'
+          : 'fail';
+      checks.push(result('artifactTarget', targetStatus, artifactTarget?.message ?? (artifactTarget?.ok ? 'artifact target is ready' : 'artifact target is unavailable'), artifactTarget?.details));
+    } catch (error) { checks.push(result('artifactTarget', 'fail', error.message)); }
 
     try {
       await mkdir(paths.jobs, { recursive: true }); await access(paths.jobs, constants.R_OK | constants.W_OK);

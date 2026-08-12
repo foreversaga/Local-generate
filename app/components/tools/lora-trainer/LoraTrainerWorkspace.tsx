@@ -71,6 +71,19 @@ function fallbackTriggerWord(characterName: string) {
   return cleaned;
 }
 
+function fallbackOutputName(value: string) {
+  const cleaned = value
+    .normalize("NFKC")
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/g, "")
+    .replace(/[^A-Za-z0-9]+$/g, "")
+    .slice(0, 128);
+  if (!cleaned || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(cleaned)) return "my-character";
+  return cleaned;
+}
+
 function resolvedTrainingConfig(config: LoraTrainingConfig, triggerDraft: string): LoraTrainingConfig {
   const parsed = parseTriggerWordsDraft(triggerDraft);
   return {
@@ -95,7 +108,7 @@ const DEFAULT_CONFIG: LoraTrainingConfig = {
   baseProfile: "wai-illustrious",
   presetId: "illustrious-character-balanced",
   characterName: "my-character",
-  outputName: "my-character-lora",
+  outputName: "my-character",
   triggerWords: [],
   overrides: { rank: 16, alpha: 16, learningRate: 0.0001, epochs: 10, batchSize: 1, resolution: 1024, seed: 42 },
 };
@@ -209,6 +222,7 @@ export function LoraTrainerWorkspace() {
   const [triggerError, setTriggerError] = useState("");
   const uploadRef = useRef<HTMLInputElement>(null);
   const triggerDraftCustomizedRef = useRef(false);
+  const outputNameCustomizedRef = useRef(false);
   const actionLockRef = useRef("");
   const requestSequenceRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
@@ -256,6 +270,7 @@ export function LoraTrainerWorkspace() {
         setTriggerDraft(persistedCharacterName);
         triggerDraftCustomizedRef.current = false;
       }
+      if (persistedOutputName) outputNameCustomizedRef.current = true;
     }
     setJob(next);
     return true;
@@ -498,6 +513,12 @@ export function LoraTrainerWorkspace() {
 
   function patchCharacterName(value: string) {
     patchConfig("characterName", value);
+    if (!outputNameCustomizedRef.current) {
+      const triggerSource = triggerDraftCustomizedRef.current
+        ? parseTriggerWordsDraft(triggerDraft).values[0] || value
+        : value;
+      patchConfig("outputName", fallbackOutputName(triggerSource));
+    }
     if (triggerDraftCustomizedRef.current) return;
     const parsed = parseTriggerWordsDraft(value);
     setTriggerDraft(value);
@@ -511,6 +532,12 @@ export function LoraTrainerWorkspace() {
     setTriggerDraft(value);
     setTriggerError(parsed.error);
     patchConfig("triggerWords", parsed.values);
+    if (!outputNameCustomizedRef.current) patchConfig("outputName", fallbackOutputName(parsed.values[0] || config.characterName));
+  }
+
+  function patchOutputName(value: string) {
+    outputNameCustomizedRef.current = true;
+    patchConfig("outputName", value);
   }
 
   function patchOverride(key: keyof NonNullable<LoraTrainingConfig["overrides"]>, raw: string) {
@@ -830,7 +857,7 @@ export function LoraTrainerWorkspace() {
               <label className={styles.field}><span>基礎模型設定檔</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
               <label className={styles.field}><span>預設樣式</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>角色 · 平衡</option><option value={`${config.family}-style-balanced`}>風格 · 平衡</option></select></label>
               <label className={styles.field}><span>角色名稱</span><input id="lora-character-name" value={config.characterName} aria-invalid={!config.characterName.trim()} aria-describedby="character-name-help" onChange={(event) => patchCharacterName(event.target.value)} /><small id="character-name-help">訓練後的角色顯示名稱；觸發詞預設會跟隨此名稱。</small></label>
-              <label className={styles.field}><span>LoRA 檔名</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
+              <label className={styles.field}><span>LoRA 檔名</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchOutputName(event.target.value)} /><small id="output-name-help">預設跟隨角色名稱或第一個觸發詞；手動修改後會保留自訂檔名。</small></label>
               <label className={styles.fieldWide}><span>觸發詞</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => patchTriggerDraft(event.target.value)} placeholder={config.characterName || "my_character"} /><small id="trigger-words-help">生成提示詞時使用；預設為角色名稱，可用逗號分隔多個觸發詞。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
             </div>
             <details className={styles.details}><summary>進階設定</summary><div className={styles.advancedGrid}>

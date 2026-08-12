@@ -9,6 +9,7 @@ export * from './queue.mjs';
 export * from './runner.mjs';
 export * from './registry.mjs';
 export * from './artifact.mjs';
+export * from './artifact-target.mjs';
 export * from './presets.mjs';
 export * from './health.mjs';
 export * from './service.mjs';

@@ -13,6 +13,7 @@ import { createLoraTrainingController } from './controller.mjs';
 import { createTrainingQueue } from './queue.mjs';
 import { createTrainingRunner, sanitizeTrainerText } from './runner.mjs';
 import { installTrainingArtifact } from './artifact.mjs';
+import { checkArtifactTarget as checkConfiguredArtifactTarget } from './artifact-target.mjs';
 import { normalizeTrainingParameters, resolveTrainingCommand } from './presets.mjs';
 import { inspectRuntimeRevision, preflightLoraTraining } from './health.mjs';
 import { createPythonResolver, toPublicPythonResolution } from '../runtime/python-resolver.mjs';
@@ -224,6 +225,10 @@ export function createLoraTrainingService(options = {}) {
     presetOptions: options.presetOptions,
     clock: options.clock,
     resolveBaseModel,
+    checkArtifactTarget: options.checkArtifactTarget ?? (async (context) => checkConfiguredArtifactTarget({
+      ...context,
+      targetDirectory: await resolveComfyTarget(context),
+    })),
     checkTrainer: options.checkTrainer ?? (async () => {
       const entrypoint = path.join(paths.runtime, 'sd-scripts', 'sdxl_train_network.py');
       const revision = await inspectRuntimeRevision(paths.runtime);
