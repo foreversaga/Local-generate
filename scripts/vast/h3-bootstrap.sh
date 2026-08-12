@@ -1,166 +1,198 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly COMFY_ROOT=/workspace/ComfyUI
-readonly MODEL_ROOT="$COMFY_ROOT/models"
-readonly STAGING_ROOT=/workspace/.h3-model-staging
-readonly OLLAMA_MODEL_QWEN='huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M'
-readonly OLLAMA_MODEL_GEMMA4='hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M'
+readonly MANIFEST_PATH="${H3_RUNTIME_MANIFEST:-/workspace/runtime-manifest.json}"
+readonly PYTHON_BIN="${H3_RUNTIME_PYTHON:-/venv/main/bin/python}"
+
+[[ -f "$MANIFEST_PATH" ]] || { printf 'runtime manifest not found: %s\n' "$MANIFEST_PATH" >&2; exit 1; }
+
+manifest_query() {
+  "$PYTHON_BIN" - "$MANIFEST_PATH" "$@" <<'PY'
+import json
+import sys
+
+manifest_path, command, *args = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+if manifest.get("schemaVersion") != 1:
+    raise SystemExit(f"unsupported manifest schemaVersion: {manifest.get('schemaVersion')!r}")
+if command == "meta":
+    print(manifest["manifestVersion"], manifest["bootstrapVersion"])
+elif command == "comfyui":
+    item = manifest["comfyui"]
+    print("\t".join((item["repository"], item["revision"], item["path"], item.get("requirements", ""))))
+elif command == "custom":
+    for item in manifest.get("customNodes", []):
+        print("\t".join((item["name"], item["repository"], item["revision"], item["path"], item.get("requirements", ""))))
+elif command == "models":
+    for item in manifest["models"]:
+        print("\t".join((item["id"], item["repository"], item["revision"], item["remotePath"], item["targetPath"], str(item["size"]), item["sha256"])))
+elif command == "ollama":
+    for item in manifest["ollama"]["models"]:
+        print("\t".join((item["name"], item.get("version", ""), item.get("digest") or "")))
+elif command == "persistent":
+    item = manifest["persistent"]
+    print("\t".join((item["cacheRoot"], item["statePath"], item["volumeMount"])))
+elif command == "remote_ports":
+    item = manifest.get("remote", {})
+    print("\t".join((str(item.get("comfyPort", 18188)), str(item.get("ollamaPort", 11434)))))
+else:
+    raise SystemExit(f"unknown manifest query: {command}")
+PY
+}
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
-download_model() {
-  local label="$1"
-  local repo="$2"
-  local revision="$3"
-  local remote_path="$4"
-  local target_path="$5"
-  local expected_size="$6"
-  local expected_sha="$7"
-  local staging_dir="$STAGING_ROOT/$label"
-  local source_path="$staging_dir/$remote_path"
+quarantine_file() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    local quarantine="${path}.bad.$(date -u +%Y%m%dT%H%M%SZ)"
+    mv -- "$path" "$quarantine"
+    log "quarantined invalid artifact $path -> $quarantine"
+  fi
+}
 
-  if [[ -f "$target_path" ]]; then
-    local current_size
-    current_size="$(stat -c '%s' "$target_path")"
-    if [[ "$current_size" != "$expected_size" ]]; then
-      log "ERROR existing $label has unexpected size: $current_size"
-      return 1
-    fi
-    echo "$expected_sha  $target_path" | sha256sum --check --status
+verify_file() {
+  local path="$1" expected_size="$2" expected_sha="$3"
+  [[ -f "$path" ]] || return 1
+  [[ "$(stat -c '%s' "$path")" == "$expected_size" ]] || return 1
+  printf '%s  %s\n' "$expected_sha" "$path" | sha256sum --check --status
+}
+
+install_atomic() {
+  local source="$1" target="$2" temporary="${2}.tmp.$$"
+  mkdir -p "$(dirname "$target")"
+  rm -f -- "$temporary"
+  cp --reflink=auto -- "$source" "$temporary" 2>/dev/null || cp -- "$source" "$temporary"
+  chmod 0644 "$temporary"
+  mv -f -- "$temporary" "$target"
+}
+
+ensure_git_checkout() {
+  local label="$1" repository="$2" revision="$3" target="$4"
+  if [[ ! -d "$target/.git" ]]; then
+    [[ ! -e "$target" ]] || quarantine_file "$target"
+    mkdir -p "$(dirname "$target")"
+    log "cloning $label at $revision"
+    git clone --no-checkout "$repository" "$target"
+  fi
+  git -C "$target" fetch --depth 1 origin "$revision"
+  git -C "$target" checkout --detach "$revision"
+  [[ "$(git -C "$target" rev-parse HEAD)" == "$revision" ]] || { log "ERROR $label revision drift"; return 1; }
+}
+
+install_requirements() {
+  local root="$1" requirements="$2"
+  [[ -n "$requirements" && -f "$root/$requirements" ]] || return 0
+  "$PYTHON_BIN" -m pip install --disable-pip-version-check -r "$root/$requirements"
+}
+
+download_model() {
+  local label="$1" repo="$2" revision="$3" remote_path="$4" target_path="$5" expected_size="$6" expected_sha="$7"
+  local cache_path="$CACHE_ROOT/models/$label/$(basename "$remote_path")"
+  local staging_dir="$STAGING_ROOT/$label/$revision" source_path="$staging_dir/$remote_path"
+
+  if verify_file "$target_path" "$expected_size" "$expected_sha"; then
     log "verified existing $label"
     return 0
   fi
-
-  log "downloading $label"
-  mkdir -p "$staging_dir" "$(dirname "$target_path")"
-  /venv/main/bin/hf download "$repo" "$remote_path" \
-    --revision "$revision" \
-    --local-dir "$staging_dir"
-
-  local downloaded_size
-  downloaded_size="$(stat -c '%s' "$source_path")"
-  if [[ "$downloaded_size" != "$expected_size" ]]; then
-    local prefix_sha
-    local trailing_text
-    prefix_sha="$(head -c "$expected_size" "$source_path" | sha256sum | awk '{print $1}')"
-    trailing_text="$(tail -c "+$((expected_size + 1))" "$source_path" | tr -d '\r\n')"
-    if [[ "$prefix_sha" == "$expected_sha" && "$trailing_text" =~ ^L2P_bypass_[A-Za-z0-9._-]+_[0-9]+$ ]]; then
-      log "removing verified L2P bypass trailer from $label ($((downloaded_size - expected_size)) bytes)"
-      truncate -s "$expected_size" "$source_path"
-      downloaded_size="$expected_size"
-    else
-      log "ERROR downloaded $label has unexpected size: $downloaded_size"
-      return 1
+  quarantine_file "$target_path"
+  if ! verify_file "$cache_path" "$expected_size" "$expected_sha"; then
+    quarantine_file "$cache_path"
+    mkdir -p "$staging_dir"
+    log "downloading $label at $revision"
+    /venv/main/bin/hf download "$repo" "$remote_path" --revision "$revision" --local-dir "$staging_dir"
+    if [[ "$(stat -c '%s' "$source_path")" != "$expected_size" ]]; then
+      local prefix_sha trailing_text
+      prefix_sha="$(head -c "$expected_size" "$source_path" | sha256sum | awk '{print $1}')"
+      trailing_text="$(tail -c "+$((expected_size + 1))" "$source_path" | tr -d '\r\n')"
+      if [[ "$prefix_sha" == "$expected_sha" && "$trailing_text" =~ ^L2P_bypass_[A-Za-z0-9._-]+_[0-9]+$ ]]; then
+        truncate -s "$expected_size" "$source_path"
+      fi
     fi
+    verify_file "$source_path" "$expected_size" "$expected_sha" || { quarantine_file "$source_path"; return 1; }
+    mkdir -p "$(dirname "$cache_path")"
+    mv -f -- "$source_path" "$cache_path"
+  else
+    log "restoring verified $label from persistent cache"
   fi
-  echo "$expected_sha  $source_path" | sha256sum --check --status
-  mv "$source_path" "$target_path"
-  chmod 0644 "$target_path"
-  log "installed and verified $label"
+  install_atomic "$cache_path" "$target_path"
+  verify_file "$target_path" "$expected_size" "$expected_sha"
 }
 
-log 'starting Vast 5090 H3 bootstrap'
+IFS=$'\t' read -r COMFY_REPOSITORY COMFY_REVISION COMFY_ROOT COMFY_REQUIREMENTS < <(manifest_query comfyui)
+IFS=$'\t' read -r CACHE_ROOT STATE_PATH VOLUME_MOUNT < <(manifest_query persistent)
+IFS=$'\t' read -r REMOTE_COMFY_PORT REMOTE_OLLAMA_PORT < <(manifest_query remote_ports)
+STAGING_ROOT="$CACHE_ROOT/staging"
+MODEL_ROOT="$COMFY_ROOT/models"
+MANIFEST_SHA="$(sha256sum "$MANIFEST_PATH" | awk '{print $1}')"
+mkdir -p "$CACHE_ROOT" "$STAGING_ROOT"
+read -r MANIFEST_VERSION BOOTSTRAP_VERSION < <(manifest_query meta)
+log "starting Vast H3 bootstrap manifest=$MANIFEST_VERSION bootstrap=$BOOTSTRAP_VERSION"
+
+ensure_git_checkout "ComfyUI" "$COMFY_REPOSITORY" "$COMFY_REVISION" "$COMFY_ROOT"
+install_requirements "$COMFY_ROOT" "$COMFY_REQUIREMENTS"
+while IFS=$'\t' read -r node_name node_repository node_revision node_path node_requirements; do
+  [[ -n "$node_name" ]] || continue
+  ensure_git_checkout "$node_name" "$node_repository" "$node_revision" "$node_path"
+  install_requirements "$node_path" "$node_requirements"
+done < <(manifest_query custom)
 
 if [[ ! -x /usr/local/bin/ollama ]]; then
-  log 'installing Ollama from the official installer'
   curl -fsSL https://ollama.com/install.sh | sh
-else
-  log "using existing Ollama: $(/usr/local/bin/ollama --version 2>/dev/null || true)"
 fi
-
 install -m 0755 /workspace/ollama.sh /opt/supervisor-scripts/ollama.sh
 install -m 0644 /workspace/ollama.conf /etc/supervisor/conf.d/ollama.conf
 supervisorctl reread
 supervisorctl update
-
-for _ in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
-    break
-  fi
-  sleep 1
-done
+for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break || sleep 1; done
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-
-for ollama_model in "$OLLAMA_MODEL_QWEN" "$OLLAMA_MODEL_GEMMA4"; do
-  log "pulling Ollama model $ollama_model"
+while IFS=$'\t' read -r ollama_model _ollama_version _ollama_digest; do
+  [[ -n "$ollama_model" ]] || continue
   OLLAMA_HOST=http://127.0.0.1:11434 /usr/local/bin/ollama pull "$ollama_model"
-done
+done < <(manifest_query ollama)
 
-download_model \
-  fl2va_nvfp4 \
-  Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot \
-  6e632a197e7e1fe99f2c9f4b635c39db801b2210 \
-  MiniMax_H3_FL2VA_pruned_nvfp4.safetensors \
-  "$MODEL_ROOT/diffusion_models/minimax_h3_fl2va_pruned_nvfp4.safetensors" \
-  12528636800 \
-  9d49beb65ddc373a0df523b8ce715b61b73f88127bf3c8d3ffda76c5dda02bd4
-
-download_model \
-  ref2va_nvfp4 \
-  lilcheaty/MiniMax-H3-NVFP4 \
-  8c5abfed61e1b6a170240792b65253fba1a65b7b \
-  minimax_h3_ref2va_pruned_nvfp4.safetensors \
-  "$MODEL_ROOT/diffusion_models/minimax_h3_ref2va_pruned_nvfp4.safetensors" \
-  12528636800 \
-  c813c5eabd85e275daccbf45e6f8ac4d9d14a1827d425e5be5070c92c60b78ac
-
-download_model \
-  qwen3vl_h3_nvfp4_awq \
-  Comfy-Org/MiniMax-H3 \
-  eb8a16107c595128b3a578f82d2ce2f75920c355 \
-  text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors \
-  "$MODEL_ROOT/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors" \
-  15687142551 \
-  35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6
-
-download_model \
-  h3_video_vae \
-  Comfy-Org/MiniMax-H3 \
-  eb8a16107c595128b3a578f82d2ce2f75920c355 \
-  vae/minimax_h3_video_vae_fp16.safetensors \
-  "$MODEL_ROOT/vae/minimax_h3_video_vae_fp16.safetensors" \
-  5207808496 \
-  7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522
-
-download_model \
-  h3_audio_vae \
-  Comfy-Org/MiniMax-H3 \
-  eb8a16107c595128b3a578f82d2ce2f75920c355 \
-  vae/minimax_h3_audio_vae_fp32.safetensors \
-  "$MODEL_ROOT/vae/minimax_h3_audio_vae_fp32.safetensors" \
-  605254808 \
-  8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48
-
-download_model \
-  seedvr2_3b_int8 \
-  Comfy-Org/SeedVR2 \
-  0ef637b0cfd0543a4843d5d49231da2ca35a306f \
-  diffusion_models/seedvr2_3b_int8_convrot.safetensors \
-  "$MODEL_ROOT/diffusion_models/seedvr2_3b_int8_convrot.safetensors" \
-  3458259704 \
-  c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157
-
-download_model \
-  seedvr2_ema_vae \
-  Comfy-Org/SeedVR2 \
-  0ef637b0cfd0543a4843d5d49231da2ca35a306f \
-  vae/seedvr2_ema_vae_fp16.safetensors \
-  "$MODEL_ROOT/vae/seedvr2_ema_vae_fp16.safetensors" \
-  501324814 \
-  20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1
+while IFS=$'\t' read -r model_id model_repo model_revision model_remote_path model_target_path model_size model_sha; do
+  [[ -n "$model_id" ]] || continue
+  download_model "$model_id" "$model_repo" "$model_revision" "$model_remote_path" "$model_target_path" "$model_size" "$model_sha"
+done < <(manifest_query models)
 
 log 'restarting ComfyUI so model selectors refresh'
 supervisorctl restart comfyui
+for _ in $(seq 1 120); do curl -fsS "http://127.0.0.1:${REMOTE_COMFY_PORT}/system_stats" >/dev/null && break || sleep 1; done
+curl -fsS "http://127.0.0.1:${REMOTE_COMFY_PORT}/system_stats" >/dev/null
 
-for _ in $(seq 1 120); do
-  if curl -fsS http://127.0.0.1:18188/system_stats >/dev/null; then
-    break
-  fi
-  sleep 1
-done
-curl -fsS http://127.0.0.1:18188/system_stats >/dev/null
-
-log 'bootstrap completed successfully'
+"$PYTHON_BIN" - "$MANIFEST_PATH" "$STATE_PATH" "$MANIFEST_SHA" "$CACHE_ROOT" "$VOLUME_MOUNT" <<'PY'
+import json
+import sys
+import urllib.request
+from datetime import datetime, timezone
+manifest_path, state_path, manifest_sha, cache_root, volume_mount = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+try:
+    with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5) as response:
+        ollama_models = {item.get("name"): item.get("digest") for item in json.load(response).get("models", [])}
+except Exception:
+    ollama_models = {}
+state = {
+    "schemaVersion": 1,
+    "manifestVersion": manifest["manifestVersion"],
+    "bootstrapVersion": manifest["bootstrapVersion"],
+    "manifestSha256": manifest_sha,
+    "completedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "cacheRoot": cache_root,
+    "volumeMount": volume_mount,
+    "models": [item["id"] for item in manifest["models"]],
+    "customNodes": [item["name"] for item in manifest.get("customNodes", [])],
+    "nativeNodes": manifest.get("nativeNodes", []),
+    "ollamaModels": [item["name"] for item in manifest["ollama"]["models"]],
+    "ollamaDigests": {item["name"]: ollama_models.get(item["name"]) for item in manifest["ollama"]["models"]},
+}
+with open(state_path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2)
+    handle.write("\n")
+PY
+log "bootstrap completed successfully; cache=$CACHE_ROOT persistentVolume=$VOLUME_MOUNT"

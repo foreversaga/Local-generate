@@ -4,21 +4,53 @@
 
 ## Vast RTX 5090 remote mode
 
-The current Vast instance is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet.
+The Vast runtime is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet. Instance-specific host, SSH port, tunnel ports, and optional persistent-volume settings live in one ignored file; the reproducible software inventory is versioned in [`scripts/vast/runtime-manifest.json`](scripts/vast/runtime-manifest.json).
 
-```powershell
-cd C:\Users\forev\minimax-h3-video-studio
-.\scripts\vast\start-vast-remote.ps1
-.\scripts\vast\status.ps1
-```
+### New instance / replacement procedure
 
-The launcher forwards local `127.0.0.1:18188` to remote ComfyUI and local `127.0.0.1:11435` to remote Ollama, then starts the Web/API on `http://127.0.0.1:8787/app` with the Vast runtime initially selected. The **MODEL RUNTIME** control in the WebUI can switch the live process between **本機** (`8188` / `11434`) and **Vast 5090** (`18188` / `11435`). A switch is rejected while generation or upscaling is active; when safe, the bridge checks or starts the selected services and releases loaded models on the runtime being left. Inputs stay in the local media library, are uploaded for each remote workflow, and completed artifacts are downloaded back into the local output library.
+1. Provision a Vast instance with the required GPU. If persistent storage is available, mount it at `/workspace` (the manifest also reserves `/workspace/.h3-runtime-cache` for a model cache); without it, bootstrap will rebuild from the pinned sources.
+2. Copy the bootstrap bundle and manifest to the instance, then run the one-shot bootstrap command:
+
+   ```powershell
+   $VastHost = '<VAST_HOST>'
+   $SshPort = [int]'<SSH_PORT>'
+   $Remote = "root@$VastHost"
+   $Files = @(
+     'scripts/vast/h3-bootstrap.sh',
+     'scripts/vast/runtime-manifest.json',
+     'scripts/vast/runtime-status.sh',
+     'scripts/vast/ollama.sh',
+     'scripts/vast/ollama.conf'
+   )
+   scp.exe -P $SshPort @Files ("{0}:/workspace/" -f $Remote)
+   ssh.exe -p $SshPort $Remote 'chmod 0755 /workspace/h3-bootstrap.sh /workspace/runtime-status.sh && /workspace/h3-bootstrap.sh'
+   ```
+
+   Bootstrap is idempotent: verified models and pinned git checkouts are reused, missing or mismatched artifacts are quarantined and restored from the persistent cache or downloaded into staging before an atomic install. It writes `/workspace/.h3-runtime-state.json` only after the health check succeeds.
+3. Create the local connection file once and update only that file when Vast replaces the instance:
+
+   ```powershell
+   Copy-Item scripts/vast/vast-runtime.config.example.json scripts/vast/vast-runtime.config.json
+   # Set instance.host, instance.sshPort, and any tunnel ports in vast-runtime.config.json.
+   ```
+
+   The file may live elsewhere by setting `$env:VAST_RUNTIME_CONFIG` or passing `-ConfigPath`.
+4. Start the tunnel and Web/API, then inspect health and drift:
+
+   ```powershell
+   .\scripts\vast\start-vast-remote.ps1
+   .\scripts\vast\status.ps1
+   ```
+
+   `status.ps1` reports loopback tunnel health, H3 Studio health, manifest version, native-node availability, missing or checksum-mismatched weights, git revision drift, Ollama model drift, and persistent-cache/state presence. It exits with code `1` while a repair is needed.
+
+The launcher forwards the configured local tunnel ports to remote ComfyUI/Ollama, then starts the Web/API on `http://127.0.0.1:8787/app` with the Vast runtime initially selected. The **MODEL RUNTIME** control in the WebUI can switch the live process between **本機** (`8188` / `11434`) and Vast. A switch is rejected while generation or upscaling is active; when safe, the bridge checks or starts the selected services and releases loaded models on the runtime being left. Inputs stay in the local media library, are uploaded for each remote workflow, and completed artifacts are downloaded back into the local output library.
 
 Remote prompt generation defaults to `hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M`; `huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M` remains selectable. Both models support text and image prompt inputs. Before Ollama inference the bridge unloads ComfyUI models; before video generation it unloads active Ollama models. Ollama requests use an 8192-token context and `keep_alive: 0`.
 
 Prompt-generation failures and H3 validation failures that occur before a video job is admitted are appended to `logs/prompt-errors-YYYYMMDD.jsonl`. Each record includes the problematic submitted or final candidate prompt, validation/API error details, model, mode, duration, runtime, and timestamp. Attached image data is never written to this log.
 
-The rented instance does not have a persistent Vast volume. Stopping and restarting the same instance preserves `/workspace`, but recycling or destroying it removes Ollama, H3 weights, and configuration. Update the host and SSH port parameters in `scripts/vast/start-tunnel.ps1` after renting a replacement instance.
+The remote instance is disposable by design. A persistent `/workspace` volume is optional and accelerates recovery through `.h3-runtime-cache`; when it is unavailable, the pinned manifest and bootstrap command are the source of truth. Local Library files and job metadata remain on the local machine and are never the only provenance source on Vast.
 
 ## Long-video jobs and diagnostics
 

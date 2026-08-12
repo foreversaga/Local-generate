@@ -240,37 +240,34 @@ $SshPort = [int]'<SSH_PORT>'
 $Remote = "root@$VastHost"
 $Files = @(
   'scripts/vast/h3-bootstrap.sh',
-  'scripts/vast/h3-bootstrap.conf',
+  'scripts/vast/runtime-manifest.json',
+  'scripts/vast/runtime-status.sh',
   'scripts/vast/ollama.sh',
-  'scripts/vast/ollama.conf',
-  'scripts/vast/seedvr2-bootstrap.sh'
+  'scripts/vast/ollama.conf'
 )
 scp.exe -P $SshPort @Files ("{0}:/workspace/" -f $Remote)
-ssh.exe -p $SshPort $Remote 'chmod 0755 /workspace/h3-bootstrap.sh /workspace/ollama.sh /workspace/seedvr2-bootstrap.sh'
+ssh.exe -p $SshPort $Remote 'chmod 0755 /workspace/h3-bootstrap.sh /workspace/runtime-status.sh /workspace/ollama.sh && /workspace/h3-bootstrap.sh'
 ```
 
 ### 8.2 容器內安裝 supervisor 設定並手動啟動
 
-以下在**容器 Bash**執行。`h3-bootstrap.conf` 的 `autostart=false` 是刻意設計：換容器後先檢查，再手動 start，避免未驗證的下載在 supervisor 啟動時自動發生。
+以下在**容器 Bash**執行。bootstrap 會在 checksum、固定 git revision 與 ComfyUI health check 通過後寫入 `/workspace/.h3-runtime-state.json`；不要把未驗證的下載交給 supervisor 自動啟動。
 
 ```bash
 set -euo pipefail
 
 install -m 0644 /workspace/ollama.conf /etc/supervisor/conf.d/ollama.conf
-install -m 0644 /workspace/h3-bootstrap.conf /etc/supervisor/conf.d/h3-bootstrap.conf
 supervisorctl reread
 supervisorctl update
-supervisorctl status comfyui ollama h3-bootstrap
-
-# 僅在 h3-bootstrap 不是 RUNNING 時執行；已完成的 STOPPED job 不要重複 start。
-supervisorctl start h3-bootstrap
+supervisorctl status comfyui ollama
 ```
 
 `h3-bootstrap.sh` 的內容與行為：
 
-1. 若 `/usr/local/bin/ollama` 不存在，使用官方 installer；安裝／更新 `ollama.conf` 與 `/opt/supervisor-scripts/ollama.sh`。
-2. 等待 `127.0.0.1:11434/api/tags`，pull 兩個未 pin digest 的 Ollama 模型。
-3. 以固定 revision 下載 H3 五檔與 SeedVR2 兩檔，逐檔做 size/hash、staging、idempotency 檢查；錯檔／既有 mismatch 會 fail，不覆寫。
+1. 讀取版本化 `runtime-manifest.json`，固定 ComfyUI、custom nodes、H3/SeedVR2 模型與 Ollama inventory。
+2. 若 `/usr/local/bin/ollama` 不存在，使用官方 installer；安裝／更新 `ollama.conf` 與 `/opt/supervisor-scripts/ollama.sh`。
+3. 驗證既有 artifact；缺少或 checksum/revision 不符時隔離到 `.bad.<timestamp>`，優先從 persistent cache 恢復，否則下載至 staging 後 atomic install。
+4. 重啟 ComfyUI、確認 health，並寫入 manifest checksum 與 runtime state；可用 `/usr/local/bin/h3-runtime-status.sh` 回報 drift。
 4. `supervisorctl restart comfyui`，並等待 `127.0.0.1:18188/system_stats` 成功後才回報完成。
 
 `seedvr2-bootstrap.sh` 是 SeedVR2 修復／獨立補裝入口，同樣會檢查兩檔、重啟 ComfyUI 並檢查 18188；它不是完整 H3 bootstrap 的替代品。
@@ -283,16 +280,12 @@ supervisorctl start h3-bootstrap
 
 ```powershell
 Set-Location <REPO_ROOT>
-$VastHost = '<VAST_HOST>'
-$SshPort = [int]'<SSH_PORT>'
-.\scripts\vast\start-tunnel.ps1 `
-  -RemoteHost $VastHost `
-  -SshPort $SshPort `
-  -LocalComfyPort 18188 `
-  -LocalOllamaPort 11435
+Copy-Item scripts\vast\vast-runtime.config.example.json scripts\vast\vast-runtime.config.json
+# Set instance.host, instance.sshPort, and tunnel ports in vast-runtime.config.json.
+.\scripts\vast\start-tunnel.ps1
 ```
 
-`start-vast-remote.ps1` 會包裝 tunnel 與 Web restart，但其參數預設值必須在新租用後確認；若要避免攜入舊 host／port，直接使用上面的參數化 `start-tunnel.ps1`，再手動設定環境。
+`start-vast-remote.ps1` 會讀取同一份 config、建立 tunnel 並重啟 Web/API。若設定檔放在 repo 外，使用 `-ConfigPath` 或 `VAST_RUNTIME_CONFIG`；替換 instance 時不需要修改 script。
 
 ### 9.2 啟動 H3 Studio
 
@@ -302,15 +295,11 @@ $SshPort = [int]'<SSH_PORT>'
 $env:COMFY_REMOTE = '1'
 $env:LOCAL_COMFY_URL = 'http://127.0.0.1:8188'
 $env:LOCAL_OLLAMA_URL = 'http://127.0.0.1:11434'
-$env:REMOTE_COMFY_URL = 'http://127.0.0.1:18188'
-$env:REMOTE_OLLAMA_URL = 'http://127.0.0.1:11435'
-$env:COMFY_URL = 'http://127.0.0.1:18188'
-$env:OLLAMA_URL = 'http://127.0.0.1:11435'
+$env:VAST_RUNTIME_CONFIG = '<PATH_TO_VAST_RUNTIME_CONFIG>'
 $env:MINIMAX_H3_PYTHON = '<LOCAL_H3_PYTHON>'
 
-npm.cmd ci
-npm.cmd test
-npm.cmd run dev
+.\scripts\vast\start-vast-remote.ps1
+.\scripts\vast\status.ps1
 ```
 
 Studio 入口為 `http://127.0.0.1:8787/app`。不要執行 `node local-bridge.mjs` 或另開 bridge process；Web/API 與 bridge 由 Vite/Vinext 同一個 8787 process 提供。

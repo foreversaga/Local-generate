@@ -44,5 +44,8 @@ dev.*.log
 /data/jobs/
 /data/img2img/
 
+# Vast instance-specific connection details (copy the example before use)
+/scripts/vast/vast-runtime.config.json
+
 # LoRA training runtime data
 /data/lora-training/

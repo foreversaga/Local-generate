@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "instance": {
+    "host": "replace-with-vast-host",
+    "sshPort": 22,
+    "user": "root"
+  },
+  "tunnel": {
+    "localComfyPort": 18188,
+    "localOllamaPort": 11435,
+    "remoteComfyPort": 18188,
+    "remoteOllamaPort": 11434
+  },
+  "persistentVolume": {
+    "enabled": false,
+    "mountPath": "/workspace",
+    "cachePath": "/workspace/.h3-runtime-cache"
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": 1,
+  "manifestVersion": "2026.08.12",
+  "bootstrapVersion": "1.1.0",
+  "comfyui": {
+    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+    "revision": "545c4c36a0c6fbb63f4e9d79e4bfef09edbb473e",
+    "path": "/workspace/ComfyUI",
+    "requirements": "requirements.txt"
+  },
+  "remote": {
+    "comfyPort": 18188,
+    "ollamaPort": 11434
+  },
+  "customNodes": [
+    {
+      "name": "ComfyUI-KJNodes",
+      "repository": "https://github.com/kijai/ComfyUI-KJNodes.git",
+      "revision": "35e5956193769d18a13136cdedb73a36a05c73e6",
+      "path": "/workspace/ComfyUI/custom_nodes/ComfyUI-KJNodes",
+      "requirements": "requirements.txt"
+    },
+    {
+      "name": "ComfyUI-segment-anything-2",
+      "repository": "https://github.com/kijai/ComfyUI-segment-anything-2.git",
+      "revision": "0c35fff5f382803e2310103357b5e985f5437f32",
+      "path": "/workspace/ComfyUI/custom_nodes/ComfyUI-segment-anything-2",
+      "requirements": "requirements.txt"
+    },
+    {
+      "name": "comfyui_controlnet_aux",
+      "repository": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+      "revision": "e8b689a513c3e6b63edc44066560ca5919c0576e",
+      "path": "/workspace/ComfyUI/custom_nodes/comfyui_controlnet_aux",
+      "requirements": "requirements.txt"
+    }
+  ],
+  "nativeNodes": [
+    "MiniMaxH3ImageToVideo",
+    "MiniMaxH3ReferenceToVideo",
+    "EmptyMiniMaxH3LatentAV",
+    "MiniMaxH3SigmaShift",
+    "LoadVideo",
+    "GetVideoComponents",
+    "ResizeImageMaskNode",
+    "SeedVR2Preprocess",
+    "VAEEncodeTiled",
+    "VAELoader",
+    "UNETLoader",
+    "SeedVR2Conditioning",
+    "SeedVR2TemporalChunk",
+    "KSampler",
+    "SeedVR2TemporalMerge",
+    "VAEDecodeTiled",
+    "SeedVR2PostProcessing",
+    "CreateVideo",
+    "SaveVideo"
+  ],
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "digestPolicy": "registry-digest-recorded-by-runtime-status",
+    "models": [
+      {
+        "name": "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M",
+        "source": "ollama registry",
+        "version": "32b-instruct-q4_K_M",
+        "digest": null
+      },
+      {
+        "name": "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
+        "source": "ollama registry",
+        "version": "26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
+        "digest": null
+      }
+    ]
+  },
+  "models": [
+    {
+      "id": "fl2va_nvfp4",
+      "repository": "Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot",
+      "revision": "6e632a197e7e1fe99f2c9f4b635c39db801b2210",
+      "remotePath": "MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/diffusion_models/minimax_h3_fl2va_pruned_nvfp4.safetensors",
+      "size": 12528636800,
+      "sha256": "9d49beb65ddc373a0df523b8ce715b61b73f88127bf3c8d3ffda76c5dda02bd4"
+    },
+    {
+      "id": "ref2va_nvfp4",
+      "repository": "lilcheaty/MiniMax-H3-NVFP4",
+      "revision": "8c5abfed61e1b6a170240792b65253fba1a65b7b",
+      "remotePath": "minimax_h3_ref2va_pruned_nvfp4.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/diffusion_models/minimax_h3_ref2va_pruned_nvfp4.safetensors",
+      "size": 12528636800,
+      "sha256": "c813c5eabd85e275daccbf45e6f8ac4d9d14a1827d425e5be5070c92c60b78ac"
+    },
+    {
+      "id": "qwen3vl_h3_nvfp4_awq",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "eb8a16107c595128b3a578f82d2ce2f75920c355",
+      "remotePath": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "size": 15687142551,
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6"
+    },
+    {
+      "id": "h3_video_vae",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "eb8a16107c595128b3a578f82d2ce2f75920c355",
+      "remotePath": "vae/minimax_h3_video_vae_fp16.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors",
+      "size": 5207808496,
+      "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522"
+    },
+    {
+      "id": "h3_audio_vae",
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "eb8a16107c595128b3a578f82d2ce2f75920c355",
+      "remotePath": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/vae/minimax_h3_audio_vae_fp32.safetensors",
+      "size": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
+    },
+    {
+      "id": "seedvr2_3b_int8",
+      "repository": "Comfy-Org/SeedVR2",
+      "revision": "0ef637b0cfd0543a4843d5d49231da2ca35a306f",
+      "remotePath": "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/diffusion_models/seedvr2_3b_int8_convrot.safetensors",
+      "size": 3458259704,
+      "sha256": "c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157"
+    },
+    {
+      "id": "seedvr2_ema_vae",
+      "repository": "Comfy-Org/SeedVR2",
+      "revision": "0ef637b0cfd0543a4843d5d49231da2ca35a306f",
+      "remotePath": "vae/seedvr2_ema_vae_fp16.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors",
+      "size": 501324814,
+      "sha256": "20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1"
+    }
+  ],
+  "persistent": {
+    "volumeMount": "/workspace",
+    "cacheRoot": "/workspace/.h3-runtime-cache",
+    "statePath": "/workspace/.h3-runtime-state.json"
+  }
+}

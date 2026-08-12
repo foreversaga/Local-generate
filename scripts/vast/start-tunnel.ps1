@@ -1,22 +1,39 @@
 [CmdletBinding()]
 param(
-  [string]$RemoteHost = "58.136.107.112",
-  [ValidateRange(1, 65535)]
-  [int]$SshPort = 32052,
-  [ValidateRange(1, 65535)]
-  [int]$LocalComfyPort = 18188,
-  [ValidateRange(1, 65535)]
-  [int]$LocalOllamaPort = 11435
+  [string]$ConfigPath = "",
+  [string]$RemoteHost = "",
+  [int]$SshPort = 0,
+  [int]$LocalComfyPort = 0,
+  [int]$LocalOllamaPort = 0
 )
 
 $ErrorActionPreference = "Stop"
+$configModule = Join-Path $PSScriptRoot "runtime-config.ps1"
+. $configModule
+$configState = Get-VastRuntimeConfig $ConfigPath
+$config = $configState.Data
+
+$remoteHostValue = if ([string]::IsNullOrWhiteSpace($RemoteHost)) { [string]$config.instance.host } else { $RemoteHost }
+$sshPortValue = if ($SshPort -gt 0) { $SshPort } else { [int]$config.instance.sshPort }
+$localComfyPortValue = if ($LocalComfyPort -gt 0) { $LocalComfyPort } else { [int]$config.tunnel.localComfyPort }
+$localOllamaPortValue = if ($LocalOllamaPort -gt 0) { $LocalOllamaPort } else { [int]$config.tunnel.localOllamaPort }
+$remoteComfyPortValue = [int]$config.tunnel.remoteComfyPort
+$remoteOllamaPortValue = [int]$config.tunnel.remoteOllamaPort
+$remoteUser = [string]$config.instance.user
+
+foreach ($port in @($sshPortValue, $localComfyPortValue, $localOllamaPortValue, $remoteComfyPortValue, $remoteOllamaPortValue)) {
+  if ($port -lt 1 -or $port -gt 65535) {
+    throw "Every Vast runtime SSH/tunnel port must be between 1 and 65535."
+  }
+}
+
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $logRoot = Join-Path $projectRoot "logs"
 $pidPath = Join-Path $logRoot "vast-ssh-tunnel.pid"
 $stdoutPath = Join-Path $logRoot "vast-ssh-tunnel.stdout.log"
 $stderrPath = Join-Path $logRoot "vast-ssh-tunnel.stderr.log"
-$comfyHealth = "http://127.0.0.1:$LocalComfyPort/system_stats"
-$ollamaHealth = "http://127.0.0.1:$LocalOllamaPort/api/tags"
+$comfyHealth = "http://127.0.0.1:$localComfyPortValue/system_stats"
+$ollamaHealth = "http://127.0.0.1:$localOllamaPortValue/api/tags"
 
 function Test-HttpEndpoint([string]$Uri) {
   try {
@@ -33,7 +50,7 @@ if ((Test-HttpEndpoint $comfyHealth) -and (Test-HttpEndpoint $ollamaHealth)) {
 }
 
 $occupied = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Where-Object { $_.LocalPort -in @($LocalComfyPort, $LocalOllamaPort) }
+  Where-Object { $_.LocalPort -in @($localComfyPortValue, $localOllamaPortValue) }
 if ($occupied) {
   $details = $occupied | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort) PID $($_.OwningProcess)" }
   throw "A required local tunnel port is already occupied but unhealthy: $($details -join '; ')"
@@ -41,7 +58,7 @@ if ($occupied) {
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $sshPath = (Get-Command ssh.exe -CommandType Application).Source
-$target = "root@$RemoteHost"
+$target = "$remoteUser@$remoteHostValue"
 $arguments = @(
   "-N",
   "-T",
@@ -49,9 +66,9 @@ $arguments = @(
   "-o", "ExitOnForwardFailure=yes",
   "-o", "ServerAliveInterval=30",
   "-o", "ServerAliveCountMax=3",
-  "-p", [string]$SshPort,
-  "-L", "127.0.0.1:${LocalComfyPort}:127.0.0.1:18188",
-  "-L", "127.0.0.1:${LocalOllamaPort}:127.0.0.1:11434",
+  "-p", [string]$sshPortValue,
+  "-L", "127.0.0.1:${localComfyPortValue}:127.0.0.1:${remoteComfyPortValue}",
+  "-L", "127.0.0.1:${localOllamaPortValue}:127.0.0.1:${remoteOllamaPortValue}",
   $target
 )
 
@@ -73,8 +90,8 @@ for ($attempt = 0; $attempt -lt 30; $attempt += 1) {
   }
   if ((Test-HttpEndpoint $comfyHealth) -and (Test-HttpEndpoint $ollamaHealth)) {
     Write-Host "Vast SSH tunnel is ready (PID $($process.Id))."
-    Write-Host "ComfyUI: http://127.0.0.1:$LocalComfyPort"
-    Write-Host "Ollama: http://127.0.0.1:$LocalOllamaPort"
+    Write-Host "ComfyUI: http://127.0.0.1:$localComfyPortValue"
+    Write-Host "Ollama: http://127.0.0.1:$localOllamaPortValue"
     exit 0
   }
   Start-Sleep -Milliseconds 500
