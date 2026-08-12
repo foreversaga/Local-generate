@@ -30,10 +30,11 @@ type Props = AssetPickerConstraints & {
 
 type PickerRoot = "all" | "input" | "output" | "training";
 
-const ROOT_OPTIONS: Array<{ value: Exclude<PickerRoot, "training">; label: string }> = [
+const ROOT_OPTIONS: Array<{ value: PickerRoot; label: string }> = [
     { value: "all", label: SOURCE_LABELS.all },
     { value: "input", label: SOURCE_LABELS.input },
     { value: "output", label: SOURCE_LABELS.output },
+    { value: "training", label: SOURCE_LABELS.training },
 ];
 
 export function AssetPickerButton({
@@ -52,9 +53,9 @@ export function AssetPickerButton({
     onSelect,
 }: Props) {
     const roots = useMemo<Array<"input" | "output" | "training">>(() => {
-        if (assetSource === "training") return ["training"];
         if (allowedRoots?.length) return allowedRoots;
         if (root) return [root];
+        if (assetSource === "training") return ["input", "output", "training"];
         return ["input", "output"];
     }, [allowedRoots, assetSource, root]);
     const kinds = useMemo<Array<"image" | "video">>(() => {
@@ -78,9 +79,7 @@ export function AssetPickerButton({
     const selectedKeysSignature = JSON.stringify(selectedKeys);
     const availableRootOptions = ROOT_OPTIONS.filter((option) => option.value === "all" ? roots.length > 1 : roots.includes(option.value));
     const sourceLabel = assetSource === "training" ? SOURCE_LABELS.training : "素材選擇器";
-    const breadcrumbLabel = assetSource === "training"
-        ? SOURCE_LABELS.training
-        : SOURCE_LABELS[activeRoot] || SOURCE_LABELS.all;
+    const breadcrumbLabel = SOURCE_LABELS[activeRoot] || SOURCE_LABELS.all;
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -252,7 +251,7 @@ export function AssetPickerButton({
                             <button type="button" onClick={closeDialog} aria-label="關閉素材選擇器">×</button>
                         </header>
 
-                        {assetSource !== "training" && availableRootOptions.length > 1 && (
+                        {availableRootOptions.length > 1 && (
                             <div className={styles.sourceTabs} role="group" aria-label="素材來源">
                                 {availableRootOptions.map((option) => (
                                     <button key={option.value} type="button" aria-pressed={activeRoot === option.value || (option.value === "all" && activeRoot === "all")} onClick={() => changeRoot(option.value)}>

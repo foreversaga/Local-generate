@@ -2,7 +2,7 @@
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AssetPickerButton } from "../../library/AssetPickerButton";
-import { assetKey, assetUrl, type StudioAsset, uploadAssets } from "../../library/asset-client";
+import { assetKey, assetUrl, fetchAssetLibrary, type StudioAsset, type StudioAssetFolder, uploadAssets } from "../../library/asset-client";
 import { FIELD_LABELS, jobStatusLabel } from "../../../lib/ui-copy.mjs";
 import {
   artifactDownloadUrl,
@@ -40,6 +40,7 @@ type HealthResource =
   | { key: string; status: "error"; error: string };
 
 const MAX_TRIGGER_WORDS = 20;
+const NEW_UPLOAD_FOLDER = "__new_upload_folder__";
 
 function parseTriggerWordsDraft(raw: string) {
   const seen = new Set<string>();
@@ -56,8 +57,8 @@ function parseTriggerWordsDraft(raw: string) {
   return { values, error: values.length > MAX_TRIGGER_WORDS ? `觸發詞最多只能有 ${MAX_TRIGGER_WORDS} 個。` : "" };
 }
 
-function fallbackTriggerWord(outputName: string) {
-  const cleaned = outputName
+function fallbackTriggerWord(characterName: string) {
+  const cleaned = characterName
     .normalize("NFKC")
     .trim()
     .replace(/[^\p{L}\p{N} _.-]+/gu, " ")
@@ -73,7 +74,7 @@ function resolvedTrainingConfig(config: LoraTrainingConfig, triggerDraft: string
   const parsed = parseTriggerWordsDraft(triggerDraft);
   return {
     ...config,
-    triggerWords: parsed.values.length ? parsed.values : [fallbackTriggerWord(config.outputName)],
+    triggerWords: parsed.values.length ? parsed.values : [fallbackTriggerWord(config.characterName || config.outputName)],
   };
 }
 
@@ -92,6 +93,7 @@ const DEFAULT_CONFIG: LoraTrainingConfig = {
   family: "illustrious",
   baseProfile: "wai-illustrious",
   presetId: "illustrious-character-balanced",
+  characterName: "my-character",
   outputName: "my-character-lora",
   triggerWords: [],
   overrides: { rank: 16, alpha: 16, learningRate: 0.0001, epochs: 10, batchSize: 1, resolution: 1024, seed: 42 },
@@ -182,9 +184,13 @@ export function LoraTrainerWorkspace() {
     return isStage(value) ? value : null;
   }, [locationSearch]);
   const [assets, setAssets] = useState<StudioAsset[]>([]);
+  const [inputFolders, setInputFolders] = useState<StudioAssetFolder[]>([]);
+  const [uploadFolderMode, setUploadFolderMode] = useState<"existing" | "new">("existing");
+  const [uploadFolder, setUploadFolder] = useState("");
+  const [newUploadFolder, setNewUploadFolder] = useState("");
   const [mode, setMode] = useState<CaptionReviewMode>("auto");
   const [config, setConfig] = useState<LoraTrainingConfig>(DEFAULT_CONFIG);
-  const [triggerDraft, setTriggerDraft] = useState("");
+  const [triggerDraft, setTriggerDraft] = useState(DEFAULT_CONFIG.characterName);
   const [job, setJob] = useState<LoraJob | null>(null);
   const [stageOverride, setStage] = useState<Stage | null>(null);
   const stage = stageOverride || requestedStage || "dataset";
@@ -201,10 +207,25 @@ export function LoraTrainerWorkspace() {
   const [notice, setNotice] = useState("");
   const [triggerError, setTriggerError] = useState("");
   const uploadRef = useRef<HTMLInputElement>(null);
+  const triggerDraftCustomizedRef = useRef(false);
   const actionLockRef = useRef("");
   const requestSequenceRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
   const latestJobRevisionRef = useRef(-1);
+
+  useEffect(() => {
+    if (stage !== "dataset") return;
+    let cancelled = false;
+    void fetchAssetLibrary().then((library) => {
+      if (cancelled) return;
+      setInputFolders(library.folders
+        .filter((folder) => folder.root === "input")
+        .sort((left, right) => left.path.localeCompare(right.path)));
+    }).catch(() => {
+      // The root option remains available even if the folder listing is temporarily unavailable.
+    });
+    return () => { cancelled = true; };
+  }, [stage]);
 
   const commitJob = useCallback((next: LoraJob) => {
     if (activeJobIdRef.current === next.id && next.revision < latestJobRevisionRef.current) return false;
@@ -213,6 +234,28 @@ export function LoraTrainerWorkspace() {
     activeJobIdRef.current = next.id;
     // Invalidate every in-flight poll from before this canonical mutation.
     requestSequenceRef.current += 1;
+    const persistedConfig = next.config && typeof next.config === "object" ? next.config : {};
+    const persistedCharacterName = next.characterName || persistedConfig.characterName || next.displayName || "";
+    const persistedOutputName = next.outputName || persistedConfig.outputName || "";
+    const persistedTriggerWords = (next.triggerWords || persistedConfig.triggerWords || [])
+      .filter((word): word is string => typeof word === "string" && Boolean(word.trim()))
+      .map((word) => word.trim());
+    if (persistedCharacterName || persistedOutputName || persistedTriggerWords.length) {
+      setConfig((current) => ({
+        ...current,
+        ...persistedConfig,
+        ...(persistedCharacterName ? { characterName: persistedCharacterName } : {}),
+        ...(persistedOutputName ? { outputName: persistedOutputName } : {}),
+        ...(persistedTriggerWords.length ? { triggerWords: persistedTriggerWords } : {}),
+      }));
+      if (persistedTriggerWords.length) {
+        setTriggerDraft(persistedTriggerWords.join(", "));
+        triggerDraftCustomizedRef.current = persistedTriggerWords.join(", ") !== persistedCharacterName;
+      } else if (persistedCharacterName) {
+        setTriggerDraft(persistedCharacterName);
+        triggerDraftCustomizedRef.current = false;
+      }
+    }
     setJob(next);
     return true;
   }, []);
@@ -416,10 +459,28 @@ export function LoraTrainerWorkspace() {
     const files = [...(event.target.files || [])].filter((file) => file.type.startsWith("image/"));
     event.target.value = "";
     if (!files.length) return;
+    if (uploadFolderMode === "new" && !newUploadFolder.trim()) {
+      setError("請先輸入新的資料夾名稱。");
+      return;
+    }
     setBusy("upload");
     try {
-      const uploaded = await uploadAssets(files);
+      const targetFolder = uploadFolderMode === "new" ? newUploadFolder.trim() : uploadFolder;
+      const uploaded = await uploadAssets(files, targetFolder);
       setAssets((current) => [...current, ...uploaded].slice(0, 50));
+      if (targetFolder) {
+        setUploadFolderMode("existing");
+        setUploadFolder(targetFolder);
+        setNewUploadFolder("");
+      }
+      try {
+        const library = await fetchAssetLibrary();
+        setInputFolders(library.folders
+          .filter((folder) => folder.root === "input")
+          .sort((left, right) => left.path.localeCompare(right.path)));
+      } catch {
+        // The upload already succeeded; a stale folder list can refresh on the next stage visit.
+      }
       setNotice(`已加入 ${uploaded.length} 張圖片。`);
       setError("");
     } catch (reason) {
@@ -434,6 +495,23 @@ export function LoraTrainerWorkspace() {
     setPreflight(null);
   }
 
+  function patchCharacterName(value: string) {
+    patchConfig("characterName", value);
+    if (triggerDraftCustomizedRef.current) return;
+    const parsed = parseTriggerWordsDraft(value);
+    setTriggerDraft(value);
+    setTriggerError(parsed.error);
+    patchConfig("triggerWords", parsed.values);
+  }
+
+  function patchTriggerDraft(value: string) {
+    triggerDraftCustomizedRef.current = true;
+    const parsed = parseTriggerWordsDraft(value);
+    setTriggerDraft(value);
+    setTriggerError(parsed.error);
+    patchConfig("triggerWords", parsed.values);
+  }
+
   function patchOverride(key: keyof NonNullable<LoraTrainingConfig["overrides"]>, raw: string) {
     const value = Number(raw);
     setConfig((current) => ({ ...current, overrides: { ...current.overrides, [key]: Number.isFinite(value) ? value : undefined } }));
@@ -445,6 +523,12 @@ export function LoraTrainerWorkspace() {
       setError("請先選擇至少一張訓練圖片。");
       setStage("dataset");
       focusLoraField("lora-asset-picker");
+      return;
+    }
+    if (!config.characterName.trim()) {
+      setError("請填寫角色名稱。");
+      setStage("config");
+      focusLoraField("lora-character-name");
       return;
     }
     if (!config.outputName.trim()) {
@@ -543,6 +627,12 @@ export function LoraTrainerWorkspace() {
       setError("請先修正觸發詞，再開始訓練。");
       setStage("config");
       focusLoraField("trigger-words");
+      return;
+    }
+    if (!config.characterName.trim()) {
+      setError("請填寫角色名稱。");
+      setStage("config");
+      focusLoraField("lora-character-name");
       return;
     }
     if (!config.outputName.trim()) {
@@ -645,7 +735,26 @@ export function LoraTrainerWorkspace() {
         <main className={styles.main}>
           {stage === "dataset" && <section className={styles.panel} aria-labelledby="dataset-title">
             <header className={styles.sectionHeader}><div><span>01 / 訓練資料</span><h2 id="dataset-title">選擇訓練圖片</h2><p>建議使用 10–30 張主體一致、構圖與角度有變化的清晰圖片。</p></div><span className={styles.count}>{assets.length} / 50</span></header>
-            <div className={styles.assetGrid}>
+             <div className={styles.identityPanel} aria-labelledby="dataset-identity-title">
+               <div className={styles.identityHeader}>
+                 <strong id="dataset-identity-title">訓練前設定</strong>
+                 <p>開始訓練前先設定角色名稱與提示詞觸發詞；觸發詞預設會跟隨角色名稱。</p>
+               </div>
+               <div className={styles.formGrid}>
+                 <label className={styles.field}>
+                   <span>角色名稱（提示詞中的觸發名稱）</span>
+                   <input id="lora-dataset-character-name" value={config.characterName} aria-invalid={!config.characterName.trim()} aria-describedby="dataset-character-name-help" onChange={(event) => patchCharacterName(event.target.value)} />
+                   <small id="dataset-character-name-help">這個名稱會顯示在訓練產物中，也會作為預設觸發詞。</small>
+                 </label>
+                 <label className={styles.field}>
+                   <span>觸發詞</span>
+                   <input id="lora-dataset-trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "dataset-trigger-words-help dataset-trigger-words-error" : "dataset-trigger-words-help"} onChange={(event) => patchTriggerDraft(event.target.value)} placeholder={config.characterName || "my_character"} />
+                   <small id="dataset-trigger-words-help">生成提示詞時使用；可用逗號分隔多個觸發詞。</small>
+                   {triggerError && <p id="dataset-trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}
+                 </label>
+               </div>
+             </div>
+             <div className={styles.assetGrid}>
               {assets.map((asset) => <article key={assetKey(asset)} className={styles.assetCard}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- Dynamic local bridge asset. */}
                 <img src={assetUrl(asset)} alt="" />
@@ -653,6 +762,38 @@ export function LoraTrainerWorkspace() {
               </article>)}
               {!assets.length && <div className={styles.empty}><strong>尚未選擇圖片</strong><span>從素材庫挑選，或上傳本機 JPG、PNG、WebP。</span></div>}
             </div>
+            <label className={styles.field}>
+              <span>上傳到 ComfyUI/input</span>
+              <select
+                aria-label="LoRA 上傳到 input 資料夾"
+                value={uploadFolderMode === "new" ? NEW_UPLOAD_FOLDER : uploadFolder}
+                onChange={(event) => {
+                  if (event.target.value === NEW_UPLOAD_FOLDER) {
+                    setUploadFolderMode("new");
+                  } else {
+                    setUploadFolderMode("existing");
+                    setUploadFolder(event.target.value);
+                  }
+                }}
+                disabled={busy === "upload"}
+              >
+                <option value="">ComfyUI/input（根目錄）</option>
+                {inputFolders.map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}
+                <option value={NEW_UPLOAD_FOLDER}>建立新的資料夾…</option>
+              </select>
+            </label>
+            {uploadFolderMode === "new" && (
+              <label className={styles.field}>
+                <span>新資料夾名稱</span>
+                <input
+                  aria-label="LoRA 新資料夾名稱"
+                  value={newUploadFolder}
+                  onChange={(event) => setNewUploadFolder(event.target.value)}
+                  placeholder="例如 training/新角色"
+                  disabled={busy === "upload"}
+                />
+              </label>
+            )}
             <div className={styles.actions}>
               <AssetPickerButton triggerId="lora-asset-picker" assetSource="training" kind="image" multiple max={50} selectedKeys={selectedKeys} onSelect={chooseAssets} label="選擇訓練素材" />
               <input ref={uploadRef} className={styles.hiddenInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={handleUpload} />
@@ -687,8 +828,9 @@ export function LoraTrainerWorkspace() {
               <label className={styles.field}><span>模型系列</span><select value={config.family} onChange={(event) => { const family = event.target.value as LoraFamily; patchConfig("family", family); patchConfig("baseProfile", family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious"); patchConfig("presetId", family === "sdxl" ? "sdxl-character-balanced" : "illustrious-character-balanced"); }}><option value="sdxl">SDXL</option><option value="illustrious">Illustrious</option></select></label>
               <label className={styles.field}><span>基礎模型設定檔</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
               <label className={styles.field}><span>預設樣式</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>角色 · 平衡</option><option value={`${config.family}-style-balanced`}>風格 · 平衡</option></select></label>
-              <label className={styles.field}><span>模型名稱</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
-              <label className={styles.fieldWide}><span>觸發詞</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => { const next = event.target.value; const parsed = parseTriggerWordsDraft(next); setTriggerDraft(next); setTriggerError(parsed.error); patchConfig("triggerWords", parsed.values); }} placeholder="my_character, custom_style" /><small id="trigger-words-help">生成時需在提示詞使用；留白會自動採 LoRA 名稱。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
+              <label className={styles.field}><span>角色名稱</span><input id="lora-character-name" value={config.characterName} aria-invalid={!config.characterName.trim()} aria-describedby="character-name-help" onChange={(event) => patchCharacterName(event.target.value)} /><small id="character-name-help">訓練後的角色顯示名稱；觸發詞預設會跟隨此名稱。</small></label>
+              <label className={styles.field}><span>LoRA 檔名</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
+              <label className={styles.fieldWide}><span>觸發詞</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => patchTriggerDraft(event.target.value)} placeholder={config.characterName || "my_character"} /><small id="trigger-words-help">生成提示詞時使用；預設為角色名稱，可用逗號分隔多個觸發詞。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
             </div>
             <details className={styles.details}><summary>進階設定</summary><div className={styles.advancedGrid}>
               <NumberField label="Rank" value={config.overrides?.rank} min={1} max={256} onChange={(value) => patchOverride("rank", value)} />
@@ -711,7 +853,7 @@ export function LoraTrainerWorkspace() {
 
           {stage === "artifact" && <section className={styles.panel} aria-labelledby="artifact-title">
             <header className={styles.sectionHeader}><div><span>05 / 模型產物</span><h2 id="artifact-title">LoRA 已可使用</h2><p>模型已驗證並安裝到 ComfyUI 的 trained LoRA 目錄。</p></div><span className={styles.successMark} aria-hidden="true">✓</span></header>
-            <dl className={styles.artifactGrid}><Meta label="註冊編號" value={artifact?.registryId || job?.artifact?.registryId} /><Meta label="模型系列" value={artifact?.family || job?.training.family} /><Meta label="基礎模型設定檔" value={artifact?.baseProfile || job?.training.baseProfile} /><Meta label="檔案大小" value={formatBytes(artifact?.sizeBytes || job?.artifact?.sizeBytes)} /><Meta label="SHA-256" value={artifact?.sha256 || job?.artifact?.sha256} wide /><Meta label="觸發詞" value={artifact?.triggerWords?.join(", ") || "—"} wide /></dl>
+            <dl className={styles.artifactGrid}><Meta label="角色名稱" value={artifact?.displayName || job?.characterName || job?.displayName} /><Meta label="註冊編號" value={artifact?.registryId || job?.artifact?.registryId} /><Meta label="模型系列" value={artifact?.family || job?.training.family} /><Meta label="基礎模型設定檔" value={artifact?.baseProfile || job?.training.baseProfile} /><Meta label="檔案大小" value={formatBytes(artifact?.sizeBytes || job?.artifact?.sizeBytes)} /><Meta label="SHA-256" value={artifact?.sha256 || job?.artifact?.sha256} wide /><Meta label="觸發詞" value={artifact?.triggerWords?.join(", ") || "—"} wide /></dl>
             <details className={styles.details}><summary>來源資訊</summary><pre>{JSON.stringify(artifact?.provenance || job?.provenance || {}, null, 2)}</pre></details>
             <div className={styles.primaryRow}><a className={styles.secondaryButton} href={job ? artifact?.downloadUrl || artifactDownloadUrl(job.id) : undefined}>下載 .safetensors</a><a className={styles.primaryButton} href={`/app/tools/image-to-image${artifact?.registryId || job?.artifact?.registryId ? `?lora=${encodeURIComponent(artifact?.registryId || job?.artifact?.registryId || "")}` : ""}`}>前往以圖生圖</a></div>
           </section>}

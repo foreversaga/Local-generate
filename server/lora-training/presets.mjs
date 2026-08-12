@@ -16,6 +16,7 @@ const MIXED_PRECISIONS = new Set(['no', 'fp16', 'bf16']);
 const SAVE_PRECISIONS = new Set(['float', 'fp16', 'bf16']);
 const SECRET_NAME = /(?:token|secret|password|credential|api[_-]?key)/i;
 const SECRET_VALUE = /(?:bearer\s+|hf_[a-z0-9]{8,}|(?:token|password|api[_-]?key)=)/i;
+const SAFE_PATH_REQUEST_KEYS = new Set(['tokenizerCacheDirectory']);
 
 export const TRAINING_PARAMETER_ALIASES = Object.freeze({
   // The UI and the public job shape use the terminology users expect.  The
@@ -165,7 +166,9 @@ export async function loadPreset(id, { read = readFile, presetDirectory = PRESET
 
 export async function resolveTrainingCommand(request, options = {}) {
   if (!request || Object.getPrototypeOf(request) !== Object.prototype) throw new TypeError('training request must be an object');
-  for (const key of Object.keys(request)) if (SECRET_NAME.test(key)) throw new TypeError('secrets must be supplied through the runner environment');
+  for (const key of Object.keys(request)) {
+    if (!SAFE_PATH_REQUEST_KEYS.has(key) && SECRET_NAME.test(key)) throw new TypeError('secrets must be supplied through the runner environment');
+  }
   const preset = await loadPreset(request.preset, options);
   const parameterResolution = resolveLoadedTrainingParameters(preset, {
     family: request.family,
@@ -173,6 +176,9 @@ export async function resolveTrainingCommand(request, options = {}) {
   });
   const values = parameterResolution.values;
   const runtimeRoot = requiredPath(request.runtimeRoot, 'runtimeRoot');
+  const tokenizerCacheDirectory = request.tokenizerCacheDirectory === undefined
+    ? null
+    : requiredPath(request.tokenizerCacheDirectory, 'tokenizerCacheDirectory');
   const python = requiredExecutable(request.python ?? 'python', 'python');
   const entrypoint = path.join(runtimeRoot, 'sd-scripts', preset.entrypoint);
   const args = [entrypoint,
@@ -190,7 +196,12 @@ export async function resolveTrainingCommand(request, options = {}) {
     '--save_every_n_epochs', String(integer(values.saveEveryEpochs, 'saveEveryEpochs', 1, 1000)),
     '--mixed_precision', assertEnum(values.mixedPrecision, MIXED_PRECISIONS, 'mixedPrecision'),
     '--save_precision', assertEnum(values.savePrecision, SAVE_PRECISIONS, 'savePrecision'),
+    // Training images can have different aspect ratios and dimensions larger
+    // than the target resolution.  Buckets resize them safely without forcing
+    // callers to crop character datasets before training.
+    '--enable_bucket',
   ];
+  if (tokenizerCacheDirectory) args.push('--tokenizer_cache_dir', tokenizerCacheDirectory);
   if (values.maxTrainSteps !== undefined) args.push('--max_train_steps', String(integer(values.maxTrainSteps, 'maxTrainSteps', 1, 10000000)));
   if (values.seed !== undefined) args.push('--seed', String(integer(values.seed, 'seed', 0, 2147483647)));
   if (values.captionExtension !== undefined) {

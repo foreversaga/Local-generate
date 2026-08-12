@@ -6,6 +6,8 @@ import { assetKey, assetUrl, deleteAsset, deleteAssetFolder, fetchAssetLibrary, 
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./LibraryWorkspace.module.css";
 
+const NEW_UPLOAD_FOLDER = "__new_upload_folder__";
+
 export function LibraryWorkspace() {
     const [assets, setAssets] = useState<StudioAsset[]>([]);
     const [folderRecords, setFolderRecords] = useState<StudioAssetFolder[]>([]);
@@ -14,6 +16,10 @@ export function LibraryWorkspace() {
     const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
+    const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+    const [uploadFolderMode, setUploadFolderMode] = useState<"existing" | "new">("existing");
+    const [uploadFolder, setUploadFolder] = useState("");
+    const [newUploadFolder, setNewUploadFolder] = useState("");
     const [preview, setPreview] = useState<StudioAsset | null>(null);
     const [pendingDelete, setPendingDelete] = useState<{ assets: StudioAsset[]; folders: Array<{ root: "input" | "output"; path: string }>; size: number } | null>(null);
     const [busy, setBusy] = useState(false);
@@ -50,6 +56,9 @@ export function LibraryWorkspace() {
 
     const scopedAssets = useMemo(() => assets.filter((asset) => root === "all" || asset.root === root), [assets, root]);
     const scopedFolders = useMemo(() => folderRecords.filter((folder) => root === "all" || folder.root === root), [folderRecords, root]);
+    const inputFolders = useMemo(() => folderRecords
+        .filter((folder) => folder.root === "input")
+        .sort((left, right) => left.path.localeCompare(right.path)), [folderRecords]);
     const navigation = useMemo(() => buildAssetNavigation(scopedAssets, currentPath, scopedFolders), [currentPath, scopedAssets, scopedFolders]);
 
     const visibleAssets = useMemo(() => {
@@ -146,12 +155,37 @@ export function LibraryWorkspace() {
         }
     }
 
-    async function upload(files: File[]) {
+    function openUploadDialog(files: File[]) {
+        if (!files.length || busy) return;
+        const currentFolder = root === "input" ? currentPath.join("/") : "";
+        setUploadFolder(inputFolders.some((folder) => folder.path === currentFolder) ? currentFolder : "");
+        setUploadFolderMode("existing");
+        setNewUploadFolder("");
+        setError("");
+        setPendingUploadFiles(files);
+    }
+
+    function closeUploadDialog() {
+        if (busy) return;
+        setPendingUploadFiles([]);
+        setUploadFolderMode("existing");
+        setUploadFolder("");
+        setNewUploadFolder("");
+    }
+
+    async function upload(files: File[], targetFolder: string) {
         if (!files.length || busy) return;
         setBusy(true);
         setError("");
         try {
-            await uploadAssets(files);
+            await uploadAssets(files, targetFolder);
+            setPendingUploadFiles([]);
+            setUploadFolderMode("existing");
+            setUploadFolder("");
+            setNewUploadFolder("");
+            setRoot("input");
+            setCurrentPath(folderPathSegments(targetFolder));
+            setQuery("");
             await refresh();
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "上傳素材失敗。");
@@ -183,7 +217,7 @@ export function LibraryWorkspace() {
                         accept="image/*,video/*"
                         disabled={busy}
                         onChange={(event) => {
-                            void upload(Array.from(event.target.files || []));
+                            openUploadDialog(Array.from(event.target.files || []));
                             event.target.value = "";
                         }}
                     />
@@ -194,6 +228,60 @@ export function LibraryWorkspace() {
             </section>
 
             {error && <div className={styles.error} role="alert">{error}</div>}
+            {pendingUploadFiles.length > 0 && (
+                <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closeUploadDialog()}>
+                    <div className={`${styles.confirmDialog} ${styles.uploadDialog}`} role="dialog" aria-modal="true" aria-labelledby="upload-assets-title">
+                        <h2 id="upload-assets-title">上傳素材</h2>
+                        <p>選擇要寫入的 ComfyUI/input 資料夾；也可以建立新的資料夾。</p>
+                        <div className={styles.uploadFiles} aria-label="待上傳檔案">
+                            {pendingUploadFiles.map((file, index) => <span key={`${file.name}-${index}`}>{file.name}</span>)}
+                        </div>
+                        <label className={styles.uploadField}>
+                            <span>上傳到資料夾</span>
+                            <select
+                                aria-label="上傳到 input 資料夾"
+                                value={uploadFolderMode === "new" ? NEW_UPLOAD_FOLDER : uploadFolder}
+                                onChange={(event) => {
+                                    if (event.target.value === NEW_UPLOAD_FOLDER) {
+                                        setUploadFolderMode("new");
+                                    } else {
+                                        setUploadFolderMode("existing");
+                                        setUploadFolder(event.target.value);
+                                    }
+                                }}
+                                disabled={busy}
+                            >
+                                <option value="">ComfyUI/input（根目錄）</option>
+                                {inputFolders.map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}
+                                <option value={NEW_UPLOAD_FOLDER}>建立新的資料夾…</option>
+                            </select>
+                        </label>
+                        {uploadFolderMode === "new" && (
+                            <label className={styles.uploadField}>
+                                <span>新資料夾名稱</span>
+                                <input
+                                    aria-label="新資料夾名稱"
+                                    value={newUploadFolder}
+                                    onChange={(event) => setNewUploadFolder(event.target.value)}
+                                    placeholder="例如 training/新角色"
+                                    disabled={busy}
+                                />
+                            </label>
+                        )}
+                        {error && <p className={styles.error} role="alert">{error}</p>}
+                        <div className={styles.previewActions}>
+                            <button type="button" onClick={closeUploadDialog} disabled={busy}>取消</button>
+                            <button
+                                type="button"
+                                onClick={() => void upload(pendingUploadFiles, uploadFolderMode === "new" ? newUploadFolder.trim() : uploadFolder)}
+                                disabled={busy || (uploadFolderMode === "new" && !newUploadFolder.trim())}
+                            >
+                                {busy ? "上傳中…" : `上傳 ${pendingUploadFiles.length} 個檔案`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className={styles.navigation}>
                 <button
                     type="button"
@@ -374,4 +462,8 @@ function formatBytes(value: number) {
     if (value < 1024) return `${value} B`;
     if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function folderPathSegments(value: string) {
+    return value.trim().replaceAll("\\", "/").split("/").filter(Boolean);
 }

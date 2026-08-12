@@ -20,6 +20,7 @@ export type LoraTrainingConfig = {
   family: LoraFamily;
   baseProfile: string;
   presetId: string;
+  characterName: string;
   outputName: string;
   triggerWords: string[];
   overrides?: {
@@ -51,6 +52,11 @@ export type LoraJob = {
   schemaVersion: 1;
   id: string;
   revision: number;
+  displayName?: string;
+  characterName?: string;
+  outputName?: string;
+  triggerWords?: string[];
+  config?: Partial<LoraTrainingConfig>;
   status: LoraJobStatus;
   createdAt: string;
   updatedAt: string;

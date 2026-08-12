@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -74,11 +75,20 @@ test('maps every UI training override to the sd-scripts CLI', async () => {
   assert.equal(flagValue(command.args, '--seed'), '7');
   // Trainer defaults to .caption, while this project writes .txt sidecars.
   assert.equal(flagValue(command.args, '--caption_extension'), '.txt');
+  assert.ok(command.args.includes('--enable_bucket'));
 });
 
 test('preserves a resolver-approved PATH command instead of resolving it as a local path', async () => {
   const command = await resolveTrainingCommand({ ...COMMAND_REQUEST, python: 'python3' });
   assert.equal(command.command, 'python3');
+});
+
+test('passes the pinned local tokenizer cache to sd-scripts', async () => {
+  const command = await resolveTrainingCommand({
+    ...COMMAND_REQUEST,
+    tokenizerCacheDirectory: 'data/lora-training/runtime/tokenizers',
+  });
+  assert.equal(flagValue(command.args, '--tokenizer_cache_dir'), path.resolve('data/lora-training/runtime/tokenizers'));
 });
 
 test('accepts trainer-supported float alpha and save precision', async () => {

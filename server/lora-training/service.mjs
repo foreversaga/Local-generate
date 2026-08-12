@@ -338,6 +338,10 @@ export function createLoraTrainingService(options = {}) {
     const jobDirectory = getJobPaths(job.id, paths).directory;
     const outputDirectory = resolveSafeChild(jobDirectory, 'output/staging');
     await mkdir(outputDirectory, { recursive: true });
+    const tokenizerCacheDirectory = path.join(paths.runtime, 'tokenizers');
+    const huggingfaceCacheDirectory = path.join(paths.runtime, 'cache', 'huggingface');
+    await mkdir(tokenizerCacheDirectory, { recursive: true });
+    await mkdir(path.join(huggingfaceCacheDirectory, 'hub'), { recursive: true });
     const outputName = config.outputName ?? job.slug;
     // Keep the canonical Studio split untouched and materialize a fresh
     // DreamBooth tree for every dispatch.  A missing caption therefore fails
@@ -358,6 +362,7 @@ export function createLoraTrainingService(options = {}) {
       // injected for tests or an alternate runtime.
       parameters: normalizeTrainingParameters(config.overrides ?? config.parameters ?? {}),
       runtimeRoot: paths.runtime,
+      tokenizerCacheDirectory,
       ...(pythonResolution?.executable ? { python: pythonResolution.executable } : {}),
       baseCheckpoint: baseModel.path,
       datasetDirectory: trainerDataset.root,
@@ -377,7 +382,21 @@ export function createLoraTrainingService(options = {}) {
         runResult = await runner.run(resolved, {
           // Python's stdio/argparse must not inherit a legacy Windows code
           // page (cp950 was the first visible failure in the incident log).
-          env: { ...(options.runnerEnv ?? {}), PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+          // Training must be reproducible from the pinned local runtime; the
+          // tokenizer cache is passed explicitly to sd-scripts, so prevent a
+          // missing cache file from turning into a surprise network request.
+          env: {
+            ...(options.runnerEnv ?? {}),
+            HF_HOME: huggingfaceCacheDirectory,
+            HF_HUB_CACHE: path.join(huggingfaceCacheDirectory, 'hub'),
+            TRANSFORMERS_CACHE: path.join(huggingfaceCacheDirectory, 'transformers'),
+            HF_DATASETS_CACHE: path.join(huggingfaceCacheDirectory, 'datasets'),
+            HF_HUB_OFFLINE: '1',
+            TRANSFORMERS_OFFLINE: '1',
+            HF_HUB_DISABLE_TELEMETRY: '1',
+            PYTHONUTF8: '1',
+            PYTHONIOENCODING: 'utf-8',
+          },
           signal,
         });
       }

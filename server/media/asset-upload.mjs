@@ -61,6 +61,25 @@ function pathInvalid(name) {
     });
 }
 
+function normalizeUploadFolder(folder) {
+  const original = String(folder || "").trim().replaceAll("\\", "/");
+  if (!original) return [];
+  const segments = original.split("/");
+  if (
+    original.length > 1024
+    || original.startsWith("/")
+    || /^[A-Za-z]:/.test(original)
+    || original.startsWith("\\\\")
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment) || Array.from(segment).some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint < 0x20 || codePoint === 0x7f;
+    }))
+  ) {
+    throw new AssetUploadError("ASSET_UPLOAD_FOLDER_INVALID", "Upload folder must be a safe relative path.", 400);
+  }
+  return segments;
+}
+
 export function validateAssetUploadMetadata({ name, mimeType } = {}) {
   const originalName = String(name || "");
   if (!originalName || originalName.length > 255 || Buffer.byteLength(originalName, "utf8") > 255 || pathInvalid(originalName)) {
@@ -139,10 +158,29 @@ export function createAssetUploadService({
     }
   }
 
-  async function reserveTarget(stem, extension) {
+  async function ensureDestination(folderSegments) {
+    let destinationPath = rootPath;
+    for (const segment of folderSegments) {
+      destinationPath = path.join(destinationPath, segment);
+      try {
+        await fileSystem.mkdir(destinationPath);
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw new AssetUploadError("ASSET_UPLOAD_FOLDER_INVALID", "The upload folder could not be created.", 409);
+        }
+      }
+      const stat = await fileSystem.lstat(destinationPath).catch(() => null);
+      if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new AssetUploadError("ASSET_UPLOAD_FOLDER_INVALID", "The upload folder must be a regular directory.", 409);
+      }
+    }
+    return destinationPath;
+  }
+
+  async function reserveTarget(stem, extension, destinationPath, folderSegments) {
     for (let suffix = 0; suffix <= MAX_DUPLICATE_SUFFIX; suffix += 1) {
       const outputName = `${stem}${suffix ? `-${suffix}` : ""}${extension}`;
-      const outputPath = path.join(rootPath, outputName);
+      const outputPath = path.join(destinationPath, outputName);
       if (reservedTargets.has(outputPath)) continue;
       const existing = await fileSystem.lstat(outputPath).catch((error) => {
         if (error?.code === "ENOENT") return null;
@@ -150,13 +188,14 @@ export function createAssetUploadService({
       });
       if (existing) continue;
       reservedTargets.add(outputPath);
-      return { outputName, outputPath };
+      return { outputName, outputPath, relativeName: [...folderSegments, outputName].join("/") };
     }
     throw new AssetUploadError("ASSET_UPLOAD_DUPLICATE_LIMIT", "Unable to allocate a unique asset name.", 409);
   }
 
   async function upload(request, metadata = {}) {
     const info = validateAssetUploadMetadata(metadata);
+    const folderSegments = normalizeUploadFolder(metadata.folder);
     const contentType = normalizeMime(metadata.contentType);
     if (contentType && contentType !== RAW_UPLOAD_CONTENT_TYPE) {
       throw new AssetUploadError("ASSET_UPLOAD_CONTENT_TYPE_INVALID", "Raw uploads must use application/octet-stream.", 415);
@@ -167,8 +206,9 @@ export function createAssetUploadService({
     }
 
     await ensureRoot();
-    let target = await reserveTarget(info.stem, info.extension);
-    const tempPath = path.join(rootPath, safeTempName(idFactory()));
+    const destinationPath = await ensureDestination(folderSegments);
+    let target = await reserveTarget(info.stem, info.extension, destinationPath, folderSegments);
+    const tempPath = path.join(destinationPath, safeTempName(idFactory()));
     let renamed = false;
     let requestAborted = false;
     let requestEnded = false;
@@ -212,10 +252,10 @@ export function createAssetUploadService({
           if (!isDestinationConflict(error) || attempt === MAX_DUPLICATE_SUFFIX) {
             throw new AssetUploadError("ASSET_UPLOAD_COMMIT_FAILED", "The uploaded asset could not be committed atomically.", 500, uploadDetails(bytesReceived, maxBytes));
           }
-          target = await reserveTarget(info.stem, info.extension);
+          target = await reserveTarget(info.stem, info.extension, destinationPath, folderSegments);
         }
       }
-      return await toAsset(assetRoot, target.outputName);
+      return await toAsset(assetRoot, target.relativeName);
     } catch (error) {
       if (error instanceof AssetUploadError) throw error;
       if (requestAborted || request?.aborted === true || error?.code === "ERR_STREAM_PREMATURE_CLOSE") {

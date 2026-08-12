@@ -538,7 +538,6 @@ function mimeFor(fileName) {
 function mediaContentDisposition(rootName, relativeName, download) {
   const disposition = download ? "attachment" : "inline";
   const baseName = path.basename(relativeName).replace(/["\r\n]/g, "") || "asset";
-  if (rootName !== "training") return `${disposition}; filename="${baseName}"`;
   const fallback = baseName.replace(/[^\x20-\x7e]/g, "_") || "asset";
   let encoded;
   try {
@@ -730,7 +729,7 @@ function summarizeMediaFolders(rootName, folders, files) {
   return [...summaries.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-async function listAssetLibrary(rootName) {
+async function listAssetLibrary(rootName, { limit = 100 } = {}) {
   const roots = rootName === "all" ? ["input", "output"] : [rootName];
   const all = [];
   const folders = [];
@@ -751,8 +750,9 @@ async function listAssetLibrary(rootName) {
       }
     }
   }
+  const assets = all.sort((left, right) => right.modified.localeCompare(left.modified));
   return {
-    assets: all.sort((left, right) => right.modified.localeCompare(left.modified)).slice(0, 100),
+    assets: Number.isFinite(limit) ? assets.slice(0, Math.max(0, limit)) : assets,
     folders,
   };
 }
@@ -769,6 +769,36 @@ async function listTrainingAssets() {
     }
   }
   return all.sort((left, right) => right.modified.localeCompare(left.modified));
+}
+
+function assetFolderRecords(rootName, assets) {
+  const folderPaths = new Set();
+  for (const asset of assets) {
+    const segments = String(asset.name || "").replaceAll("\\", "/").split("/").filter(Boolean);
+    for (let index = 1; index < segments.length; index += 1) {
+      folderPaths.add(segments.slice(0, index).join("/"));
+    }
+  }
+  return summarizeMediaFolders(
+    rootName,
+    [...folderPaths].map((relativeName) => ({ relativeName })),
+    assets.map((asset) => ({ relativeName: asset.name })),
+  );
+}
+
+function mergeLoraTrainingAssetLibrary(library, trainingAssets) {
+  return {
+    assets: [...library.assets, ...trainingAssets].sort((left, right) => right.modified.localeCompare(left.modified)),
+    folders: [...library.folders, ...assetFolderRecords("training", trainingAssets)],
+  };
+}
+
+async function listLoraTrainingAssetLibrary() {
+  const [library, trainingAssets] = await Promise.all([
+    listAssetLibrary("all", { limit: Infinity }),
+    listTrainingAssets(),
+  ]);
+  return mergeLoraTrainingAssetLibrary(library, trainingAssets);
 }
 
 function mediaRoots(rootName) {
@@ -2104,12 +2134,17 @@ function publicLoraTrainingJob(details) {
     ?.filter((word) => typeof word === "string" && word.trim())
     .map((word) => word.trim())
     .slice(0, 20) || [];
+  const characterName = typeof config.characterName === "string" && config.characterName.trim()
+    ? config.characterName.trim()
+    : job.displayName || config.outputName || job.slug || "Trained LoRA";
   const overrides = config.overrides && typeof config.overrides === "object" ? config.overrides : {};
   const configSummary = {
     family: training.family,
     baseProfile: training.baseProfile,
     presetId: training.presetId,
+    characterName,
     outputName: typeof config.outputName === "string" ? config.outputName : "",
+    triggerWords,
     overrides: Object.fromEntries(["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"]
       .filter((key) => Number.isFinite(Number(overrides[key])))
       .map((key) => [key, Number(overrides[key])])),
@@ -2135,7 +2170,8 @@ function publicLoraTrainingJob(details) {
     } : {}),
     revision: job.revision,
     slug: job.slug,
-    displayName: job.displayName || config.outputName || job.slug || "Trained LoRA",
+    displayName: job.displayName || characterName,
+    characterName,
     outputName: config.outputName || job.displayName || job.slug || "",
     family: training.family,
     baseProfile: training.baseProfile,
@@ -2219,7 +2255,7 @@ export function resolveLoraTriggerWords(body = {}, config = body?.config || {}) 
   if (bodyCandidate) return bodyCandidate;
   const configCandidate = nonEmptyLoraTriggerWords(config?.triggerWords);
   if (configCandidate) return configCandidate;
-  return [fallbackLoraTriggerWord(config?.outputName)];
+  return [fallbackLoraTriggerWord(config?.characterName || config?.outputName)];
 }
 
 async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
@@ -2229,7 +2265,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       return true;
     }
     try {
-      sendJson(res, 200, { assets: await listTrainingAssets() });
+      sendJson(res, 200, await listLoraTrainingAssetLibrary());
     } catch (error) {
       const status = Number.isInteger(error?.status) ? error.status : 500;
       sendError(res, status, error?.message || "Training assets could not be listed.", error?.code);
@@ -2284,7 +2320,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
         ...body,
         family: config.family || body.family,
         slug: body.slug || `lora-${Date.now().toString(36)}`,
-        displayName: body.displayName || config.outputName || "Trained LoRA",
+        displayName: body.displayName || config.characterName || config.outputName || "Trained LoRA",
         triggerWords: resolveLoraTriggerWords(body, config),
       });
       sendJson(res, 201, { job: publicLoraTrainingJob(details) }); return true;
@@ -2324,6 +2360,9 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       const { revision, triggerWords, ...config } = body;
       const nextConfig = { ...current.config, ...config };
       const patch = { config: nextConfig };
+      if (Object.prototype.hasOwnProperty.call(config, "characterName")) {
+        patch.displayName = config.characterName;
+      }
       if (Object.prototype.hasOwnProperty.call(body, "triggerWords")) {
         const resolvedTriggerWords = resolveLoraTriggerWords({ triggerWords }, nextConfig);
         patch.triggerWords = resolvedTriggerWords;
@@ -3939,6 +3978,7 @@ async function route(req, res) {
       }
       const asset = await withAssetLifecycleLock(() => uploadAsset(req, {
         name: requestUrl.searchParams.get("name") || "",
+        folder: requestUrl.searchParams.get("folder") || "",
         mimeType: req.headers?.["x-asset-mime"] || requestUrl.searchParams.get("mimeType") || "",
         contentType,
       }));
@@ -4085,6 +4125,8 @@ export {
   walkMedia,
   summarizeMediaFolders,
   listAssetLibrary,
+  mergeLoraTrainingAssetLibrary,
+  listLoraTrainingAssetLibrary,
   canonicalInputAssetName,
   canonicalTrainingAssetName,
   mediaContentDisposition,

@@ -68,6 +68,12 @@ class RenameFailure extends Error {
   }
 }
 
+function isRetryableWindowsRenameFailure(error, platform) {
+  return platform === 'win32'
+    && error instanceof RenameFailure
+    && error.details?.retryable === true;
+}
+
 async function renameWithRetry(source, target, {
   platform = process.platform,
   renameImpl = rename,
@@ -417,20 +423,27 @@ export function createDatasetService({ paths = LORA_PATHS, resolveSource, maxIma
       const backup = resolveSafeChild(job.directory, `.trainer-data-backup-${randomUUID()}`);
       let movedOld = false;
       let installed = false;
+      let trainerRoot = target.trainer;
+      let directFallback = false;
       let operation = 'stage';
       try {
         await mkdir(subset, { recursive: true });
-        for (const { image, source, extension, caption } of entries) {
-          // Image ids are generated UUIDs, so using them as names avoids source
-          // filename collisions while retaining the original extension.
-          const imageName = `${image.id}${extension}`;
-          const imageTarget = resolveSafeChild(subset, imageName);
-          const captionTarget = resolveSafeChild(subset, `${image.id}${layout.captionExtension}`);
-          operation = 'copy';
-          await copyFile(source, imageTarget);
-          operation = 'write';
-          await writeFile(captionTarget, `${caption}\n`, { encoding: 'utf8', mode: 0o600 });
-        }
+        const populateTrainerTree = async (root) => {
+          const destination = resolveSafeChild(root, layout.subset);
+          await mkdir(destination, { recursive: true });
+          for (const { image, source, extension, caption } of entries) {
+            // Image ids are generated UUIDs, so using them as names avoids
+            // source filename collisions while retaining the original extension.
+            const imageName = `${image.id}${extension}`;
+            const imageTarget = resolveSafeChild(destination, imageName);
+            const captionTarget = resolveSafeChild(destination, `${image.id}${layout.captionExtension}`);
+            operation = 'copy';
+            await copyFile(source, imageTarget);
+            operation = 'write';
+            await writeFile(captionTarget, `${caption}\n`, { encoding: 'utf8', mode: 0o600 });
+          }
+        };
+        await populateTrainerTree(stage);
 
         // A generated tree must never be a symlink/junction supplied by a
         // caller.  Refuse it before moving anything, preserving the old tree.
@@ -439,20 +452,54 @@ export function createDatasetService({ paths = LORA_PATHS, resolveSource, maxIma
           const existing = await lstatImpl(target.trainer);
           if (existing.isSymbolicLink() || !existing.isDirectory()) throw datasetError('UNSAFE_TRAINER_DATASET', 'trainer dataset root is not a regular directory', 422);
           operation = 'rename';
-          await renameWithRetry(target.trainer, backup, {
-            platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'backup-existing',
-          });
-          movedOld = true;
+          try {
+            await renameWithRetry(target.trainer, backup, {
+              platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'backup-existing',
+            });
+            movedOld = true;
+          } catch (error) {
+            // Windows can keep a directory handle open after a trainer or
+            // scanner has finished using it.  Keep the old generated tree in
+            // place and install the fresh tree under an isolated sibling so a
+            // transient lock cannot fail an otherwise valid training job.
+            if (!isRetryableWindowsRenameFailure(error, platform)) throw error;
+            trainerRoot = resolveSafeChild(job.directory, `trainer-data-${randomUUID()}`);
+            directFallback = true;
+          }
         } catch (error) {
           if (error?.code !== 'ENOENT') throw error;
         }
-        operation = 'rename';
-        await renameWithRetry(stage, target.trainer, {
-          platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory, phase: 'install-stage',
-        });
+        if (directFallback) {
+          const destination = resolveSafeChild(trainerRoot, layout.subset);
+          await mkdir(destination, { recursive: true });
+          for (const { image, source, extension, caption } of entries) {
+            const imageName = `${image.id}${extension}`;
+            operation = 'copy';
+            await copyFile(source, resolveSafeChild(destination, imageName));
+            operation = 'write';
+            await writeFile(resolveSafeChild(destination, `${image.id}${layout.captionExtension}`), `${caption}\n`, { encoding: 'utf8', mode: 0o600 });
+          }
+        } else {
+          operation = 'rename';
+          try {
+            await renameWithRetry(stage, trainerRoot, {
+              platform, renameImpl, sleep, lstatImpl, jobDirectory: job.directory,
+              phase: 'install-stage',
+            });
+          } catch (error) {
+            // The destination can be absent and still reject a populated
+            // directory rename on Windows.  Fall back to copying into an
+            // isolated root so a fresh retry can proceed without relying on
+            // directory replacement semantics.
+            if (!isRetryableWindowsRenameFailure(error, platform)) throw error;
+            trainerRoot = resolveSafeChild(job.directory, `trainer-data-${randomUUID()}`);
+            directFallback = true;
+            await populateTrainerTree(trainerRoot);
+          }
+        }
         installed = true;
         return {
-          root: target.trainer,
+          root: trainerRoot,
           subset: layout.subset,
           imageCount: entries.length,
           captionCount: entries.length,

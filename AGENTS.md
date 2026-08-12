@@ -107,3 +107,11 @@ Invoke-WebRequest -Uri http://127.0.0.1:8787/app/api/health -UseBasicParsing -Ti
 - Create a new Luna only for truly independent work with non-overlapping ownership and parallel acceptance; check whether an existing agent can be reused first.
 - Do not start Browser or the full test suite merely for formality for a simple status check or short answer.
 - These rules do not override the core rule that all exploration and operations must still be performed by an `agent_type=luna_max` Luna.
+
+## 變更後重啟與驗收（強制）
+
+- 任何程式碼、設定、路由或服務行為改動後，無論開發伺服器是否支援 HMR，都不得在未重啟受影響服務前回報完成。
+- 本專案的 Web/API 改動一律重啟 `8787` 的 H3 Studio Web/API 服務；若改動涉及 ComfyUI 或 Ollama，也必須重啟相應服務。重啟時只能操作明確對應的服務程序，不得使用模糊的全域 process name。
+- 重啟後必須重新執行受影響服務的 health check，並依風險執行必要的 targeted tests、完整測試、lint 或 build。
+- UI 或使用者流程改動必須在重啟後用 Browser 實際操作驗收；涉及素材、上傳、選取或資料夾流程時，必須確認成功結果與實際 API／檔案狀態。
+- 只要重啟、health check、必要測試或 Browser 驗收任一項尚未完成，不得對使用者宣稱「完成」；應明確回報尚未完成的驗收項目。

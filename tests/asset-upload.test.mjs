@@ -81,6 +81,21 @@ test("uses deterministic suffixes without overwriting duplicate names", async (t
   assert.equal(await fs.readFile(path.join(root, second.name), "utf8"), "second");
 });
 
+test("creates a requested nested input folder and returns its relative asset name", async (t) => {
+  const { root, service } = await harness();
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+
+  const asset = await service.upload(requestFrom([PNG_BYTES]), {
+    name: "portrait.png",
+    folder: "training/hero",
+    mimeType: "image/png",
+    contentType: RAW_UPLOAD_CONTENT_TYPE,
+  });
+
+  assert.equal(asset.name, "training/hero/portrait.png");
+  assert.deepEqual(await fs.readFile(path.join(root, "training", "hero", "portrait.png")), PNG_BYTES);
+});
+
 test("rejects over-limit raw bodies before or during streaming and cleans temp files", async (t) => {
   const { root, service } = await harness({ maxBytes: 4 });
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -143,5 +158,7 @@ test("validates path, extension, MIME, and raw content type before writing", asy
   await assert.rejects(() => service.upload(requestFrom([PNG_BYTES]), { name: "mismatch.png", mimeType: "video/mp4" }), { code: "ASSET_UPLOAD_MIME_MISMATCH", status: 415 });
   await assert.rejects(() => service.upload(requestFrom([PNG_BYTES]), { name: "notes.txt", mimeType: "text/plain" }), { code: "ASSET_UPLOAD_EXTENSION_UNSUPPORTED", status: 415 });
   await assert.rejects(() => service.upload(requestFrom([PNG_BYTES]), { name: "json.png", mimeType: "image/png", contentType: "application/json" }), { code: "ASSET_UPLOAD_CONTENT_TYPE_INVALID", status: 415 });
+  await assert.rejects(() => service.upload(requestFrom([PNG_BYTES]), { name: "escape.png", folder: "../outside", mimeType: "image/png" }), { code: "ASSET_UPLOAD_FOLDER_INVALID", status: 400 });
+  await assert.rejects(() => service.upload(requestFrom([PNG_BYTES]), { name: "escape.png", folder: "nested/../outside", mimeType: "image/png" }), { code: "ASSET_UPLOAD_FOLDER_INVALID", status: 400 });
   assert.deepEqual(await fs.readdir(root), []);
 });

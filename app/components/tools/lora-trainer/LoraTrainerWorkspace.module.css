@@ -81,6 +81,10 @@
 .cardActions { margin-top: 0; }
 .pagination { justify-content: flex-end; }
 .pagination > span { color: var(--muted); font-size: 11px; }
+.identityPanel { display: grid; gap: 13px; margin-bottom: 18px; border: 1px solid rgba(200,241,105,.24); border-radius: 12px; background: rgba(200,241,105,.045); padding: 14px; }
+.identityHeader { display: grid; gap: 5px; }
+.identityHeader strong { color: var(--text); font-size: 13px; }
+.identityHeader p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .formGrid, .advancedGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .field, .fieldWide { display: grid; align-content: start; gap: 7px; min-width: 0; }
 .fieldWide { grid-column: 1 / -1; }

@@ -54,6 +54,9 @@ test('trainer failure persists bounded safe diagnostics and UTF-8 environment', 
   try {
     assert.equal(capturedEnv.PYTHONUTF8, '1');
     assert.equal(capturedEnv.PYTHONIOENCODING, 'utf-8');
+    assert.equal(capturedEnv.HF_HUB_OFFLINE, '1');
+    assert.equal(capturedEnv.TRANSFORMERS_OFFLINE, '1');
+    assert.match(capturedEnv.HF_HUB_CACHE, /runtime[\\/]cache[\\/]huggingface[\\/]hub$/);
     const details = await value.service.get(value.jobId);
     assert.equal(details.job.status, 'failed');
     assert.equal(details.job.config.orchestration.error.code, 'TRAINER_FAILED');
