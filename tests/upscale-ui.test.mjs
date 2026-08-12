@@ -24,6 +24,9 @@ test("Upscale workspace keeps the SeedVR2 source, readiness, polling, and retry 
   assert.match(source, /1500/);
   assert.match(source, /Retry upscale/);
   assert.match(source, /Cancel upscale/);
+  assert.match(source, /if \(!source\) \{[\s\S]*upscale-source-picker/);
+  assert.match(source, /disabled=\{active \|\| Boolean\(busy\)\}/);
+  assert.match(source, /id="upscale-readiness"/);
   assert.match(source, /role="progressbar"/);
   assert.match(styles, /\.textButton\{min-height:44px/);
   assert.match(styles, /\.textLink\{display:inline-flex;min-height:44px/);

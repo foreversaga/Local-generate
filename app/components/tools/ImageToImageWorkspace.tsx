@@ -266,6 +266,7 @@ export function ImageToImageWorkspace() {
     const [cancelling, setCancelling] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
+    const [submitAttempted, setSubmitAttempted] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const loraRequestIdRef = useRef(0);
     const registryLoraSelectionRef = useRef(false);
@@ -466,7 +467,8 @@ export function ImageToImageWorkspace() {
     const sourceReady = Boolean(source && source.kind === "image");
     const promptReady = Boolean(prompt.trim());
     const readinessReady = !healthLoading && health?.ready === true && modelReady && characterLoraReady;
-    const canStart = !active && !submitting && !retrying && !uploading && sourceReady && promptReady && modelRuntimeReady && readinessReady;
+    const canInteract = !active && !submitting && !retrying && !uploading;
+    const canStart = sourceReady && promptReady && modelRuntimeReady && readinessReady;
 
     function selectSource(assets: StudioAsset[]) {
         const next = assets.find((asset) => asset.kind === "image");
@@ -599,6 +601,28 @@ export function ImageToImageWorkspace() {
         return parseNumberDraft(seed, "Seed", 0, 2147483647, true);
     }
 
+    function firstValidationField() {
+        if (!source || source.kind !== "image") return "source";
+        if (!prompt.trim() || prompt.trim().length > 4000) return "prompt";
+        if (negativePrompt.length > 4000) return "negativePrompt";
+        if (characterLoraNameIssue) return "characterLoraName";
+        if (characterLoraStrengthIssue) return "characterLoraStrength";
+        if (!modelRuntimeReady || !readinessReady || readinessBlockingMessage) return "readiness";
+        if (parseNumberDraft(batchCount, "生成張數", 1, 20, true)) return "batchCount";
+        for (const key of Object.keys(RANGE_BOUNDS) as RandomRangeKey[]) {
+            const bounds = RANGE_BOUNDS[key];
+            const draft = randomRanges[key];
+            if (parseNumberDraft(draft.min, `${key} range min`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Min`;
+            if (parseNumberDraft(draft.max, `${key} range max`, bounds.min, bounds.max, bounds.integer, bounds.step)) return `${key}Max`;
+            if (Number(draft.min) > Number(draft.max)) return `${key}Min`;
+        }
+        if (parseNumberDraft(String(denoise), "重繪強度", 0.01, 1)) return "denoise";
+        if (parseNumberDraft(steps, "Steps", 1, 50, true)) return "steps";
+        if (parseNumberDraft(cfg, "CFG", 0, 20)) return "cfg";
+        if (parseNumberDraft(seed, "Seed", 0, 2147483647, true)) return "seed";
+        return "";
+    }
+
     function requestBody(): Img2ImgSubmitInput {
         const sourceRoot = source?.root;
         if (sourceRoot && !isImg2ImgAssetRoot(sourceRoot)) {
@@ -624,8 +648,13 @@ export function ImageToImageWorkspace() {
 
     async function start() {
         const validationError = validateForm();
-        if (validationError || submitting || retrying || uploading || active) {
-            if (validationError) setError(validationError);
+        setSubmitAttempted(true);
+        if (validationError) {
+            setError(validationError);
+            focusImg2ImgValidation(firstValidationField());
+            return;
+        }
+        if (submitting || retrying || uploading || active) {
             return;
         }
         setSubmitting(true);
@@ -730,7 +759,7 @@ export function ImageToImageWorkspace() {
                         </div>
                     )}
                     <div className={styles.sourceActions}>
-                        <AssetPickerButton kind="image" selectedKeys={selectedKey} label="從 Library 選取" onSelect={selectSource} />
+                        <AssetPickerButton triggerId="img2img-source-picker" kind="image" selectedKeys={selectedKey} label="從 Library 選取" onSelect={selectSource} />
                         <button type="button" className={styles.secondaryButton} onClick={() => inputRef.current?.click()} disabled={uploading}>
                             {uploading ? "上傳中…" : "上傳圖片"}
                         </button>
@@ -793,16 +822,16 @@ export function ImageToImageWorkspace() {
                     </button>
                     <label className={styles.fieldWide}>
                         <span>正向提示詞 <em>*</em></span>
-                        <textarea value={prompt} maxLength={4000} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
+                        <textarea id="img2img-prompt" value={prompt} maxLength={4000} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
                         <small>{prompt.length}/4000</small>
                     </label>
                     <label className={styles.fieldWide}>
                         <span>負向提示詞（可選）</span>
-                        <textarea value={negativePrompt} maxLength={4000} rows={3} placeholder="blurry, low quality, artifacts" onChange={(event) => setNegativePrompt(event.target.value)} />
+                        <textarea id="img2img-negative-prompt" value={negativePrompt} maxLength={4000} rows={3} placeholder="blurry, low quality, artifacts" onChange={(event) => setNegativePrompt(event.target.value)} />
                     </label>
                     <label className={styles.field}>
                         <span>模型</span>
-                        <select value={model} disabled={active} onChange={(event) => updateModel(event.target.value as ModelValue)}>
+                        <select id="img2img-model" value={model} disabled={active} onChange={(event) => updateModel(event.target.value as ModelValue)}>
                             {visibleModels.map((item) => {
                                 const available = optionAvailable(item.value);
                                 return <option key={item.value} value={item.value} disabled={!available}>{item.label}{available ? "" : " · Unavailable"}</option>;
@@ -856,20 +885,20 @@ export function ImageToImageWorkspace() {
                     </label>
                     <label className={styles.field}>
                         <span>重繪強度 <strong>{denoise.toFixed(2)}</strong></span>
-                        <input type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
+                        <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
                         <small>越高越偏離原圖；0.45–0.70 通常較平衡。</small>
                     </label>
                     <label className={styles.field}>
                         <span>Steps</span>
-                        <input type="number" min="1" max="50" step="1" value={steps} disabled={active} onChange={(event) => updateBaseValue("steps", event.target.value)} />
+                        <input id="img2img-steps" type="number" min="1" max="50" step="1" value={steps} disabled={active} onChange={(event) => updateBaseValue("steps", event.target.value)} />
                     </label>
                     <label className={styles.field}>
                         <span>CFG</span>
-                        <input type="number" min="0" max="20" step="0.5" value={cfg} disabled={active} onChange={(event) => updateBaseValue("cfg", event.target.value)} />
+                        <input id="img2img-cfg" type="number" min="0" max="20" step="0.5" value={cfg} disabled={active} onChange={(event) => updateBaseValue("cfg", event.target.value)} />
                     </label>
                     <label className={styles.field}>
                         <span>Seed</span>
-                        <input type="number" min="0" max="2147483647" step="1" value={seed} disabled={active || Number(batchCount) > 1} onChange={(event) => updateBaseValue("seed", event.target.value)} aria-describedby="img2img-seed-help" />
+                        <input id="img2img-seed" type="number" min="0" max="2147483647" step="1" value={seed} disabled={active || Number(batchCount) > 1} onChange={(event) => updateBaseValue("seed", event.target.value)} aria-describedby="img2img-seed-help" />
                         <button
                             type="button"
                             className={styles.secondaryButton}
@@ -885,6 +914,7 @@ export function ImageToImageWorkspace() {
                     <label className={styles.field}>
                         <span>生成張數</span>
                         <input
+                            id="img2img-batch-count"
                             type="number"
                             min="1"
                             max="20"
@@ -910,6 +940,7 @@ export function ImageToImageWorkspace() {
                                         <label>
                                             <span className={styles.srOnly}>最小值</span>
                                             <input
+                                                id={`img2img-${key}-min`}
                                                 type="number"
                                                 min={bounds.min}
                                                 max={bounds.max}
@@ -924,6 +955,7 @@ export function ImageToImageWorkspace() {
                                         <label>
                                             <span className={styles.srOnly}>最大值</span>
                                             <input
+                                                id={`img2img-${key}-max`}
                                                 type="number"
                                                 min={bounds.min}
                                                 max={bounds.max}
@@ -940,12 +972,12 @@ export function ImageToImageWorkspace() {
                         </div>
                     </div>
                 </div>
-                <div className={styles.submitRow}>
-                    <div>
-                        <p className={styles.helper}>提示詞可手動輸入；生成工作會交由 Jobs 追蹤。</p>
-                        {error && <p className={styles.error} role="alert">{error}</p>}
-                    </div>
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canStart} aria-busy={submitting || retrying || uploading}>
+                    <div className={styles.submitRow} data-form-valid={canStart}>
+                        <div>
+                            <p className={styles.helper}>{submitAttempted && !canStart ? "請修正下方問題後再試。" : "提示詞可手動輸入；生成工作會交由 Jobs 追蹤。"}</p>
+                            {error && <p className={styles.error} role="alert">{error}</p>}
+                        </div>
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby="img2img-readiness-title">
                         {uploading ? "上傳圖片中…" : submitting ? "正在排程…" : active ? "圖片生成中…" : "開始以圖生圖"}
                     </button>
                 </div>
@@ -1107,6 +1139,35 @@ export function ImageToImageWorkspace() {
 
 function isImg2ImgAssetRoot(root: StudioAsset["root"]): root is "input" | "output" {
     return root === "input" || root === "output";
+}
+
+function focusImg2ImgValidation(field: string) {
+    const ids: Record<string, string> = {
+        source: "img2img-source-picker",
+        prompt: "img2img-prompt",
+        negativePrompt: "img2img-negative-prompt",
+        model: "img2img-model",
+        characterLoraName: "img2img-character-lora",
+        characterLoraStrength: "img2img-character-lora-strength",
+        batchCount: "img2img-batch-count",
+        denoise: "img2img-denoise",
+        denoiseMin: "img2img-denoise-min",
+        denoiseMax: "img2img-denoise-max",
+        steps: "img2img-steps",
+        stepsMin: "img2img-steps-min",
+        stepsMax: "img2img-steps-max",
+        cfg: "img2img-cfg",
+        cfgMin: "img2img-cfg-min",
+        cfgMax: "img2img-cfg-max",
+        seed: "img2img-seed",
+        readiness: "img2img-readiness-title",
+    };
+    const element = document.getElementById(ids[field] || "");
+    if (element instanceof HTMLElement) {
+        if (field === "readiness") element.tabIndex = -1;
+        element.focus();
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
 }
 
 async function assetToPromptImage(asset: StudioAsset) {

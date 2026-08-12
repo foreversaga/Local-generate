@@ -20,7 +20,7 @@ test("LoRA Trainer is discoverable from Tools and mounts its workspace route", a
 test("LoRA Trainer keeps the multi-image, auto/manual, and one-click start contract", async () => {
   const workspace = await read("../app/components/tools/lora-trainer/LoraTrainerWorkspace.tsx");
 
-  assert.match(workspace, /<AssetPickerButton assetSource="training" kind="image" multiple max=\{50\}/);
+  assert.match(workspace, /<AssetPickerButton triggerId="lora-asset-picker" assetSource="training" kind="image" multiple max=\{50\}/);
   assert.match(workspace, /type="file" accept="image\/jpeg,image\/png,image\/webp" multiple/);
   assert.match(workspace, /type="radio" name="caption-mode" value="auto"/);
   assert.match(workspace, /type="radio" name="caption-mode" value="manual"/);
@@ -32,7 +32,10 @@ test("LoRA Trainer keeps the multi-image, auto/manual, and one-click start contr
   assert.match(workspace, /id="trigger-words"[\s\S]*aria-invalid=\{Boolean\(triggerError\)\}/);
   assert.match(workspace, /生成時需在提示詞使用；留白會自動採 LoRA 名稱/);
   assert.match(workspace, /trigger-words-error[\s\S]*role="alert"/);
-  assert.match(workspace, /onClick=\{beginTraining\} disabled=\{Boolean\(busy\) \|\| !assets\.length \|\| healthBlocked\}/);
+  assert.match(workspace, /onClick=\{beginTraining\} disabled=\{Boolean\(busy\)\}/);
+  assert.match(workspace, /focusLoraField\("lora-asset-picker"\)/);
+  assert.match(workspace, /focusLoraField\("lora-output-name"\)/);
+  assert.match(workspace, /focusLoraField\("lora-health-summary"\)/);
   assert.match(workspace, /const currentHealth = healthResource\?\.key === healthKey && healthResource\.status === "loaded" \? healthResource\.health : null;[\s\S]*const healthNetworkWarning = healthResource\?\.key === healthKey && healthResource\.status === "error" \? healthResource\.error : "";[\s\S]*const healthBlocked = currentHealth\?\.ok === false;/);
 });
 

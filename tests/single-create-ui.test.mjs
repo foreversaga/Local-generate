@@ -90,4 +90,8 @@ test("Single Create derives final output resolution from the current image and r
   assert.match(form, /onChange=\{\(event\) => updateResolutionDimension\("height", numberDraft\(event\.target\.value\)\)\}/);
   assert.match(form, /onClearReference=\{\(\) => \{\s*setReferenceImage\(null\);\s*resetResolutionToDefault\(\);/);
   assert.match(form, /onClearLastFrame=\{\(\) => \{\s*setLastFrameImage\(null\);\s*resetResolutionToDefault\(\);/);
+  assert.match(form, /const canInteract = !submitting && !isUploading/);
+  assert.match(form, /disabled=\{!canInteract\}/);
+  assert.match(form, /focusValidationField\(validationIssues\[0\]\.field\)/);
+  assert.match(form, /className=\{styles\.validationLink\}/);
 });

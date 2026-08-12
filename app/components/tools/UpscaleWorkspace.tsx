@@ -59,7 +59,6 @@ export function UpscaleWorkspace() {
         () => Object.values(health?.models || {}).filter((model) => model.available).length,
         [health?.models],
     );
-    const canSubmit = Boolean(source) && !active && !busy && health?.ready !== false;
     const canRetry = Boolean(job && TERMINAL_STATUSES.has(job.status) && !busy && !active);
 
     async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -89,7 +88,17 @@ export function UpscaleWorkspace() {
     }
 
     async function start() {
-        if (!source || !canSubmit) return;
+        if (!source) {
+            setError("Please choose a source video before starting the upscale.");
+            document.getElementById("upscale-source-picker")?.focus();
+            return;
+        }
+        if (active || busy) return;
+        if (health?.ready === false) {
+            setError(readinessLabel);
+            document.getElementById("upscale-readiness")?.focus();
+            return;
+        }
         setBusy("submit");
         setError("");
         try {
@@ -199,7 +208,7 @@ export function UpscaleWorkspace() {
                         <div className={styles.emptySource}>Select a video from the library or upload one from this device.</div>
                     )}
                     <div className={styles.sourceActions}>
-                        <AssetPickerButton kind="video" selectedKeys={sourceKey ? [sourceKey] : []} onSelect={handleLibrarySelection} label="Browse library" />
+                        <AssetPickerButton triggerId="upscale-source-picker" kind="video" selectedKeys={sourceKey ? [sourceKey] : []} onSelect={handleLibrarySelection} label="Browse library" />
                         <label className={styles.uploadButton}>
                             Upload video
                             <input type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo" onChange={(event) => void handleUpload(event)} disabled={active || Boolean(busy)} />
@@ -215,7 +224,7 @@ export function UpscaleWorkspace() {
                         </div>
                         <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
                     </div>
-                    <div className={styles.readiness} aria-live="polite">
+                    <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
                         <span className={`${styles.statusDot} ${health?.ready ? styles.online : ""}`} />
                         <div>
                             <strong>{readinessLabel}</strong>
@@ -225,7 +234,7 @@ export function UpscaleWorkspace() {
                     </div>
                     {healthError && <p className={styles.inlineError} role="alert">{healthError}</p>}
                     {missingNodes.length > 0 && <p className={styles.helper}>Missing nodes: {missingNodes.join(", ")}</p>}
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canSubmit} aria-busy={busy === "submit" || busy === "upload"}>
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={active || Boolean(busy)} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
                         {busy === "submit" ? "Submitting…" : active ? "Upscaling…" : "Start 2× upscale"}
                     </button>
                     <div className={styles.status} aria-live="polite">

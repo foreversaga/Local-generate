@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { cloneElement, isValidElement, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   buildLongPlanRequest,
@@ -185,7 +185,7 @@ export function LongCreateForm() {
   const issuesByField = useMemo(() => new Map(submitIssues.map((issue) => [issue.field, issue.message])), [submitIssues]);
   const activeJob = Boolean(job && longJobIsActive(job.status));
   const canPlan = baseIssues.length === 0 && providerReady && !planning && !saving && !uploading;
-  const canStart = baseIssues.length === 0 && Boolean(outputFolder.trim()) && providerReady && !planning && !saving && !uploading && !activeJob;
+  const canInteract = !planning && !saving && !uploading && !activeJob;
   const canSave = Boolean(plan && !planDirty && outputFolder.trim() && submitIssues.length === 0 && !saving && !activeJob);
 
   async function refreshAssets(): Promise<Asset[]> {
@@ -470,14 +470,22 @@ export function LongCreateForm() {
 
   async function startLongVideo() {
     setAttempted(true);
-    setSaving(true);
     setError("");
     setNotice("");
+    if (!canInteract) return;
+    const firstIssue = baseIssues[0] || (!outputFolder.trim() ? { field: "outputFolder", message: "Output folder is required." } : null);
+    if (firstIssue) {
+      setError(firstIssue.message);
+      focusLongValidationField(firstIssue.field);
+      return;
+    }
+    if (!providerReady) {
+      setError("Planner 尚未就緒；請先確認 Ollama 或 Codex CLI readiness。 ");
+      document.getElementById("long-provider-status")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    setSaving(true);
     try {
-      if (!canStart) {
-        const first = baseIssues[0] || (!outputFolder.trim() ? { message: "Output folder is required." } : null);
-        throw new Error(first?.message || "請完成必要欄位。" );
-      }
       const readyPlan = !plan || planDirty ? await requestPlan() : plan;
       const saved = await savePlan(readyPlan);
       const response = await fetch(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(saved.id)}/start`, { method: "POST" });
@@ -525,7 +533,7 @@ export function LongCreateForm() {
         <LongSection id="long-story" code="01 / STORY + SOURCE" title="故事與來源">
           <div className={styles.twoColumns}>
             <Field label="標題"><input className={styles.input} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="兩段式故事" /></Field>
-            <Field label="輸出資料夾" error={attempted ? issuesByField.get("outputFolder") : ""}><input className={styles.input} value={outputFolder} onChange={(event) => setOutputFolder(event.target.value)} placeholder="my-sequence-001" /></Field>
+            <Field label="輸出資料夾" error={attempted ? issuesByField.get("outputFolder") : ""}><input id="long-output-folder" className={styles.input} value={outputFolder} onChange={(event) => setOutputFolder(event.target.value)} placeholder="my-sequence-001" /></Field>
           </div>
           <div className={styles.segmented} role="group" aria-label="Long-video input type">
             <button type="button" className={inputType === "text" ? styles.active : ""} aria-pressed={inputType === "text"} onClick={() => { setInputType("text"); markPlanDirty(); }}>文字起點</button>
@@ -538,7 +546,7 @@ export function LongCreateForm() {
                 <button type="button" className={referenceMode === "multi_reference" ? styles.active : ""} aria-pressed={referenceMode === "multi_reference"} onClick={() => updateReferenceMode("multi_reference")}>多參考</button>
               </div>
               <div className={styles.assetControls}>
-                <select className={styles.select} value="" aria-label="加入長片參考圖片" onChange={(event) => { addReference(event.target.value); event.target.value = ""; }}>
+                <select id="long-reference-assets" className={styles.select} value="" aria-label="加入長片參考圖片" onChange={(event) => { addReference(event.target.value); event.target.value = ""; }}>
                   <option value="">從資源庫加入圖片…</option>
                   {inputImages.filter((asset) => !references.some((selected) => assetKey(selected) === assetKey(asset))).map((asset) => <option key={assetKey(asset)} value={assetKey(asset)}>{asset.name}</option>)}
                 </select>
@@ -550,7 +558,7 @@ export function LongCreateForm() {
             </div>
           )}
           <Field label="整體提示詞／故事描述" error={attempted ? issuesByField.get("inputText") : ""}>
-            <textarea className={styles.textarea} value={brief} onChange={(event) => { setBrief(event.target.value); markPlanDirty(); }} placeholder="描述角色、場景、情節、鏡頭、對話與聲音方向…" />
+            <textarea id="long-brief" className={styles.textarea} value={brief} onChange={(event) => { setBrief(event.target.value); markPlanDirty(); }} placeholder="描述角色、場景、情節、鏡頭、對話與聲音方向…" />
           </Field>
           <Field label="負面提示詞／限制" helper="空白時 planner 可自行補齊。">
             <textarea className={`${styles.textarea} ${styles.compactTextarea}`} value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="角色漂移、服裝改變、閃爍、文字、浮水印…" />
@@ -558,7 +566,7 @@ export function LongCreateForm() {
         </LongSection>
 
         <LongSection id="long-planner" code="02 / PLANNER + TIMELINE" title="Planner 與時間軸">
-          <div className={styles.providerRow}>
+          <div id="long-provider-status" className={styles.providerRow} tabIndex={-1}>
             <div className={styles.segmented} role="group" aria-label="長影片規劃 provider">
               <button type="button" className={promptProvider === "ollama" ? styles.active : ""} aria-pressed={promptProvider === "ollama"} onClick={() => { setPromptProvider("ollama"); markPlanDirty(); }}>Ollama</button>
               <button type="button" className={promptProvider === "codex" ? styles.active : ""} aria-pressed={promptProvider === "codex"} onClick={() => { setPromptProvider("codex"); markPlanDirty(); }}>Codex CLI</button>
@@ -568,10 +576,10 @@ export function LongCreateForm() {
           {promptProvider === "ollama" ? <Field label="Ollama 模型"><select className={styles.select} value={effectiveOllamaModel} disabled={!visibleOllamaModels.length} onChange={(event) => { setOllamaModel(event.target.value); markPlanDirty(); }}>{visibleOllamaModels.length ? visibleOllamaModels.map((model) => <option key={model} value={model}>{model}</option>) : <option value={ollamaModel}>沒有可用模型</option>}</select></Field> : <div className={styles.twoColumns}><Field label="Codex 模型"><select className={styles.select} value={effectiveCodexModel} onChange={(event) => { setCodexModel(event.target.value); markPlanDirty(); }}>{codexModels.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}</option>)}</select></Field><Field label="Reasoning"><select className={styles.select} value={effectiveReasoning} onChange={(event) => { setReasoningEffort(event.target.value); markPlanDirty(); }}>{reasoningOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field></div>}
           <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} aria-pressed={timelineMode === "auto"} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} aria-pressed={timelineMode === "manual"} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
           <div className={styles.twoColumns}>
-            {timelineMode === "auto" && <Field label="目標總長（秒）" error={attempted ? issuesByField.get("duration") : ""}><input className={styles.input} type="number" min={1} max={3600} value={duration} onChange={(event) => { setDuration(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>}
-            <Field label="目標單段長度（秒）" error={attempted ? issuesByField.get("segmentDurationHint") : ""}><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationHint} onChange={(event) => { setSegmentDurationHint(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
+            {timelineMode === "auto" && <Field label="目標總長（秒）" error={attempted ? issuesByField.get("duration") : ""}><input id="long-duration" className={styles.input} type="number" min={1} max={3600} value={duration} onChange={(event) => { setDuration(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>}
+            <Field label="目標單段長度（秒）" error={attempted ? issuesByField.get("segmentDurationHint") : ""}><input id="long-segment-duration" className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationHint} onChange={(event) => { setSegmentDurationHint(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
           </div>
-          {timelineMode === "manual" && <Field label="手動時間軸" helper="例如：[0 - 5] Opening；[5 - 10] Ending" error={attempted ? issuesByField.get("timelineText") : ""}><textarea className={styles.textarea} value={timeline} onChange={(event) => { setTimeline(event.target.value); markPlanDirty(); }} /></Field>}
+          {timelineMode === "manual" && <Field label="手動時間軸" helper="例如：[0 - 5] Opening；[5 - 10] Ending" error={attempted ? issuesByField.get("timelineText") : ""}><textarea id="long-timeline" className={styles.textarea} value={timeline} onChange={(event) => { setTimeline(event.target.value); markPlanDirty(); }} /></Field>}
           <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "規劃失敗。"))}>{planning ? "規劃中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡與 H3 Prompt`}</button>
           {planDirty && plan && <p className={styles.stale} role="status">規劃輸入已變更；保存或開始前會重新規劃。</p>}
         </LongSection>
@@ -588,7 +596,7 @@ export function LongCreateForm() {
 
         <LongSection id="long-setup" code="04 / RENDER SETUP" title="生成設定">
           <div className={styles.twoColumns}><Field label="模型 profile"><select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field><Field label="Seam"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">Keep duplicate frame</option><option value="drop_next_first_frame" disabled>Drop next first frame (unsupported)</option></select></Field></div>
-          <div className={styles.fourColumns}><Field label="寬" error={attempted ? issuesByField.get("width") : ""}><input className={styles.input} type="number" min={32} max={2048} step={32} value={width} onChange={(event) => setWidth(numberDraft(event.target.value))} /></Field><Field label="高" error={attempted ? issuesByField.get("height") : ""}><input className={styles.input} type="number" min={32} max={2048} step={32} value={height} onChange={(event) => setHeight(numberDraft(event.target.value))} /></Field><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機 Seed">↻</button></div></Field></div>
+          <div className={styles.fourColumns}><Field label="寬" error={attempted ? issuesByField.get("width") : ""}><input id="long-width" className={styles.input} type="number" min={32} max={2048} step={32} value={width} onChange={(event) => setWidth(numberDraft(event.target.value))} /></Field><Field label="高" error={attempted ? issuesByField.get("height") : ""}><input id="long-height" className={styles.input} type="number" min={32} max={2048} step={32} value={height} onChange={(event) => setHeight(numberDraft(event.target.value))} /></Field><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input id="long-steps" className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input id="long-seed" className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機 Seed">↻</button></div></Field></div>
         </LongSection>
       </div>
 
@@ -598,17 +606,17 @@ export function LongCreateForm() {
           <div className={styles.summaryRows}><Summary label="來源" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="時間軸" value={timelineMode === "auto" ? `${duration || "—"} 秒 / auto` : "manual"} /><Summary label="分段" value={`${plan?.segments.length || 0} 段`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="Provider" value={promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel} /></div>
           {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{job.status}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>開啟 Job</a></div>}
         </section>
-        <section className={styles.summaryCard}>
+        <section id="long-validation-summary" className={styles.summaryCard}>
           <span className={styles.eyebrow}>Validation</span>
-          <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}>× {issue.message}</li>) : <li className={styles.valid}>✓ 基本欄位可提交；若尚未規劃會先自動規劃。</li>}</ul>
+          <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}><button type="button" className={styles.validationLink} onClick={() => focusLongValidationField(issue.field)}>× {issue.message}</button></li>) : <li className={styles.valid}>✓ 基本欄位可提交；若尚未規劃會先自動規劃。</li>}</ul>
           <div className={styles.providerSummary}><span className={`${styles.statusDot} ${providerReady ? styles.online : ""}`} />{providerReady ? "Planner ready" : "Planner unavailable"}</div>
           {error && <p className={styles.errorBox} role="alert">{error}</p>}{notice && <p className={styles.notice} role="status">{notice}</p>}
-          <button type="button" className={styles.primaryButton} disabled={!canStart} onClick={() => void startLongVideo()}>{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button>
+          <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button>
           <div className={styles.secondaryActions}><button type="button" disabled={!canSave} onClick={() => void saveDraft()}>{saving ? "保存中…" : "保存草稿"}</button><button type="button" disabled={activeJob || saving || planning} onClick={clearEditor}>清除設定</button></div>
         </section>
       </aside>
 
-      <div className={styles.mobileCta}><button type="button" className={styles.primaryButton} disabled={!canStart} onClick={() => void startLongVideo()}>{!plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button></div>
+      <div className={styles.mobileCta}><button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{!plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button></div>
     </div>
   );
 }
@@ -617,11 +625,45 @@ function LongSection({ id, code, title, children }: { id: string; code: string; 
   return <section id={id} className={styles.section}><div className={styles.sectionHeader}><div><span className={styles.eyebrow}>{code}</span><h2>{title}</h2></div></div><div className={styles.stack}>{children}</div></section>;
 }
 
-function Field({ label, helper, error, children }: { label: string; helper?: string; error?: string; children: ReactNode }) {
-  return <label className={`${styles.field} ${error ? styles.fieldInvalid : ""}`}><span className={styles.label}>{label}</span>{children}{helper && <span className={styles.helper}>{helper}</span>}<InlineError message={error} /></label>;
+function focusLongValidationField(field: string) {
+  const ids: Record<string, string> = {
+    outputFolder: "long-output-folder",
+    referenceAssets: "long-reference-assets",
+    inputText: "long-brief",
+    duration: "long-duration",
+    segmentDurationHint: "long-segment-duration",
+    timelineText: "long-timeline",
+    width: "long-width",
+    height: "long-height",
+    steps: "long-steps",
+    seed: "long-seed",
+  };
+  const element = document.getElementById(ids[field] || "");
+  if (element instanceof HTMLElement) {
+    element.focus();
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 }
 
-function InlineError({ message }: { message?: string }) { return message ? <span className={styles.inlineError} role="alert">{message}</span> : null; }
+function Field({ label, helper, error, children }: { label: string; helper?: string; error?: string; children: ReactNode }) {
+  const childProps = isValidElement(children) ? children.props as Record<string, unknown> : {};
+  const childId = typeof childProps.id === "string" && childProps.id
+    ? childProps.id
+    : `long-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
+  const errorId = `${childId}-error`;
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<Record<string, unknown>>, {
+      id: childProps.id || childId,
+      "aria-invalid": error ? true : childProps["aria-invalid"],
+      "aria-describedby": error
+        ? [childProps["aria-describedby"], errorId].filter(Boolean).join(" ")
+        : childProps["aria-describedby"],
+    })
+    : children;
+  return <label className={`${styles.field} ${error ? styles.fieldInvalid : ""}`}><span className={styles.label}>{label}</span>{control}{helper && <span className={styles.helper}>{helper}</span>}<InlineError id={errorId} message={error} /></label>;
+}
+
+function InlineError({ id, message }: { id?: string; message?: string }) { return message ? <span id={id} className={styles.inlineError} role="alert">{message}</span> : null; }
 function Summary({ label, value }: { label: string; value: string }) { return <div className={styles.summaryRow}><span>{label}</span><strong title={value}>{value}</strong></div>; }
 
 function UploadButton({ busy, multiple, onFiles }: { busy: boolean; multiple: boolean; onFiles: (files: File[]) => Promise<void> }) {

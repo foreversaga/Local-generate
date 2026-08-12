@@ -53,13 +53,18 @@ test("Image to Image UI preserves readiness, submit, poll and retry contracts", 
   assert.match(requestBodyBlock, /steps: Number\(steps\)/);
   assert.match(requestBodyBlock, /cfg: Number\(cfg\)/);
   assert.match(requestBodyBlock, /seed: Number\(seed\)/);
+  const startHandler = workspace.indexOf("async function start()");
   const renderStart = workspace.indexOf("    return (", retryStart);
-  assert.ok(retryStart >= 0 && renderStart > retryStart, "retry handler should be present before render");
+  assert.ok(startHandler >= 0 && retryStart > startHandler && renderStart > retryStart, "start and retry handlers should precede render");
+  const startBlock = workspace.slice(startHandler, retryStart);
+  assert.match(startBlock, /const validationError = validateForm\(\);/);
+  assert.match(startBlock, /setSubmitAttempted\(true\)/);
+  assert.match(startBlock, /focusImg2ImgValidation\(firstValidationField\(\)\)/);
+  assert.match(startBlock, /if \(validationError\) \{[\s\S]*setError\(validationError\);[\s\S]*return;/);
+  assert.match(startBlock, /submitImg2Img\(requestBody\(\)\)/);
   const retryBlock = workspace.slice(retryStart, renderStart);
-  assert.match(retryBlock, /const validationError = validateForm\(\);/);
-  assert.match(retryBlock, /if \(validationError\) \{[\s\S]*setError\(validationError\);[\s\S]*return;/);
   assert.doesNotMatch(retryBlock, /modelAllowedForRuntime\(job\.model/);
-  assert.match(retryBlock, /submitImg2Img\(requestBody\(\)\)/);
+  assert.match(retryBlock, /retryImg2ImgJob\(job\.id\)/);
   assert.doesNotMatch(retryBlock, /requestBody\(job\)/);
   assert.doesNotMatch(workspace, /function requestBody\(jobOverride/);
   assert.match(workspace, /sourceName/);
@@ -104,15 +109,17 @@ test("Image to Image UI preserves readiness, submit, poll and retry contracts", 
   assert.match(workspace, /const sourceReady = Boolean\(source && source\.kind === "image"\)/);
   assert.match(workspace, /const promptReady = Boolean\(prompt\.trim\(\)\)/);
   assert.match(workspace, /const readinessReady = !healthLoading && health\?\.ready === true && modelReady/);
-  assert.match(workspace, /const canStart = !active && !submitting && !retrying && !uploading && sourceReady && promptReady && modelRuntimeReady && readinessReady/);
+  assert.match(workspace, /const canInteract = !active && !submitting && !retrying && !uploading/);
+  assert.match(workspace, /const canStart = sourceReady && promptReady && modelRuntimeReady && readinessReady/);
   assert.match(workspace, /if \(!source \|\| source\.kind !== "image"\)/);
   assert.match(workspace, /if \(!prompt\.trim\(\)\)/);
   assert.match(workspace, /if \(!readinessReady\) return readinessBlockingMessage/);
   assert.match(workspace, /health\?\.models\?\.\[value\] === true/);
   assert.match(workspace, /disabled=\{!available\}/);
   assert.match(workspace, /Unavailable/);
-  assert.match(workspace, /disabled=\{!canStart\}/);
-  assert.doesNotMatch(client, /img2img\/jobs\/.*cancel/);
+  assert.match(workspace, /disabled=\{!canInteract\}/);
+  assert.match(workspace, /focusImg2ImgValidation/);
+  assert.match(client, /img2img\/jobs\/\$\{encodeURIComponent\(id\)\}\/cancel/);
 });
 
 test("Image to Image output delete clears only the current preview", async () => {

@@ -610,6 +610,22 @@
   line-height: 1.45;
 }
 
+.validationLink {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.validationLink:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
 .validationReady {
   background: color-mix(in srgb, var(--lime) 7%, transparent);
   color: var(--lime);

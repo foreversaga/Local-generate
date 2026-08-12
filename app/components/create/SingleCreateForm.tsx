@@ -207,7 +207,7 @@ export function SingleCreateForm() {
   const issuesByField = useMemo(() => new Map(validationIssues.map((issue) => [issue.field, issue.message])), [validationIssues]);
   const previewAsset = referenceImage || referenceImages[0] || lastFrameImage || sourceVideo;
   const isUploading = uploadingTarget !== null;
-  const canSubmit = validationIssues.length === 0 && !submitting && !isUploading;
+  const canInteract = !submitting && !isUploading;
   const draftValue = useMemo(() => ({
     mode,
     prompt,
@@ -951,13 +951,13 @@ export function SingleCreateForm() {
           </div>
         </section>
 
-        <section className={styles.summaryCard} aria-live="polite">
+          <section id="single-validation-summary" className={styles.summaryCard} aria-live="polite">
           <div className={styles.validationLabel}>Validation</div>
           <ul className={styles.validationList}>
             {validationIssues.length ? validationIssues.map((issue) => (
               <li key={`${issue.field}:${issue.message}`} className={styles.validationItem}>
                 <span className={styles.validationIcon} aria-hidden="true"><Icon name="close" /></span>
-                <span>{issue.message}</span>
+                <button type="button" className={styles.validationLink} onClick={() => focusValidationField(issue.field)}>{issue.message}</button>
               </li>
             )) : (
               <li className={`${styles.validationItem} ${styles.validationReady}`}>
@@ -976,13 +976,13 @@ export function SingleCreateForm() {
           </div>
           {submitError && <div className={styles.submitError} role="alert">{submitError}</div>}
           <div className={styles.desktopGenerate}>
-            <GenerateButton canSubmit={canSubmit} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
+            <GenerateButton canInteract={canInteract} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
           </div>
         </section>
       </aside>
 
       <div className={styles.mobileCta}>
-        <GenerateButton canSubmit={canSubmit} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
+        <GenerateButton canInteract={canInteract} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
       </div>
     </div>
   );
@@ -1239,10 +1239,10 @@ function UploadButton({ kind, busy, multiple = false, disabled = false, onFiles 
   );
 }
 
-function GenerateButton({ canSubmit, submitting, uploading, onClick }: { canSubmit: boolean; submitting: boolean; uploading: boolean; onClick: () => void }) {
+function GenerateButton({ canInteract, submitting, uploading, onClick }: { canInteract: boolean; submitting: boolean; uploading: boolean; onClick: () => void }) {
   return (
-    <button type="button" className={styles.primaryButton} disabled={!canSubmit} onClick={onClick}>
-      <span>{submitting ? "建立工作中…" : uploading ? "素材上傳中…" : canSubmit ? "開始生成影片" : "完成必要欄位後生成"}</span>
+    <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={onClick} aria-describedby="single-validation-summary">
+      <span>{submitting ? "建立工作中…" : uploading ? "素材上傳中…" : "開始生成影片"}</span>
       <Icon name="arrow" />
     </button>
   );

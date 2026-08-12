@@ -149,6 +149,14 @@ function formatEta(seconds?: number) {
   return `${minutes}m ${Math.round((seconds || 0) % 60)}s`;
 }
 
+function focusLoraField(id: string) {
+  const element = document.getElementById(id);
+  if (element instanceof HTMLElement) {
+    element.focus();
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
 function healthCheckLabel(name: string) {
   const normalized = name.toLowerCase().replaceAll("_", "-");
   if (normalized.includes("python") || normalized.includes("venv")) return "Python runtime";
@@ -441,18 +449,16 @@ export function LoraTrainerWorkspace() {
   }
 
   async function beginTraining() {
-    if (healthBlocked) {
-      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
-      return;
-    }
     if (!assets.length) {
       setError("請先選擇至少一張訓練圖片。");
       setStage("dataset");
+      focusLoraField("lora-asset-picker");
       return;
     }
     if (!config.outputName.trim()) {
       setError("請填寫模型名稱。");
       setStage("config");
+      focusLoraField("lora-output-name");
       return;
     }
     const parsedTriggerWords = parseTriggerWordsDraft(triggerDraft);
@@ -460,6 +466,12 @@ export function LoraTrainerWorkspace() {
       setTriggerError(parsedTriggerWords.error);
       setError("請先修正 Trigger words，再開始訓練。");
       setStage("config");
+      focusLoraField("trigger-words");
+      return;
+    }
+    if (healthBlocked) {
+      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
+      focusLoraField("lora-health-summary");
       return;
     }
     const resolvedConfig = resolvedTrainingConfig(config, triggerDraft);
@@ -533,15 +545,23 @@ export function LoraTrainerWorkspace() {
       setError("此工作已進入佇列或已結束，無法重複執行 preflight。");
       return;
     }
-    if (healthBlocked) {
-      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
-      return;
-    }
     const parsedTriggerWords = parseTriggerWordsDraft(triggerDraft);
     if (parsedTriggerWords.error) {
       setTriggerError(parsedTriggerWords.error);
       setError("請先修正 Trigger words，再開始訓練。");
       setStage("config");
+      focusLoraField("trigger-words");
+      return;
+    }
+    if (!config.outputName.trim()) {
+      setError("請填寫模型名稱。");
+      setStage("config");
+      focusLoraField("lora-output-name");
+      return;
+    }
+    if (healthBlocked) {
+      setError(`${healthBlockReason} 請先完成上方 readiness 項目。`);
+      focusLoraField("lora-health-summary");
       return;
     }
     const resolvedConfig = resolvedTrainingConfig(config, triggerDraft);
@@ -602,7 +622,7 @@ export function LoraTrainerWorkspace() {
         })}
       </nav>
 
-      <section id="lora-health-summary" className={styles.readiness} data-state={healthDisplayState} aria-live="polite" aria-atomic="true">
+      <section id="lora-health-summary" className={styles.readiness} data-state={healthDisplayState} tabIndex={-1} aria-live="polite" aria-atomic="true">
         <div className={styles.readinessHeader}>
           <span className={styles.readinessMark} aria-hidden="true" />
           <div>
@@ -642,7 +662,7 @@ export function LoraTrainerWorkspace() {
               {!assets.length && <div className={styles.empty}><strong>尚未選擇圖片</strong><span>從 Library 挑選，或上傳本機 JPG、PNG、WebP。</span></div>}
             </div>
             <div className={styles.actions}>
-              <AssetPickerButton assetSource="training" kind="image" multiple max={50} selectedKeys={selectedKeys} onSelect={chooseAssets} label="選擇訓練素材" />
+              <AssetPickerButton triggerId="lora-asset-picker" assetSource="training" kind="image" multiple max={50} selectedKeys={selectedKeys} onSelect={chooseAssets} label="選擇訓練素材" />
               <input ref={uploadRef} className={styles.hiddenInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={handleUpload} />
               <button className={styles.secondaryButton} type="button" onClick={() => uploadRef.current?.click()} disabled={busy === "upload"}>{busy === "upload" ? "上傳中…" : "上傳本機圖片"}</button>
             </div>
@@ -650,7 +670,7 @@ export function LoraTrainerWorkspace() {
               <label htmlFor="caption-mode-auto"><input id="caption-mode-auto" type="radio" name="caption-mode" value="auto" checked={mode === "auto"} onChange={() => setMode("auto")} />Auto<span><small>通過 schema 驗證後自動 preflight 與排程。</small></span></label>
               <label htmlFor="caption-mode-manual"><input id="caption-mode-manual" type="radio" name="caption-mode" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} />Manual<span><small>逐張編輯、重試並確認 captions 後再訓練。</small></span></label>
             </fieldset>
-            <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 完成 readiness 後才能開始。` : "建立後可用網址中的 job ID 恢復進度。"}</span><button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={beginTraining} disabled={Boolean(busy) || !assets.length || healthBlocked}>{busy === "start" ? "建立工作中…" : "開始訓練"}</button></div>
+                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊開始後會導向 readiness。` : "建立後可用網址中的 job ID 恢復進度。"}</span><button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={beginTraining} disabled={Boolean(busy)}>{busy === "start" ? "建立工作中…" : "開始訓練"}</button></div>
           </section>}
 
           {stage === "captions" && <section className={styles.panel} aria-labelledby="captions-title">
@@ -675,7 +695,7 @@ export function LoraTrainerWorkspace() {
               <label className={styles.field}><span>模型系列</span><select value={config.family} onChange={(event) => { const family = event.target.value as LoraFamily; patchConfig("family", family); patchConfig("baseProfile", family === "sdxl" ? "sdxl-base-1.0" : "wai-illustrious"); patchConfig("presetId", family === "sdxl" ? "sdxl-character-balanced" : "illustrious-character-balanced"); }}><option value="sdxl">SDXL</option><option value="illustrious">Illustrious</option></select></label>
               <label className={styles.field}><span>Base profile</span><select value={config.baseProfile} onChange={(event) => patchConfig("baseProfile", event.target.value)}>{config.family === "sdxl" ? <option value="sdxl-base-1.0">SDXL Base 1.0</option> : <option value="wai-illustrious">WAI Illustrious</option>}</select></label>
               <label className={styles.field}><span>Preset</span><select value={config.presetId} onChange={(event) => patchConfig("presetId", event.target.value)}><option value={`${config.family}-character-balanced`}>Character · Balanced</option><option value={`${config.family}-style-balanced`}>Style · Balanced</option></select></label>
-              <label className={styles.field}><span>模型名稱</span><input value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
+              <label className={styles.field}><span>模型名稱</span><input id="lora-output-name" value={config.outputName} aria-invalid={!config.outputName.trim()} aria-describedby="output-name-help" onChange={(event) => patchConfig("outputName", event.target.value)} /><small id="output-name-help">使用英數、連字號或底線；伺服器會產生安全檔名。</small></label>
               <label className={styles.fieldWide}><span>Trigger words</span><input id="trigger-words" value={triggerDraft} aria-invalid={Boolean(triggerError)} aria-describedby={triggerError ? "trigger-words-help trigger-words-error" : "trigger-words-help"} onChange={(event) => { const next = event.target.value; const parsed = parseTriggerWordsDraft(next); setTriggerDraft(next); setTriggerError(parsed.error); patchConfig("triggerWords", parsed.values); }} placeholder="my_character, custom_style" /><small id="trigger-words-help">生成時需在提示詞使用；留白會自動採 LoRA 名稱。</small>{triggerError && <p id="trigger-words-error" className={styles.inlineError} role="alert">{triggerError}</p>}</label>
             </div>
             <details className={styles.details}><summary>進階設定</summary><div className={styles.advancedGrid}>
@@ -687,7 +707,7 @@ export function LoraTrainerWorkspace() {
               <NumberField label="Seed" value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
             </div></details>
             {preflight && <div className={styles.checks} aria-live="polite">{preflight.checks.map((check, index) => <div key={check.id || check.name || index} data-status={check.status}><strong>{check.label || check.name || `檢查 ${index + 1}`}</strong><span>{check.message || check.status}</span></div>)}</div>}
-            <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 完成 readiness 後才能開始。` : job ? "Preflight 會確認 runtime、caption、checkpoint、磁碟與 GPU readiness。" : "設定會在建立工作時送出；開始前仍可返回 Dataset 增減圖片。"}</span>{canQueueJob && <button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={job ? checkAndQueue : beginTraining} disabled={Boolean(busy) || !config.outputName.trim() || (!job && !assets.length) || healthBlocked}>{busy === "preflight" ? "檢查並排程中…" : busy === "start" ? "建立工作中…" : job ? "檢查並開始訓練" : "開始訓練"}</button>}</div>
+                <div className={styles.primaryRow}><span>{healthBlocked ? `${healthBlockReason} 點擊後會導向 readiness。` : job ? "Preflight 會確認 runtime、caption、checkpoint、磁碟與 GPU readiness。" : "設定會在建立工作時送出；開始前仍可返回 Dataset 增減圖片。"}</span>{canQueueJob && <button className={styles.primaryButton} type="button" aria-describedby="lora-health-summary" onClick={job ? checkAndQueue : beginTraining} disabled={Boolean(busy)}>{busy === "preflight" ? "檢查並排程中…" : busy === "start" ? "建立工作中…" : job ? "檢查並開始訓練" : "開始訓練"}</button>}</div>
           </section>}
 
           {stage === "progress" && <section className={styles.panel} aria-labelledby="progress-title" aria-live="polite">

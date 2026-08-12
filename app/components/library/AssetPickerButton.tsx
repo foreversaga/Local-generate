@@ -13,6 +13,7 @@ type Props = {
     max?: number;
     selectedKeys?: string[];
     label?: string;
+    triggerId?: string;
     onSelect: (assets: StudioAsset[]) => void;
 };
 
@@ -24,6 +25,7 @@ export function AssetPickerButton({
     max = 1,
     selectedKeys = [],
     label = "Browse Library",
+    triggerId,
     onSelect,
 }: Props) {
     const [open, setOpen] = useState(false);
@@ -162,7 +164,7 @@ export function AssetPickerButton({
 
     return (
         <>
-            <button ref={triggerRef} type="button" className={styles.trigger} aria-haspopup="dialog" aria-expanded={open} onClick={openDialog}>
+            <button id={triggerId} ref={triggerRef} type="button" className={styles.trigger} aria-haspopup="dialog" aria-expanded={open} onClick={openDialog}>
                 {label}
             </button>
             {open && (

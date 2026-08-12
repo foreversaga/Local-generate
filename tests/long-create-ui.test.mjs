@@ -24,6 +24,12 @@ test("Long Create route uses persisted sequence hydration and existing bridge AP
   assert.match(form, /aria-pressed=\{referenceMode === "continuity"\}/);
   assert.match(form, /aria-pressed=\{promptProvider === "ollama"\}/);
   assert.match(form, /aria-pressed=\{timelineMode === "auto"\}/);
+  assert.match(form, /const canInteract = !planning && !saving && !uploading && !activeJob/);
+  assert.match(form, /disabled=\{!canInteract\}/);
+  assert.match(form, /focusLongValidationField/);
+  assert.match(form, /id="long-validation-summary"/);
+  assert.match(form, /className=\{styles\.validationLink\}/);
+  assert.match(form, /aria-invalid/);
   assert.match(styles, /\.segmented button\{min-height:44px\}/);
   assert.match(styles, /\.referenceCard button\{width:44px;height:44px\}/);
   assert.match(styles, /\.layout\{[^}]*min-width:0;width:100%/);

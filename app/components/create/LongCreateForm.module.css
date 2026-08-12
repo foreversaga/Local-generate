@@ -5,3 +5,4 @@
 @media(max-width:420px){.referenceGrid{grid-template-columns:1fr}.segmentHeading{align-items:flex-start}}
 @media(prefers-reduced-motion:reduce){.sectionNav a,.planButton,.primaryButton{transition:none}}
 .segmented button{min-height:44px}.referenceCard button{width:44px;height:44px}.summary,.summaryCard,.summaryRow,.summaryRow strong{min-width:0}
+.validationLink{border:0;background:transparent;padding:0;color:inherit;font:inherit;text-align:left;text-decoration:underline;text-underline-offset:2px}.validationLink:focus-visible{outline:2px solid currentColor;outline-offset:3px}
