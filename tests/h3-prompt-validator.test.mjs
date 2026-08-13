@@ -26,6 +26,7 @@ test("accepts every H3 mode with the official field structure", () => {
     const result = validateH3Prompt(prompt, { mode, duration });
     assert.equal(result.valid, true);
     assert.equal(result.mode, mode);
+    assert.equal(result.structured, true);
     assert.equal(result.shots.at(-1).shot, 2);
   }
 });
@@ -36,41 +37,51 @@ test("keeps the long-video adapter compatible with inputType and duration", () =
   assert.equal(result.duration, 5);
 });
 
-test("rejects missing or reordered fields", () => {
-  assert.throws(() => validateH3Prompt("overall_soundscape: wind\n\nnon_diegetic_music: N/A\n\nintegrated_multimodal_description: [Shot 1] scene", { mode: "t2v" }), { code: "PROMPT_FIRST_LINE_INVALID" });
-  assert.throws(() => validateH3Prompt("integrated_multimodal_description: [Shot 1] scene\n\nnon_diegetic_music: N/A", { mode: "t2v" }), { code: "PROMPT_FIELD_MISSING" });
-  assert.throws(() => validateH3Prompt("preamble\n\n" + basePrompt(), { mode: "t2v" }), { code: "PROMPT_FIRST_LINE_INVALID" });
-  assert.throws(() => validateH3Prompt(refPrompt().replace("subject_definitions:", "preamble\n\nsubject_definitions:"), { mode: "ref2v" }), { code: "PROMPT_FIRST_LINE_INVALID" });
+test("accepts ordinary free-form text in every video mode", () => {
+  const prompts = {
+    t2v: "A quiet cinematic room at dawn; the camera slowly pushes toward the window.",
+    i2v: "Use the supplied image as inspiration and animate a slow push-in.",
+    fl2v: "Transition smoothly from the first reference image to the last.",
+    l2v: "End on the supplied last frame while the subject turns.",
+    ref2v: "Use the supplied references to guide a coherent cinematic sequence.",
+  };
+  for (const [mode, prompt] of Object.entries(prompts)) {
+    const result = validateH3Prompt(prompt, { mode, duration: 5 });
+    assert.equal(result.valid, true);
+    assert.equal(result.structured, false);
+    assert.deepEqual(result.fields, []);
+    assert.deepEqual(result.shots, []);
+  }
 });
 
-test("requires sequential shots and bounded, increasing cut timestamps", () => {
-  assert.throws(() => validateH3Prompt(basePrompt().replace("[Shot 2]", "[Shot 3]"), { mode: "t2v", duration: 5 }), { code: "PROMPT_SHOT_SEQUENCE" });
-  assert.throws(() => validateH3Prompt(basePrompt().replace("[Shot 2] At 00:03.500", "[Shot 2] camera cuts"), { mode: "t2v", duration: 5 }), { code: "PROMPT_SHOT_TIMESTAMP_REQUIRED" });
-  assert.throws(() => validateH3Prompt(basePrompt().replace("[Shot 1] Live-action", "[Shot 1] At 00:00.000, Live-action"), { mode: "t2v", duration: 5 }), { code: "PROMPT_SHOT1_TIMESTAMP_FORBIDDEN" });
-  assert.throws(() => validateH3Prompt(basePrompt().replace("00:03.500", "00:06.000"), { mode: "t2v", duration: 5 }), { code: "PROMPT_SHOT_TIMESTAMP_OUT_OF_RANGE" });
-  const nonIncreasing = basePrompt().replace("[Shot 2] At 00:03.500, the camera cuts to a close-up.", "[Shot 2] At 00:03.500, the camera cuts. [Shot 3] At 00:03.500, the camera holds.");
-  assert.throws(() => validateH3Prompt(nonIncreasing, { mode: "t2v", duration: 5 }), { code: "PROMPT_SHOT_TIMESTAMP_ORDER" });
+test("accepts malformed or partial field structures without format rejection", () => {
+  const prompts = [
+    ["t2v", "overall_soundscape: wind\n\nnon_diegetic_music: N/A\n\nintegrated_multimodal_description: [Shot 1] scene"],
+    ["t2v", "integrated_multimodal_description: [Shot 1] scene\n\nnon_diegetic_music: N/A"],
+    ["t2v", "preamble\n\n" + basePrompt()],
+    ["ref2v", refPrompt().replace("subject_definitions:", "preamble\n\nsubject_definitions:")],
+    ["l2v", "How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the wrong mark."],
+  ];
+  for (const [mode, prompt] of prompts) assert.doesNotThrow(() => validateH3Prompt(prompt, { mode, duration: 5 }));
 });
 
-test("enforces exact I2VA and concrete FL2VA/L2VA alignment lines", () => {
-  assert.throws(() => validateH3Prompt(basePrompt("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 2]) is fully referenced.\n\n"), { mode: "i2v" }), { code: "PROMPT_I2VA_FIRST_LINE" });
-  assert.throws(() => validateH3Prompt(basePrompt("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Live-action.\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A"), { mode: "i2v" }), { code: "PROMPT_ALIGNMENT_FIELD_GAP" });
-  assert.throws(() => validateH3Prompt(basePrompt("How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 2) aligns with the 5-second mark of the target video.\n\n"), { mode: "fl2v" }), { code: "PROMPT_FL2VA_FIRST_LINE" });
-  assert.throws(() => validateH3Prompt(basePrompt("How the reference pictures align with the target video —<Picture 1> (from [Shot 2]) aligns with the 5.00-second mark of the target video.\n\n"), { mode: "l2v" }), { code: "PROMPT_L2VA_FIRST_LINE" });
-  assert.throws(() => validateH3Prompt(basePrompt("How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the 5.00-second mark of the target video.\n\n"), { mode: "l2v" }), { code: "PROMPT_L2VA_FIRST_LINE" });
-  assert.throws(() => validateH3Prompt(basePrompt("How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 5.00-second mark of the target video.\n\n"), { mode: "l2v" }), { code: "PROMPT_FINAL_SHOT_MISMATCH" });
+test("does not reject arbitrary shot numbering, timestamps, references, or dialogue tags", () => {
+  const prompts = [
+    basePrompt().replace("[Shot 2]", "[Shot 3]"),
+    basePrompt().replace("[Shot 2] At 00:03.500", "[Shot 2] camera cuts"),
+    basePrompt().replace("[Shot 1] Live-action", "[Shot 1] At 00:00.000, Live-action"),
+    basePrompt().replace("00:03.500", "00:06.000"),
+    basePrompt().replace("the camera cuts", "the speaker says <d>Hello</d>; the camera cuts"),
+    refPrompt().replace("[reference generation]", "[creative idea]").replace("<Subject 1>", "<Subject 2>"),
+  ];
+  for (const prompt of prompts) assert.doesNotThrow(() => validateH3Prompt(prompt, { mode: prompt.startsWith("subject_definitions") ? "ref2v" : "t2v", duration: 5 }));
 });
 
-test("validates Ref2VA task prefix, shot body, and reference definitions", () => {
-  assert.throws(() => validateH3Prompt(refPrompt().replace("[reference generation]", "[creative idea]"), { mode: "ref2v" }), { code: "PROMPT_SUMMARY_TASK_PREFIX" });
-  assert.throws(() => validateH3Prompt(refPrompt({ undefinedLabel: true }), { mode: "ref2v" }), { code: "PROMPT_REFERENCE_UNDEFINED" });
-  assert.throws(() => validateH3Prompt(refPrompt({ undefinedPicture: true }), { mode: "ref2v" }), { code: "PROMPT_REFERENCE_UNDEFINED" });
-  assert.throws(() => validateH3Prompt(refPrompt().replace("detailed_description:\nThe target video uses a cinematic style. [Shot 1]", "detailed_description:\nThe target video uses a cinematic style. [Shot 2]"), { mode: "ref2v" }), { code: "PROMPT_SHOT1_REQUIRED" });
-});
-
-test("requires language-tagged dialogue blocks and enforces the character limit", () => {
-  assert.throws(() => validateH3Prompt(basePrompt().replace("the camera cuts", "the speaker says <d>Hello</d>; the camera cuts"), { mode: "t2v" }), { code: "PROMPT_DIALOGUE_LANGUAGE_TAG" });
-  assert.throws(() => validateH3Prompt(basePrompt().replace("the camera cuts", "the speaker says <d>[English] Hello; the camera cuts"), { mode: "t2v" }), { code: "PROMPT_DIALOGUE_TAG_UNBALANCED" });
+test("retains non-format mode, prompt, duration, and character boundaries", () => {
+  assert.throws(() => validateH3Prompt("scene", { mode: "unknown" }), { code: "PROMPT_MODE_INVALID" });
+  assert.throws(() => validateH3Prompt("", { mode: "t2v" }), { code: "PROMPT_REQUIRED" });
+  assert.throws(() => validateH3Prompt("scene", { mode: "t2v", duration: 0 }), { code: "PROMPT_DURATION_INVALID" });
+  assert.throws(() => validateH3Prompt("scene", { mode: "t2v", duration: "not-a-number" }), { code: "PROMPT_DURATION_INVALID" });
   assert.throws(() => validateH3Prompt("x".repeat(7001), { mode: "t2v" }), { code: "PROMPT_TOO_LONG" });
 });
 

@@ -7,12 +7,18 @@ import test from "node:test";
 import {
   IMG2IMG_MODELS,
   IMG2IMG_MODEL_PROFILES,
+  IMG2IMG_POSE_REQUIRED_NODES,
   buildImg2ImgPrompt,
   createImg2ImgController,
   evaluateImg2ImgReadiness,
   normalizeCharacterLoraName,
   normalizeCharacterLoraStrength,
   normalizeImageAssetName,
+  normalizePoseImageName,
+  normalizePoseControlNetName,
+  normalizePoseControlStrength,
+  normalizePoseResolution,
+  normalizePoseRoot,
   parseImg2ImgHistory,
 } from "../server/image-generation/img2img.mjs";
 import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs";
@@ -60,6 +66,13 @@ const currentObjectInfo = {
   CheckpointLoaderSimple: { input: { required: { ckpt_name: [{ value: [...CHECKPOINT_MODELS] }, { tooltip: "Checkpoint" }] } } },
 };
 
+const poseObjectInfo = {
+  ...currentObjectInfo,
+  ControlNetLoader: { input: { required: { control_net_name: [["openpose.safetensors"]] } } },
+  ControlNetApplyAdvanced: {},
+  DWPreprocessor: {},
+};
+
 const loraObjectInfo = {
   ...currentObjectInfo,
   LoraLoader: { input: { required: { model: ["MODEL"], clip: ["CLIP"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"], strength_clip: ["FLOAT"] } } },
@@ -103,6 +116,38 @@ test("builds an eight-node native img2img workflow", () => {
   assert.equal(graph["6"].inputs.denoise, 0.55);
   assert.equal(graph["6"].inputs.steps, 4);
   assert.deepEqual(graph["8"].inputs.images, ["7", 0]);
+});
+
+test("adds an optional DWPose ControlNet branch without changing source conditioning", () => {
+  const graph = buildImg2ImgPrompt({
+    sourceName: "character.png",
+    poseName: "pose.png",
+    poseControlNetName: "openpose.safetensors",
+    poseControlStrength: 0.8,
+    poseResolution: 512,
+    prompt: "cinematic portrait",
+    model: IMG2IMG_MODELS[0],
+  });
+  assert.equal(graph["2"].inputs.image, "character.png");
+  assert.equal(graph["9"].class_type, "LoadImage");
+  assert.equal(graph["9"].inputs.image, "pose.png");
+  assert.equal(graph["10"].class_type, "DWPreprocessor");
+  assert.equal(graph["11"].class_type, "ControlNetLoader");
+  assert.equal(graph["11"].inputs.control_net_name, "openpose.safetensors");
+  assert.equal(graph["12"].class_type, "ControlNetApplyAdvanced");
+  assert.equal(graph["12"].inputs.strength, 0.8);
+  assert.deepEqual(graph["6"].inputs.positive, ["12", 0]);
+  assert.deepEqual(graph["6"].inputs.negative, ["12", 1]);
+  assert.deepEqual(graph["6"].inputs.latent_image, ["3", 0]);
+});
+
+test("pose readiness requires configured ControlNet and DWPose nodes", () => {
+  const ready = evaluateImg2ImgReadiness(poseObjectInfo, { poseControlNetName: "openpose.safetensors" });
+  assert.deepEqual(Object.keys(ready.pose.nodes).sort(), [...IMG2IMG_POSE_REQUIRED_NODES].sort());
+  assert.equal(ready.pose.available, true);
+  const missingModel = evaluateImg2ImgReadiness(poseObjectInfo, { poseControlNetName: "missing.safetensors" });
+  assert.equal(missingModel.pose.available, false);
+  assert.equal(missingModel.pose.reason, "POSE_CONTROLNET_MODEL_MISSING");
 });
 
 test("allows image-to-image workflows without a positive prompt", () => {
@@ -341,6 +386,27 @@ test("POST rejects a selected model when another profile is ready", async () => 
   assert.equal(res.body.health.models[Z_IMAGE_MODEL], false);
 });
 
+test("POST rejects a pose reference when no ControlNet model is configured", async () => {
+  const controller = createImg2ImgController({
+    inputRoot: path.join(os.tmpdir(), "h3-img2img-pose-input-missing"),
+    outputRoot: path.join(os.tmpdir(), "h3-img2img-pose-output-missing"),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/system_stats")) return response({});
+      if (String(url).endsWith("/object_info")) return response(currentObjectInfo);
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+  });
+  const res = apiResponse();
+  await controller.handleRoute({ method: "POST", url: "/api/img2img" }, res, {
+    readJson: async () => ({ sourceName: "character.png", poseName: "pose.png", prompt: "portrait" }),
+    sendJson: (_target, status, body) => { res.status = status; res.body = body; },
+    sendError: (_target, status, message, code) => { res.status = status; res.body = { error: message, code }; },
+  });
+  assert.equal(res.status, 503);
+  assert.equal(res.body.code, "IMG2IMG_POSE_NOT_READY");
+  assert.equal(res.body.health.pose.reason, "POSE_CONTROLNET_NOT_CONFIGURED");
+});
+
 test("normalizes safe image names and parses SaveImage history", () => {
   assert.equal(normalizeImageAssetName("folder/source.webp"), "folder/source.webp");
   assert.throws(() => normalizeImageAssetName("../secret.png"), { code: "SOURCE_NAME_INVALID" });
@@ -448,6 +514,92 @@ test("remote controller uploads, generates, downloads, and registers an image", 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("remote controller stages the optional pose image and submits the ControlNet branch", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-pose-remote-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "character.png"), Buffer.from([137, 80, 78, 71]));
+  await writeFile(path.join(inputRoot, "pose.png"), Buffer.from([137, 80, 78, 71]));
+  let uploadCount = 0;
+  let submittedGraph = null;
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://pose-comfy", "");
+    if (endpoint === "/system_stats") return new Response("{}");
+    if (endpoint === "/object_info") return new Response(JSON.stringify(poseObjectInfo));
+    if (endpoint === "/upload/image") {
+      uploadCount += 1;
+      return new Response(JSON.stringify({
+        name: uploadCount === 1 ? "character-upload.png" : "pose-upload.png",
+        subfolder: "h3-studio-img2img",
+        type: "input",
+      }));
+    }
+    if (endpoint === "/prompt") {
+      submittedGraph = JSON.parse(init.body).prompt;
+      return new Response(JSON.stringify({ prompt_id: "pose-prompt-1" }));
+    }
+    if (endpoint === "/history/pose-prompt-1") return new Response(JSON.stringify({
+      "pose-prompt-1": {
+        status: { status_str: "success", completed: true },
+        outputs: { "8": { images: [{ filename: "pose-result.png", subfolder: "img2img", type: "output" }] } },
+      },
+    }));
+    if (endpoint.startsWith("/view?")) return new Response(Buffer.from([137, 80, 78, 71, 13, 10]));
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  try {
+    const controller = createImg2ImgController({
+      comfyUrl: "http://pose-comfy",
+      remote: true,
+      inputRoot,
+      outputRoot,
+      storeRoot: path.join(root, "records"),
+      fetchImpl,
+      pollIntervalMs: 1,
+      poseControlNetName: "openpose.safetensors",
+      idFactory: () => "pose-remote-job",
+      toAsset: (_root, name) => ({ root: "output", name, kind: "image" }),
+    });
+    const queued = await controller.enqueue({
+      sourceName: "character.png",
+      poseName: "pose.png",
+      prompt: "pose-controlled portrait",
+      seed: 17,
+    });
+    let job = queued;
+    for (let count = 0; count < 100 && !["completed", "failed"].includes(job.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      job = await controller.getJob(queued.id);
+    }
+    assert.equal(job.status, "completed", job.error);
+    assert.equal(uploadCount, 2);
+    assert.equal(submittedGraph["2"].inputs.image, "h3-studio-img2img/character-upload.png");
+    assert.equal(submittedGraph["9"].inputs.image, "h3-studio-img2img/pose-upload.png");
+    assert.equal(submittedGraph["10"].class_type, "DWPreprocessor");
+    assert.equal(submittedGraph["11"].inputs.control_net_name, "openpose.safetensors");
+    assert.deepEqual(submittedGraph["6"].inputs.positive, ["12", 0]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("normalizes an optional pose reference without changing legacy source validation", () => {
+  assert.equal(normalizePoseImageName("poses\\hero.webp"), "poses/hero.webp");
+  assert.equal(normalizePoseControlNetName("openpose\\body.safetensors"), "openpose/body.safetensors");
+  assert.equal(normalizePoseControlStrength(undefined), 1);
+  assert.equal(normalizePoseResolution(undefined), 512);
+  assert.equal(normalizePoseRoot(undefined), "input");
+  assert.equal(normalizePoseRoot("output"), "output");
+  assert.throws(() => normalizePoseImageName("../pose.png"), { code: "POSE_NAME_INVALID" });
+  assert.throws(() => normalizePoseImageName("pose.mp4"), { code: "POSE_KIND_INVALID" });
+  assert.throws(() => normalizePoseRoot("training"), { code: "POSE_ROOT_INVALID" });
+  assert.throws(() => normalizePoseControlNetName("../escape.safetensors"), { code: "POSE_CONTROLNET_NAME_INVALID" });
+  assert.throws(() => normalizePoseControlStrength(11), { code: "POSE_CONTROL_STRENGTH_INVALID" });
+  assert.throws(() => normalizePoseResolution(513), { code: "POSE_RESOLUTION_INVALID" });
 });
 
 test("local controller submits the exact Windows ComfyUI LoRA token", async () => {

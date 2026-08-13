@@ -1,5 +1,10 @@
 /** @typedef {number | ""} NumberDraft */
 
+import {
+  SINGLE_RENDER_DURATION_MAX_SECONDS,
+  SINGLE_RENDER_DURATION_UI_MIN_SECONDS,
+} from "./single-duration.mjs";
+
 /**
  * @typedef {{ name: string }} SingleRenderAssetRef
  */
@@ -23,6 +28,7 @@
  *   enforcePromptMaxChars?: boolean;
  *   width: NumberDraft;
  *   height: NumberDraft;
+ *   duration: NumberDraft;
  *   steps: NumberDraft;
  *   seed: NumberDraft;
  *   renderCount: NumberDraft;
@@ -67,6 +73,11 @@ export function validateSingleRender(input) {
   const dimensionGrid = input.mode === "replace" ? 16 : 32;
   issues.push(...validateDimension(input.width, "width", "影片寬度", dimensionGrid));
   issues.push(...validateDimension(input.height, "height", "影片高度", dimensionGrid));
+  issues.push(...validateNumber(input.duration, "duration", {
+    label: "影片時長（秒）",
+    min: SINGLE_RENDER_DURATION_UI_MIN_SECONDS,
+    max: SINGLE_RENDER_DURATION_MAX_SECONDS,
+  }));
   issues.push(...validateNumber(input.steps, "steps", {
     label: "採樣步數（Steps）",
     min: 1,

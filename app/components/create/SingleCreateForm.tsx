@@ -16,6 +16,12 @@ import {
   scaleImageResolution,
 } from "../../lib/single-image-resolution.mjs";
 import { validateSingleRender } from "../../lib/single-render-validation.mjs";
+import {
+  SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
+  SINGLE_RENDER_DURATION_MAX_SECONDS,
+  SINGLE_RENDER_DURATION_STEP_SECONDS,
+  SINGLE_RENDER_DURATION_UI_MIN_SECONDS,
+} from "../../lib/single-duration.mjs";
 import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
 import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
@@ -97,7 +103,7 @@ export function SingleCreateForm() {
   const [resolutionFlipped, setResolutionFlipped] = useState(false);
   const [resolutionError, setResolutionError] = useState("");
   const resolutionRequestRef = useRef(0);
-  const [duration, setDuration] = useState(5);
+  const [duration, setDuration] = useState(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
   const [steps, setSteps] = useState<NumberDraft>(20);
   const [seed, setSeed] = useState<NumberDraft>(12345);
   const [renderCount, setRenderCount] = useState<NumberDraft>(1);
@@ -180,6 +186,7 @@ export function SingleCreateForm() {
     enforcePromptMaxChars: true,
     width,
     height,
+    duration,
     steps,
     seed,
     renderCount,
@@ -199,6 +206,7 @@ export function SingleCreateForm() {
     renderCount,
     characterLoraName,
     characterLoraStrength,
+    duration,
     seed,
     sourceVideo,
     steps,
@@ -862,13 +870,26 @@ export function SingleCreateForm() {
               </div>
             </div>
 
-            <label className={styles.field}>
+            <label className={`${styles.field} ${visibleFieldError("duration") ? styles.fieldInvalid : ""}`}>
               <span className={styles.rangeHeader}>
                 <span className={styles.fieldLabel}>片段長度</span>
                 <span className={styles.rangeValue}>{duration.toFixed(1)} sec</span>
               </span>
-              <input className={styles.range} type="range" min={2} max={10} step={0.5} value={duration} onChange={(event) => setDuration(Number(event.target.value))} />
-              <span className={styles.helper}>2–10 秒；既有流程預設 5 秒。</span>
+              <input
+                id="single-duration"
+                className={styles.range}
+                type="range"
+                min={SINGLE_RENDER_DURATION_UI_MIN_SECONDS}
+                max={SINGLE_RENDER_DURATION_MAX_SECONDS}
+                step={SINGLE_RENDER_DURATION_STEP_SECONDS}
+                value={duration}
+                aria-invalid={Boolean(visibleFieldError("duration"))}
+                aria-describedby={visibleFieldError("duration") ? "single-duration-error" : "single-duration-helper"}
+                onBlur={() => markTouched("duration")}
+                onChange={(event) => setDuration(Number(event.target.value))}
+              />
+              <span id="single-duration-helper" className={styles.helper}>2–60 秒；既有流程預設 5 秒。</span>
+              <FieldError id="single-duration-error" message={visibleFieldError("duration")} />
             </label>
 
             <div className={styles.compactGrid}>
@@ -1357,6 +1378,7 @@ function focusValidationField(field: string) {
     sourceVideo: "single-source-video",
     width: "single-width",
     height: "single-height",
+    duration: "single-duration",
     steps: "single-steps",
     seed: "single-seed",
     renderCount: "single-render-count",

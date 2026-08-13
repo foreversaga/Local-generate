@@ -32,7 +32,7 @@ import {
 import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
 import { buildH3PromptSystem } from "./server/h3-prompt/instruction.mjs";
 import { appendPromptError } from "./server/h3-prompt/error-log.mjs";
-import { normalizeDeterministicH3Prompt, validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
+import { validateOrRepairH3Prompt } from "./server/h3-prompt/repair.mjs";
 import { validateH3Prompt } from "./server/h3-prompt/validator.mjs";
 import { createPythonResolver, toPublicPythonResolution } from "./server/runtime/python-resolver.mjs";
 import { createRuntimeContext } from "./server/runtime/runtime-context.mjs";
@@ -40,6 +40,11 @@ import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coor
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
+import {
+  SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
+  SINGLE_RENDER_DURATION_MAX_SECONDS,
+  SINGLE_RENDER_DURATION_RUNTIME_MIN_SECONDS,
+} from "./app/lib/single-duration.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -1312,7 +1317,7 @@ async function createPrompt(payload) {
     ? codexReasoningEffort(payload.reasoningEffort || payload.codexReasoningEffort)
     : null;
   const mode = promptMode(payload.mode);
-  const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
+  const durationSeconds = normalizeSingleRenderDuration(payload.duration);
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
   const referenceImageName = referenceImageNames[0] || "";
   const firstFrameName = String(payload.firstFrameName || "").trim();
@@ -1720,6 +1725,24 @@ function clampNumber(value, fallback, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeSingleRenderDuration(value) {
+  const number = Number(value);
+  if (Number.isFinite(number) && number > SINGLE_RENDER_DURATION_MAX_SECONDS) {
+    throw makeRuntimeError(
+      "SINGLE_DURATION_INVALID",
+      `Single video duration must be no more than ${SINGLE_RENDER_DURATION_MAX_SECONDS} seconds.`,
+      400,
+      { duration: number, max: SINGLE_RENDER_DURATION_MAX_SECONDS },
+    );
+  }
+  return clampNumber(
+    value,
+    SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
+    SINGLE_RENDER_DURATION_RUNTIME_MIN_SECONDS,
+    SINGLE_RENDER_DURATION_MAX_SECONDS,
+  );
 }
 
 function normalizeCharacterLoraName(value) {
@@ -2903,12 +2926,9 @@ async function startGeneration(payload, internal = {}) {
   const referenceImageRoots = mode === "ref2v"
     ? normalizeReferenceImageRoots(payload, { mode, referenceCount: referenceImageNames.length })
     : [];
-  const submittedPrompt = String(payload.prompt || "").trim();
-  const prompt = mode === "replace"
-    ? submittedPrompt
-    : normalizeDeterministicH3Prompt(submittedPrompt, { mode });
+  const prompt = String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");
-  const duration = clampNumber(payload.duration, 5, 0.5, 60);
+  const duration = normalizeSingleRenderDuration(payload.duration);
   if (mode !== "replace") validateH3Prompt(prompt, { mode, duration });
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
     throw new Error("找不到 minimax-h3-local，請確認本機路徑。");

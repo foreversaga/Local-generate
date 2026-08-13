@@ -38,7 +38,7 @@
 - 可直接輸入 H3 prompt（一般模式最多 7000 字元）及負面提示詞。
 - **Prompt Assistant** 可選 Ollama 或 Codex CLI，並設定 Ollama 模型、Codex 模型與 reasoning；提供圖片或影片時會以視覺輸入協助整理。服務不可用時仍可手動編輯提示詞。
 - 可選模型 profile（NVFP4、INT4、Official INT8、Ref2VA、Wan Animate 等，實際選項依模式而定）、寬高、時長、步數、種子、輸出名稱及 Render count。
-- 一般模式寬高範圍為 32–2048 且以 32 為步進；Replace 使用 16 步進。時長 2–10 秒、步數 1–80、種子 0–2147483647、Render count 1–20；角色 LoRA strength 為 0–2。
+- 一般模式寬高範圍為 32–2048 且以 32 為步進；Replace 使用 16 步進。時長 2–60 秒（既有流程預設 5 秒）、步數 1–80、種子 0–2147483647、Render count 1–20；角色 LoRA strength 為 0–2。
 
 畫面會回報 Bridge/ComfyUI readiness、驗證錯誤及草稿自動儲存狀態。若素材或數值不符合模式需求，Generate 會被停用並顯示原因。
 

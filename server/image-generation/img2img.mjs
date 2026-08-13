@@ -13,6 +13,15 @@ export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
+// Pose references use the native ComfyUI ControlNet API plus the already
+// installed controlnet_aux DWPose preprocessor.  The actual ControlNet model
+// is intentionally configured by the runtime (no model is downloaded here).
+export const IMG2IMG_POSE_REQUIRED_NODES = Object.freeze([
+  "ControlNetLoader",
+  "ControlNetApplyAdvanced",
+  "DWPreprocessor",
+]);
+
 const IMG2IMG_COMMON_NODES = Object.freeze([
   "LoadImage",
   "VAEEncode",
@@ -106,6 +115,9 @@ const IMG2IMG_PARAMETER_RULES = Object.freeze({
   seed: Object.freeze({ min: 0, max: 2_147_483_647, step: 1, integer: true }),
 });
 const IMG2IMG_SEED_RANGE = Object.freeze({ min: 0, max: 2_147_483_647 });
+const IMG2IMG_POSE_CONTROLNET_ENV = "H3_IMG2IMG_POSE_CONTROLNET";
+const IMG2IMG_POSE_STRENGTH_ENV = "H3_IMG2IMG_POSE_STRENGTH";
+const IMG2IMG_POSE_RESOLUTION_ENV = "H3_IMG2IMG_POSE_RESOLUTION";
 
 function isoNow(now = Date.now()) {
   return new Date(now).toISOString();
@@ -177,6 +189,87 @@ export function normalizeImageAssetName(value) {
     throw makeError("Image-to-image accepts PNG, JPG, or WEBP assets only.", 415, "SOURCE_KIND_INVALID");
   }
   return normalized;
+}
+
+/**
+ * Normalize the optional pose/control reference independently from the
+ * required character/source image.  Keeping a separate validator gives API
+ * callers an actionable field-specific error while retaining the legacy
+ * sourceName/sourceRoot contract.
+ */
+export function normalizePoseImageName(value) {
+  if (typeof value !== "string") throw makeError("poseName must be a relative image asset name.", 400, "POSE_NAME_INVALID");
+  const raw = value.replaceAll("\\", "/");
+  if (!raw || raw.length > 512 || raw.includes("\0") || raw.startsWith("/") || /^[A-Za-z]:\//.test(raw)) {
+    throw makeError("poseName must be a relative image asset name.", 400, "POSE_NAME_INVALID");
+  }
+  const pieces = raw.split("/");
+  if (pieces.some((piece) => !piece || piece === "." || piece === "..")) {
+    throw makeError("poseName must not contain traversal segments.", 400, "POSE_NAME_INVALID");
+  }
+  const normalized = pieces.join("/");
+  if (!IMAGE_EXTENSIONS.has(path.posix.extname(normalized).toLowerCase())) {
+    throw makeError("Pose reference accepts PNG, JPG, or WEBP assets only.", 415, "POSE_KIND_INVALID");
+  }
+  return normalized;
+}
+
+export function normalizePoseRoot(value, fallback = "input") {
+  const root = value === undefined || value === null || value === "" ? fallback : String(value);
+  if (root !== "input" && root !== "output") {
+    throw makeError("poseRoot must be input or output.", 400, "POSE_ROOT_INVALID");
+  }
+  return root;
+}
+
+export function normalizePoseControlNetName(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return "";
+  if (typeof value !== "string") {
+    throw makeError("Pose ControlNet model name must be a string.", 400, "POSE_CONTROLNET_NAME_INVALID");
+  }
+  const normalized = value.trim().replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized
+    || normalized.length > 512
+    || normalized.startsWith("/")
+    || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0")
+    || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) {
+    throw makeError("Pose ControlNet model name must be a safe relative ComfyUI controlnet path.", 400, "POSE_CONTROLNET_NAME_INVALID");
+  }
+  return normalized;
+}
+
+export function normalizePoseControlStrength(value, fallback = 1) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw makeError("Pose ControlNet strength must be a finite number between 0 and 10.", 400, "POSE_CONTROL_STRENGTH_INVALID");
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    throw makeError("Pose ControlNet strength must be a finite number between 0 and 10.", 400, "POSE_CONTROL_STRENGTH_INVALID");
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 10) {
+    throw makeError("Pose ControlNet strength must be a finite number between 0 and 10.", 400, "POSE_CONTROL_STRENGTH_INVALID");
+  }
+  return number;
+}
+
+export function normalizePoseResolution(value, fallback = 512) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw makeError("Pose DWPose resolution must be an integer multiple of 64 between 64 and 2048.", 400, "POSE_RESOLUTION_INVALID");
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    throw makeError("Pose DWPose resolution must be an integer multiple of 64 between 64 and 2048.", 400, "POSE_RESOLUTION_INVALID");
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number) || number < 64 || number > 2048 || number % 64 !== 0) {
+    throw makeError("Pose DWPose resolution must be an integer multiple of 64 between 64 and 2048.", 400, "POSE_RESOLUTION_INVALID");
+  }
+  return number;
 }
 
 export function normalizeCharacterLoraName(value) {
@@ -367,6 +460,10 @@ function randomizeParameters(ranges, randomFn) {
 
 export function buildImg2ImgPrompt({
   sourceName,
+  poseName,
+  poseControlNetName,
+  poseControlStrength,
+  poseResolution,
   prompt,
   negativePrompt = "",
   model = IMG2IMG_MODELS[0],
@@ -380,10 +477,28 @@ export function buildImg2ImgPrompt({
   filenamePrefix = "img2img/h3_img2img",
 } = {}) {
   const image = normalizeImageAssetName(sourceName);
+  const poseImage = poseName ? normalizePoseImageName(poseName) : "";
+  const poseControlModel = poseImage ? normalizePoseControlNetName(poseControlNetName) : "";
+  const poseStrength = poseImage ? normalizePoseControlStrength(poseControlStrength) : null;
+  const poseSize = poseImage ? normalizePoseResolution(poseResolution) : null;
+  if (poseImage && !poseControlModel) {
+    throw makeError(
+      `Pose reference selected but no ControlNet model is configured. Set ${IMG2IMG_POSE_CONTROLNET_ENV} to an installed OpenPose ControlNet filename.`,
+      503,
+      "IMG2IMG_POSE_NOT_READY",
+    );
+  }
   const positive = String(prompt || "").trim();
   const profile = modelProfile(model);
   if (!profile) throw unsupportedModelError(model);
   const parameters = boundedModelParameters(profile, { denoise, steps, cfg, seed });
+  if (poseImage && profile.workflow !== "checkpoint") {
+    throw makeError(
+      `Pose references are not supported by the ${profile.workflow} image workflow. Select an SDXL or SD1.5 checkpoint.`,
+      400,
+      "IMG2IMG_POSE_UNSUPPORTED",
+    );
+  }
   const loraName = normalizeCharacterLoraName(characterLoraName);
   const loraLoaderName = loraName
     ? preserveCharacterLoraLoaderName(characterLoraLoaderName || characterLoraName)
@@ -420,8 +535,41 @@ export function buildImg2ImgPrompt({
       "7": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
       "8": { class_type: "SaveImage", inputs: { images: link(7), filename_prefix: cleanPrefix } },
     };
+    if (poseImage) {
+      graph["9"] = { class_type: "LoadImage", inputs: { image: poseImage } };
+      graph["10"] = {
+        class_type: "DWPreprocessor",
+        inputs: {
+          image: link(9),
+          detect_hand: "enable",
+          detect_body: "enable",
+          detect_face: "disable",
+          resolution: poseSize,
+          bbox_detector: "yolox_l.onnx",
+          pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
+          scale_stick_for_xinsr_cn: "disable",
+        },
+      };
+      graph["11"] = { class_type: "ControlNetLoader", inputs: { control_net_name: poseControlModel } };
+      graph["12"] = {
+        class_type: "ControlNetApplyAdvanced",
+        inputs: {
+          positive: link(4),
+          negative: link(5),
+          control_net: link(11),
+          image: link(10),
+          strength: poseStrength,
+          start_percent: 0,
+          end_percent: 1,
+          vae: link(1, 2),
+        },
+      };
+      graph["6"].inputs.positive = link(12, 0);
+      graph["6"].inputs.negative = link(12, 1);
+    }
     if (loraName) {
-      graph["9"] = {
+      const loraNodeId = poseImage ? "13" : "9";
+      graph[loraNodeId] = {
         class_type: "LoraLoader",
         inputs: {
           model: link(1),
@@ -431,9 +579,9 @@ export function buildImg2ImgPrompt({
           strength_clip: loraStrength,
         },
       };
-      graph["4"].inputs.clip = link(9, 1);
-      graph["5"].inputs.clip = link(9, 1);
-      graph["6"].inputs.model = link(9);
+      graph["4"].inputs.clip = link(loraNodeId, 1);
+      graph["5"].inputs.clip = link(loraNodeId, 1);
+      graph["6"].inputs.model = link(loraNodeId);
     }
     return graph;
   }
@@ -519,6 +667,50 @@ function nodeAvailability(objectInfo, requiredNodes) {
   return Object.fromEntries(requiredNodes.map((name) => [name, Boolean(objectInfo?.[name])]));
 }
 
+function poseControlNetAvailability(objectInfo, poseControlNetName = "") {
+  const configuredModel = normalizePoseControlNetName(poseControlNetName);
+  const nodes = nodeAvailability(objectInfo, IMG2IMG_POSE_REQUIRED_NODES);
+  const models = comboValues(objectInfo?.ControlNetLoader, "control_net_name");
+  const model = Boolean(configuredModel && models.some((choice) => {
+    try {
+      return normalizePoseControlNetName(choice).toLowerCase() === configuredModel.toLowerCase();
+    } catch {
+      return false;
+    }
+  }));
+  const available = Boolean(configuredModel && Object.values(nodes).every(Boolean) && model);
+  let reason = "";
+  if (!configuredModel) reason = "POSE_CONTROLNET_NOT_CONFIGURED";
+  else if (!Object.values(nodes).every(Boolean)) reason = "POSE_REQUIRED_NODE_MISSING";
+  else if (!model) reason = "POSE_CONTROLNET_MODEL_MISSING";
+  return {
+    available,
+    configuredModel: configuredModel || null,
+    model,
+    nodes,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function resolvePoseControlNetLoaderName(objectInfo, value) {
+  const normalized = normalizePoseControlNetName(value);
+  if (!normalized) return "";
+  const choices = comboValues(objectInfo?.ControlNetLoader, "control_net_name");
+  const loaderName = choices.find((choice) => {
+    try {
+      return normalizePoseControlNetName(choice).toLowerCase() === normalized.toLowerCase();
+    } catch {
+      return false;
+    }
+  });
+  if (loaderName) return String(loaderName).trim();
+  throw makeError(
+    `Pose ControlNet model ${normalized} is not available in ComfyUI.`,
+    409,
+    "IMG2IMG_POSE_CONTROLNET_NOT_FOUND",
+  );
+}
+
 function checkpointModelAvailability(objectInfo, profile) {
   return comboValues(objectInfo?.CheckpointLoaderSimple, "ckpt_name").includes(profile.model);
 }
@@ -563,7 +755,11 @@ function evaluateModelProfile(objectInfo, profile, { remote = false } = {}) {
   };
 }
 
-export function evaluateImg2ImgReadiness(objectInfo, { comfyUi = true, remote = false } = {}) {
+export function evaluateImg2ImgReadiness(objectInfo, {
+  comfyUi = true,
+  remote = false,
+  poseControlNetName = process.env[IMG2IMG_POSE_CONTROLNET_ENV] || "",
+} = {}) {
   const nodes = Object.fromEntries(IMG2IMG_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
   const profiles = Object.fromEntries(IMG2IMG_MODELS.map((name) => [
     name,
@@ -575,9 +771,28 @@ export function evaluateImg2ImgReadiness(objectInfo, { comfyUi = true, remote = 
     comfyUi: Boolean(comfyUi),
     remote: Boolean(remote),
     nodes,
+    pose: poseControlNetAvailability(objectInfo, poseControlNetName),
     models,
     profiles,
   };
+}
+
+function assertPoseReadiness(profile, readiness) {
+  if (profile?.workflow !== "checkpoint") {
+    throw makeError(
+      `Pose references are not supported by the ${profile?.workflow || "selected"} image workflow. Select an SDXL or SD1.5 checkpoint.`,
+      400,
+      "IMG2IMG_POSE_UNSUPPORTED",
+    );
+  }
+  if (readiness?.pose?.available) return;
+  const reason = readiness?.pose?.reason;
+  const detail = reason === "POSE_CONTROLNET_NOT_CONFIGURED"
+    ? `Pose reference selected but no ControlNet model is configured. Set ${IMG2IMG_POSE_CONTROLNET_ENV} to an installed OpenPose ControlNet filename.`
+    : reason === "POSE_REQUIRED_NODE_MISSING"
+      ? "Pose reference selected but ComfyUI is missing ControlNet/DWPose nodes. Install or enable the existing controlnet_aux nodes and restart ComfyUI."
+      : "Pose reference selected but the configured ControlNet model is not available in ComfyUI/models/controlnet.";
+  throw makeError(detail, 503, "IMG2IMG_POSE_NOT_READY");
 }
 
 function safeArtifact(value) {
@@ -665,6 +880,7 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
     stage: job.stage,
     sourceName: job.sourceName,
     sourceRoot: job.sourceRoot,
+    ...(job.poseName ? { poseName: job.poseName, poseRoot: job.poseRoot || "input" } : {}),
     prompt: job.prompt,
     negativePrompt: job.negativePrompt,
     model: job.model,
@@ -730,8 +946,14 @@ export function createImg2ImgController({
   gpuCoordinator = null,
   gpuWorkloadType = "img2img",
   gpuRuntime = remote ? "remote" : "local",
+  poseControlNetName = process.env[IMG2IMG_POSE_CONTROLNET_ENV] || "",
+  poseControlStrength = process.env[IMG2IMG_POSE_STRENGTH_ENV] || 1,
+  poseResolution = process.env[IMG2IMG_POSE_RESOLUTION_ENV] || 512,
 } = {}) {
   if (!inputRoot || !outputRoot) throw new Error("Image-to-image controller requires inputRoot and outputRoot.");
+  poseControlNetName = normalizePoseControlNetName(poseControlNetName);
+  poseControlStrength = normalizePoseControlStrength(poseControlStrength);
+  poseResolution = normalizePoseResolution(poseResolution);
   const jobStore = store || createImg2ImgStore({ root: storeRoot });
   const jobs = new Map();
   const queue = [];
@@ -930,7 +1152,7 @@ export function createImg2ImgController({
       requestJson("/object_info").catch(() => null),
     ]);
     return {
-      readiness: evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats, remote }),
+      readiness: evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats, remote, poseControlNetName }),
       objectInfo,
     };
   }
@@ -953,9 +1175,9 @@ export function createImg2ImgController({
     return { cleanName, path: candidateReal };
   }
 
-  async function copyOutputToLocalInput(job, source) {
+  async function copyOutputToLocalInput(job, source, suffix = "") {
     const extension = path.posix.extname(source.cleanName).toLowerCase();
-    const loadName = `img2img_temp_${job.id}${extension}`;
+    const loadName = `img2img_temp_${job.id}${suffix}${extension}`;
     const target = path.resolve(inputRoot, loadName);
     if (!inside(inputRoot, target)) throw makeError("Temporary image path is unsafe.", 500, "TEMP_PATH_INVALID");
     await fsApi.mkdir(inputRoot, { recursive: true });
@@ -963,11 +1185,11 @@ export function createImg2ImgController({
     return { loadName, path: target, created: true };
   }
 
-  async function uploadRemoteInput(job, source, signal) {
+  async function uploadRemoteInput(job, source, signal, suffix = "") {
     if (typeof FormData !== "function" || typeof Blob !== "function") throw makeError("Remote image upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
     assertNotCancelled(job);
     const extension = path.posix.extname(source.cleanName).toLowerCase();
-    const uploadName = `${job.id}${extension}`;
+    const uploadName = `${job.id}${suffix}${extension}`;
     const form = new FormData();
     form.append("image", new Blob([await fsApi.readFile(source.path)], { type: extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "image/jpeg" }), uploadName);
     form.append("subfolder", "h3-studio-img2img");
@@ -1047,6 +1269,7 @@ export function createImg2ImgController({
 
   async function runItem(job, item, itemIndex, parameters, runtime) {
     let staged = null;
+    let stagedPose = null;
     runtime.itemIndex = itemIndex;
     runtime.promptId = "";
     item.parameters = { ...parameters };
@@ -1077,6 +1300,10 @@ export function createImg2ImgController({
           "IMG2IMG_LORA_NOT_READY",
         );
       }
+      if (job.poseName) assertPoseReadiness(profile, readiness);
+      const poseControlNetLoaderName = job.poseName
+        ? resolvePoseControlNetLoaderName(objectInfo, poseControlNetName)
+        : "";
       const characterLoraLoaderName = job.characterLoraName
         ? resolveCharacterLoraLoaderName(objectInfo, profile, job.characterLoraName)
         : "";
@@ -1089,11 +1316,21 @@ export function createImg2ImgController({
       if (remote) staged = await uploadRemoteInput(job, source, runtime.abortController?.signal);
       else if (job.sourceRoot === "output") staged = await copyOutputToLocalInput(job, source);
       else staged = { loadName: source.cleanName, created: false };
+      if (job.poseName) {
+        const poseSource = await resolveAsset(job.poseRoot || "input", job.poseName);
+        if (remote) stagedPose = await uploadRemoteInput(job, poseSource, runtime.abortController?.signal, "-pose");
+        else if ((job.poseRoot || "input") === "output") stagedPose = await copyOutputToLocalInput(job, poseSource, "-pose");
+        else stagedPose = { loadName: poseSource.cleanName, created: false };
+      }
       assertNotCancelled(job);
       const graph = buildImg2ImgPrompt({
         ...job,
         ...parameters,
         sourceName: staged.loadName,
+        poseName: stagedPose?.loadName,
+        poseControlNetName: poseControlNetLoaderName,
+        poseControlStrength,
+        poseResolution,
         characterLoraLoaderName,
         filenamePrefix: itemFilenamePrefix(job, itemIndex),
       });
@@ -1157,6 +1394,7 @@ export function createImg2ImgController({
     } finally {
       runtime.promptId = "";
       await cleanupLocalTemp(staged);
+      await cleanupLocalTemp(stagedPose);
     }
   }
 
@@ -1306,6 +1544,18 @@ export function createImg2ImgController({
     const sourceRoot = String(input.sourceRoot || "input");
     const sourceName = normalizeImageAssetName(input.sourceName);
     await resolveAsset(sourceRoot, sourceName);
+    const hasPoseName = typeof input.poseName === "string"
+      ? input.poseName.trim() !== ""
+      : input.poseName !== undefined && input.poseName !== null;
+    const poseName = hasPoseName
+      ? normalizePoseImageName(typeof input.poseName === "string" ? input.poseName.trim() : input.poseName)
+      : "";
+    const poseRoot = poseName ? normalizePoseRoot(input.poseRoot) : "";
+    if (poseName) await resolveAsset(poseRoot, poseName);
+    if (poseName) {
+      const readiness = await checkReadiness();
+      assertPoseReadiness(profile, readiness);
+    }
     const prompt = String(input.prompt || "").trim();
     const batchCount = normalizeBatchCount(input.batchCount);
     const baseSeed = input.seed === undefined ? Math.floor(randomSource() * 2_147_483_647) : input.seed;
@@ -1324,6 +1574,7 @@ export function createImg2ImgController({
       stage: "Queued",
       sourceName,
       sourceRoot,
+      ...(poseName ? { poseName, poseRoot } : {}),
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
@@ -1391,6 +1642,7 @@ export function createImg2ImgController({
         request: {
           sourceName,
           sourceRoot,
+          ...(poseName ? { poseName, poseRoot } : {}),
           prompt,
           negativePrompt: String(input.negativePrompt || "").trim(),
           model,
@@ -1409,7 +1661,12 @@ export function createImg2ImgController({
     job.completedCount = job.items.filter((item) => item.status === "completed").length;
     job.output = job.items.find((item) => item.output)?.output || undefined;
     // Validate the full graph contract before admitting the job.
-    buildImg2ImgPrompt(job);
+    buildImg2ImgPrompt({
+      ...job,
+      poseControlNetName,
+      poseControlStrength,
+      poseResolution,
+    });
     await persistJob(job, { required: true });
     jobs.set(job.id, job);
     ensureGpuAdmission(job);
@@ -1472,6 +1729,7 @@ export function createImg2ImgController({
     const body = {
       sourceName: source.sourceName,
       sourceRoot: source.sourceRoot,
+      ...(source.poseName ? { poseName: source.poseName, poseRoot: source.poseRoot || "input" } : {}),
       prompt: source.prompt,
       negativePrompt: source.negativePrompt,
       model: source.model,
@@ -1534,6 +1792,22 @@ export function createImg2ImgController({
             health: readiness,
           });
           return true;
+        }
+        const requestedPoseName = typeof body?.poseName === "string" ? body.poseName.trim() : "";
+        if (requestedPoseName) {
+          const requestedProfile = modelProfile(requestedModel);
+          if (requestedProfile?.workflow !== "checkpoint" || !readiness.pose?.available) {
+            try {
+              assertPoseReadiness(requestedProfile, readiness);
+            } catch (error) {
+              respond(res, Number.isInteger(error?.status) ? error.status : 503, {
+                error: errorMessage(error),
+                code: error?.code || "IMG2IMG_POSE_NOT_READY",
+                health: readiness,
+              });
+              return true;
+            }
+          }
         }
         respond(res, 202, { job: await enqueue(body) });
       } catch (error) {

@@ -222,7 +222,11 @@ function localizedJobStatusLabel(job: Img2ImgJob | null) {
 }
 
 export function ImageToImageWorkspace() {
+    // `source` is the required character/reference image.  `poseReference`
+    // is deliberately independent and optional so legacy source-only jobs
+    // keep the exact same request shape.
     const [source, setSource] = useState<StudioAsset | null>(null);
+    const [poseReference, setPoseReference] = useState<StudioAsset | null>(null);
     const [promptDescription, setPromptDescription] = useState("");
     const [prompt, setPrompt] = useState("");
     const [negativePrompt, setNegativePrompt] = useState("");
@@ -267,6 +271,7 @@ export function ImageToImageWorkspace() {
     const [error, setError] = useState("");
     const [submitAttempted, setSubmitAttempted] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const poseInputRef = useRef<HTMLInputElement>(null);
     const loraRequestIdRef = useRef(0);
 
     const updateBaseValue = useCallback((key: BaseValueKey, value: string | number) => {
@@ -424,6 +429,7 @@ export function ImageToImageWorkspace() {
     }, [trackedJobId, trackedJobStatus, historyQuery, refreshHistory]);
 
     const selectedKey = useMemo(() => (source ? [assetKey(source)] : []), [source]);
+    const poseSelectedKey = useMemo(() => (poseReference ? [assetKey(poseReference)] : []), [poseReference]);
     const visibleModels = runtimeMode === "local"
         ? IMG2IMG_MODELS
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
@@ -495,6 +501,14 @@ export function ImageToImageWorkspace() {
         setError("");
     }
 
+    function selectPoseReference(assets: StudioAsset[]) {
+        const next = assets.find((asset) => asset.kind === "image");
+        if (!next) return;
+        setPoseReference(next);
+        setJob(null);
+        setError("");
+    }
+
     async function uploadSource(event: ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
         event.target.value = "";
@@ -508,6 +522,24 @@ export function ImageToImageWorkspace() {
             setJob(null);
         } catch (reason) {
             setError(errorMessage(reason, "圖片上傳失敗。"));
+        } finally {
+            setUploading(false);
+        }
+    }
+
+    async function uploadPoseReference(event: ChangeEvent<HTMLInputElement>) {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (!file) return;
+        setUploading(true);
+        setError("");
+        try {
+            const [asset] = await uploadAssets([file]);
+            if (!asset || asset.kind !== "image") throw new Error("Pose reference must be a PNG, JPG, or WEBP image.");
+            setPoseReference(asset);
+            setJob(null);
+        } catch (reason) {
+            setError(errorMessage(reason, "Unable to upload pose reference."));
         } finally {
             setUploading(false);
         }
@@ -643,6 +675,9 @@ export function ImageToImageWorkspace() {
         return {
             sourceName: source?.name || "",
             sourceRoot: sourceRoot || "input",
+            ...(poseReference
+                ? { poseName: poseReference.name, poseRoot: isImg2ImgAssetRoot(poseReference.root) ? poseReference.root : "input" }
+                : {}),
             prompt: prompt.trim(),
             negativePrompt: negativePrompt.trim(),
             model,
@@ -749,8 +784,8 @@ export function ImageToImageWorkspace() {
                 <section className={styles.panel} aria-labelledby="img2img-source-title">
                     <div className={styles.sectionHeader}>
                         <div>
-                            <span className={styles.eyebrow}>來源圖片</span>
-                            <h2 id="img2img-source-title">來源圖片</h2>
+                            <span className={styles.eyebrow}>角色參考圖</span>
+                            <h2 id="img2img-source-title">角色參考圖（必填）</h2>
                         </div>
                         <span className={styles.sectionCode}>PNG · JPG · WEBP</span>
                     </div>
@@ -766,8 +801,8 @@ export function ImageToImageWorkspace() {
                         </div>
                     ) : (
                         <div className={styles.emptySource}>
-                            <strong>選擇或上傳一張圖片</strong>
-                            <span>可從素材庫選擇素材或上傳圖片。</span>
+                            <strong>選擇或上傳角色參考圖</strong>
+                            <span>角色參考圖是必要輸入，可從素材庫選擇或上傳圖片。</span>
                         </div>
                     )}
                     <div className={styles.sourceActions}>
@@ -776,6 +811,33 @@ export function ImageToImageWorkspace() {
                             {uploading ? "上傳中…" : "上傳圖片"}
                         </button>
                         <input ref={inputRef} className={styles.hiddenInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadSource(event)} />
+                    </div>
+                    <div className={styles.sourceActions} aria-labelledby="img2img-pose-reference-title">
+                        <div>
+                            <strong id="img2img-pose-reference-title">姿勢參考圖（選填）</strong>
+                            {poseReference && <span className={styles.helper}> {poseReference.name}</span>}
+                        </div>
+                        {poseReference && (
+                            <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => { setPoseReference(null); setJob(null); setError(""); }}
+                                disabled={active || uploading}
+                            >
+                                移除姿勢圖
+                            </button>
+                        )}
+                        <AssetPickerButton
+                            triggerId="img2img-pose-reference-picker"
+                            kind="image"
+                            selectedKeys={poseSelectedKey}
+                            label={poseReference ? "替換姿勢參考圖" : "選擇姿勢參考圖"}
+                            onSelect={selectPoseReference}
+                        />
+                        <button type="button" className={styles.secondaryButton} onClick={() => poseInputRef.current?.click()} disabled={uploading || active}>
+                            上傳姿勢參考圖
+                        </button>
+                        <input ref={poseInputRef} className={styles.hiddenInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadPoseReference(event)} />
                     </div>
                 </section>
 

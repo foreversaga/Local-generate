@@ -28,6 +28,7 @@ function validSingleInput(overrides = {}) {
     enforcePromptMaxChars: true,
     width: 736,
     height: 416,
+    duration: 5,
     steps: 20,
     seed: 12345,
     renderCount: 1,
@@ -274,6 +275,11 @@ test("the request forwards the normalized resolution that the UI displays", () =
   assert.equal(payload.height, finalResolution.height);
   assert.equal(payload.width, 2048);
   assert.equal(payload.height, 1536);
+});
+
+test("single render duration accepts 60 seconds and rejects values above the new maximum", () => {
+  assert.deepEqual(validateSingleRender(validSingleInput({ duration: 60 })), []);
+  assert.match(messages(validSingleInput({ duration: 60.5 }))[0], /60/);
 });
 
 test("ref2v request preserves video input and caps reference images at nine", () => {

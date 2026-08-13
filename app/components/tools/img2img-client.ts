@@ -67,6 +67,9 @@ export type Img2ImgJob = {
     stage: string;
     sourceName: string;
     sourceRoot: "input" | "output";
+    /** Optional pose/control reference image. The source image remains the required character reference. */
+    poseName?: string;
+    poseRoot?: "input" | "output";
     prompt: string;
     negativePrompt: string;
     model: string;
@@ -98,6 +101,9 @@ export type Img2ImgJob = {
 export type Img2ImgSubmitInput = {
     sourceName: string;
     sourceRoot: "input" | "output";
+    /** Optional pose/control reference image. The source image remains required. */
+    poseName?: string;
+    poseRoot?: "input" | "output";
     prompt: string;
     negativePrompt: string;
     model: string;

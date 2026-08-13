@@ -21,22 +21,14 @@ function promptFromRepairResult(value) {
   return String(value ?? "");
 }
 
-const I2VA_FIRST_LINE = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
-const INTEGRATED_FIELD = "integrated_multimodal_description:";
-
 /**
- * Fix deterministic contract mistakes without asking the model to rewrite
- * creative content. Gemma commonly merges the mandatory I2VA alignment line
- * into the first field even after a model-driven repair request.
+ * Keep this compatibility export for callers that used the former
+ * deterministic H3 wrapper. Prompt formatting is no longer a validation
+ * boundary, so normalization intentionally preserves the submitted text.
  */
 export function normalizeDeterministicH3Prompt(prompt, options = {}) {
-  const mode = normalizeH3Mode(options.mode ?? options.inputType ?? "t2v");
-  const value = String(prompt ?? "").trim();
-  if (mode !== "i2v" || !value) return value;
-  const mergedPrefix = `${INTEGRATED_FIELD} ${I2VA_FIRST_LINE}`;
-  if (!value.toLowerCase().startsWith(mergedPrefix.toLowerCase())) return value;
-  const body = value.slice(mergedPrefix.length).trimStart();
-  return `${I2VA_FIRST_LINE}\n\n${INTEGRATED_FIELD}${body ? ` ${body}` : ""}`;
+  normalizeH3Mode(options.mode ?? options.inputType ?? "t2v");
+  return String(prompt ?? "");
 }
 
 /**
@@ -91,21 +83,15 @@ export async function validateOrRepairH3Prompt(prompt, options = {}) {
   const validationHistory = [];
   const repairPrompts = [];
   let candidatePrompt = String(prompt ?? "");
-  let deterministicRepairs = 0;
 
   for (let repairAttempts = 0; ; repairAttempts += 1) {
-    const normalizedPrompt = normalizeDeterministicH3Prompt(candidatePrompt, { mode });
-    if (normalizedPrompt !== candidatePrompt) {
-      candidatePrompt = normalizedPrompt;
-      deterministicRepairs += 1;
-    }
     try {
       const result = validate(candidatePrompt, validationOptions);
       return {
         ...result,
-        repaired: repairAttempts > 0 || deterministicRepairs > 0,
+        repaired: repairAttempts > 0,
         repairAttempts,
-        deterministicRepairs,
+        deterministicRepairs: 0,
         ...(repairPrompts.length ? { repairPrompt: repairPrompts.at(-1), repairPrompts } : {}),
       };
     } catch (validationError) {

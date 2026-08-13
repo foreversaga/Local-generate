@@ -83,7 +83,7 @@ test("prompt field order and I2VA first line are stable", () => {
   const i2v = buildI2VAPrompt({ description: "continue" });
   assert.match(i2v, /^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot 1\]\) is fully referenced\./);
   validatePrompt(i2v, { mode: "i2v" });
-  assert.throws(() => validatePrompt("integrated_multimodal_description: walk\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A", { mode: "t2v" }), { code: "PROMPT_SHOT1_REQUIRED" });
+  assert.doesNotThrow(() => validatePrompt("integrated_multimodal_description: walk\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A", { mode: "t2v" }));
 });
 
 test("continuity bible preserves explicit face identity anchors and prompt builders reuse them", () => {
@@ -415,7 +415,7 @@ test("automatic planner repairs one invalid JSON response", async () => {
   assert.equal(plan.planMeta.repairAttempts, 1);
 });
 
-test("planner records malformed segment prompt fallback and keeps the emitted prompt valid", async () => {
+test("planner preserves malformed segment prompt text without format fallback", async () => {
   const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "manual", timelineText: "5s: first\n5s: second" }, {
     request: async () => ({
       continuityBible: {},
@@ -425,9 +425,9 @@ test("planner records malformed segment prompt fallback and keeps the emitted pr
       ],
     }),
   });
-  assert.equal(plan.segments[0].promptFallback.reasonCode, "PROMPT_SHOT1_REQUIRED");
-  assert.equal(plan.planMeta.promptFallbacks[0].segmentIndex, 0);
-  assert.doesNotThrow(() => validatePrompt(plan.segments[0].prompt, { mode: "t2v", duration: 5 }));
+  assert.equal(plan.segments[0].prompt, "integrated_multimodal_description: missing shot marker\n\noverall_soundscape: wind\n\nnon_diegetic_music: N/A");
+  assert.equal(plan.segments[0].promptFallback, undefined);
+  assert.equal(plan.planMeta.promptFallbacks, undefined);
 });
 
 test("planner accepts timeline-only text briefs", async () => {

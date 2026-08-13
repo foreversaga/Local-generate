@@ -143,29 +143,45 @@ test("Generate rejects unsafe character LoRA payloads before starting a job", as
   assert.equal(result.body.code, "CHARACTER_LORA_NAME_INVALID");
 });
 
-test("Ollama prompt output is validated and repaired once with low randomness", async () => {
+test("Ollama prompt output accepts malformed H3 structure without repair", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
     calls.push(body);
-    const response = calls.length === 1
-      ? "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A"
-      : VALID_T2V;
+    const response = "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A";
     return new Response(JSON.stringify({ response }), { status: 200 });
   };
   try {
     const result = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 5 });
     assert.equal(result.status, 200);
-    assert.equal(result.body.prompt, VALID_T2V);
+    assert.equal(result.body.prompt, "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A");
     const generationCalls = calls.filter((body) => body.prompt);
-    assert.equal(generationCalls.length, 2);
+    assert.equal(generationCalls.length, 1);
     assert.equal(generationCalls[0].options.temperature, 0.2);
-    assert.equal(generationCalls[1].options.temperature, 0.2);
-    assert.match(generationCalls[1].prompt, /VALIDATION_CONTRACT_START/);
-    assert.equal(calls.filter((body) => body.prompt === "").length, 2);
+    assert.equal(calls.filter((body) => typeof body.prompt === "string" && body.prompt.includes("VALIDATION_CONTRACT_START")).length, 0);
     assert.match(result.body.negativePrompt, /unwanted random text/);
     assert.doesNotMatch(result.body.negativePrompt, /, text,/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("single prompt duration accepts 60 seconds and rejects values above the maximum", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ response: VALID_T2V }), { status: 200 });
+  try {
+    const accepted = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 60 });
+    assert.equal(accepted.status, 200);
+
+    const rejected = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 60.5 });
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.body.code, "SINGLE_DURATION_INVALID");
+    assert.equal(rejected.body.details.max, 60);
+
+    const rejectedGeneration = await invoke("/api/generate", { prompt: VALID_T2V, mode: "t2v", duration: 60.5 });
+    assert.equal(rejectedGeneration.status, 400);
+    assert.equal(rejectedGeneration.body.code, "SINGLE_DURATION_INVALID");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -298,10 +314,10 @@ test("runtime endpoint switches atomically between local and Vast targets", asyn
   }
 });
 
-test("failed Ollama repairs return the last candidate and validation details", async () => {
+test("oversized Ollama prompts retain the size boundary and validation details", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
-  const invalid = "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A";
+  const invalid = "x".repeat(7001);
   globalThis.fetch = async (_url, init) => {
     calls.push(JSON.parse(init.body));
     return new Response(JSON.stringify({ response: invalid }), { status: 200 });
@@ -313,7 +329,7 @@ test("failed Ollama repairs return the last candidate and validation details", a
     assert.equal(result.body.candidatePrompt, invalid);
     assert.equal(result.body.details.candidatePrompt, invalid);
     assert.equal(result.body.details.repairAttempts, 2);
-    assert.equal(result.body.details.finalValidation.code, "PROMPT_SHOT1_REQUIRED");
+    assert.equal(result.body.details.finalValidation.code, "PROMPT_TOO_LONG");
     assert.equal(path.dirname(result.body.errorLog), bridgeLogRoot);
     const saved = (await readFile(result.body.errorLog, "utf8"))
       .trim()

@@ -1,3 +1,5 @@
+import { SINGLE_RENDER_DURATION_DEFAULT_SECONDS } from "./single-duration.mjs";
+
 export const SINGLE_CREATE_DRAFT_STORAGE_KEY = "h3-studio.single-create.draft.v1";
 
 const SINGLE_CREATE_DRAFT_VERSION = 1;
@@ -10,7 +12,7 @@ const DEFAULT_DRAFT = Object.freeze({
   modelProfile: "nvfp4_blackwell",
   width: 736,
   height: 416,
-  duration: 5,
+  duration: SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
   steps: 20,
   seed: 12345,
   renderCount: 1,

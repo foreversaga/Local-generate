@@ -11,6 +11,7 @@ const validT2V = [
   "non_diegetic_music: N/A",
 ].join("\n");
 const invalidT2V = "integrated_multimodal_description: A subject enters the room.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A";
+const tooLongPrompt = "x".repeat(7001);
 const i2vaFirstLine = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
 const mergedI2va = `integrated_multimodal_description: ${i2vaFirstLine}\n\n[Shot 1] The referenced subject walks forward.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A`;
 
@@ -26,7 +27,7 @@ test("does not call repair when the first validation succeeds", async () => {
   assert.equal(result.repairAttempts, 0);
 });
 
-test("repairs once and validates the repaired output", async () => {
+test("accepts malformed H3 structure without calling repair", async () => {
   let calls = 0;
   let request = "";
   const result = await validateOrRepairH3Prompt(invalidT2V, {
@@ -37,25 +38,20 @@ test("repairs once and validates the repaired output", async () => {
       request = repairPrompt;
       assert.equal(context.mode, "t2v");
       assert.equal(context.duration, 5);
-      assert.equal(context.firstValidation.code, "PROMPT_SHOT1_REQUIRED");
       return validT2V;
     },
   });
-  assert.equal(calls, 1);
-  assert.equal(result.repaired, true);
-  assert.equal(result.repairAttempts, 1);
-  assert.match(request, /VALIDATION_ERROR_UNTRUSTED_START/);
-  assert.match(request, /code=PROMPT_SHOT1_REQUIRED/);
-  assert.match(request, /mode=t2v/);
-  assert.match(request, /duration=5/);
-  assert.match(request, /ORIGINAL_PROMPT_UNTRUSTED_START/);
-  assert.match(request, /Only repair the H3 format contract/);
+  assert.equal(calls, 0);
+  assert.equal(request, "");
+  assert.equal(result.repaired, false);
+  assert.equal(result.repairAttempts, 0);
+  assert.equal(result.prompt, invalidT2V);
 });
 
-test("deterministically separates Gemma's merged I2VA alignment line", async () => {
+test("preserves merged I2VA text without deterministic format rewriting", async () => {
   let calls = 0;
   const normalized = normalizeDeterministicH3Prompt(mergedI2va, { mode: "i2v" });
-  assert.equal(normalized, `${i2vaFirstLine}\n\nintegrated_multimodal_description: [Shot 1] The referenced subject walks forward.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A`);
+  assert.equal(normalized, mergedI2va);
   const result = await validateOrRepairH3Prompt(mergedI2va, {
     mode: "i2v",
     duration: 5,
@@ -63,21 +59,21 @@ test("deterministically separates Gemma's merged I2VA alignment line", async () 
   });
   assert.equal(calls, 0);
   assert.equal(result.valid, true);
-  assert.equal(result.repaired, true);
+  assert.equal(result.repaired, false);
   assert.equal(result.repairAttempts, 0);
-  assert.equal(result.deterministicRepairs, 1);
-  assert.equal(result.prompt, normalized);
+  assert.equal(result.deterministicRepairs, 0);
+  assert.equal(result.prompt, mergedI2va);
 });
 
-test("repairs twice when the first repaired candidate is still invalid", async () => {
+test("repairs twice when a retained boundary remains invalid", async () => {
   let calls = 0;
-  const result = await validateOrRepairH3Prompt(invalidT2V, {
+  const result = await validateOrRepairH3Prompt(tooLongPrompt, {
     mode: "t2v",
     repair: async (_repairPrompt, context) => {
       calls += 1;
       assert.equal(context.attempt, calls);
       assert.equal(context.maxRepairAttempts, 2);
-      return calls === 1 ? invalidT2V : validT2V;
+      return calls === 1 ? tooLongPrompt : validT2V;
     },
   });
   assert.equal(calls, 2);
@@ -86,20 +82,20 @@ test("repairs twice when the first repaired candidate is still invalid", async (
   assert.equal(result.repairPrompts.length, 2);
 });
 
-test("stops after two repairs and retains the final candidate and validation errors", async () => {
+test("stops after two repairs and retains non-format validation errors", async () => {
   let calls = 0;
   await assert.rejects(
-    () => validateOrRepairH3Prompt(invalidT2V, {
+    () => validateOrRepairH3Prompt(tooLongPrompt, {
       mode: "t2v",
-      repair: async () => { calls += 1; return invalidT2V; },
+      repair: async () => { calls += 1; return tooLongPrompt; },
     }),
     (error) => {
       assert.equal(error.code, "PROMPT_REPAIR_FAILED");
-      assert.equal(error.details.firstValidation.code, "PROMPT_SHOT1_REQUIRED");
-      assert.equal(error.details.secondValidation.code, "PROMPT_SHOT1_REQUIRED");
-      assert.equal(error.details.finalValidation.code, "PROMPT_SHOT1_REQUIRED");
+      assert.equal(error.details.firstValidation.code, "PROMPT_TOO_LONG");
+      assert.equal(error.details.secondValidation.code, "PROMPT_TOO_LONG");
+      assert.equal(error.details.finalValidation.code, "PROMPT_TOO_LONG");
       assert.equal(error.details.validationHistory.length, 3);
-      assert.equal(error.details.candidatePrompt, invalidT2V);
+      assert.equal(error.details.candidatePrompt, tooLongPrompt);
       assert.equal(error.details.repairAttempts, 2);
       return true;
     },
