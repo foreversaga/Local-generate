@@ -190,6 +190,15 @@ function enumValue(value, allowed, field) {
   return value;
 }
 
+// WAI is the user-facing name for the existing Illustrious/WAI checkpoint
+// profile. Keep the persisted family canonical so older jobs and registry
+// consumers continue to use `illustrious` while accepting the concise API
+// alias at the boundary.
+export function normalizeTrainingFamily(value, field = 'family') {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : value;
+  return enumValue(normalized === 'wai' ? 'illustrious' : normalized, MODEL_FAMILIES, field);
+}
+
 export function normalizeJobCreate(input, { id = randomUUID(), now = new Date().toISOString() } = {}) {
   if (!input || Object.getPrototypeOf(input) !== Object.prototype) throw invalid('job request must be an object');
   const timestamp = new Date(now);
@@ -201,7 +210,7 @@ export function normalizeJobCreate(input, { id = randomUUID(), now = new Date().
     slug: normalizeSlug(input.slug),
     displayName: normalizeDisplayName(input.displayName),
     status: enumValue(input.status ?? 'draft', JOB_STATUSES, 'status'),
-    family: enumValue(input.family, MODEL_FAMILIES, 'family'),
+    family: normalizeTrainingFamily(input.family),
     captionReviewMode: enumValue(input.captionReviewMode ?? 'auto', CAPTION_REVIEW_MODES, 'captionReviewMode'),
     triggerWords: normalizeTriggerWords(input.triggerWords),
     assetIds: normalizeAssetIds(input.assetIds),
@@ -220,7 +229,7 @@ export function normalizeJobPatch(input) {
   if ('slug' in input) patch.slug = normalizeSlug(input.slug);
   if ('displayName' in input) patch.displayName = normalizeDisplayName(input.displayName);
   if ('status' in input) patch.status = enumValue(input.status, JOB_STATUSES, 'status');
-  if ('family' in input) patch.family = enumValue(input.family, MODEL_FAMILIES, 'family');
+  if ('family' in input) patch.family = normalizeTrainingFamily(input.family);
   if ('captionReviewMode' in input) patch.captionReviewMode = enumValue(input.captionReviewMode, CAPTION_REVIEW_MODES, 'captionReviewMode');
   if ('triggerWords' in input) patch.triggerWords = normalizeTriggerWords(input.triggerWords);
   if ('assetIds' in input) patch.assetIds = normalizeAssetIds(input.assetIds);
@@ -240,7 +249,7 @@ export function normalizeJobRecord(input) {
     slug: normalizeSlug(input.slug),
     displayName: normalizeDisplayName(input.displayName),
     status: enumValue(input.status, JOB_STATUSES, 'status'),
-    family: enumValue(input.family, MODEL_FAMILIES, 'family'),
+    family: normalizeTrainingFamily(input.family),
     captionReviewMode: enumValue(input.captionReviewMode, CAPTION_REVIEW_MODES, 'captionReviewMode'),
     triggerWords: normalizeTriggerWords(input.triggerWords),
     assetIds: normalizeAssetIds(input.assetIds),

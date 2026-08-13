@@ -2,7 +2,7 @@ import path from 'node:path';
 import { access, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { API_ERROR_CODES, LoraTrainingError } from './schema.mjs';
+import { API_ERROR_CODES, LoraTrainingError, normalizeTrainingFamily } from './schema.mjs';
 import { ensureLoraTrainingLayout, getJobPaths, LORA_PATHS, resolveSafeChild } from './paths.mjs';
 import { atomicWriteJson, createJobStore, withStorageLock } from './store.mjs';
 import { createRegistryStore } from './registry.mjs';
@@ -740,6 +740,7 @@ export function createLoraTrainingService(options = {}) {
 
   async function health({ family = 'sdxl', baseProfile } = {}) {
     await initialize();
+    family = normalizeTrainingFamily(family);
     // Never route any Z-Image health request through the legacy SDXL
     // preflight, including malformed/missing baseProfile requests.
     if (family === 'z-image') {
@@ -785,7 +786,12 @@ export function createLoraTrainingService(options = {}) {
 
   async function queueSnapshot() { await initialize(); return queue.snapshot(); }
   async function drainQueue() { await initialize(); return queue.drain(); }
-  async function listRegistry(filters) { await initialize(); return registry.list(filters); }
+  async function listRegistry(filters = {}) {
+    await initialize();
+    const normalizedFilters = { ...filters };
+    if (filters.family) normalizedFilters.family = normalizeTrainingFamily(filters.family);
+    return registry.list(normalizedFilters);
+  }
   async function getRegistry(id) { await initialize(); return registry.get(id); }
 
   return Object.freeze({

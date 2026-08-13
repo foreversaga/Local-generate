@@ -385,6 +385,18 @@ function envValue(env, names) {
   return [undefined, undefined];
 }
 
+function aiToolkitRuntimeEnv(env) {
+  const [ffmpegBin] = envValue(env, ['MINIMAX_H3_AI_TOOLKIT_FFMPEG_BIN', 'AI_TOOLKIT_FFMPEG_BIN']);
+  if (!ffmpegBin) return {};
+  const inheritedPath = [env?.PATH, env?.Path, process.env.PATH, process.env.Path]
+    .find((value) => typeof value === 'string' && value.trim()) ?? '';
+  const nextPath = [ffmpegBin, inheritedPath].filter(Boolean).join(path.delimiter);
+  return {
+    PATH: nextPath,
+    ...(env?.Path !== undefined || process.env.Path !== undefined ? { Path: nextPath } : {}),
+  };
+}
+
 function configSection(request) {
   const section = request.zImageConfig ?? request.zImage ?? request.aiToolkit ?? {};
   return plainObject(section, 'zImageConfig');
@@ -777,6 +789,7 @@ export async function writeZImageTrainingConfig(config, configPath, { mkdirImpl 
 
 export async function resolveZImageTrainingCommand(request = {}, options = {}) {
   const built = await buildZImageTrainingConfig(request, options);
+  const runtimeEnv = options.env ?? process.env;
   if (built.datasetAdapterEntries) {
     await writeZImageDatasetAdapter(built.datasetAdapterEntries, built.datasetAdapterPath, options);
   }
@@ -806,6 +819,7 @@ export async function resolveZImageTrainingCommand(request = {}, options = {}) {
       HF_HUB_DISABLE_TELEMETRY: '1',
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
+      ...aiToolkitRuntimeEnv(runtimeEnv),
     }),
     provenance: Object.freeze({
       backend: 'ai-toolkit',

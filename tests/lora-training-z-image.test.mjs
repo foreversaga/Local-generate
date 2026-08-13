@@ -111,6 +111,26 @@ test('builds a local AI Toolkit Z-Image config and shell:false argv', async () =
   }
 });
 
+test('prepends the configured AI Toolkit FFmpeg directory without replacing PATH', async () => {
+  const fixture = await fixtureRoot();
+  const inheritedPath = ['C:\\Windows\\System32', 'C:\\Windows'].join(path.delimiter);
+  const ffmpegBin = 'C:\\ai-toolkit\\runtime\\ffmpeg\\bin';
+  try {
+    const resolved = await resolveZImageTrainingCommand({
+      family: 'z-image', baseProfile: 'z-image-turbo', preset: 'z-image', python: 'python',
+      aiToolkitRoot: fixture.toolkit, baseModelPath: fixture.model, extrasPath: fixture.model,
+      tokenizerPath: fixture.tokenizer, assistantLoraPath: fixture.adapter,
+      datasetDirectory: fixture.dataset, outputDirectory: fixture.output, outputName: 'ffmpeg-path',
+      triggerWords: ['zeta'],
+    }, { env: { MINIMAX_H3_AI_TOOLKIT_FFMPEG_BIN: ffmpegBin, PATH: inheritedPath, Path: inheritedPath } });
+    const expected = `${ffmpegBin}${path.delimiter}${inheritedPath}`;
+    assert.equal(resolved.env.PATH, expected);
+    assert.equal(resolved.env.Path, expected);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('rejects remote or unknown ComfyUI model formats before command creation', async () => {
   const fixture = await fixtureRoot();
   const common = {

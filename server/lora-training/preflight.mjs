@@ -1,7 +1,7 @@
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { API_ERROR_CODES, LoraTrainingError, MODEL_FAMILIES, invalid, normalizeSlug, normalizeUuid } from './schema.mjs';
+import { API_ERROR_CODES, LoraTrainingError, MODEL_FAMILIES, invalid, normalizeSlug, normalizeTrainingFamily, normalizeUuid } from './schema.mjs';
 import { LORA_PATHS } from './paths.mjs';
 import { datasetService } from './dataset.mjs';
 import { TRAINING_PARAMETER_ALIASES, TRAINING_PARAMETER_KEYS, resolveTrainingParameters } from './presets.mjs';
@@ -52,8 +52,7 @@ export function createPreflightService({
 
   async function validateConfig(job, config = job?.config ?? {}) {
     if (!job) throw invalid('job is required');
-    const family = config.family ?? job.family;
-    if (!MODEL_FAMILIES.includes(family)) throw invalid('family is unsupported', { allowed: MODEL_FAMILIES });
+    const family = normalizeTrainingFamily(config.family ?? job.family);
     const preset = config.presetId ?? config.preset ?? family;
     try {
       const zImage = family === 'z-image';
@@ -93,8 +92,7 @@ export function createPreflightService({
   async function run(job, config = job?.config ?? {}) {
     if (!job) throw invalid('job is required');
     const jobId = normalizeUuid(job.id, 'jobId');
-    const family = config.family ?? job.family;
-    if (!MODEL_FAMILIES.includes(family)) throw invalid('family is unsupported', { allowed: MODEL_FAMILIES });
+    const family = normalizeTrainingFamily(config.family ?? job.family);
     const resolvedConfig = await validateConfig(job, config);
     const checks = [];
     let manifest;

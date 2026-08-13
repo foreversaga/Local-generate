@@ -219,7 +219,12 @@ export function ImageToImageWorkspace() {
     const [seed, setSeed] = useState("12345");
     const [characterLoraName, setCharacterLoraName] = useState("");
     const [characterLoraStrength, setCharacterLoraStrength] = useState("0.75");
-    const [characterLoraRegistry, setCharacterLoraRegistry] = useState<{ model: ModelValue; values: string[] }>(() => ({
+    const [characterLoraRegistry, setCharacterLoraRegistry] = useState<{
+        model: ModelValue;
+        values: string[];
+        status: "idle" | "loading" | "ready" | "empty" | "error";
+        error?: string;
+    }>(() => ({
         model: IMG2IMG_MODELS[0].value,
         values: [],
     }));
@@ -239,13 +244,13 @@ export function ImageToImageWorkspace() {
     const [uploading, setUploading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [retrying, setRetrying] = useState(false);
+        status: "idle",
     const [cancelling, setCancelling] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
     const [submitAttempted, setSubmitAttempted] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const loraRequestIdRef = useRef(0);
-    const registryLoraSelectionRef = useRef(false);
 
     const updateBaseValue = useCallback((key: BaseValueKey, value: string | number) => {
         const next = String(value);
@@ -321,10 +326,20 @@ export function ImageToImageWorkspace() {
         let active = true;
         void fetchImg2ImgLoras(model)
             .then((values) => {
-                if (active && loraRequestIdRef.current === requestId) setCharacterLoraRegistry({ model, values });
+                if (!active || loraRequestIdRef.current !== requestId) return;
+                setCharacterLoraRegistry({ model, values, status: values.length ? "ready" : "empty" });
+                setCharacterLoraName((current) => current && values.includes(current) ? current : "");
             })
-            .catch(() => {
-                if (active && loraRequestIdRef.current === requestId) setCharacterLoraRegistry({ model, values: [] });
+            .catch((reason) => {
+                if (active && loraRequestIdRef.current === requestId) {
+                    setCharacterLoraRegistry({
+                        model,
+                        values: [],
+                        status: "error",
+                        error: errorMessage(reason, "Unable to load available character LoRAs."),
+                    });
+                    setCharacterLoraName("");
+                }
             });
         return () => {
             active = false;
@@ -414,6 +429,10 @@ export function ImageToImageWorkspace() {
     const readinessBlockingMessage = !modelRuntimeReady
         ? LOCAL_ONLY_MODEL_MESSAGE
         : characterLoraReadinessMessage || (health ? img2ImgReadinessMessage(health, model) : "");
+    const characterLoraDiscoveryStatus = characterLoraRegistry.model === model
+        ? characterLoraRegistry.status === "idle" ? "loading" : characterLoraRegistry.status
+        : "loading";
+    const characterLoraDiscoveryError = characterLoraRegistry.model === model ? characterLoraRegistry.error : undefined;
     const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選模型設定檔均可用。" : "尚未取得 ComfyUI 檢查結果；提交時會再次檢查。 ");
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
@@ -474,10 +493,7 @@ export function ImageToImageWorkspace() {
 
     function updateModel(value: ModelValue) {
         const next = modelOption(value) || DEFAULT_IMG2IMG_MODEL;
-        if (next.value !== model && registryLoraSelectionRef.current) {
-            registryLoraSelectionRef.current = false;
-            setCharacterLoraName("");
-        }
+        if (next.value !== model) setCharacterLoraName("");
         setModel(next.value);
         setDenoise(next.denoise);
         setSteps(next.steps);
@@ -821,29 +837,27 @@ export function ImageToImageWorkspace() {
                         <span>角色 LoRA <em>（選填）</em></span>
                         <input
                             id="img2img-character-lora"
-                            type="text"
-                            list="img2img-character-lora-options"
                             value={characterLoraName}
-                            disabled={active}
-                            aria-describedby={`img2img-character-lora-help${characterLoraNameIssue ? " img2img-character-lora-error" : ""}`}
+                            disabled={active || characterLoraDiscoveryStatus === "loading"}
+                            aria-describedby={`img2img-character-lora-help${characterLoraDiscoveryError ? " img2img-character-lora-discovery-error" : characterLoraNameIssue ? " img2img-character-lora-error" : ""}`}
                             aria-invalid={Boolean(characterLoraNameIssue)}
-                            onChange={(event) => {
-                                registryLoraSelectionRef.current = characterLoraOptions.includes(event.target.value);
-                                setCharacterLoraName(event.target.value);
-                            }}
-                        />
-                        <datalist id="img2img-character-lora-options">
-                            {characterLoraOptions.map((name) => <option key={name} value={name} />)}
-                        </datalist>
+                            onChange={(event) => setCharacterLoraName(event.target.value)}
+                        >
+                            <option value="">不使用角色 LoRA</option>
+                            {characterLoraDiscoveryStatus === "loading" && <option value="" disabled>正在載入角色 LoRA…</option>}
+                            {characterLoraOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                            {characterLoraDiscoveryStatus === "empty" && <option value="" disabled>目前沒有可用的角色 LoRA</option>}
+                            {characterLoraDiscoveryStatus === "error" && <option value="" disabled>無法載入角色 LoRA</option>}
+                        </select>
                         <small id="img2img-character-lora-help">
                             {selectedModel?.loraHint || "請選擇以此模型系列訓練的 LoRA；Wan2.2 Animate LoRA 不相容。"}
-                            {characterLoraOptions.length ? " 已找到的 LoRA 僅供選擇，也可以手動輸入相對路徑。" : "目前無法探索 LoRA，請手動輸入 models/loras 下的相對路徑。"}
+                            {characterLoraDiscoveryStatus === "loading" ? " 正在探索既有角色 LoRA…" : characterLoraOptions.length ? " 請從既有角色 LoRA 清單選擇。" : "目前沒有可用角色 LoRA；可直接不使用此設定。"}
                         </small>
                         {characterLoraNameIssue && <small id="img2img-character-lora-error" className={styles.error} role="alert">{characterLoraNameIssue}</small>}
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.loraStrength} <strong>{characterLoraStrength.trim() ? Number(characterLoraStrength).toFixed(2) : "—"}</strong></span>
-                        <input
+                        <select
                             id="img2img-character-lora-strength"
                             type="number"
                             min="0"
@@ -877,6 +891,7 @@ export function ImageToImageWorkspace() {
                         <span>{FIELD_LABELS.seed}</span>
                         <input id="img2img-seed" type="number" min="0" max="2147483647" step="1" value={seed} disabled={active || Number(batchCount) > 1} onChange={(event) => updateBaseValue("seed", event.target.value)} aria-describedby="img2img-seed-help" />
                         <button
+                        {characterLoraDiscoveryError && <small id="img2img-character-lora-discovery-error" className={styles.error} role="status">{characterLoraDiscoveryError} 可先不使用角色 LoRA，或稍後重試。</small>}
                             type="button"
                             className={styles.secondaryButton}
                             onClick={randomizeSeed}

@@ -78,6 +78,19 @@ test('maps every UI training override to the sd-scripts CLI', async () => {
   assert.ok(command.args.includes('--enable_bucket'));
 });
 
+test('accepts WAI as the user-facing alias for Illustrious training', async () => {
+  const resolved = await resolveTrainingParameters({ preset: 'wai-character-balanced', family: 'wai', parameters: {} });
+  assert.equal(resolved.preset, 'illustrious');
+  assert.equal(resolved.selectedPreset, 'wai-character-balanced');
+  const command = await resolveTrainingCommand({
+    ...COMMAND_REQUEST,
+    preset: 'wai-character-balanced',
+    family: 'wai',
+  });
+  assert.equal(command.preset, 'illustrious');
+  assert.equal(command.selectedPreset, 'wai-character-balanced');
+});
+
 test('preserves a resolver-approved PATH command instead of resolving it as a local path', async () => {
   const command = await resolveTrainingCommand({ ...COMMAND_REQUEST, python: 'python3' });
   assert.equal(command.command, 'python3');

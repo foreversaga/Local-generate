@@ -122,6 +122,16 @@ export type Img2ImgApiPayload = {
 
 export type Img2ImgLoraPayload = {
     loras?: string[];
+    /** Structured entries are optional for backwards-compatible bridge responses. */
+    items?: Array<{
+        id?: string | null;
+        name?: string;
+        relativePath?: string;
+        displayName?: string;
+        family?: string | null;
+        baseProfile?: string | null;
+        comfyLoaded?: boolean;
+    }>;
     available?: boolean;
     error?: string | { code?: string; message?: string };
     code?: string;
@@ -191,7 +201,15 @@ export async function submitImg2Img(input: Img2ImgSubmitInput) {
 export async function fetchImg2ImgLoras(modelOrProfile: string) {
     const response = await fetch(`${BRIDGE_URL}/api/loras?consumer=img2img&profile=${encodeURIComponent(modelOrProfile)}`, { cache: "no-store" });
     const payload = await response.json().catch(() => ({})) as Img2ImgLoraPayload;
-    if (!response.ok || !Array.isArray(payload.loras)) return [];
+    if (!response.ok) {
+        throw new Img2ImgApiError(apiErrorMessage(payload, "Unable to load available character LoRAs."), response.status, payload);
+    }
+    if (payload.available === false) {
+        throw new Img2ImgApiError(apiErrorMessage(payload, "Character LoRA discovery is unavailable."), 503, payload);
+    }
+    if (!Array.isArray(payload.loras)) {
+        throw new Img2ImgApiError("Character LoRA discovery returned an invalid response.", 502, payload);
+    }
     return payload.loras.filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
 }
 

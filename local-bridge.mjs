@@ -1812,6 +1812,7 @@ function characterLoraOptions(objectInfo) {
       }
       const lower = safeValue.toLowerCase();
       if (!safeValue || BUILTIN_ANIMATE_LORAS.has(lower) || lower.includes("lightx2v") || lower.includes("relight") || seen.has(lower)) return false;
+  if (family === "wai") return "illustrious";
       seen.add(lower);
       return true;
     });
@@ -1858,6 +1859,7 @@ function normalizeLoraConsumerFilter(value) {
 function registryConsumerMetadata(item) {
   const consumers = [];
   if (item.family === "wan22-animate") consumers.push("single-replace");
+  if (!objectInfo) return { loras: [], items: [], available: false, registryVersion: 0 };
   if (["sdxl", "illustrious", "sd15", "z-image"].includes(item.family)) consumers.push("img2img");
   return consumers;
 }
@@ -2266,6 +2268,34 @@ function nonEmptyLoraTriggerWords(value) {
   const normalized = values
     .map((word) => typeof word === "string" ? word.trim() : word)
     .filter((word) => typeof word !== "string" || word.length > 0);
+function normalizeTrainableFamily(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "wai" ? "illustrious" : normalized;
+}
+
+export function resolveLoraTrainingHealthRequest(searchParams) {
+  const family = searchParams.has("family")
+    ? normalizeTrainableFamily(searchParams.get("family"))
+    : "sdxl";
+  if (!Object.hasOwn(TRAINABLE_LORA_BASE_PROFILES, family)) {
+    throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
+      status: 400,
+      details: { field: "family", allowed: Object.keys(TRAINABLE_LORA_BASE_PROFILES) },
+    });
+  }
+  const baseProfile = searchParams.has("baseProfile")
+    ? String(searchParams.get("baseProfile") || "").trim()
+    : TRAINABLE_LORA_BASE_PROFILES[family];
+  const allowedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[family];
+  if (baseProfile !== allowedBaseProfile) {
+    throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
+      status: 400,
+      details: { field: "baseProfile", family, allowed: [allowedBaseProfile] },
+    });
+  }
+  return { family, baseProfile };
+}
+
   return normalized.length ? normalized : null;
 }
 
@@ -2295,15 +2325,17 @@ export function resolveLoraTriggerWords(body = {}, config = body?.config || {}) 
 }
 
 function normalizeTrainableLoraConfig(config = {}, family = config?.family) {
-  const requestedFamily = String(family || config?.family || "").trim().toLowerCase();
-  const configFamily = config?.family === undefined ? undefined : String(config.family || "").trim().toLowerCase();
+  const requestedFamily = normalizeTrainableFamily(family || config?.family);
+  const configFamily = config?.family === undefined ? undefined : normalizeTrainableFamily(config.family);
   if (requestedFamily && configFamily && requestedFamily !== configFamily) {
     throw new LoraTrainingError("INVALID_REQUEST", "family does not match the selected training family", {
       status: 400,
       details: { field: "family", requestedFamily, configFamily },
     });
   }
-  if (requestedFamily !== "z-image") return config;
+  if (requestedFamily !== "z-image") {
+    return requestedFamily ? { ...config, family: requestedFamily } : config;
+  }
   const expectedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[requestedFamily];
   const requestedBaseProfile = config?.baseProfile === undefined
     ? expectedBaseProfile
@@ -2360,25 +2392,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
     const service = await getLoraTrainingService();
     const controller = loraServiceController(service);
     if (req.method === "GET" && pathname === "/api/lora-training/health") {
-      const family = requestUrl.searchParams.has("family")
-        ? String(requestUrl.searchParams.get("family") || "").trim().toLowerCase()
-        : "sdxl";
-      if (!Object.hasOwn(TRAINABLE_LORA_BASE_PROFILES, family)) {
-        throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
-          status: 400,
-          details: { field: "family", allowed: Object.keys(TRAINABLE_LORA_BASE_PROFILES) },
-        });
-      }
-      const baseProfile = requestUrl.searchParams.has("baseProfile")
-        ? String(requestUrl.searchParams.get("baseProfile") || "").trim()
-        : TRAINABLE_LORA_BASE_PROFILES[family];
-      const allowedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[family];
-      if (baseProfile !== undefined && baseProfile !== allowedBaseProfile) {
-        throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
-          status: 400,
-          details: { field: "baseProfile", family, allowed: [allowedBaseProfile] },
-        });
-      }
+      const { family, baseProfile } = resolveLoraTrainingHealthRequest(requestUrl.searchParams);
       const healthResult = typeof service.health === "function"
         ? await service.health({ family, ...(baseProfile ? { baseProfile } : {}) })
         : { available: true };

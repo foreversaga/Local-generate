@@ -1,4 +1,4 @@
-import { API_ERROR_CODES, LoraTrainingError, invalid, normalizeRevision, normalizeUuid } from './schema.mjs';
+import { API_ERROR_CODES, LoraTrainingError, invalid, normalizeRevision, normalizeTrainingFamily, normalizeUuid } from './schema.mjs';
 import { jobStore } from './store.mjs';
 import { datasetService } from './dataset.mjs';
 import { captionService } from './captioner.mjs';
@@ -80,10 +80,11 @@ export function createLoraTrainingController({
 
   async function create(request) {
     if (!request || typeof request !== 'object') throw invalid('job request must be an object');
+    const family = normalizeTrainingFamily(request.family);
     const job = await store.createJob({
-      slug: request.slug, displayName: request.displayName, family: request.family,
+      slug: request.slug, displayName: request.displayName, family,
       captionReviewMode: request.captionReviewMode ?? 'auto', triggerWords: request.triggerWords,
-      assetIds: request.assetIds ?? request.sourceAssetIds ?? [], config: { ...(request.config ?? {}), family: request.family },
+      assetIds: request.assetIds ?? request.sourceAssetIds ?? [], config: { ...(request.config ?? {}), family },
       provenance: { ...(request.provenance ?? {}), sourceAssets: request.assetIds ?? request.sourceAssetIds ?? [] },
     });
     if (request.images?.length) await dataset.importImages(job.id, request.images, { resolver: resolveSource });
@@ -97,7 +98,11 @@ export function createLoraTrainingController({
     return { job, dataset: manifest, captions: summary(captionManifest.records, manifest.images.length), queuePosition: queue?.position?.(job.id) ?? null };
   }
 
-  async function list(filters = {}) { return store.listJobs(filters); }
+  async function list(filters = {}) {
+    const normalizedFilters = { ...filters };
+    if (filters.family) normalizedFilters.family = normalizeTrainingFamily(filters.family);
+    return store.listJobs(normalizedFilters);
+  }
 
   async function createAndStart(request) {
     const created = await create(request);

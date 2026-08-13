@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { resolveZImageTrainingCommand, resolveZImageTrainingParameters } from './backends/z-image-ai-toolkit.mjs';
+import { normalizeTrainingFamily } from './schema.mjs';
 
 const PRESET_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'presets');
 export const PRESET_ALIASES = Object.freeze({
@@ -11,6 +12,10 @@ export const PRESET_ALIASES = Object.freeze({
   illustrious: 'illustrious',
   'illustrious-character-balanced': 'illustrious',
   'illustrious-style-balanced': 'illustrious',
+  // WAI is the product-facing name for the existing Illustrious preset.
+  wai: 'illustrious',
+  'wai-character-balanced': 'illustrious',
+  'wai-style-balanced': 'illustrious',
   'z-image': 'z-image',
   'z-image-turbo': 'z-image',
 });
@@ -139,12 +144,14 @@ function presetFamily(preset) {
  */
 export async function resolveTrainingParameters({ preset, family, parameters = {} } = {}, options = {}) {
   const loaded = await loadPreset(preset, options);
-  if (loaded.canonicalId === 'z-image') return resolveZImageTrainingParameters({ family, preset: loaded.selectedId, parameters });
-  return resolveLoadedTrainingParameters(loaded, { family, parameters });
+  const normalizedFamily = family === undefined ? undefined : normalizeTrainingFamily(family);
+  if (loaded.canonicalId === 'z-image') return resolveZImageTrainingParameters({ family: normalizedFamily, preset: loaded.selectedId, parameters });
+  return resolveLoadedTrainingParameters(loaded, { family: normalizedFamily, parameters });
 }
 
 function resolveLoadedTrainingParameters(loaded, { family, parameters = {} } = {}) {
-  if (family !== undefined && family !== presetFamily(loaded)) {
+  const normalizedFamily = family === undefined ? undefined : normalizeTrainingFamily(family);
+  if (normalizedFamily !== undefined && normalizedFamily !== presetFamily(loaded)) {
     throw new TypeError(`preset ${loaded.selectedId} is incompatible with family ${family}`);
   }
   const normalized = normalizeTrainingParameters(parameters);
