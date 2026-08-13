@@ -66,6 +66,11 @@ const loraObjectInfo = {
   LoraLoaderModelOnly: { input: { required: { model: ["MODEL"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"] } } },
 };
 
+const windowsLoraObjectInfo = {
+  ...currentObjectInfo,
+  LoraLoader: { input: { required: { lora_name: [["trained\\girl2d.safetensors"]] } } },
+};
+
 const zImageObjectInfo = {
   LoadImage: {},
   VAEEncode: {},
@@ -440,6 +445,117 @@ test("remote controller uploads, generates, downloads, and registers an image", 
     assert.equal(job.output.name, "img2img/source-12345678.png");
     assert.deepEqual([...await readFile(path.join(outputRoot, job.output.name))], [137, 80, 78, 71, 13, 10]);
     assert.ok(calls.some((item) => item.startsWith("/view?")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local controller submits the exact Windows ComfyUI LoRA token", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-windows-lora-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  const artifactName = "img2img/windows-lora.png";
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(path.join(outputRoot, "img2img"), { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  await writeFile(path.join(outputRoot, artifactName), Buffer.from([137, 80, 78, 71]));
+  let submittedGraph = null;
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://windows-comfy", "");
+    if (endpoint === "/system_stats") return new Response("{}");
+    if (endpoint === "/object_info") return new Response(JSON.stringify(windowsLoraObjectInfo));
+    if (endpoint === "/prompt") {
+      submittedGraph = JSON.parse(init.body).prompt;
+      return new Response(JSON.stringify({ prompt_id: "windows-lora-prompt" }));
+    }
+    if (endpoint === "/history/windows-lora-prompt") return new Response(JSON.stringify({
+      "windows-lora-prompt": {
+        status: { status_str: "success", completed: true },
+        outputs: { "8": { images: [{ filename: "windows-lora.png", subfolder: "img2img", type: "output" }] } },
+      },
+    }));
+    throw new Error("Unexpected endpoint: " + endpoint);
+  };
+  try {
+    const controller = createImg2ImgController({
+      comfyUrl: "http://windows-comfy",
+      inputRoot,
+      outputRoot,
+      storeRoot: path.join(root, "records"),
+      fetchImpl,
+      pollIntervalMs: 1,
+      idFactory: () => "windows-lora-job",
+      toAsset: (_root, name) => ({ root: "output", name, kind: "image" }),
+    });
+    const queued = await controller.enqueue({
+      sourceName: "source.png",
+      prompt: "anime portrait",
+      model: WAI_MODEL,
+      characterLoraName: "trained/girl2d.safetensors",
+      characterLoraStrength: 0.75,
+    });
+    let job = queued;
+    for (let count = 0; count < 100 && !["completed", "failed"].includes(job.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      job = await controller.getJob(queued.id);
+    }
+    assert.equal(job.status, "completed", job.error);
+    assert.equal(job.characterLoraName, "trained/girl2d.safetensors");
+    assert.equal(submittedGraph["9"].inputs.lora_name, "trained\\girl2d.safetensors");
+    assert.equal(job.output.name, artifactName);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("controller preserves actionable ComfyUI node validation details", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-node-errors-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  const fetchImpl = async (url) => {
+    const endpoint = String(url).replace("http://error-comfy", "");
+    if (endpoint === "/system_stats") return new Response("{}");
+    if (endpoint === "/object_info") return new Response(JSON.stringify(currentObjectInfo));
+    if (endpoint === "/prompt") return new Response(JSON.stringify({
+      error: { message: "Prompt outputs failed validation" },
+      node_errors: {
+        "9": {
+          class_type: "LoraLoader",
+          errors: [{
+            message: "Value not in list",
+            extra_info: {
+              input_name: "lora_name",
+              received_value: "trained/girl2d.safetensors",
+            },
+          }],
+        },
+      },
+    }), { status: 400 });
+    throw new Error("Unexpected endpoint: " + endpoint);
+  };
+  try {
+    const controller = createImg2ImgController({
+      comfyUrl: "http://error-comfy",
+      inputRoot,
+      outputRoot,
+      storeRoot: path.join(root, "records"),
+      fetchImpl,
+      pollIntervalMs: 1,
+      idFactory: () => "node-error-job",
+    });
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "portrait" });
+    let job = queued;
+    for (let count = 0; count < 100 && !["completed", "failed"].includes(job.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      job = await controller.getJob(queued.id);
+    }
+    assert.equal(job.status, "failed");
+    assert.match(job.error, /Prompt outputs failed validation/);
+    assert.match(job.error, /LoraLoader\.lora_name: Value not in list/);
+    assert.match(job.error, /trained\/girl2d\.safetensors/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

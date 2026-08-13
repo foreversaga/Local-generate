@@ -123,6 +123,39 @@ function errorMessage(error, fallback = "Image-to-image generation failed.") {
   return String(value || fallback).replace(/[\r\n]+/g, " ").slice(0, 1200);
 }
 
+function compactComfyValue(value) {
+  let text;
+  try {
+    text = JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  if (!text) return "";
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
+
+function comfyRequestErrorMessage(payload, fallback) {
+  const primary = errorMessage(payload?.error || payload?.message || payload?.raw || fallback);
+  const nodeErrors = payload?.node_errors;
+  if (!nodeErrors || typeof nodeErrors !== "object" || Array.isArray(nodeErrors)) return primary;
+  const details = [];
+  for (const [nodeId, nodeError] of Object.entries(nodeErrors)) {
+    const classType = String(nodeError?.class_type || `node ${nodeId}`);
+    for (const issue of Array.isArray(nodeError?.errors) ? nodeError.errors : []) {
+      const inputName = String(issue?.extra_info?.input_name || "").trim();
+      const label = inputName ? `${classType}.${inputName}` : classType;
+      const message = errorMessage(issue, String(issue?.type || "validation failed"));
+      const received = Object.prototype.hasOwnProperty.call(issue?.extra_info || {}, "received_value")
+        ? compactComfyValue(issue.extra_info.received_value)
+        : "";
+      details.push(`${label}: ${message}${received ? ` (received ${received})` : ""}`);
+      if (details.length >= 4) break;
+    }
+    if (details.length >= 4) break;
+  }
+  return details.length ? `${primary} — ${[...new Set(details)].join("; ")}` : primary;
+}
+
 function inside(root, candidate) {
   const absoluteRoot = path.resolve(root);
   const absoluteCandidate = path.resolve(candidate);
@@ -183,6 +216,15 @@ export function normalizeCharacterLoraStrength(value, fallback = 0.75) {
     throw makeError("Character LoRA strength must be a finite number between 0 and 2.", 400, "CHARACTER_LORA_STRENGTH_INVALID");
   }
   return number;
+}
+
+function preserveCharacterLoraLoaderName(value) {
+  if (typeof value !== "string") {
+    throw makeError("Character LoRA loader name must be a string.", 400, "CHARACTER_LORA_NAME_INVALID");
+  }
+  const loaderName = value.trim();
+  normalizeCharacterLoraName(loaderName);
+  return loaderName;
 }
 
 function sanitizePrefix(value) {
@@ -329,6 +371,7 @@ export function buildImg2ImgPrompt({
   negativePrompt = "",
   model = IMG2IMG_MODELS[0],
   characterLoraName,
+  characterLoraLoaderName,
   characterLoraStrength,
   denoise,
   steps,
@@ -342,6 +385,12 @@ export function buildImg2ImgPrompt({
   if (!profile) throw unsupportedModelError(model);
   const parameters = boundedModelParameters(profile, { denoise, steps, cfg, seed });
   const loraName = normalizeCharacterLoraName(characterLoraName);
+  const loraLoaderName = loraName
+    ? preserveCharacterLoraLoaderName(characterLoraLoaderName || characterLoraName)
+    : "";
+  if (loraName && normalizeCharacterLoraName(loraLoaderName).toLowerCase() !== loraName.toLowerCase()) {
+    throw makeError("Character LoRA loader name does not match the selected LoRA.", 400, "CHARACTER_LORA_NAME_MISMATCH");
+  }
   const loraStrength = loraName ? normalizeCharacterLoraStrength(characterLoraStrength) : null;
   const cleanNegative = String(negativePrompt || "").trim();
   const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
@@ -377,7 +426,7 @@ export function buildImg2ImgPrompt({
         inputs: {
           model: link(1),
           clip: link(1, 1),
-          lora_name: loraName,
+          lora_name: loraLoaderName,
           strength_model: loraStrength,
           strength_clip: loraStrength,
         },
@@ -427,7 +476,7 @@ export function buildImg2ImgPrompt({
         class_type: "LoraLoaderModelOnly",
         inputs: {
           model: link(1),
-          lora_name: loraName,
+          lora_name: loraLoaderName,
           strength_model: loraStrength,
         },
       };
@@ -445,6 +494,25 @@ function comboValues(nodeInfo, key) {
   if (Array.isArray(choices)) return choices.map(String);
   if (choices && typeof choices === "object" && Array.isArray(choices.value)) return choices.value.map(String);
   return [];
+}
+
+function resolveCharacterLoraLoaderName(objectInfo, profile, value) {
+  const normalized = normalizeCharacterLoraName(value);
+  if (!normalized) return "";
+  const choices = comboValues(objectInfo?.[profile?.loraLoader], "lora_name");
+  const loaderName = choices.find((choice) => {
+    try {
+      return normalizeCharacterLoraName(choice).toLowerCase() === normalized.toLowerCase();
+    } catch {
+      return false;
+    }
+  });
+  if (loaderName) return preserveCharacterLoraLoaderName(loaderName);
+  throw makeError(
+    `Character LoRA ${normalized} is not available in ComfyUI ${profile?.loraLoader || "LoRA loader"}.`,
+    409,
+    "IMG2IMG_LORA_NOT_READY",
+  );
 }
 
 function nodeAvailability(objectInfo, requiredNodes) {
@@ -852,16 +920,23 @@ export function createImg2ImgController({
     const text = await response.text();
     let payload;
     try { payload = JSON.parse(text || "{}"); } catch { payload = { raw: text }; }
-    if (!response.ok) throw makeError(errorMessage(payload?.error || payload?.message || payload?.raw || response.statusText), response.status === 404 ? 404 : 502, "COMFY_REQUEST_FAILED");
+    if (!response.ok) throw makeError(comfyRequestErrorMessage(payload, response.statusText), response.status === 404 ? 404 : 502, "COMFY_REQUEST_FAILED");
     return payload;
   }
 
-  async function checkReadiness() {
+  async function inspectReadiness() {
     const [stats, objectInfo] = await Promise.all([
       requestJson("/system_stats").then(() => true).catch(() => false),
       requestJson("/object_info").catch(() => null),
     ]);
-    return evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats, remote });
+    return {
+      readiness: evaluateImg2ImgReadiness(objectInfo, { comfyUi: stats, remote }),
+      objectInfo,
+    };
+  }
+
+  async function checkReadiness() {
+    return (await inspectReadiness()).readiness;
   }
 
   async function resolveAsset(rootName, sourceName) {
@@ -987,7 +1062,7 @@ export function createImg2ImgController({
       const profile = assertModelForRuntime(job.model, { remote });
       if (typeof beforeRun === "function") await beforeRun(job);
       assertNotCancelled(job);
-      const readiness = await checkReadiness();
+      const { readiness, objectInfo } = await inspectReadiness();
       assertNotCancelled(job);
       if (!readiness.ready || !readiness.models[job.model]) {
         const detail = readiness.profiles?.[job.model]?.reason === "REQUIRED_NODE_MISSING"
@@ -1002,6 +1077,9 @@ export function createImg2ImgController({
           "IMG2IMG_LORA_NOT_READY",
         );
       }
+      const characterLoraLoaderName = job.characterLoraName
+        ? resolveCharacterLoraLoaderName(objectInfo, profile, job.characterLoraName)
+        : "";
       item.progress = 12;
       item.stage = "Preparing source image";
       updateParentProgress(job, itemIndex, item.progress, item.stage);
@@ -1016,6 +1094,7 @@ export function createImg2ImgController({
         ...job,
         ...parameters,
         sourceName: staged.loadName,
+        characterLoraLoaderName,
         filenamePrefix: itemFilenamePrefix(job, itemIndex),
       });
       item.progress = 22;
