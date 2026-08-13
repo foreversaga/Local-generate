@@ -4,11 +4,6 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { assetKey, assetUrl, deleteAsset, type StudioAsset, uploadAssets } from "../library/asset-client";
 import {
-    STUDIO_SETTINGS_DEFAULTS,
-    loadStudioSettings,
-    reconcileStudioSettings,
-} from "../../lib/studio-settings.mjs";
-import {
     fetchImg2ImgHealth,
     fetchImg2ImgJob,
     fetchImg2ImgJobs,
@@ -77,6 +72,8 @@ const IMG2IMG_MODELS = [
         localOnly: true,
     },
 ] as const;
+
+const IMG2IMG_PROMPT_MODEL_STORAGE_KEY = "h3-studio.img2img-prompt-model";
 
 type ModelValue = typeof IMG2IMG_MODELS[number]["value"];
 
@@ -151,6 +148,26 @@ async function fetchPromptHealth(): Promise<PromptHealth | null> {
     }
 }
 
+function explicitStoredPromptModel(availableModels: readonly string[]) {
+    if (!availableModels.length || typeof window === "undefined") return "";
+    try {
+        const model = window.localStorage.getItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY)?.trim() || "";
+        return availableModels.includes(model) ? model : "";
+    } catch {
+        return "";
+    }
+}
+
+function persistExplicitPromptModel(model: string) {
+    if (typeof window === "undefined") return;
+    try {
+        if (model) window.localStorage.setItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY, model);
+        else window.localStorage.removeItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY);
+    } catch {
+        // Keep the current selection in memory when storage is unavailable.
+    }
+}
+
 function modelSupportsPromptImages(model: string) {
     const normalized = model.toLowerCase();
     if (normalized === "gemma3:1b") return false;
@@ -209,7 +226,7 @@ export function ImageToImageWorkspace() {
     const [promptDescription, setPromptDescription] = useState("");
     const [prompt, setPrompt] = useState("");
     const [negativePrompt, setNegativePrompt] = useState("");
-    const [promptModel, setPromptModel] = useState(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+    const [promptModel, setPromptModel] = useState("");
     const [promptHealth, setPromptHealth] = useState<PromptHealth | null>(null);
     const [promptBusy, setPromptBusy] = useState(false);
     const [model, setModel] = useState<ModelValue>(IMG2IMG_MODELS[0].value);
@@ -314,12 +331,17 @@ export function ImageToImageWorkspace() {
     }, [refreshHealth]);
 
     useEffect(() => {
+        const availableModels = promptHealth?.ollama?.models || [];
+        const storedModel = explicitStoredPromptModel(availableModels);
         const timer = window.setTimeout(() => {
-            const stored = reconcileStudioSettings(loadStudioSettings());
-            setPromptModel(stored.ollamaModel);
+            setPromptModel((current) => {
+                if (!availableModels.length) return "";
+                if (availableModels.includes(current)) return current;
+                return storedModel;
+            });
         }, 0);
         return () => window.clearTimeout(timer);
-    }, []);
+    }, [promptHealth]);
 
     useEffect(() => {
         const requestId = ++loraRequestIdRef.current;
@@ -414,8 +436,9 @@ export function ImageToImageWorkspace() {
     const visiblePromptModels = promptHealth?.ollama?.models || [];
     const effectivePromptModel = visiblePromptModels.includes(promptModel)
         ? promptModel
-        : visiblePromptModels[0] || promptModel;
+        : "";
     const promptProviderReady = Boolean(promptHealth?.ollama?.online && visiblePromptModels.includes(effectivePromptModel));
+    const promptGenerationReady = Boolean(effectivePromptModel && promptProviderReady && modelSupportsPromptImages(effectivePromptModel));
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
     const characterLoraRequested = Boolean(characterLoraName.trim());
     const characterLoraReady = !characterLoraRequested || Boolean(health?.profiles?.[model]?.loraAvailable);
@@ -460,10 +483,9 @@ export function ImageToImageWorkspace() {
     }, [history, historyQuery]);
     const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(model, runtimeMode);
     const sourceReady = Boolean(source && source.kind === "image");
-    const promptReady = Boolean(prompt.trim());
     const readinessReady = !healthLoading && health?.ready === true && modelReady && characterLoraReady;
     const canInteract = !active && !submitting && !retrying && !uploading;
-    const canStart = sourceReady && promptReady && modelRuntimeReady && readinessReady;
+    const canStart = sourceReady && modelRuntimeReady && readinessReady;
 
     function selectSource(assets: StudioAsset[]) {
         const next = assets.find((asset) => asset.kind === "image");
@@ -512,6 +534,10 @@ export function ImageToImageWorkspace() {
             setError("請先輸入圖片轉換描述。");
             return;
         }
+        if (!effectivePromptModel) {
+            setError("請先選擇 Ollama 視覺模型，再產生提示詞。" );
+            return;
+        }
         if (!promptProviderReady) {
             setError("Ollama 無法使用，或尚未安裝提示詞模型。");
             return;
@@ -541,11 +567,8 @@ export function ImageToImageWorkspace() {
             });
             const payload = await response.json().catch(() => ({})) as PromptApiPayload;
             if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama 沒有回傳提示詞。"));
-            if (!payload.prompt?.trim() || !payload.negativePrompt?.trim()) {
-                throw new Error("Ollama 回傳的結果格式不完整；正向與負向提示詞都必須存在。" );
-            }
-            setPrompt(payload.prompt.trim());
-            setNegativePrompt(payload.negativePrompt.trim());
+            setPrompt(typeof payload.prompt === "string" ? payload.prompt.trim() : "");
+            setNegativePrompt(typeof payload.negativePrompt === "string" ? payload.negativePrompt.trim() : "");
         } catch (reason) {
             setError(errorMessage(reason, "無法產生以圖生圖提示詞。"));
         } finally {
@@ -566,8 +589,6 @@ export function ImageToImageWorkspace() {
 
     function validateForm() {
         if (!source || source.kind !== "image") return "請先選擇來源圖片。";
-        if (!prompt.trim()) return "請輸入希望圖片呈現的內容。";
-        if (prompt.trim().length > 4000 || negativePrompt.length > 4000) return "提示詞不可超過 4000 字元。";
         if (characterLoraNameIssue) return characterLoraNameIssue;
         if (characterLoraStrengthIssue) return characterLoraStrengthIssue;
         if (!modelRuntimeReady) return LOCAL_ONLY_MODEL_MESSAGE;
@@ -595,8 +616,6 @@ export function ImageToImageWorkspace() {
 
     function firstValidationField() {
         if (!source || source.kind !== "image") return "source";
-        if (!prompt.trim() || prompt.trim().length > 4000) return "prompt";
-        if (negativePrompt.length > 4000) return "negativePrompt";
         if (characterLoraNameIssue) return "characterLoraName";
         if (characterLoraStrengthIssue) return "characterLoraStrength";
         if (!modelRuntimeReady || !readinessReady || readinessBlockingMessage) return "readiness";
@@ -804,23 +823,42 @@ export function ImageToImageWorkspace() {
                             {promptProviderReady ? ` 模型：${effectivePromptModel}` : " 視覺模型無法使用。"}
                         </small>
                     </label>
+                    <label className={styles.field}>
+                        <span>Ollama 提示詞模型</span>
+                        <select
+                            id="img2img-prompt-model"
+                            value={effectivePromptModel}
+                            disabled={!visiblePromptModels.length || promptBusy || active}
+                            onChange={(event) => {
+                                const nextModel = event.target.value;
+                                setPromptModel(nextModel);
+                                persistExplicitPromptModel(nextModel);
+                            }}
+                        >
+                            {visiblePromptModels.length > 0 && <option value="">請選擇 Ollama 模型</option>}
+                            {!visiblePromptModels.length && <option value="">沒有可用模型</option>}
+                            {visiblePromptModels.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
+                        </select>
+                        {visiblePromptModels.length > 0 && !effectivePromptModel && <small className={styles.error} role="status">請先選擇 Ollama 視覺模型，才能產生提示詞。</small>}
+                        <small>產生以圖生圖提示詞時會使用此 Ollama 模型；需支援圖片理解。</small>
+                    </label>
                     <button
                         type="button"
                         className={styles.secondaryButton}
                         onClick={() => void generatePrompt()}
-                        disabled={promptBusy || uploading || submitting || retrying || active}
+                        disabled={!promptGenerationReady || promptBusy || uploading || submitting || retrying || active}
                         aria-busy={promptBusy}
                     >
                         {promptBusy ? "產生提示詞中…" : "使用 Ollama 產生提示詞"}
                     </button>
                     <label className={styles.fieldWide}>
-                        <span>{FIELD_LABELS.prompt} <em>*</em></span>
-                        <textarea id="img2img-prompt" value={prompt} maxLength={4000} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
-                        <small>{prompt.length}/4000</small>
+                        <span>{FIELD_LABELS.prompt}（選填）</span>
+                        <textarea id="img2img-prompt" value={prompt} rows={5} placeholder="描述希望結果呈現的主體、風格、光線與細節" onChange={(event) => { setPrompt(event.target.value); if (error) setError(""); }} />
+                        <small>{prompt.length} 字元</small>
                     </label>
                     <label className={styles.fieldWide}>
                         <span>{FIELD_LABELS.negativePrompt}（選填）</span>
-                        <textarea id="img2img-negative-prompt" value={negativePrompt} maxLength={4000} rows={3} placeholder="模糊、低畫質、瑕疵" onChange={(event) => setNegativePrompt(event.target.value)} />
+                        <textarea id="img2img-negative-prompt" value={negativePrompt} rows={3} placeholder="模糊、低畫質、瑕疵" onChange={(event) => setNegativePrompt(event.target.value)} />
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.model}</span>

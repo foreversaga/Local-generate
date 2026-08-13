@@ -100,6 +100,17 @@ test("builds an eight-node native img2img workflow", () => {
   assert.deepEqual(graph["8"].inputs.images, ["7", 0]);
 });
 
+test("allows image-to-image workflows without a positive prompt", () => {
+  const graph = buildImg2ImgPrompt({
+    sourceName: "source.png",
+    prompt: "",
+    negativePrompt: "",
+    model: IMG2IMG_MODELS[0],
+  });
+  assert.equal(graph["4"].inputs.text, "");
+  assert.equal(graph["5"].inputs.text, "");
+});
+
 test("adds a checkpoint LoRA without changing the unselected graph node ids", () => {
   const graph = buildImg2ImgPrompt({
     sourceName: "source.png",

@@ -338,10 +338,6 @@ export function buildImg2ImgPrompt({
 } = {}) {
   const image = normalizeImageAssetName(sourceName);
   const positive = String(prompt || "").trim();
-  if (!positive) throw makeError("A positive image prompt is required.", 400, "PROMPT_REQUIRED");
-  if (positive.length > 4000 || String(negativePrompt || "").length > 4000) {
-    throw makeError("Image prompts must be no more than 4000 characters.", 400, "PROMPT_TOO_LONG");
-  }
   const profile = modelProfile(model);
   if (!profile) throw unsupportedModelError(model);
   const parameters = boundedModelParameters(profile, { denoise, steps, cfg, seed });
@@ -1232,7 +1228,6 @@ export function createImg2ImgController({
     const sourceName = normalizeImageAssetName(input.sourceName);
     await resolveAsset(sourceRoot, sourceName);
     const prompt = String(input.prompt || "").trim();
-    if (!prompt) throw makeError("A positive image prompt is required.", 400, "PROMPT_REQUIRED");
     const batchCount = normalizeBatchCount(input.batchCount);
     const baseSeed = input.seed === undefined ? Math.floor(randomSource() * 2_147_483_647) : input.seed;
     const parameters = boundedModelParameters(profile, {

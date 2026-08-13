@@ -190,7 +190,7 @@ test("Ollama image modes reject requests without an actual visual input", async 
   }
 });
 
-test("Ollama img2img prompt generation returns strict positive and negative fields", async () => {
+test("Ollama img2img prompt generation returns structured positive and negative fields", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (_url, init) => {
@@ -216,6 +216,7 @@ test("Ollama img2img prompt generation returns strict positive and negative fiel
     assert.match(result.body.negativePrompt, /watermark/);
     const generationCalls = calls.filter((body) => body.prompt);
     assert.equal(generationCalls.length, 1);
+    assert.equal(generationCalls[0].model, "qwen3-vl");
     assert.deepEqual(generationCalls[0].images, ["aGVsbG8="]);
     assert.match(generationCalls[0].system, /exactly these two keys: prompt and negativePrompt/);
     assert.equal(calls.filter((body) => body.prompt === "").length, 1);
@@ -224,7 +225,7 @@ test("Ollama img2img prompt generation returns strict positive and negative fiel
   }
 });
 
-test("Ollama img2img rejects malformed model output without a fallback negative prompt", async () => {
+test("Ollama img2img keeps free-form model output without prompt validation", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ response: "not valid JSON" }), { status: 200 });
   try {
@@ -235,13 +236,23 @@ test("Ollama img2img rejects malformed model output without a fallback negative 
       brief: "Make the source image look cinematic.",
       images: [{ role: "source_image", data: "aGVsbG8=" }],
     });
-    assert.equal(result.status, 502);
-    assert.equal(result.body.code, "IMG2IMG_PROMPT_FORMAT_INVALID");
-    assert.match(result.body.error, /JSON/);
-    assert.equal(Object.prototype.hasOwnProperty.call(result.body, "negativePrompt"), false);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.prompt, "not valid JSON");
+    assert.equal(result.body.negativePrompt, "");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Ollama img2img does not silently default a prompt model", async () => {
+  const result = await invoke("/api/prompt", {
+    provider: "ollama",
+    mode: "img2img",
+    brief: "Make the source image look cinematic.",
+    images: [{ role: "source_image", data: "aGVsbG8=" }],
+  });
+  assert.equal(result.status, 400);
+  assert.equal(result.body.code, "IMG2IMG_MODEL_REQUIRED");
 });
 
 test("invalid prompt modes return 400 for prompt and generation routes", async () => {

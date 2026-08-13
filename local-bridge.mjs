@@ -1247,49 +1247,20 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] })
 
 function parseImg2ImgPromptResponse(value) {
   const raw = cleanPromptText(value);
-  let parsed;
+  let parsed = null;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new LongVideoError(
-      "IMG2IMG_PROMPT_FORMAT_INVALID",
-      "Ollama 圖生圖提示詞必須回傳只含 prompt 與 negativePrompt 的 JSON。",
-      502,
-      { candidatePrompt: raw.slice(0, 4000) },
-    );
+    // Image-to-image prompts are free-form; keep the provider response as-is.
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new LongVideoError(
-      "IMG2IMG_PROMPT_FORMAT_INVALID",
-      "Ollama 圖生圖提示詞必須回傳 JSON 物件。",
-      502,
-    );
-  }
-  const keys = Object.keys(parsed);
-  if (keys.length !== 2 || !keys.includes("prompt") || !keys.includes("negativePrompt")) {
-    throw new LongVideoError(
-      "IMG2IMG_PROMPT_FIELDS_INVALID",
-      "Ollama 圖生圖提示詞 JSON 必須只包含 prompt 與 negativePrompt 兩個欄位。",
-      502,
-      { keys },
-    );
-  }
-  const prompt = typeof parsed.prompt === "string" ? parsed.prompt.trim() : "";
-  const negativePrompt = typeof parsed.negativePrompt === "string" ? parsed.negativePrompt.trim() : "";
-  if (!prompt || !negativePrompt) {
-    throw new LongVideoError(
-      "IMG2IMG_PROMPT_FIELDS_INVALID",
-      "Ollama 圖生圖提示詞 JSON 的 prompt 與 negativePrompt 都必須是非空文字。",
-      502,
-    );
-  }
-  if (prompt.length > 4000 || negativePrompt.length > 4000) {
-    throw new LongVideoError(
-      "IMG2IMG_PROMPT_TOO_LONG",
-      "Ollama 圖生圖提示詞的 prompt 與 negativePrompt 不可超過 4000 字元。",
-      502,
-    );
-  }
+  const prompt = typeof parsed === "string"
+    ? parsed.trim()
+    : typeof parsed?.prompt === "string"
+      ? parsed.prompt.trim()
+      : raw;
+  const negativePrompt = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.negativePrompt === "string"
+    ? parsed.negativePrompt.trim()
+    : "";
   return { prompt, negativePrompt };
 }
 
@@ -1312,7 +1283,8 @@ async function createImg2ImgPrompt(payload = {}) {
     role: String(imageInput.role || "source_image").trim() || "source_image",
     data: normalizeBase64ImageData(imageInput.data, 0, "IMG2IMG_IMAGE"),
   }];
-  const model = String(payload.model || defaultOllamaModel());
+  const model = String(payload.model || "").trim();
+  if (!model) throw new LongVideoError("IMG2IMG_MODEL_REQUIRED", "請先選擇可用的 Ollama 視覺模型。", 400);
   const response = await requestOllamaPrompt({
     model,
     system: [
@@ -1331,14 +1303,14 @@ async function createImg2ImgPrompt(payload = {}) {
 async function createPrompt(payload) {
   const brief = String(payload.brief || "").trim();
   const provider = promptProvider(payload.provider);
+  const requestedMode = String(payload.mode || "").trim().toLowerCase();
+  if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const model = provider === "codex"
     ? codexModel(payload.codexModel || payload.model)
     : String(payload.model || defaultOllamaModel());
   const reasoningEffort = provider === "codex"
     ? codexReasoningEffort(payload.reasoningEffort || payload.codexReasoningEffort)
     : null;
-  const requestedMode = String(payload.mode || "").trim().toLowerCase();
-  if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const mode = promptMode(payload.mode);
   const durationSeconds = clampNumber(payload.duration, 5, 0.5, 60);
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
