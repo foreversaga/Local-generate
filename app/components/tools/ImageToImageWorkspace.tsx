@@ -244,6 +244,7 @@ export function ImageToImageWorkspace() {
     }>(() => ({
         model: IMG2IMG_MODELS[0].value,
         values: [],
+        status: "idle",
     }));
     const [batchCount, setBatchCount] = useState("1");
     const [randomRanges, setRandomRanges] = useState<RangeDraft>(() => baseRangeDraft(0.65, "4", "1"));
@@ -261,7 +262,6 @@ export function ImageToImageWorkspace() {
     const [uploading, setUploading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [retrying, setRetrying] = useState(false);
-        status: "idle",
     const [cancelling, setCancelling] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
@@ -429,6 +429,10 @@ export function ImageToImageWorkspace() {
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
     const selectedModel = modelOption(model);
     const characterLoraOptions = characterLoraRegistry.model === model ? characterLoraRegistry.values : [];
+    const characterLoraDiscoveryStatus = characterLoraRegistry.model === model
+        ? characterLoraRegistry.status === "idle" ? "loading" : characterLoraRegistry.status
+        : "loading";
+    const characterLoraDiscoveryError = characterLoraRegistry.model === model ? characterLoraRegistry.error : undefined;
     const characterLoraNameIssue = characterLoraNameError(characterLoraName);
     const characterLoraStrengthIssue = characterLoraName.trim()
         ? parseNumberDraft(characterLoraStrength, FIELD_LABELS.loraStrength, 0, 2, false, 0.05)
@@ -452,10 +456,6 @@ export function ImageToImageWorkspace() {
     const readinessBlockingMessage = !modelRuntimeReady
         ? LOCAL_ONLY_MODEL_MESSAGE
         : characterLoraReadinessMessage || (health ? img2ImgReadinessMessage(health, model) : "");
-    const characterLoraDiscoveryStatus = characterLoraRegistry.model === model
-        ? characterLoraRegistry.status === "idle" ? "loading" : characterLoraRegistry.status
-        : "loading";
-    const characterLoraDiscoveryError = characterLoraRegistry.model === model ? characterLoraRegistry.error : undefined;
     const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選模型設定檔均可用。" : "尚未取得 ComfyUI 檢查結果；提交時會再次檢查。 ");
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
@@ -873,7 +873,7 @@ export function ImageToImageWorkspace() {
                     </label>
                     <label className={styles.field}>
                         <span>角色 LoRA <em>（選填）</em></span>
-                        <input
+                        <select
                             id="img2img-character-lora"
                             value={characterLoraName}
                             disabled={active || characterLoraDiscoveryStatus === "loading"}
@@ -891,11 +891,12 @@ export function ImageToImageWorkspace() {
                             {selectedModel?.loraHint || "請選擇以此模型系列訓練的 LoRA；Wan2.2 Animate LoRA 不相容。"}
                             {characterLoraDiscoveryStatus === "loading" ? " 正在探索既有角色 LoRA…" : characterLoraOptions.length ? " 請從既有角色 LoRA 清單選擇。" : "目前沒有可用角色 LoRA；可直接不使用此設定。"}
                         </small>
+                        {characterLoraDiscoveryError && <small id="img2img-character-lora-discovery-error" className={styles.error} role="status">{characterLoraDiscoveryError} 可先不使用角色 LoRA，或稍後重試。</small>}
                         {characterLoraNameIssue && <small id="img2img-character-lora-error" className={styles.error} role="alert">{characterLoraNameIssue}</small>}
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.loraStrength} <strong>{characterLoraStrength.trim() ? Number(characterLoraStrength).toFixed(2) : "—"}</strong></span>
-                        <select
+                        <input
                             id="img2img-character-lora-strength"
                             type="number"
                             min="0"
@@ -929,7 +930,6 @@ export function ImageToImageWorkspace() {
                         <span>{FIELD_LABELS.seed}</span>
                         <input id="img2img-seed" type="number" min="0" max="2147483647" step="1" value={seed} disabled={active || Number(batchCount) > 1} onChange={(event) => updateBaseValue("seed", event.target.value)} aria-describedby="img2img-seed-help" />
                         <button
-                        {characterLoraDiscoveryError && <small id="img2img-character-lora-discovery-error" className={styles.error} role="status">{characterLoraDiscoveryError} 可先不使用角色 LoRA，或稍後重試。</small>}
                             type="button"
                             className={styles.secondaryButton}
                             onClick={randomizeSeed}

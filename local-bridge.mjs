@@ -1784,7 +1784,6 @@ function characterLoraOptions(objectInfo) {
       }
       const lower = safeValue.toLowerCase();
       if (!safeValue || BUILTIN_ANIMATE_LORAS.has(lower) || lower.includes("lightx2v") || lower.includes("relight") || seen.has(lower)) return false;
-  if (family === "wai") return "illustrious";
       seen.add(lower);
       return true;
     });
@@ -1813,6 +1812,7 @@ function normalizeLoraFamilyFilter(value) {
   const family = String(value || "").trim().toLowerCase();
   if (!family) return "";
   if (family === "wan") return "wan22-animate";
+  if (family === "wai") return "illustrious";
   if (!["sdxl", "illustrious", "sd15", "z-image", "wan22-animate"].includes(family)) {
     throw makeRuntimeError("LORA_FAMILY_INVALID", "Unsupported LoRA family.", 400, { family });
   }
@@ -1831,7 +1831,6 @@ function normalizeLoraConsumerFilter(value) {
 function registryConsumerMetadata(item) {
   const consumers = [];
   if (item.family === "wan22-animate") consumers.push("single-replace");
-  if (!objectInfo) return { loras: [], items: [], available: false, registryVersion: 0 };
   if (["sdxl", "illustrious", "sd15", "z-image"].includes(item.family)) consumers.push("img2img");
   return consumers;
 }
@@ -1860,6 +1859,7 @@ async function listLoras({ family = "", profile = "", consumer = "" } = {}) {
     loraRegistryStore.readRegistry(),
   ]);
   const objectInfo = objectInfoResult.status === "fulfilled" ? objectInfoResult.value : null;
+  if (!objectInfo) return { loras: [], items: [], available: false, registryVersion: 0 };
   const loaderNames = objectInfo
     ? [...comboValues(objectInfo?.LoraLoader, "lora_name"), ...comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name")]
     : [];
@@ -2240,34 +2240,6 @@ function nonEmptyLoraTriggerWords(value) {
   const normalized = values
     .map((word) => typeof word === "string" ? word.trim() : word)
     .filter((word) => typeof word !== "string" || word.length > 0);
-function normalizeTrainableFamily(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  return normalized === "wai" ? "illustrious" : normalized;
-}
-
-export function resolveLoraTrainingHealthRequest(searchParams) {
-  const family = searchParams.has("family")
-    ? normalizeTrainableFamily(searchParams.get("family"))
-    : "sdxl";
-  if (!Object.hasOwn(TRAINABLE_LORA_BASE_PROFILES, family)) {
-    throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
-      status: 400,
-      details: { field: "family", allowed: Object.keys(TRAINABLE_LORA_BASE_PROFILES) },
-    });
-  }
-  const baseProfile = searchParams.has("baseProfile")
-    ? String(searchParams.get("baseProfile") || "").trim()
-    : TRAINABLE_LORA_BASE_PROFILES[family];
-  const allowedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[family];
-  if (baseProfile !== allowedBaseProfile) {
-    throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
-      status: 400,
-      details: { field: "baseProfile", family, allowed: [allowedBaseProfile] },
-    });
-  }
-  return { family, baseProfile };
-}
-
   return normalized.length ? normalized : null;
 }
 
@@ -2294,6 +2266,34 @@ export function resolveLoraTriggerWords(body = {}, config = body?.config || {}) 
   const configCandidate = nonEmptyLoraTriggerWords(config?.triggerWords);
   if (configCandidate) return configCandidate;
   return [fallbackLoraTriggerWord(config?.characterName || config?.outputName)];
+}
+
+function normalizeTrainableFamily(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "wai" ? "illustrious" : normalized;
+}
+
+export function resolveLoraTrainingHealthRequest(searchParams) {
+  const family = searchParams.has("family")
+    ? normalizeTrainableFamily(searchParams.get("family"))
+    : "sdxl";
+  if (!Object.hasOwn(TRAINABLE_LORA_BASE_PROFILES, family)) {
+    throw new LoraTrainingError("INVALID_REQUEST", "family is unsupported", {
+      status: 400,
+      details: { field: "family", allowed: Object.keys(TRAINABLE_LORA_BASE_PROFILES) },
+    });
+  }
+  const baseProfile = searchParams.has("baseProfile")
+    ? String(searchParams.get("baseProfile") || "").trim()
+    : TRAINABLE_LORA_BASE_PROFILES[family];
+  const allowedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[family];
+  if (baseProfile !== allowedBaseProfile) {
+    throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
+      status: 400,
+      details: { field: "baseProfile", family, allowed: [allowedBaseProfile] },
+    });
+  }
+  return { family, baseProfile };
 }
 
 function normalizeTrainableLoraConfig(config = {}, family = config?.family) {
