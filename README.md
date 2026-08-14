@@ -1,14 +1,43 @@
 # H3 Studio
 
-- [WebUI 功能說明](docs/webui-functions.md)
+- [WebUI feature guide](docs/webui-functions.md)
+- [Traditional Chinese](README.zh-TW.md)
+
+H3 Studio is a local MiniMax H3 video control interface. The web service coordinates Ollama, ComfyUI, media assets, and video generation through the `/app` entry point.
+
+The public `/app` entry opens the Create landing. Single, Long, Jobs, Library, Tools, and Settings are provided by the same Studio shell, and all flows share the existing `/app/api/...` bridge contract.
+
+## Local configuration
+
+Run these commands from the project root:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+If `.env.local` already exists, merge the missing variable names into it instead of overwriting local paths or secrets.
+
+Edit `.env.local` with the paths and service endpoints for the current machine. Keep `.env.local` out of version control. The committed `.env.example` contains only empty values, loopback defaults, and safe placeholders.
+
+The important path settings are:
+
+- `MINIMAX_H3_ROOT` is required by `scripts/vast/start-local-runtime.ps1` and must point to the local `minimax-h3-local` checkout.
+- `MINIMAX_H3_PYTHON` is required by `scripts/vast/start-vast-remote.ps1` and must point to a usable Python executable, or to a command available on `PATH`.
+- `COMFYUI_ROOT` and `MINIMAX_H3_ROOT` can override the bridge defaults when ComfyUI and the local H3 project are not adjacent to this repository.
+- `MINIMAX_H3_AI_TOOLKIT_ROOT`, `MINIMAX_H3_AI_TOOLKIT_PYTHON`, `MINIMAX_H3_AI_TOOLKIT_FFMPEG_BIN`, and the `MINIMAX_H3_Z_IMAGE_*` settings are required only when the Z-Image / AI Toolkit training workflow is used.
+- `FFMPEG_PATH` and `FFPROBE_PATH` are required for long-video media processing when the executables are not already on `PATH`.
+
+The existing AI Toolkit variables in an older `.env.local` configure only the Z-Image training backend; they do not replace `MINIMAX_H3_ROOT` or `MINIMAX_H3_PYTHON`.
+
+Do not put credentials, API keys, SSH keys, model tokens, or provider secrets in `.env.example`. Keep real secrets in local ignored files or the deployment provider's secret store. The real Vast connection file is also local-only: copy `scripts/vast/vast-runtime.config.example.json` to `scripts/vast/vast-runtime.config.json`, then set the instance host, SSH port, user, and tunnel ports. The real file is ignored by Git.
 
 ## Vast RTX 5090 remote mode
 
-The Vast runtime is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet. Instance-specific host, SSH port, tunnel ports, and optional persistent-volume settings live in one ignored file; the reproducible software inventory is versioned in [`scripts/vast/runtime-manifest.json`](scripts/vast/runtime-manifest.json).
+The Vast runtime is reached only through loopback SSH forwards. ComfyUI and Ollama are not exposed directly to the internet. Instance-specific host, SSH port, tunnel ports, and optional persistent-volume settings live in the ignored runtime config; the reproducible software inventory is versioned in [`scripts/vast/runtime-manifest.json`](scripts/vast/runtime-manifest.json).
 
 ### New instance / replacement procedure
 
-1. Provision a Vast instance with the required GPU. If persistent storage is available, mount it at `/workspace` (the manifest also reserves `/workspace/.h3-runtime-cache` for a model cache); without it, bootstrap will rebuild from the pinned sources.
+1. Provision a Vast instance with the required GPU. If persistent storage is available, mount it at `/workspace` (the manifest also reserves `/workspace/.h3-runtime-cache` for a model cache); without it, bootstrap rebuilds from the pinned sources.
 2. Copy the bootstrap bundle and manifest to the instance, then run the one-shot bootstrap command:
 
    ```powershell
@@ -26,15 +55,15 @@ The Vast runtime is reached only through loopback SSH forwards. ComfyUI and Olla
    ssh.exe -p $SshPort $Remote 'chmod 0755 /workspace/h3-bootstrap.sh /workspace/runtime-status.sh && /workspace/h3-bootstrap.sh'
    ```
 
-   Bootstrap is idempotent: verified models and pinned git checkouts are reused, missing or mismatched artifacts are quarantined and restored from the persistent cache or downloaded into staging before an atomic install. It writes `/workspace/.h3-runtime-state.json` only after the health check succeeds.
+   Bootstrap is idempotent: verified models and pinned Git checkouts are reused, while missing or mismatched artifacts are quarantined and restored from persistent cache or staging before an atomic install. It writes `/workspace/.h3-runtime-state.json` only after the health check succeeds.
 3. Create the local connection file once and update only that file when Vast replaces the instance:
 
    ```powershell
    Copy-Item scripts/vast/vast-runtime.config.example.json scripts/vast/vast-runtime.config.json
-   # Set instance.host, instance.sshPort, and any tunnel ports in vast-runtime.config.json.
+   # Set instance.host, instance.sshPort, instance.user, and tunnel ports in the copied file.
    ```
 
-   The file may live elsewhere by setting `$env:VAST_RUNTIME_CONFIG` or passing `-ConfigPath`.
+   The file may live elsewhere by setting `VAST_RUNTIME_CONFIG` in `.env.local` or by passing `-ConfigPath`.
 4. Start the tunnel and Web/API, then inspect health and drift:
 
    ```powershell
@@ -42,9 +71,9 @@ The Vast runtime is reached only through loopback SSH forwards. ComfyUI and Olla
    .\scripts\vast\status.ps1
    ```
 
-   `status.ps1` reports loopback tunnel health, H3 Studio health, manifest version, native-node availability, missing or checksum-mismatched weights, git revision drift, Ollama model drift, and persistent-cache/state presence. It exits with code `1` while a repair is needed.
+   `status.ps1` reports loopback tunnel health, H3 Studio health, manifest version, native-node availability, missing or checksum-mismatched weights, Git revision drift, Ollama model drift, and persistent-cache/state presence. It exits with code `1` while a repair is needed.
 
-The launcher forwards the configured local tunnel ports to remote ComfyUI/Ollama, then starts the Web/API on `http://127.0.0.1:8787/app` with the Vast runtime initially selected. The **MODEL RUNTIME** control in the WebUI can switch the live process between **本機** (`8188` / `11434`) and Vast. A switch is rejected while generation or upscaling is active; when safe, the bridge checks or starts the selected services and releases loaded models on the runtime being left. Inputs stay in the local media library, are uploaded for each remote workflow, and completed artifacts are downloaded back into the local output library.
+The launcher forwards the configured local tunnel ports to remote ComfyUI/Ollama, then starts the Web/API on `http://127.0.0.1:8787/app` with the Vast runtime initially selected. The **MODEL RUNTIME** control in the WebUI can switch the live process between local services (`8188` / `11434`) and Vast. A switch is rejected while generation or upscaling is active; when safe, the bridge checks or starts the selected services and releases loaded models on the runtime being left. Inputs stay in the local media library, are uploaded for each remote workflow, and completed artifacts are downloaded back into the local output library.
 
 Remote prompt generation defaults to `hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M`; `huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M` remains selectable. Both models support text and image prompt inputs. Before Ollama inference the bridge unloads ComfyUI models; before video generation it unloads active Ollama models. Ollama requests use an 8192-token context and `keep_alive: 0`.
 
@@ -58,61 +87,65 @@ Long-video drafts and jobs are persisted under `data/jobs/<sequence-id>/`. Each 
 
 Continuation prompt finalization has an injectable `finalizePrompt` seam in the runner. For segment 2 and later, the bridge sends the normalized previous tail image transiently to the selected vision-capable Ollama model; request, timeout, unsafe-tail, and validation failures use a deterministic continuity-preserving fallback and record provider/model/fallback provenance without persisting image bytes.
 
-本機 MiniMax H3 影片控制介面。網頁服務同時處理 Ollama、ComfyUI、檔案資源與影片生成，直接使用已開放的 `8787` port。
+## Start the web service
 
-公開入口 `/app` 直接顯示新版 Create landing，Single、Long、Jobs、Library、Tools 與 Settings 由同一個 Studio shell 提供；所有流程共用既有 `/app/api/...` bridge contract。
-
-## 啟動
-
-先確認 Ollama 與 ComfyUI 已在本機執行，再啟動網頁：
+After `.env.local` is configured, either reuse healthy local Ollama and ComfyUI services or use the local runtime helper:
 
 ```powershell
-cd C:\Users\forev\minimax-h3-video-studio
+.\scripts\vast\start-local-runtime.ps1
+```
+
+Then start the Web/API from the project root:
+
+```powershell
+Set-Location '<PROJECT_ROOT>'
 npm.cmd run dev
 ```
 
-## 重啟網頁服務
+## Restart the web service
 
-只需要重啟 H3 Studio Web/API 時，使用專案內的固定腳本：
+When only the H3 Studio Web/API needs to restart, use the fixed project script:
 
 ```powershell
-cd C:\Users\forev\minimax-h3-video-studio
+Set-Location '<PROJECT_ROOT>'
 .\scripts\restart-web.ps1
 ```
 
-也可以使用 npm 指令：
+You can also use the npm command:
 
 ```powershell
 npm.cmd run restart:web
 ```
 
-腳本會辨識 `8787` 的現有 H3 Studio process、停止後重新執行 `npm.cmd run dev`，並等待 `/app/api/health` 回傳 `200`。ComfyUI `8188` 與 Ollama `11434` 會沿用現有服務，不需要一併重啟；啟動紀錄會寫入專案的 `logs` 資料夾。
+The script identifies the existing H3 Studio process on port `8787`, stops it, starts `npm.cmd run dev`, and waits for `/app/api/health` to return `200`. ComfyUI on `8188` and Ollama on `11434` are reused and do not need to restart together. Startup records are written to the project `logs` directory.
 
-網頁與本機 API 共用 `8787`：
-
-```text
-http://<主機 IP 或主機名稱>:8787/app
-```
-
-不再需要透過 Tailscale Serve 轉送網頁，也不使用 HMR WebSocket。
-
-## 本機服務
+## Local services
 
 ```text
-網頁：0.0.0.0:8787
-ComfyUI：127.0.0.1:8188
-Ollama：127.0.0.1:11434
+Web/API: 0.0.0.0:8787
+ComfyUI: 127.0.0.1:8188
+Ollama: 127.0.0.1:11434
 ```
 
-手機請使用主機在網路上已開放的 `8787` 位址；ComfyUI 仍使用既有的 `8188` 服務。
+A phone or other client should use the host address exposed for port `8787`; ComfyUI remains on its existing loopback service.
 
-## 功能
+The Web/API does not require Tailscale Serve and does not use an HMR WebSocket.
 
-- Ollama 產生並可手動修改 H3 提示詞
-- 長影片可由 Ollama 從整體文字產生 continuity bible、無縫全片分鏡時間、首段 T2VA 與續段 I2VA 提示詞；亦可切換為作者鎖定時間軸
-- 文字生片、參考圖生片、影片替換
-- 解析度、秒數、Steps、Seed、模型 profile 設定
-- 上傳與預覽圖片、影片、輸出 MP4
-- 生成進度、取消工作與歷史紀錄
+## Features
 
-網頁資源只使用 ComfyUI 的兩個原生路徑：上傳與參考素材使用 `C:\Users\forev\ComfyUI\input`，生成影片與輸出資源使用 `C:\Users\forev\ComfyUI\output`。生成器直接寫入 ComfyUI output，不在本專案或 `minimax-h3-local` 建立輸出副本。
+- Ollama-generated H3 prompts with manual editing
+- Long-video continuity bible, full-film storyboard timing, first-segment T2VA prompts, and continuation I2VA prompts generated from the overall text; an author-locked timeline is also supported
+- Text-to-video, reference-image-to-video, and video replacement
+- Resolution, duration, Steps, Seed, and model-profile settings
+- Upload and preview images, videos, and output MP4 files
+- Generation progress, cancellation, and history
+
+Web resources use only ComfyUI's two native paths: uploaded and reference media use `<COMFYUI_ROOT>/input`, while generated videos and output resources use `<COMFYUI_ROOT>/output`. The generator writes directly to ComfyUI output and does not create a second output copy in this project or in `minimax-h3-local`.
+
+## CI and hosted configuration
+
+The GitHub workflow runs dependency installation, lint, build, unit tests, and WebUI route smoke checks. It is a quality gate, not a deployment command. Hosted project metadata is kept in `.openai/hosting.json`; credentials belong in the hosting provider's secret configuration and must not be added to this repository.
+
+## License
+
+This project is distributed under the MIT License. See [LICENSE](LICENSE).

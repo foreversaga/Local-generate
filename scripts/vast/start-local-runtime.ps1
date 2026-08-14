@@ -1,7 +1,46 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$h3Root = "C:\Users\forev\minimax-h3-local"
+$envFile = Join-Path $projectRoot ".env.local"
+
+function Import-LocalEnvFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return
+  }
+
+  $lineNumber = 0
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    $lineNumber += 1
+    $trimmed = $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+      continue
+    }
+    if ($trimmed -notmatch '^(?<name>[A-Za-z_][A-Za-z0-9_]*)=(?<value>.*)$') {
+      throw "Invalid environment entry at line $lineNumber in '$Path'. Use NAME=value format."
+    }
+
+    $name = $Matches.name
+    $value = $Matches.value.Trim()
+    if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    if ($null -eq [Environment]::GetEnvironmentVariable($name, "Process")) {
+      [Environment]::SetEnvironmentVariable($name, $value, "Process")
+    }
+  }
+}
+
+Import-LocalEnvFile $envFile
+
+if ([string]::IsNullOrWhiteSpace($env:MINIMAX_H3_ROOT)) {
+  throw "MINIMAX_H3_ROOT is not set. Copy .env.example to .env.local and set the local minimax-h3-local path."
+}
+
+if (-not (Test-Path -LiteralPath $env:MINIMAX_H3_ROOT -PathType Container)) {
+  throw "MINIMAX_H3_ROOT does not point to an existing directory: $env:MINIMAX_H3_ROOT"
+}
+
+$h3Root = (Resolve-Path -LiteralPath $env:MINIMAX_H3_ROOT).Path
 $comfyHealth = "http://127.0.0.1:8188/system_stats"
 $ollamaHealth = "http://127.0.0.1:11434/api/tags"
 $logRoot = Join-Path $projectRoot "logs"
