@@ -39,6 +39,7 @@ import { createRuntimeContext } from "./server/runtime/runtime-context.mjs";
 import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coordinator.mjs";
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
+import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
 import {
   SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
@@ -151,6 +152,7 @@ const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
 const jobs = new Map();
 const jobProcesses = new Map();
 const singleJobPersistence = new Map();
+const recoveredSingleVideoMonitors = new Map();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
 const singleVideoStoreReady = recoverSingleVideoJobsAtStartup().catch((error) => {
@@ -2911,6 +2913,8 @@ function publicJob(job) {
     modelProfile: job.modelProfile,
     dimensions: { width: job.width, height: job.height },
     inputRefs: job.inputRefs ? structuredClone(job.inputRefs) : {},
+    promptId: job.promptId || "",
+    runtimeMode: job.runtimeMode || "local",
     outputName: job.outputName || "",
     ...(job.characterLoraName ? {
       characterLoraName: job.characterLoraName,
@@ -2979,6 +2983,10 @@ function updateJobFromStructuredEvent(job, event) {
   touchJob(job);
   const type = String(event?.type || "");
   if (type === "queued") {
+    const promptId = String(event.prompt_id || event.promptId || "").trim().toLowerCase();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(promptId)) {
+      job.promptId = promptId;
+    }
     job.stage = "已送入 ComfyUI 佇列";
     job.progress = Math.max(job.progress, 19);
     job.connectionState = "queued";
@@ -3138,7 +3146,7 @@ function queueSpawn(command, args, options, job, { ollamaBarrier, conditionalOll
 }
 
 async function pumpGenerationQueue() {
-  if (activeGenerationId || !generationQueue.length) return;
+  if (activeGenerationId || recoveredSingleVideoMonitors.size || !generationQueue.length) return;
   const entry = generationQueue.shift();
   if (!entry) return;
   if (entry.child.cancelled) {
@@ -3470,6 +3478,8 @@ async function startGeneration(payload, internal = {}) {
       } : { relativePath: characterLoraName, legacy: true },
     } : {}),
     inputRefs,
+    promptId: existingJob?.promptId || "",
+    runtimeMode: runtimeContext.mode,
     createdAt,
     queuedAt,
     startedAt: existingJob?.startedAt || createdAt,
@@ -3661,6 +3671,284 @@ async function startGeneration(payload, internal = {}) {
   return publicJob(job);
 }
 
+function singleVideoComfyUrl(job) {
+  const mode = job?.runtimeMode === "remote" ? "remote" : "local";
+  return runtimeContext.target(mode).comfyUrl;
+}
+
+async function inspectSingleVideoComfyPrompt(job) {
+  return await inspectComfyPrompt({
+    comfyUrl: singleVideoComfyUrl(job),
+    promptId: job?.promptId || "",
+    fetchJson,
+    timeoutMs: 5000,
+  });
+}
+
+async function updateRecoveredSingleVideoJob(job, patch) {
+  const updated = await singleVideoJobStore.update(job.id, patch);
+  const runtimeJob = { ...updated, startedAt: updated.startedAt || updated.createdAt || now(), persistent: true };
+  jobs.set(runtimeJob.id, runtimeJob);
+  return runtimeJob;
+}
+
+function recoveredArtifactRelativeName(artifact) {
+  const filename = String(artifact?.filename || "").replaceAll("\\", "/").replace(/^\/+/, "");
+  const subfolder = String(artifact?.subfolder || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+  if (!filename || filename.split("/").some((segment) => !segment || segment === "." || segment === "..")) return "";
+  const relativeName = subfolder ? `${subfolder}/${filename}` : filename;
+  safePath(OUTPUT_ROOT, relativeName);
+  return relativeName;
+}
+
+async function adoptRecoveredSingleVideoArtifact(job, snapshot) {
+  if (job.runtimeMode === "remote") {
+    return await updateRecoveredSingleVideoJob(job, {
+      status: "failed",
+      stage: "failed",
+      recoverable: true,
+      error: "The remote ComfyUI prompt completed after the WebUI restart, but its artifact must be recovered or retried manually.",
+      finishedAt: now(),
+      recovery: {
+        reason: "remote_prompt_completed_after_bridge_restart",
+        previousStatus: job.status,
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+  }
+  const relativeName = recoveredArtifactRelativeName(snapshot?.artifact);
+  if (!relativeName) {
+    return await updateRecoveredSingleVideoJob(job, {
+      status: "failed",
+      stage: "failed",
+      recoverable: true,
+      error: "ComfyUI completed the recovered prompt without a video artifact.",
+      finishedAt: now(),
+      recovery: {
+        reason: "prompt_completed_without_artifact",
+        previousStatus: job.status,
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+  }
+  const output = await toAsset("output", relativeName).catch(() => null);
+  if (!output) {
+    return await updateRecoveredSingleVideoJob(job, {
+      status: "failed",
+      stage: "failed",
+      recoverable: true,
+      error: "ComfyUI reported a recovered video artifact that is not available on disk.",
+      finishedAt: now(),
+      recovery: {
+        reason: "recovered_artifact_missing",
+        previousStatus: job.status,
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+  }
+  return await updateRecoveredSingleVideoJob(job, {
+    status: "completed",
+    stage: "completed",
+    progress: 100,
+    progressSource: "native",
+    output,
+    outputName: relativeName,
+    outputRelativeName: relativeName,
+    error: "",
+    exitCode: 0,
+    recoverable: false,
+    finishedAt: now(),
+    recovery: {
+      reason: "comfy_history_adopted_after_bridge_restart",
+      previousStatus: job.status,
+      recoveredBy: SINGLE_VIDEO_OWNER_ID,
+      recoveredAt: now(),
+    },
+  });
+}
+
+function monitorRecoveredSingleVideoPrompt(job) {
+  const key = String(job.id);
+  if (recoveredSingleVideoMonitors.has(key)) return recoveredSingleVideoMonitors.get(key);
+  const monitor = (async () => {
+    let current = job;
+    let missingChecks = 0;
+    const timeoutMs = Math.max(60_000, Math.min(86_400_000, Number(job.timeoutSeconds || 3600) * 1000));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const snapshot = await inspectSingleVideoComfyPrompt(current);
+      if (snapshot.state === "completed") {
+        await adoptRecoveredSingleVideoArtifact(current, snapshot);
+        return;
+      }
+      if (snapshot.state === "error") {
+        await updateRecoveredSingleVideoJob(current, {
+          status: "failed",
+          stage: "failed",
+          recoverable: true,
+          error: "The recovered ComfyUI prompt completed with an error.",
+          finishedAt: now(),
+          recovery: {
+            reason: "comfy_prompt_error_after_bridge_restart",
+            previousStatus: current.status,
+            recoveredBy: SINGLE_VIDEO_OWNER_ID,
+            recoveredAt: now(),
+          },
+        });
+        return;
+      }
+      if (snapshot.state === "running" || snapshot.state === "pending") {
+        missingChecks = 0;
+        current = await updateRecoveredSingleVideoJob(current, {
+          status: "running",
+          stage: snapshot.state === "running"
+            ? "Reattached to the running ComfyUI prompt"
+            : "Reattached to the pending ComfyUI prompt",
+          recoverable: false,
+          connectionState: "polling",
+          recovery: {
+            reason: "bridge_restart_reattached",
+            previousStatus: current.recovery?.previousStatus || current.status,
+            recoveredBy: SINGLE_VIDEO_OWNER_ID,
+            recoveredAt: current.recovery?.recoveredAt || now(),
+          },
+        });
+      } else if (snapshot.state === "missing") {
+        missingChecks += 1;
+        if (missingChecks >= 3) {
+          await updateRecoveredSingleVideoJob(current, {
+            status: "interrupted",
+            stage: "interrupted",
+            recoverable: true,
+            error: "The original ComfyUI prompt is no longer running; retry is available.",
+            finishedAt: now(),
+            recovery: {
+              reason: "comfy_prompt_missing_after_bridge_restart",
+              previousStatus: current.status,
+              recoveredBy: SINGLE_VIDEO_OWNER_ID,
+              recoveredAt: now(),
+            },
+          });
+          return;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, snapshot.state === "unavailable" ? 5000 : 2000));
+    }
+    await updateRecoveredSingleVideoJob(current, {
+      status: "interrupted",
+      stage: "interrupted",
+      recoverable: true,
+      error: "Timed out while monitoring the recovered ComfyUI prompt; retry is available after confirming the Comfy queue is clear.",
+      finishedAt: now(),
+      recovery: {
+        reason: "comfy_prompt_monitor_timeout",
+        previousStatus: current.status,
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+  })().finally(() => {
+    recoveredSingleVideoMonitors.delete(key);
+    queueMicrotask(pumpGenerationQueue);
+  });
+  recoveredSingleVideoMonitors.set(key, monitor);
+  return monitor;
+}
+
+async function reconcileRecoveredSingleVideoJob(job) {
+  if (!job?.promptId) return job;
+  const snapshot = await inspectSingleVideoComfyPrompt(job);
+  if (snapshot.state === "completed") return await adoptRecoveredSingleVideoArtifact(job, snapshot);
+  if (snapshot.state === "error") {
+    return await updateRecoveredSingleVideoJob(job, {
+      status: "failed",
+      stage: "failed",
+      recoverable: true,
+      error: "The ComfyUI prompt completed with an error while the WebUI was restarting.",
+      finishedAt: now(),
+    });
+  }
+  if (snapshot.state === "running" || snapshot.state === "pending") {
+    const reattached = await updateRecoveredSingleVideoJob(job, {
+      status: "running",
+      stage: snapshot.state === "running"
+        ? "Reattached to the running ComfyUI prompt"
+        : "Reattached to the pending ComfyUI prompt",
+      recoverable: false,
+      connectionState: "polling",
+      error: "",
+      finishedAt: null,
+      recovery: {
+        reason: "bridge_restart_reattached",
+        previousStatus: job.recovery?.previousStatus || "running",
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+    monitorRecoveredSingleVideoPrompt(reattached);
+    return reattached;
+  }
+  return job;
+}
+
+async function guardSingleVideoRetryAgainstComfy(source) {
+  const snapshot = await inspectSingleVideoComfyPrompt(source);
+  if (snapshot.state === "unavailable") {
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_PROMPT_STATE_UNKNOWN",
+      "ComfyUI prompt state could not be verified. Retry is blocked to prevent a duplicate prompt.",
+      503,
+      { promptId: source.promptId || null },
+    );
+  }
+  if (snapshot.state === "running" || snapshot.state === "pending") {
+    const reattached = await updateRecoveredSingleVideoJob(source, {
+      status: "running",
+      stage: snapshot.state === "running"
+        ? "Reattached to the running ComfyUI prompt"
+        : "Reattached to the pending ComfyUI prompt",
+      recoverable: false,
+      connectionState: "polling",
+      error: "",
+      finishedAt: null,
+      recovery: {
+        reason: "retry_blocked_prompt_still_active",
+        previousStatus: source.status,
+        recoveredBy: SINGLE_VIDEO_OWNER_ID,
+        recoveredAt: now(),
+      },
+    });
+    monitorRecoveredSingleVideoPrompt(reattached);
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_PROMPT_STILL_ACTIVE",
+      "The original ComfyUI prompt is still active. Retry was not submitted.",
+      409,
+      { promptId: source.promptId, state: snapshot.state },
+    );
+  }
+  if (snapshot.state === "completed") {
+    await adoptRecoveredSingleVideoArtifact(source, snapshot);
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_PROMPT_ALREADY_COMPLETED",
+      "The original ComfyUI prompt completed and its artifact was recovered. Retry was not submitted.",
+      409,
+      { promptId: source.promptId },
+    );
+  }
+  if (!source.promptId && snapshot.state === "uncorrelated_busy") {
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_COMFY_QUEUE_BUSY_UNCORRELATED",
+      "ComfyUI still has active or pending prompts, but this legacy job has no prompt ID. Retry is blocked until the queue is clear.",
+      409,
+      snapshot.queue,
+    );
+  }
+  return snapshot;
+}
+
 function requestFromPersistedSingleJob(job) {
   const request = job?.provenance?.request && typeof job.provenance.request === "object"
     ? structuredClone(job.provenance.request)
@@ -3753,6 +4041,7 @@ async function retrySingleVideoJob(id, overrides = {}) {
     error.status = 409;
     throw error;
   }
+  await guardSingleVideoRetryAgainstComfy(source);
   const nextAttempt = Math.max(1, Number(source.attempt || source.provenance?.attempt || 1) + 1);
   const request = {
     ...requestFromPersistedSingleJob(source),
@@ -3766,6 +4055,14 @@ async function retrySingleVideoJob(id, overrides = {}) {
 
 async function recoverSingleVideoJobsAtStartup() {
   const recovery = await singleVideoJobStore.recover({ ownerId: SINGLE_VIDEO_OWNER_ID });
+  for (const interrupted of recovery.interrupted || []) {
+    if (!interrupted.promptId) continue;
+    try {
+      await reconcileRecoveredSingleVideoJob(interrupted);
+    } catch (error) {
+      console.warn("[single-video] Comfy prompt reconciliation warning", interrupted.id, error?.message || error);
+    }
+  }
   if (process.env.MINIMAX_H3_SINGLE_VIDEO_AUTO_RESUME !== "0") {
     for (const queued of recovery.requeued) {
       try {
@@ -4020,7 +4317,7 @@ async function startSequenceGeneration(payload) {
 }
 
 function trimJobs() {
-  const items = [...jobs.values()].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  const items = [...jobs.values()].sort((left, right) => String(right.startedAt || right.createdAt || "").localeCompare(String(left.startedAt || left.createdAt || "")));
   for (const item of items.slice(30)) {
     if (!jobProcesses.has(item.id)) jobs.delete(item.id);
   }

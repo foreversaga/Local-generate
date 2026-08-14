@@ -44,6 +44,8 @@ test("Single Video store writes durable safe records without transient process h
     output: { root: "output", name: "single-result.mp4" },
     error: "",
     exitCode: 0,
+    promptId: "11111111-1111-4111-8111-111111111111",
+    runtimeMode: "remote",
     attempt: 1,
     provenance: { request: { mode: "t2v", prompt: "A subject crosses a room.", inputImageName: "reference/frame.png" }, attempt: 1 },
     execution: { ownerId: "secret-owner", pid: 1234, child: { kill() {} } },
@@ -55,6 +57,8 @@ test("Single Video store writes durable safe records without transient process h
   assert.equal(job.output.name, "single-result.mp4");
   const saved = JSON.parse(await readFile(value.store.jobFile(job.id), "utf8"));
   assert.equal(saved.exitCode, 0);
+  assert.equal(saved.promptId, "11111111-1111-4111-8111-111111111111");
+  assert.equal(saved.runtimeMode, "remote");
   assert.equal(saved.inputRefs.inputImage, "reference/frame.png");
   assert.equal(Object.hasOwn(saved, "execution"), false);
   assert.equal(Object.hasOwn(saved, "outputPath"), false);

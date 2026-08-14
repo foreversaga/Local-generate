@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import test, { after } from "node:test";
 
+import { calculateAspectRatioDimensions } from "../app/lib/single-image-resolution.mjs";
 import { createSingleVideoJobStore } from "../server/video-generation/single-job-store.mjs";
 
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "h3-single-video-bridge-"));
@@ -13,6 +15,29 @@ const dataRoot = path.join(tempRoot, "single-jobs");
 const h3Root = path.join(tempRoot, "h3-local");
 const comfyRoot = path.join(tempRoot, "comfy");
 const logsRoot = path.join(tempRoot, "logs");
+const activePromptId = "22222222-2222-4222-8222-222222222222";
+let promptActive = false;
+let promptErrored = false;
+const comfyServer = createServer((req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  if (req.url === "/queue") {
+    res.end(JSON.stringify({
+      queue_running: promptActive ? [[1, activePromptId, {}, { client_id: "test" }]] : [],
+      queue_pending: [],
+    }));
+    return;
+  }
+  if (req.url === `/history/${activePromptId}`) {
+    res.end(JSON.stringify(promptErrored ? {
+      [activePromptId]: { status: { status_str: "error", completed: false }, outputs: {} },
+    } : {}));
+    return;
+  }
+  res.end("{}");
+});
+await new Promise((resolve) => comfyServer.listen(0, "127.0.0.1", resolve));
+const comfyAddress = comfyServer.address();
+const comfyUrl = `http://127.0.0.1:${comfyAddress.port}`;
 await mkdir(path.join(h3Root, "src"), { recursive: true });
 await mkdir(path.join(comfyRoot, "input"), { recursive: true });
 await mkdir(path.join(comfyRoot, "output"), { recursive: true });
@@ -27,6 +52,7 @@ const environmentKeys = [
   "COMFYUI_ROOT",
   "MINIMAX_H3_LOGS_ROOT",
   "MINIMAX_H3_PYTHON",
+  "LOCAL_COMFY_URL",
 ];
 const previousEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
 process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT = dataRoot;
@@ -36,6 +62,7 @@ process.env.MINIMAX_H3_ROOT = h3Root;
 process.env.COMFYUI_ROOT = comfyRoot;
 process.env.MINIMAX_H3_LOGS_ROOT = logsRoot;
 process.env.MINIMAX_H3_PYTHON = process.execPath;
+process.env.LOCAL_COMFY_URL = comfyUrl;
 
 const store = createSingleVideoJobStore({ root: dataRoot });
 const request = {
@@ -71,10 +98,21 @@ await store.create({
   attempt: 1,
   provenance: { request, attempt: 1 },
 });
+await store.create({
+  ...request,
+  id: "sv-active-prompt-api",
+  status: "failed",
+  stage: "failed",
+  progress: 31,
+  promptId: activePromptId,
+  attempt: 1,
+  provenance: { request, attempt: 1 },
+});
 
 const bridge = await import(`../local-bridge.mjs?single-video-persistence=${randomUUID()}`);
 
 after(async () => {
+  await new Promise((resolve) => comfyServer.close(resolve));
   for (const [key, value] of Object.entries(previousEnvironment)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -124,7 +162,7 @@ test("Jobs API reads durable history and recovery never exposes a ghost running 
   const response = await invoke(getRequest("/api/jobs"));
   assert.equal(response.status, 200);
   const jobs = response.body.jobs;
-  assert.deepEqual(new Set(jobs.map((job) => job.id)), new Set(["sv-completed-api", "sv-queued-api", "sv-running-api", "sv-failed-api"]));
+  assert.deepEqual(new Set(jobs.map((job) => job.id)), new Set(["sv-completed-api", "sv-queued-api", "sv-running-api", "sv-failed-api", "sv-active-prompt-api"]));
   assert.equal(jobs.find((job) => job.id === "sv-completed-api").status, "completed");
   assert.equal(jobs.find((job) => job.id === "sv-queued-api").status, "queued");
   const interrupted = jobs.find((job) => job.id === "sv-running-api");
@@ -135,13 +173,30 @@ test("Jobs API reads durable history and recovery never exposes a ghost running 
   assert.equal((await invoke(getRequest("/api/jobs/sv-running-api"))).body.status, "interrupted");
 });
 
+test("retry is blocked while the original Comfy prompt is still active", async () => {
+  promptActive = true;
+  const response = await invoke(postRequest("/api/jobs/sv-active-prompt-api/retry"));
+  assert.equal(response.status, 409, JSON.stringify(response.body));
+  assert.equal(response.body.code, "SINGLE_VIDEO_PROMPT_STILL_ACTIVE");
+  assert.equal((await store.read("sv-active-prompt-api")).status, "running");
+
+  promptActive = false;
+  promptErrored = true;
+  const finished = await waitFor(async () => {
+    const job = await store.read("sv-active-prompt-api");
+    return job?.status === "failed" ? job : null;
+  }, 4000);
+  assert.equal(finished.status, "failed");
+});
+
 test("retry creates a new attempt with edited prompt and render parameters", async () => {
+  const retryDimensions = calculateAspectRatioDimensions("9:16", 704, "width");
   const edited = {
     prompt: `${request.prompt}\n\nintegrated_multimodal_description: [Retry] Keep the same subject, use a shorter test shot.`,
     negativePrompt: "edited negative prompt",
     modelProfile: "nvfp4_blackwell",
-    width: 704,
-    height: 1056,
+    width: retryDimensions.width,
+    height: retryDimensions.height,
     duration: 8,
     steps: 8,
     seed: 777,

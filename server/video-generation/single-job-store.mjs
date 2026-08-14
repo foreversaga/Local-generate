@@ -185,6 +185,11 @@ function safeIdOptional(value) {
   return text && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(text) ? text : "";
 }
 
+function safePromptId(value) {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(text) ? text : "";
+}
+
 function canonicalJob(input = {}) {
   const id = safeId(input.id);
   const request = safeRequest(input.provenance?.request || input.request || input);
@@ -199,6 +204,7 @@ function canonicalJob(input = {}) {
   const output = safeOutput(input.output || (input.outputRelativeName ? { root: "output", name: input.outputRelativeName } : null));
   const provenance = safeProvenance(input.provenance, request);
   provenance.attempt = attempt;
+  const runtimeMode = input.runtimeMode === "remote" ? "remote" : "local";
   return {
     id,
     mode: safeText(input.mode || request.mode, "t2v"),
@@ -214,6 +220,8 @@ function canonicalJob(input = {}) {
     seed: integerOrNull(input.seed ?? request.seed),
     timeoutSeconds: numberOrNull(input.timeoutSeconds ?? request.timeoutSeconds),
     inputRefs: safeInputRefs(input.inputRefs || request.inputRefs),
+    promptId: safePromptId(input.promptId),
+    runtimeMode,
     status: safeText(input.status, "queued"),
     stage: safeText(input.stage, "queued"),
     progress: numberOrNull(input.progress) ?? 0,
