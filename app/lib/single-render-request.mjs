@@ -1,6 +1,11 @@
 const MAX_REF2V_IMAGES = 9;
 const SEED_MODULUS = 2147483648;
 
+export const H3_REALISM_PEOPLE_LORA_NAME = "h3-realism-people-t2v-i2v-r2v.safetensors";
+export const H3_REALISM_PEOPLE_LORA_TRIGGER = "r34l1sm";
+export const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
+export const H3_LORA_SUPPORTED_MODES = Object.freeze(["t2v", "i2v", "fl2v", "l2v", "ref2v"]);
+
 /**
  * @typedef {{
  *   mode: string;
@@ -17,6 +22,10 @@ const SEED_MODULUS = 2147483648;
  *   characterLoraName?: string;
  *   characterLoraId?: string;
  *   characterLoraStrength?: number;
+ *   h3LoraEnabled?: boolean;
+ *   h3LoraStrength?: number;
+ *   h3LoraPreset?: string | null;
+ *   characterLoraTrigger?: string | null;
  *   modelProfile: string;
  *   width: number;
  *   height: number;
@@ -27,6 +36,7 @@ const SEED_MODULUS = 2147483648;
  *   batchId?: string;
  *   batchIndex?: number;
  *   batchTotal?: number;
+ *   ollamaPromptReceipt?: string;
  * }} SingleRenderRequestInput
  */
 
@@ -42,6 +52,7 @@ export function buildSingleRenderRequest(input) {
   const sourceVideoName = input.sourceVideoName || "";
   const characterLoraId = input.mode === "replace" ? String(input.characterLoraId || "").trim() : "";
   const characterLoraName = input.mode === "replace" ? String(input.characterLoraName || "").trim() : "";
+  const h3LoraEnabled = input.mode !== "replace" && H3_LORA_SUPPORTED_MODES.includes(input.mode) && input.h3LoraEnabled === true;
   const payload = {
     mode: input.mode,
     prompt: input.prompt,
@@ -64,6 +75,7 @@ export function buildSingleRenderRequest(input) {
     batchId: input.batchId || "",
     batchIndex: input.batchIndex ?? 1,
     batchTotal: input.batchTotal ?? 1,
+    ...(input.ollamaPromptReceipt ? { ollamaPromptReceipt: input.ollamaPromptReceipt } : {}),
   };
 
   if (input.mode === "ref2v") {
@@ -77,6 +89,22 @@ export function buildSingleRenderRequest(input) {
   } else if (characterLoraName) {
     payload.characterLoraName = characterLoraName;
     payload.characterLoraStrength = input.characterLoraStrength ?? 0.75;
+  }
+
+  if (input.mode !== "replace" && H3_LORA_SUPPORTED_MODES.includes(input.mode) && typeof input.h3LoraEnabled === "boolean") {
+    if (h3LoraEnabled) {
+      payload.h3LoraEnabled = true;
+      payload.h3LoraPreset = H3_REALISM_PEOPLE_LORA_NAME;
+      payload.characterLoraName = H3_REALISM_PEOPLE_LORA_NAME;
+      payload.characterLoraTrigger = H3_REALISM_PEOPLE_LORA_TRIGGER;
+      payload.characterLoraStrength = input.h3LoraStrength ?? input.characterLoraStrength ?? H3_REALISM_PEOPLE_DEFAULT_STRENGTH;
+    } else {
+      payload.h3LoraEnabled = false;
+      payload.h3LoraPreset = null;
+      payload.characterLoraName = null;
+      payload.characterLoraTrigger = null;
+      payload.characterLoraStrength = null;
+    }
   }
 
   return payload;

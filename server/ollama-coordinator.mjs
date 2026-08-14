@@ -1,7 +1,10 @@
+import { spawn as nodeSpawn } from "node:child_process";
 import { LongVideoError } from "./long-video/schema.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_UNLOAD_TIMEOUT_MS = 30000;
+const DEFAULT_STOP_TIMEOUT_MS = 30000;
+const MAX_COMMAND_OUTPUT = 4000;
 const MODEL_KEY_SEPARATOR = "\u0000";
 
 function text(value) {
@@ -56,6 +59,58 @@ function responseFailed(response) {
   return response?.ok === false || (Number.isInteger(response?.status) && response.status >= 400);
 }
 
+function tail(value, limit = MAX_COMMAND_OUTPUT) {
+  return String(value || "").slice(-limit);
+}
+
+function stopAlreadyComplete(result) {
+  const output = `${String(result?.stdout || "")}\n${String(result?.stderr || "")}`.toLowerCase();
+  // keep_alive:0 may have completed before the explicit CLI reaches Ollama.
+  // Treat only the CLI's idempotent "already stopped/not loaded" responses as
+  // success; connection, permission, and other failures remain blocking.
+  return /(?:not\s+(?:running|loaded|found)|(?:no|could\s+not|couldn't|cannot)\s+(?:such\s+)?(?:model|find\s+model)|model\s+.*\b(?:not\s+found|isn't\s+running|is\s+not\s+running)\b)/i.test(output);
+}
+
+function defaultOllamaExecutable() {
+  const configured = String(process.env.OLLAMA_CLI_PATH || "").trim();
+  return configured || (process.platform === "win32" ? "ollama.exe" : "ollama");
+}
+
+/**
+ * Run a fixed executable plus argv without a shell.  The runner is injected
+ * into the coordinator in tests and by embedders that own process execution.
+ */
+function runCommand(executable, args, { env = process.env, timeoutMs = DEFAULT_STOP_TIMEOUT_MS, spawnImpl = nodeSpawn } = {}) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    let timer;
+    let child;
+    try {
+      child = spawnImpl(executable, args, {
+        env,
+        windowsHide: true,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+    timer = setTimeout(() => {
+      child.kill?.();
+      reject(new Error(`${executable} ${args.join(" ")} timed out.`));
+    }, timeoutMs);
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("close", (exitCode) => {
+      clearTimeout(timer);
+      resolve({ exitCode: exitCode ?? -1, stdout: tail(stdout), stderr: tail(stderr) });
+    });
+  });
+}
+
 /**
  * Coordinate Ollama requests with model-scoped cleanup and an exclusive H3
  * generation barrier.  The transport is injected so prompt and planner tests
@@ -65,6 +120,9 @@ export function createOllamaCoordinator({
   fetchImpl = (...args) => globalThis.fetch(...args),
   beforeRequest = null,
   unloadTimeoutMs = DEFAULT_UNLOAD_TIMEOUT_MS,
+  stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+  ollamaExecutable = defaultOllamaExecutable(),
+  commandRunner = runCommand,
 } = {}) {
   const states = new Map();
   let generationWaiters = 0;
@@ -95,6 +153,7 @@ export function createOllamaCoordinator({
         model: text(target.model),
         active: 0,
         unloading: null,
+        cleanup: null,
         failure: null,
       };
       states.set(key, state);
@@ -133,44 +192,114 @@ export function createOllamaCoordinator({
       // A generation waiter can be inserted while the previous wait above was
       // suspended. Re-check immediately before admitting the model lease.
       if (generationWaiters !== 0 || generationHeld || state.unloading) continue;
+      if (state.active === 0) {
+        let resolveCleanup;
+        const promise = new Promise((resolve) => { resolveCleanup = resolve; });
+        state.cleanup = { promise, resolve: resolveCleanup };
+      }
       state.active += 1;
       notify();
       return { state, snapshot };
     }
   }
 
+  async function explicitStop(state) {
+    const executable = String(ollamaExecutable || "").trim();
+    if (!executable) throw unloadFailure(`Ollama CLI executable is not configured for model ${state.model}.`, { model: state.model });
+    let result;
+    try {
+      result = await commandRunner(executable, ["stop", state.model], {
+        env: { ...process.env, OLLAMA_HOST: state.ollamaUrl },
+        timeoutMs: stopTimeoutMs,
+        windowsHide: true,
+        shell: false,
+      });
+    } catch (error) {
+      throw unloadFailure(`Unable to explicitly stop Ollama model ${state.model}: ${error instanceof Error ? error.message : String(error)}`, {
+        model: state.model,
+        executable,
+        cause: errorInfo(error),
+      });
+    }
+    const exitCode = Number(result?.exitCode);
+    if ((!Number.isInteger(exitCode) || exitCode !== 0) && !stopAlreadyComplete(result)) {
+      throw unloadFailure(`Ollama stop failed for model ${state.model}.`, {
+        model: state.model,
+        executable,
+        exitCode: Number.isFinite(exitCode) ? exitCode : null,
+        stderr: tail(result?.stderr),
+      });
+    }
+  }
+
   async function unloadState(state, requestFetch = fetchImpl) {
     const target = { ollamaUrl: state.ollamaUrl, model: state.model };
-    const response = await requestFetch(`${state.ollamaUrl}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: state.model, prompt: "", stream: false, keep_alive: 0 }),
-      signal: AbortSignal.timeout(unloadTimeoutMs),
-    });
-    if (!response) throw unloadFailure(`Ollama unload returned no response for model ${state.model}.`, target);
-    const body = typeof response?.text === "function"
-      ? await response.text()
-      : JSON.stringify(await response?.json?.() ?? {});
-    parseBody(body);
-    if (responseFailed(response)) {
-      throw unloadFailure(
-        `Ollama failed to unload model ${state.model} (${response.status || "unknown"}).`,
-        { ...target, status: response.status, body: body.slice(-2000) },
-      );
+    let apiError = null;
+    try {
+      const response = await requestFetch(`${state.ollamaUrl}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: state.model, prompt: "", stream: false, keep_alive: 0 }),
+        signal: AbortSignal.timeout(unloadTimeoutMs),
+      });
+      if (!response) throw unloadFailure(`Ollama unload returned no response for model ${state.model}.`, target);
+      const body = typeof response?.text === "function"
+        ? await response.text()
+        : JSON.stringify(await response?.json?.() ?? {});
+      parseBody(body);
+      if (responseFailed(response)) {
+        throw unloadFailure(
+          `Ollama failed to unload model ${state.model} (${response.status || "unknown"}).`,
+          { ...target, status: response.status, body: tail(body) },
+        );
+      }
+    } catch (error) {
+      apiError = error?.code === "OLLAMA_UNLOAD_FAILED"
+        ? error
+        : unloadFailure(`Unable to unload Ollama model ${state.model}: ${error instanceof Error ? error.message : String(error)}`, {
+            ...target,
+            cause: errorInfo(error),
+          });
     }
+
+    let explicitError = null;
+    try {
+      await explicitStop(state);
+    } catch (error) {
+      explicitError = error?.code === "OLLAMA_UNLOAD_FAILED"
+        ? error
+        : unloadFailure(`Unable to explicitly stop Ollama model ${state.model}.`, { ...target, cause: errorInfo(error) });
+    }
+    if (apiError) {
+      if (explicitError) {
+        apiError.details = {
+          ...(apiError.details && typeof apiError.details === "object" ? apiError.details : {}),
+          explicitStopError: errorInfo(explicitError),
+        };
+        apiError.cause = explicitError;
+      }
+      throw apiError;
+    }
+    if (explicitError) throw explicitError;
   }
 
   async function releaseModel(lease) {
     const { state } = lease;
+    const cleanup = state.cleanup;
     state.active = Math.max(0, state.active - 1);
     if (state.active !== 0) {
       notify();
+      if (cleanup) {
+        const result = await cleanup.promise;
+        if (result?.ok === false) throw result.error;
+      }
       return;
     }
     const operation = (async () => {
       try {
         await unloadState(state, lease.requestFetch);
         state.failure = null;
+        cleanup?.resolve({ ok: true, scope: "model-cleanup" });
       } catch (error) {
         state.failure = error?.code === "OLLAMA_UNLOAD_FAILED"
           ? error
@@ -179,9 +308,11 @@ export function createOllamaCoordinator({
               model: state.model,
               cause: errorInfo(error),
             });
+        cleanup?.resolve({ ok: false, error: state.failure, scope: "model-cleanup" });
         throw state.failure;
       } finally {
         state.unloading = null;
+        if (state.cleanup === cleanup) state.cleanup = null;
         notify();
       }
     })();
@@ -289,6 +420,28 @@ export function createOllamaCoordinator({
     }
   }
 
+  /**
+   * Wait only for the Ollama prompt operation that owns the supplied
+   * completion.  The legacy acquireGenerationBarrier() remains available for
+   * runtime-wide transitions such as switching GPU targets; H3 request
+   * admission must use this scoped variant so non-Ollama requests do not wait
+   * on unrelated prompt work.
+   */
+  async function acquireConditionalGenerationBarrier({ completion, wait } = {}) {
+    const result = typeof wait === "function"
+      ? await wait()
+      : completion
+        ? await completion
+        : null;
+    if (result && result.ok === false) {
+      throw barrierFailure([{
+        scope: "prompt-operation",
+        error: result.error || { code: "OLLAMA_UNLOAD_FAILED", message: "Ollama prompt cleanup failed." },
+      }]);
+    }
+    return { release() {} };
+  }
+
   async function waitForIdle() {
     await waitUntil(() => generationWaiters === 0 && !generationHeld && !hasActiveWork());
     const barrierFailures = failures();
@@ -298,6 +451,7 @@ export function createOllamaCoordinator({
   return {
     generate,
     acquireGenerationBarrier,
+    acquireConditionalGenerationBarrier,
     waitForIdle,
     snapshot() {
       return [...states.values()].map((state) => ({

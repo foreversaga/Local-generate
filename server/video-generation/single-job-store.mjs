@@ -134,7 +134,7 @@ function safeRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const allowed = [
     "mode", "prompt", "negativePrompt", "model", "modelProfile", "width", "height", "dimensions",
-    "duration", "steps", "seed", "inputImageName", "lastImageName", "inputVideoName",
+    "duration", "steps", "seed", "timeoutSeconds", "inputImageName", "lastImageName", "inputVideoName",
     "referenceImageName", "referenceImageNames", "characterLoraName", "characterLoraId",
     "characterLoraStrength", "outputName", "batchId", "batchIndex", "batchTotal", "inputRefs",
   ];
@@ -159,7 +159,7 @@ function safeRequest(value) {
       result[key] = { width: integerOrNull(child.width), height: integerOrNull(child.height) };
     } else if (key === "characterLoraStrength") {
       result[key] = numberOrNull(child);
-    } else if (["width", "height", "duration", "steps", "seed", "batchIndex", "batchTotal"].includes(key)) {
+    } else if (["width", "height", "duration", "steps", "seed", "timeoutSeconds", "batchIndex", "batchTotal"].includes(key)) {
       result[key] = numberOrNull(child);
     }
   }
@@ -212,6 +212,7 @@ function canonicalJob(input = {}) {
     duration: numberOrNull(input.duration ?? request.duration),
     steps: integerOrNull(input.steps ?? request.steps),
     seed: integerOrNull(input.seed ?? request.seed),
+    timeoutSeconds: numberOrNull(input.timeoutSeconds ?? request.timeoutSeconds),
     inputRefs: safeInputRefs(input.inputRefs || request.inputRefs),
     status: safeText(input.status, "queued"),
     stage: safeText(input.stage, "queued"),

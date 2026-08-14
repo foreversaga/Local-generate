@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   buildLongPlanRequest,
   buildLongSaveRequest,
+  H3_REALISM_PEOPLE_PRESET,
+  H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
   longJobIsActive,
   selectHydratableLongJob,
   validateLongCreate,
@@ -64,6 +66,11 @@ type LongPlan = {
   codexModel?: string;
   codexReasoningEffort?: string;
   negativePrompt?: string;
+  h3LoraEnabled?: boolean;
+  h3LoraPreset?: string | null;
+  characterLoraName?: string;
+  characterLoraId?: string;
+  characterLoraStrength?: number;
   planningSettings?: { timelineMode?: TimelineMode; targetDuration?: number; segmentDurationHint?: number; segmentCount?: number };
   planMeta?: { timelineSource?: string; segmentDurationHint?: number; model?: string; [key: string]: unknown };
   continuityBible?: Record<string, unknown>;
@@ -80,6 +87,11 @@ type LongJob = LongPlan & {
   steps?: number;
   seed?: number;
   modelProfile?: string;
+  h3LoraEnabled?: boolean;
+  h3LoraPreset?: string | null;
+  characterLoraName?: string;
+  characterLoraId?: string;
+  characterLoraStrength?: number;
   seam?: "keep_duplicate_frame" | "drop_next_first_frame";
   progress?: number;
   stage?: string;
@@ -127,6 +139,10 @@ export function LongCreateForm() {
   const [reasoningEffort, setReasoningEffort] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexReasoningEffort);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
+  const [h3LoraEnabled, setH3LoraEnabled] = useState(false);
+  const [characterLoraName, setCharacterLoraName] = useState("");
+  const [characterLoraId, setCharacterLoraId] = useState("");
+  const [characterLoraStrength, setCharacterLoraStrength] = useState<NumberDraft>(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
   const [width, setWidth] = useState<NumberDraft>(736);
   const [height, setHeight] = useState<NumberDraft>(416);
   const [steps, setSteps] = useState<NumberDraft>(20);
@@ -149,6 +165,14 @@ export function LongCreateForm() {
   const reasoningOptions: readonly string[] = selectedCodex?.reasoningEfforts?.length ? selectedCodex.reasoningEfforts : [...REASONING];
   const effectiveReasoning = reasoningOptions.includes(reasoningEffort) ? reasoningEffort : reasoningOptions.includes("medium") ? "medium" : reasoningOptions[0] || "medium";
   const effectiveCodexModel = selectedCodex?.value || codexModel;
+  // `false` is an explicit clear marker for the fixed preset.  Keep it
+  // undefined when hydrating an older arbitrary LoRA so re-saving that job
+  // remains backward compatible.
+  const h3LoraSelection: boolean | undefined = h3LoraEnabled
+    ? true
+    : characterLoraName.trim() || characterLoraId.trim()
+      ? undefined
+      : false;
   const providerReady = promptProvider === "ollama"
     ? Boolean(health?.ollama?.online && visibleOllamaModels.includes(effectiveOllamaModel))
     : Boolean(health?.codex?.online && health?.codex?.skill);
@@ -164,8 +188,13 @@ export function LongCreateForm() {
     height,
     steps,
     seed,
+    h3LoraEnabled: h3LoraSelection,
+    h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
+    characterLoraName,
+    characterLoraId,
+    characterLoraStrength,
     requireSavedPlan: false,
-  }) as ValidationIssue[], [brief, duration, height, inputType, references, seed, segmentDurationHint, steps, timeline, timelineMode, width]);
+  }) as ValidationIssue[], [brief, characterLoraId, characterLoraName, characterLoraStrength, duration, h3LoraSelection, height, inputType, references, seed, segmentDurationHint, steps, timeline, timelineMode, width]);
   const submitIssues = useMemo(() => validateLongCreate({
     inputText: brief,
     inputType,
@@ -178,11 +207,16 @@ export function LongCreateForm() {
     height,
     steps,
     seed,
+    h3LoraEnabled: h3LoraSelection,
+    h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
+    characterLoraName,
+    characterLoraId,
+    characterLoraStrength,
     requireSavedPlan: true,
     plan,
     planDirty,
     outputFolder,
-  }) as ValidationIssue[], [brief, duration, height, inputType, references, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
+  }) as ValidationIssue[], [brief, characterLoraId, characterLoraName, characterLoraStrength, duration, h3LoraSelection, height, inputType, references, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
   const issuesByField = useMemo(() => new Map(submitIssues.map((issue) => [issue.field, issue.message])), [submitIssues]);
   const activeJob = Boolean(job && longJobIsActive(job.status));
   const canPlan = baseIssues.length === 0 && providerReady && !planning && !saving && !uploading;
@@ -237,6 +271,11 @@ export function LongCreateForm() {
     if (next.steps) setSteps(next.steps);
     if (next.seed !== undefined) setSeed(next.seed);
     if (next.modelProfile) setModelProfile(next.modelProfile);
+    const nextH3Enabled = next.h3LoraEnabled === true || next.h3LoraPreset === H3_REALISM_PEOPLE_PRESET || next.characterLoraName === H3_REALISM_PEOPLE_PRESET;
+    setH3LoraEnabled(nextH3Enabled);
+    setCharacterLoraName(nextH3Enabled ? H3_REALISM_PEOPLE_PRESET : next.characterLoraName || "");
+    setCharacterLoraId(nextH3Enabled ? "" : next.characterLoraId || "");
+    setCharacterLoraStrength(nextH3Enabled ? (next.characterLoraStrength ?? H3_REALISM_PEOPLE_DEFAULT_STRENGTH) : (next.characterLoraName || next.characterLoraId ? (next.characterLoraStrength ?? 0.75) : H3_REALISM_PEOPLE_DEFAULT_STRENGTH));
     if (next.promptProvider) setPromptProvider(next.promptProvider);
     if (next.codexModel) setCodexModel(next.codexModel);
     if (next.codexReasoningEffort) setReasoningEffort(next.codexReasoningEffort);
@@ -327,6 +366,14 @@ export function LongCreateForm() {
     markPlanDirty();
   }
 
+  function updateH3LoraEnabled(enabled: boolean) {
+    setH3LoraEnabled(enabled);
+    setCharacterLoraName(enabled ? H3_REALISM_PEOPLE_PRESET : "");
+    setCharacterLoraId("");
+    setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
+    markPlanDirty();
+  }
+
   function addReference(key: string) {
     const asset = assets.find((item) => assetKey(item) === key && item.kind === "image");
     if (!asset) return;
@@ -383,12 +430,24 @@ export function LongCreateForm() {
           codexModel: effectiveCodexModel,
           reasoningEffort: effectiveReasoning,
           negativePrompt,
+          h3LoraEnabled: h3LoraSelection,
+          h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
+          characterLoraName,
+          characterLoraId: characterLoraId || undefined,
+          characterLoraStrength: characterLoraStrength === "" ? undefined : Number(characterLoraStrength),
           plannerImages,
         })),
       });
       const payload = (await response.json().catch(() => ({}))) as { plan?: LongPlan } & ApiError;
       if (!response.ok || !payload.plan) throw new Error(apiError(payload, "長影片規劃失敗。"));
-      const nextPlan = payload.plan;
+      const nextPlan = {
+        ...payload.plan,
+        ...(h3LoraEnabled
+          ? { h3LoraEnabled: true, h3LoraPreset: H3_REALISM_PEOPLE_PRESET, characterLoraName: H3_REALISM_PEOPLE_PRESET, characterLoraStrength: characterLoraStrength === "" ? H3_REALISM_PEOPLE_DEFAULT_STRENGTH : Number(characterLoraStrength) }
+          : !characterLoraName.trim() && !characterLoraId
+            ? { h3LoraEnabled: false, h3LoraPreset: null, characterLoraName: null, characterLoraId: null, characterLoraStrength: null }
+            : { characterLoraName: characterLoraName.trim(), ...(characterLoraId ? { characterLoraId } : {}), characterLoraStrength: characterLoraStrength === "" ? 0.75 : Number(characterLoraStrength) }),
+      } as LongPlan;
       setPlan(nextPlan);
       setPlanDirty(false);
       setTimeline((nextPlan.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
@@ -415,6 +474,11 @@ export function LongCreateForm() {
       height,
       steps,
       seed,
+      h3LoraEnabled: h3LoraSelection,
+      h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
+      characterLoraName,
+      characterLoraId,
+      characterLoraStrength,
       requireSavedPlan: true,
       plan: selectedPlan,
       planDirty: planOverride ? false : planDirty,
@@ -444,6 +508,12 @@ export function LongCreateForm() {
         codexModel: effectiveCodexModel,
         reasoningEffort: effectiveReasoning,
         negativePrompt,
+        h3LoraEnabled: h3LoraSelection,
+        h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
+        characterLoraName,
+        characterLoraId: characterLoraId || undefined,
+        characterLoraStrength: characterLoraStrength === "" ? undefined : Number(characterLoraStrength),
+        clearCharacterLora: Boolean(existing && !characterLoraName.trim() && !characterLoraId.trim()),
         seam,
         revision: existing?.revision,
       })),
@@ -519,6 +589,7 @@ export function LongCreateForm() {
     setTitle(""); setOutputFolder(""); setInputType("text"); setReferenceMode("continuity"); setReferences([]);
     setBrief(""); setNegativePrompt(""); setTimelineMode("auto"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); setWidth(736); setHeight(416); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
+    setH3LoraEnabled(false); setCharacterLoraName(""); setCharacterLoraId(""); setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
     setPlan(null); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
   }
 
@@ -602,6 +673,22 @@ export function LongCreateForm() {
         </LongSection>
 
         <LongSection id="long-setup" code="04 / 生成設定" title="生成設定">
+          <label className={styles.field}>
+            <span className={styles.label}>H3 Realism People LoRA</span>
+            <span className={styles.segmented}>
+              <button type="button" className={h3LoraEnabled ? styles.active : ""} aria-pressed={h3LoraEnabled} onClick={() => updateH3LoraEnabled(!h3LoraEnabled)}>{h3LoraEnabled ? "已啟用" : "停用"}</button>
+            </span>
+            <span className={styles.helper}>固定預設：{H3_REALISM_PEOPLE_PRESET}；trigger <code>r34l1sm</code> 由 bridge 注入。停用會清除已保存 LoRA。</span>
+          </label>
+          <div className={styles.twoColumns}>
+            <Field label="Character LoRA" error={attempted ? issuesByField.get("characterLoraName") : ""}>
+              <input id="long-character-lora" className={styles.input} value={h3LoraEnabled ? H3_REALISM_PEOPLE_PRESET : characterLoraName} readOnly={h3LoraEnabled} onChange={(event) => { setCharacterLoraName(event.target.value); markPlanDirty(); }} placeholder="停用（可保留舊版 LoRA 路徑）" />
+            </Field>
+            <Field label="LoRA strength" error={attempted ? issuesByField.get("characterLoraStrength") : ""}>
+              <input id="long-character-lora-strength" className={styles.input} type="number" min={0} max={2} step={0.05} value={characterLoraStrength} onChange={(event) => { setCharacterLoraStrength(numberDraft(event.target.value)); markPlanDirty(); }} />
+            </Field>
+          </div>
+          <p className={styles.helper}>固定 H3 preset 支援 T2V/I2V/Ref2VA；舊版自訂 LoRA 仍限 T2V/I2V。strength 範圍 0–2，固定預設 0.8。</p>
           <div className={styles.twoColumns}><Field label="模型設定檔"><select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field><Field label="接縫處理"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">保留重複畫面</option><option value="drop_next_first_frame" disabled>移除下一段首幀（目前不支援）</option></select></Field></div>
           <div className={styles.fourColumns}><Field label={FIELD_LABELS.width} error={attempted ? issuesByField.get("width") : ""}><input id="long-width" className={styles.input} type="number" min={32} max={2048} step={32} value={width} onChange={(event) => setWidth(numberDraft(event.target.value))} /></Field><Field label={FIELD_LABELS.height} error={attempted ? issuesByField.get("height") : ""}><input id="long-height" className={styles.input} type="number" min={32} max={2048} step={32} value={height} onChange={(event) => setHeight(numberDraft(event.target.value))} /></Field><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input id="long-steps" className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input id="long-seed" className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機種子">↻</button></div></Field></div>
         </LongSection>
@@ -644,6 +731,9 @@ function focusLongValidationField(field: string) {
     height: "long-height",
     steps: "long-steps",
     seed: "long-seed",
+    h3LoraPreset: "long-character-lora",
+    characterLoraName: "long-character-lora",
+    characterLoraStrength: "long-character-lora-strength",
   };
   const element = document.getElementById(ids[field] || "");
   if (element instanceof HTMLElement) {

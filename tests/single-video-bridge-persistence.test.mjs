@@ -54,6 +54,7 @@ const request = {
   duration: 5,
   steps: 20,
   seed: 42,
+  timeoutSeconds: 3600,
   outputName: "retry-me.mp4",
 };
 await store.create({ ...request, id: "sv-completed-api", status: "completed", stage: "completed", progress: 100, output: { root: "output", name: "done.mp4" }, exitCode: 0 });
@@ -134,18 +135,36 @@ test("Jobs API reads durable history and recovery never exposes a ghost running 
   assert.equal((await invoke(getRequest("/api/jobs/sv-running-api"))).body.status, "interrupted");
 });
 
-test("retry creates a new attempt while preserving request provenance", async () => {
-  const response = await invoke(postRequest("/api/jobs/sv-failed-api/retry"));
+test("retry creates a new attempt with edited prompt and render parameters", async () => {
+  const edited = {
+    prompt: `${request.prompt}\n\nintegrated_multimodal_description: [Retry] Keep the same subject, use a shorter test shot.`,
+    negativePrompt: "edited negative prompt",
+    modelProfile: "nvfp4_blackwell",
+    width: 704,
+    height: 1056,
+    duration: 8,
+    steps: 8,
+    seed: 777,
+    timeoutSeconds: 7200,
+    outputName: "retry-edited.mp4",
+  };
+  const response = await invoke(postRequest("/api/jobs/sv-failed-api/retry", edited));
   assert.equal(response.status, 201, JSON.stringify(response.body));
   const retried = response.body.job;
   assert.notEqual(retried.id, "sv-failed-api");
   assert.equal(retried.attempt, 2);
   assert.equal(retried.retryOf, "sv-failed-api");
   assert.equal(retried.provenance.retryOf, "sv-failed-api");
-  assert.equal(retried.provenance.request.prompt, request.prompt);
-  assert.equal(retried.provenance.request.seed, request.seed);
-  assert.equal(retried.provenance.request.width, request.width);
-  assert.equal(retried.provenance.request.height, request.height);
+  assert.equal(retried.prompt, edited.prompt);
+  assert.equal(retried.negativePrompt, edited.negativePrompt);
+  assert.equal(retried.provenance.request.prompt, edited.prompt);
+  assert.equal(retried.provenance.request.seed, edited.seed);
+  assert.equal(retried.provenance.request.width, edited.width);
+  assert.equal(retried.provenance.request.height, edited.height);
+  assert.equal(retried.provenance.request.duration, edited.duration);
+  assert.equal(retried.provenance.request.steps, edited.steps);
+  assert.equal(retried.provenance.request.timeoutSeconds, edited.timeoutSeconds);
+  assert.equal(retried.outputName, edited.outputName);
 
   const cancelled = await invoke(postRequest(`/api/jobs/${encodeURIComponent(retried.id)}/cancel`));
   assert.equal(cancelled.status, 200);

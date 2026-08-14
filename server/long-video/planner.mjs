@@ -5,7 +5,7 @@ import { validatePrompt } from "./prompt-validator.mjs";
 import { createOllamaCoordinator } from "../ollama-coordinator.mjs";
 
 const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
-export const DEFAULT_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+export const DEFAULT_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 
 async function releasePlannerComfy(target = {}) {
   if (!target.remoteComfy || !target.comfyUrl) return;

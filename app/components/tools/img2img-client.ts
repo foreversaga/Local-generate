@@ -106,6 +106,7 @@ export type Img2ImgSubmitInput = {
     poseRoot?: "input" | "output";
     prompt: string;
     negativePrompt: string;
+    ollamaPromptReceipt?: string;
     model: string;
     characterLoraName?: string;
     characterLoraStrength?: number;

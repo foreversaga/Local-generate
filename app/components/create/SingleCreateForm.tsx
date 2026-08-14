@@ -6,6 +6,8 @@ import {
   batchOutputName,
   batchSeed,
   buildSingleRenderRequest,
+  H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
+  H3_REALISM_PEOPLE_LORA_NAME,
 } from "../../lib/single-render-request.mjs";
 import {
   clampResolutionScale,
@@ -92,6 +94,7 @@ export function SingleCreateForm() {
   const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false });
   const [mode, setMode] = useState<Mode>("t2v");
   const [prompt, setPrompt] = useState("");
+  const [ollamaPromptReceipt, setOllamaPromptReceipt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
   const [width, setWidth] = useState<NumberDraft>(736);
@@ -111,6 +114,8 @@ export function SingleCreateForm() {
   const [characterLoraName, setCharacterLoraName] = useState("");
   const [characterLoraStrength, setCharacterLoraStrength] = useState<NumberDraft>(0.75);
   const [characterLoraOptions, setCharacterLoraOptions] = useState<string[]>([]);
+  const [h3LoraEnabled, setH3LoraEnabled] = useState(false);
+  const [h3LoraStrength, setH3LoraStrength] = useState<NumberDraft>(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
   const [referenceImages, setReferenceImages] = useState<Asset[]>([]);
   const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
@@ -192,6 +197,8 @@ export function SingleCreateForm() {
     renderCount,
     characterLoraName,
     characterLoraStrength,
+    h3LoraEnabled,
+    h3LoraStrength,
     referenceImage,
     referenceImages,
     lastFrameImage,
@@ -206,6 +213,8 @@ export function SingleCreateForm() {
     renderCount,
     characterLoraName,
     characterLoraStrength,
+    h3LoraEnabled,
+    h3LoraStrength,
     duration,
     seed,
     sourceVideo,
@@ -230,6 +239,10 @@ export function SingleCreateForm() {
     outputName,
     characterLoraName,
     characterLoraStrength,
+    h3LoraEnabled,
+    h3LoraStrength,
+    h3LoraPreset: h3LoraEnabled ? H3_REALISM_PEOPLE_LORA_NAME : null,
+    characterLoraTrigger: h3LoraEnabled ? "r34l1sm" : null,
     referenceImageKey: referenceImage ? assetKey(referenceImage) : null,
     referenceImageKeys: referenceImages.map(assetKey),
     lastFrameImageKey: lastFrameImage ? assetKey(lastFrameImage) : null,
@@ -244,6 +257,8 @@ export function SingleCreateForm() {
     outputName,
     characterLoraName,
     characterLoraStrength,
+    h3LoraEnabled,
+    h3LoraStrength,
     prompt,
     referenceImage,
     referenceImages,
@@ -343,6 +358,8 @@ export function SingleCreateForm() {
     setOutputName(draft.outputName);
     setCharacterLoraName(draft.characterLoraName);
     setCharacterLoraStrength(draft.characterLoraStrength);
+    setH3LoraEnabled(draft.h3LoraEnabled === true);
+    setH3LoraStrength(draft.h3LoraEnabled === true ? (draft.h3LoraStrength ?? H3_REALISM_PEOPLE_DEFAULT_STRENGTH) : H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
     setReferenceImage(imageByKey(draft.referenceImageKey));
     setReferenceImages(draft.referenceImageKeys
       .map((key) => imageByKey(key))
@@ -374,6 +391,8 @@ export function SingleCreateForm() {
     resetResolutionToDefault(nextMode);
     setMode(nextMode);
     if (nextMode === "replace") {
+      setH3LoraEnabled(false);
+      setH3LoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
       setModelProfile("wan22_animate_fp8");
       setWidth(832);
       setHeight(480);
@@ -585,7 +604,8 @@ export function SingleCreateForm() {
             sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
             sourceVideoRoot: sourceVideo?.kind === "video" ? sourceVideo.root : undefined,
             characterLoraName: mode === "replace" ? characterLoraName : "",
-            characterLoraStrength: mode === "replace" ? Number(characterLoraStrength) : undefined,
+            characterLoraStrength: mode === "replace" ? Number(characterLoraStrength) : Number(h3LoraStrength),
+            h3LoraEnabled: mode === "replace" ? undefined : h3LoraEnabled,
             modelProfile,
             width: submittedWidth,
             height: submittedHeight,
@@ -596,6 +616,7 @@ export function SingleCreateForm() {
             batchId,
             batchIndex: index + 1,
             batchTotal: count,
+            ollamaPromptReceipt,
           })),
         });
         const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload & { job?: Job };
@@ -686,7 +707,10 @@ export function SingleCreateForm() {
               referenceImages={referenceImages}
               lastFrameImage={lastFrameImage}
               sourceVideo={sourceVideo}
-              onPromptGenerated={setPrompt}
+              onPromptGenerated={(value, receipt) => {
+                setPrompt(value);
+                setOllamaPromptReceipt(receipt || "");
+              }}
               onNegativePromptGenerated={setNegativePrompt}
             />
             <label className={`${styles.field} ${visibleFieldError("prompt") ? styles.fieldInvalid : ""}`}>
@@ -700,7 +724,10 @@ export function SingleCreateForm() {
                 aria-describedby="single-prompt-helper single-prompt-error"
                 placeholder="輸入要送給 MiniMax H3 的完整提示詞…"
                 onBlur={() => markTouched("prompt")}
-                onChange={(event) => setPrompt(event.target.value)}
+                onChange={(event) => {
+                  setPrompt(event.target.value);
+                  setOllamaPromptReceipt("");
+                }}
               />
               <span id="single-prompt-helper" className={styles.counterRow}>
                 <span className={styles.helper}>可直接貼入既有 H3 prompt；影片替換模式不套用 H3 字數上限。</span>
@@ -735,6 +762,46 @@ export function SingleCreateForm() {
                   ))}
                 </select>
               </label>
+
+              {mode !== "replace" && (
+                <>
+                  <label className={styles.field}>
+                    <span className={styles.fieldLabel}>H3 Realism People LoRA</span>
+                    <select
+                      id="single-h3-lora"
+                      className={styles.select}
+                      value={h3LoraEnabled ? "h3-realism-people" : "none"}
+                      onChange={(event) => setH3LoraEnabled(event.target.value === "h3-realism-people")}
+                    >
+                      <option value="none">不套用</option>
+                      <option value="h3-realism-people">套用 H3 Realism People</option>
+                    </select>
+                    <span className={styles.helper}>固定權重：{H3_REALISM_PEOPLE_LORA_NAME}；trigger 由 Bridge 注入一次。</span>
+                  </label>
+                  <label className={`${styles.field} ${visibleFieldError("h3LoraStrength") ? styles.fieldInvalid : ""}`}>
+                    <span className={styles.rangeHeader}>
+                      <span className={styles.fieldLabel}>H3 LoRA 強度</span>
+                      <span className={styles.rangeValue}>{h3LoraStrength === "" ? "—" : Number(h3LoraStrength).toFixed(2)}</span>
+                    </span>
+                    <input
+                      id="single-h3-lora-strength"
+                      className={styles.input}
+                      type="number"
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      value={h3LoraStrength}
+                      disabled={!h3LoraEnabled}
+                      aria-invalid={Boolean(visibleFieldError("h3LoraStrength"))}
+                      aria-describedby="single-h3-lora-strength-helper"
+                      onBlur={() => markTouched("h3LoraStrength")}
+                      onChange={(event) => setH3LoraStrength(numberDraft(event.target.value))}
+                    />
+                    <span id="single-h3-lora-strength-helper" className={styles.helper}>建議先用 0.6–0.8；預設 {H3_REALISM_PEOPLE_DEFAULT_STRENGTH.toFixed(2)}。</span>
+                    <FieldError id="single-h3-lora-strength-error" message={visibleFieldError("h3LoraStrength")} />
+                  </label>
+                </>
+              )}
 
               {mode === "replace" && (
                 <>
@@ -971,6 +1038,12 @@ export function SingleCreateForm() {
             <SummaryRow label="素材" value={assetSummary(mode, referenceImage, referenceImages, lastFrameImage, sourceVideo)} />
             {mode === "replace" && characterLoraName.trim() && (
               <SummaryRow label="角色 LoRA" value={`${characterLoraName.trim()} · ${characterLoraStrength === "" ? "—" : Number(characterLoraStrength).toFixed(2)}`} />
+            )}
+            {mode !== "replace" && h3LoraEnabled && (
+              <SummaryRow
+                label="H3 LoRA"
+                value={`Realism People · ${h3LoraStrength === "" ? "—" : Number(h3LoraStrength).toFixed(2)}`}
+              />
             )}
           </div>
         </section>
@@ -1384,6 +1457,7 @@ function focusValidationField(field: string) {
     renderCount: "single-render-count",
     characterLoraName: "single-character-lora",
     characterLoraStrength: "single-character-lora-strength",
+    h3LoraStrength: "single-h3-lora-strength",
   };
   const element = document.getElementById(ids[field] || "");
   if (element instanceof HTMLElement) {

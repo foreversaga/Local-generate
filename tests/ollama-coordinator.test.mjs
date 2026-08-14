@@ -31,6 +31,8 @@ function requestBody(init) {
   return JSON.parse(init.body);
 }
 
+const successfulCommandRunner = async () => ({ exitCode: 0, stdout: "", stderr: "" });
+
 function successResponse(value, events = [], label = "response") {
   return {
     ok: true,
@@ -47,9 +49,16 @@ test("generation and unload bodies are fully read before the H3 barrier passes",
   const generationText = deferred();
   const generationStarted = deferred();
   const unloadText = deferred();
+  const stopDone = deferred();
   const events = [];
   const calls = [];
+  const stopCalls = [];
   const coordinator = createOllamaCoordinator({
+    commandRunner: async (executable, args, options) => {
+      stopCalls.push({ executable, args, options });
+      await stopDone.promise;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
     fetchImpl: async (url, init) => {
       const body = requestBody(init);
       calls.push({ url: String(url), body, init });
@@ -101,7 +110,6 @@ test("generation and unload bodies are fully read before the H3 barrier passes",
   assert.equal(calls[1].url, `${OLLAMA_URL}/api/generate`);
   assert.deepEqual(calls[1].body, { model: MODEL, prompt: "", stream: false, keep_alive: 0 });
   assert.equal(calls.some((call) => call.url.includes("/api/ps")), false);
-  assert.equal(calls.some((call) => call.url.endsWith("/stop")), false);
 
   let barrierSettled = false;
   barrier.then(() => { barrierSettled = true; }, () => { barrierSettled = true; });
@@ -109,8 +117,13 @@ test("generation and unload bodies are fully read before the H3 barrier passes",
   assert.equal(barrierSettled, false, "H3 admission must wait for unload response.text()");
 
   unloadText.resolve("{}");
+  await waitFor(() => stopCalls.length === 1, "explicit Ollama stop was not issued");
+  await flush();
+  assert.equal(barrierSettled, false, "H3 admission must wait for explicit Ollama stop completion");
+  stopDone.resolve();
   const [result, lease] = await Promise.all([generation, barrier]);
   assert.deepEqual(result.payload, { response: "{\"ok\":true}" });
+  assert.deepEqual(stopCalls.map(({ executable, args }) => ({ executable, args })), [{ executable: process.platform === "win32" ? "ollama.exe" : "ollama", args: ["stop", MODEL] }]);
   assert.equal(events.indexOf("generation.text:end") < events.indexOf("unload.text:start"), true);
   assert.equal(events.indexOf("unload.text:end") >= 0, true);
   lease.release();
@@ -120,6 +133,7 @@ test("same-tick barrier waiter prevents a pending model admission from penetrati
   const generationText = deferred();
   const calls = [];
   const coordinator = createOllamaCoordinator({
+    commandRunner: successfulCommandRunner,
     fetchImpl: async (url, init) => {
       const body = requestBody(init);
       calls.push({ url: String(url), body });
@@ -151,7 +165,12 @@ test("parallel same-model generation unloads only after the last lease", async (
   const firstText = deferred();
   const secondText = deferred();
   const calls = [];
+  const stopCalls = [];
   const coordinator = createOllamaCoordinator({
+    commandRunner: async (executable, args, options) => {
+      stopCalls.push({ executable, args, options });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
     fetchImpl: async (url, init) => {
       const body = requestBody(init);
       calls.push({ url: String(url), body });
@@ -168,23 +187,28 @@ test("parallel same-model generation unloads only after the last lease", async (
   const first = coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "first" } });
   const second = coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "second" } });
   await waitFor(() => calls.length === 2, "parallel generation requests were not issued");
+  let firstSettled = false;
+  first.then(() => { firstSettled = true; });
   firstText.resolve(JSON.stringify({ response: "first" }));
-  await first;
+  await flush();
+  assert.equal(firstSettled, false, "first lease must wait for the final shared unload");
   assert.equal(calls.filter((call) => call.body.prompt === "").length, 0, "first lease must not unload a shared model");
 
   secondText.resolve(JSON.stringify({ response: "second" }));
-  await second;
+  await Promise.all([first, second]);
   const unloadCalls = calls.filter((call) => call.body.prompt === "");
   assert.equal(unloadCalls.length, 1);
   assert.equal(unloadCalls[0].body.model, MODEL);
   assert.equal(unloadCalls[0].body.stream, false);
   assert.equal(unloadCalls[0].body.keep_alive, 0);
+  assert.deepEqual(stopCalls.map(({ args }) => args), [["stop", MODEL]], "the shared model receives one explicit stop after the final lease");
   assert.equal(calls.every((call) => call.url.endsWith("/api/generate")), true);
 });
 
 test("distinct models each receive one scoped unload", async () => {
   const calls = [];
   const coordinator = createOllamaCoordinator({
+    commandRunner: successfulCommandRunner,
     fetchImpl: async (url, init) => {
       const body = requestBody(init);
       calls.push({ url: String(url), body });
@@ -205,6 +229,7 @@ test("HTTP and response-text generation failures preserve the primary error and 
   await t.test("HTTP failure", async () => {
     const calls = [];
     const coordinator = createOllamaCoordinator({
+      commandRunner: successfulCommandRunner,
       fetchImpl: async (url, init) => {
         const body = requestBody(init);
         calls.push({ url: String(url), body });
@@ -224,6 +249,7 @@ test("HTTP and response-text generation failures preserve the primary error and 
   await t.test("generation response body read failure", async () => {
     const calls = [];
     const coordinator = createOllamaCoordinator({
+      commandRunner: successfulCommandRunner,
       fetchImpl: async (url, init) => {
         const body = requestBody(init);
         calls.push({ url: String(url), body });
@@ -244,6 +270,7 @@ test("HTTP and response-text generation failures preserve the primary error and 
   await t.test("caller parse failure after malformed JSON still follows completed unload", async () => {
     const calls = [];
     const coordinator = createOllamaCoordinator({
+      commandRunner: successfulCommandRunner,
       fetchImpl: async (url, init) => {
         const body = requestBody(init);
         calls.push({ url: String(url), body });
@@ -269,6 +296,7 @@ test("unload failures block H3 submit and report OLLAMA_UNLOAD_FAILED", async (t
   await t.test("unload HTTP failure", async () => {
     const calls = [];
     const coordinator = createOllamaCoordinator({
+      commandRunner: successfulCommandRunner,
       fetchImpl: async (url, init) => {
         const body = requestBody(init);
         calls.push({ url: String(url), body });
@@ -295,6 +323,7 @@ test("unload failures block H3 submit and report OLLAMA_UNLOAD_FAILED", async (t
   await t.test("unload response body read failure", async () => {
     const calls = [];
     const coordinator = createOllamaCoordinator({
+      commandRunner: successfulCommandRunner,
       fetchImpl: async (url, init) => {
         const body = requestBody(init);
         calls.push({ url: String(url), body });
@@ -317,9 +346,40 @@ test("unload failures block H3 submit and report OLLAMA_UNLOAD_FAILED", async (t
   });
 });
 
+test("request failure still runs explicit stop and stop failure blocks the H3 barrier", async () => {
+  const calls = [];
+  const stopCalls = [];
+  const coordinator = createOllamaCoordinator({
+    commandRunner: async (executable, args, options) => {
+      stopCalls.push({ executable, args, options });
+      return { exitCode: 17, stdout: "", stderr: "stop denied" };
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), body: requestBody(init) });
+      return calls.length === 1
+        ? { ok: false, status: 502, text: async () => "generation failed" }
+        : successResponse("{}");
+    },
+  });
+
+  await assert.rejects(
+    coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "request-fails" } }),
+    (error) => error?.code === "OLLAMA_REQUEST_FAILED" && error?.details?.unloadError?.code === "OLLAMA_UNLOAD_FAILED",
+  );
+  assert.equal(calls.length, 2, "API keep_alive cleanup still runs after request failure");
+  assert.deepEqual(stopCalls.map(({ executable, args }) => ({ executable, args })), [{ executable: process.platform === "win32" ? "ollama.exe" : "ollama", args: ["stop", MODEL] }]);
+  assert.equal(stopCalls[0].options.shell, false);
+  assert.equal(stopCalls[0].options.windowsHide, true);
+  await assert.rejects(
+    coordinator.acquireGenerationBarrier(),
+    (error) => error?.code === "OLLAMA_UNLOAD_FAILED" && Array.isArray(error?.details?.failures),
+  );
+});
+
 test("a held H3 barrier blocks new Ollama admission until release, then recovers", async () => {
   const calls = [];
   const coordinator = createOllamaCoordinator({
+    commandRunner: successfulCommandRunner,
     fetchImpl: async (url, init) => {
       calls.push({ url: String(url), body: requestBody(init) });
       return successResponse(JSON.stringify({ response: "ok" }));
@@ -336,4 +396,84 @@ test("a held H3 barrier blocks new Ollama admission until release, then recovers
   await generation;
   assert.equal(generationSettled, true);
   assert.equal(calls.filter((call) => call.body.prompt === "").length, 1);
+});
+
+test("conditional H3 admission waits only for its prompt cleanup result", async () => {
+  const completion = deferred();
+  const coordinator = createOllamaCoordinator({ commandRunner: successfulCommandRunner });
+  let videoRequested = false;
+  const video = coordinator.acquireConditionalGenerationBarrier({ completion: completion.promise }).then(() => {
+    videoRequested = true;
+  });
+  await flush();
+  assert.equal(videoRequested, false, "video admission must wait for explicit unload completion");
+  completion.resolve({ ok: true, scope: "prompt-operation" });
+  await video;
+  assert.equal(videoRequested, true);
+
+  const unrelated = deferred();
+  const immediate = coordinator.acquireConditionalGenerationBarrier({ completion: Promise.resolve({ ok: true }) });
+  unrelated.resolve();
+  await immediate;
+  assert.equal(videoRequested, true, "a completed unrelated operation must not add a global wait");
+});
+
+test("conditional H3 admission rejects an explicit unload failure", async () => {
+  const coordinator = createOllamaCoordinator({ commandRunner: successfulCommandRunner });
+  let videoRequested = false;
+  await assert.rejects(
+    coordinator.acquireConditionalGenerationBarrier({
+      completion: Promise.resolve({
+        ok: false,
+        error: { code: "OLLAMA_UNLOAD_FAILED", message: "stop denied", status: 503 },
+      }),
+    }).then(() => { videoRequested = true; }),
+    (error) => error?.code === "OLLAMA_UNLOAD_FAILED" && /stop denied/.test(error?.details?.failures?.[0]?.error?.message || ""),
+  );
+  assert.equal(videoRequested, false, "a failed prompt cleanup must not submit video");
+});
+
+test("concurrent leases resolve only after the final explicit unload completes", async () => {
+  const generationStarted = deferred();
+  const unloadStarted = deferred();
+  const unloadBody = deferred();
+  const stopCalls = [];
+  let generationCalls = 0;
+  const coordinator = createOllamaCoordinator({
+    commandRunner: async (executable, args) => {
+      stopCalls.push({ executable, args });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    fetchImpl: async (_url, init) => {
+      const body = requestBody(init);
+      if (body.prompt === "") {
+        unloadStarted.resolve();
+        await unloadBody.promise;
+        return successResponse("{}");
+      }
+      generationCalls += 1;
+      if (generationCalls === 2) generationStarted.resolve();
+      await generationStarted.promise;
+      return successResponse(JSON.stringify({ response: body.prompt }));
+    },
+  });
+
+  let firstSettled = false;
+  let secondSettled = false;
+  const first = coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "first" } })
+    .then(() => { firstSettled = true; });
+  const second = coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "second" } })
+    .then(() => { secondSettled = true; });
+
+  await generationStarted.promise;
+  await unloadStarted.promise;
+  await flush();
+  assert.equal(firstSettled, false, "the first lease must wait for the final unload");
+  assert.equal(secondSettled, false, "the final lease must wait for unload completion");
+  assert.equal(stopCalls.length, 0, "explicit stop must follow the unload response body");
+
+  unloadBody.resolve();
+  await Promise.all([first, second]);
+  assert.equal(stopCalls.length, 1);
+  assert.deepEqual(stopCalls[0].args, ["stop", MODEL]);
 });

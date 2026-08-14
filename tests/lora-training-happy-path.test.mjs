@@ -77,6 +77,8 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
     let registryIdIndex = 0;
     const executionOrder = [];
     const ollamaRequests = [];
+    const ollamaUnloadRequests = [];
+    const explicitStops = [];
     const clock = () => new Date("2026-08-11T00:00:00.000Z");
 
     const service = createLoraTrainingService({
@@ -84,6 +86,7 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
       clock,
       now: () => "2026-08-11T00:00:00.000Z",
       ownerId: "happy-path-test-owner",
+      ollamaModel: "gemma4",
       jobIdFactory: () => JOB_IDS[jobIdIndex++],
       registryIdFactory: () => REGISTRY_IDS[registryIdIndex++],
       comfyLoraDirectory: comfyLoras,
@@ -97,11 +100,16 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
         if (String(url).endsWith("/api/tags")) {
           return { ok: true, json: async () => ({ models: [{ name: "gemma4:latest" }] }) };
         }
-        ollamaRequests.push(JSON.parse(init.body));
+        const body = JSON.parse(init.body);
+        (body.prompt === "" ? ollamaUnloadRequests : ollamaRequests).push(body);
         return {
           ok: true,
           json: async () => ({ response: JSON.stringify({ caption: "portrait, studio lighting" }) }),
         };
+      },
+      ollamaCommandRunner: async (executable, args, options) => {
+        explicitStops.push({ executable, args, options });
+        return { exitCode: 0, stdout: "", stderr: "" };
       },
       checkTrainer: async () => ({ ok: true, message: "fake trainer ready" }),
       resolveBaseModel: async () => ({ path: path.join(paths.cache, "fake-base-model.safetensors") }),
@@ -161,6 +169,10 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
 
     assert.deepEqual(executionOrder, JOB_IDS);
     assert.equal(ollamaRequests.length, 4);
+    assert.equal(ollamaUnloadRequests.length, 4, "coordinator API unload remains a request-level safety net");
+    assert.ok(ollamaRequests.every((request) => request.format === "json" && request.stream === false && request.keep_alive === 0));
+    assert.ok(ollamaUnloadRequests.every((request) => request.keep_alive === 0 && request.stream === false));
+    assert.deepEqual(explicitStops.map(({ args }) => args), Array.from({ length: 4 }, () => ["stop", "gemma4"]));
     for (let index = 0; index < JOB_IDS.length; index += 1) {
       const details = await service.get(JOB_IDS[index]);
       assert.equal(details.job.status, "succeeded");

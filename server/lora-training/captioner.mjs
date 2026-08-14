@@ -5,6 +5,7 @@ import { API_ERROR_CODES, LoraTrainingError, invalid, normalizeCaption, normaliz
 import { resolveSafeChild } from './paths.mjs';
 import { atomicWriteJson, withStorageLock } from './store.mjs';
 import { datasetFingerprint, datasetService } from './dataset.mjs';
+import { createOllamaCoordinator } from '../ollama-coordinator.mjs';
 
 const DEFAULT_PROMPT = 'Describe this training image as concise comma-separated visual tags. Return only JSON with one string property named caption.';
 
@@ -43,8 +44,31 @@ function preserveTriggers(caption, triggerWords) {
   return normalizeCaption(missing.length ? `${triggerWords.join(', ')}, ${caption}` : caption);
 }
 
-export function createCaptionService({ dataset = datasetService, fetchImpl = globalThis.fetch, ollamaUrl = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434', model = process.env.OLLAMA_CAPTION_MODEL ?? 'gemma4', prompt = DEFAULT_PROMPT, promptVersion = 'gemma4-v1', clock = () => new Date(), maxAttempts = 2, requestTimeoutMs = 120_000 } = {}) {
+function coordinatorPayload(value) {
+  if (value && typeof value === 'object' && value.payload && typeof value.payload === 'object') return value.payload;
+  if (value && typeof value === 'object' && typeof value.text === 'string') {
+    try { return JSON.parse(value.text); } catch { return null; }
+  }
+  return value;
+}
+
+function captionFailure(error) {
+  if (error instanceof LoraTrainingError) return error;
+  if (error?.code === 'OLLAMA_UNLOAD_FAILED') {
+    return captionError('OLLAMA_UNLOAD_FAILED', error.message || 'Ollama model unload failed', Number.isInteger(error.status) ? error.status : 503, true, {
+      ...(error.details && typeof error.details === 'object' ? { coordinator: error.details } : {}),
+    });
+  }
+  return captionError('OLLAMA_UNAVAILABLE', error?.message || 'Ollama caption request failed', 503, true, {
+    ...(error?.code ? { upstreamCode: error.code } : {}),
+    ...(error?.details && typeof error.details === 'object' ? { upstreamDetails: error.details } : {}),
+  });
+}
+
+export function createCaptionService({ dataset = datasetService, fetchImpl = globalThis.fetch, ollamaCoordinator = null, commandRunner = null, ollamaUrl = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434', comfyUrl = '', remoteComfy = false, model = process.env.OLLAMA_CAPTION_MODEL ?? 'gemma4', prompt = DEFAULT_PROMPT, promptVersion = 'gemma4-v1', clock = () => new Date(), maxAttempts = 2, requestTimeoutMs = 120_000 } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('fetch implementation is required');
+  const coordinator = ollamaCoordinator ?? createOllamaCoordinator({ fetchImpl, ...(commandRunner ? { commandRunner } : {}) });
+  if (typeof coordinator?.generate !== 'function') throw new TypeError('Ollama coordinator with generate() is required');
   const endpoint = new URL('/api/generate', ollamaUrl).toString();
 
   async function readCaptions(jobId) {
@@ -121,18 +145,29 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const bytes = await readFile(resolveSafeChild(dataset.getLocations(id).dataset, image.relativePath));
-        const response = await fetchImpl(endpoint, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model, prompt: `${prompt}\nRequired trigger words: ${triggers.join(', ')}`, images: [bytes.toString('base64')], format: 'json', stream: false }),
-          signal: AbortSignal.timeout(requestTimeoutMs),
+        const response = await coordinator.generate({
+          ollamaUrl,
+          comfyUrl,
+          remoteComfy,
+          model,
+          body: {
+            model,
+            prompt: `${prompt}\nRequired trigger words: ${triggers.join(', ')}`,
+            images: [bytes.toString('base64')],
+            format: 'json',
+            stream: false,
+            keep_alive: 0,
+          },
+          timeoutMs: requestTimeoutMs,
+          requestFetch: fetchImpl,
         });
-        if (!response.ok) throw captionError('OLLAMA_UNAVAILABLE', 'Ollama caption request failed', response.status === 429 ? 429 : 503, true, { upstreamStatus: response.status });
-        const caption = preserveTriggers(parseModelResponse(await response.json()), triggers);
+        const caption = preserveTriggers(parseModelResponse(coordinatorPayload(response)), triggers);
         const record = { imageId: image.id, imageFile: image.fileName, status: 'ready', caption, model, promptVersion, attempts: attempt, updatedAt: clock().toISOString() };
         await atomicWriteText(resolveSafeChild(dataset.getLocations(id).captions, `${image.id}.txt`), caption);
         return persistRecord(id, image, record);
       } catch (error) {
-        failure = error instanceof LoraTrainingError ? error : captionError('OLLAMA_UNAVAILABLE', 'Ollama caption request failed', 503, true);
+        failure = captionFailure(error);
+        if (failure.code === 'OLLAMA_UNLOAD_FAILED') break;
       }
     }
     const record = { imageId: image.id, imageFile: image.fileName, status: 'failed', caption: '', model, promptVersion, attempts, updatedAt: clock().toISOString(), error: { code: failure.code, message: failure.message, retryable: failure.retryable !== false } };

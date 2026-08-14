@@ -29,6 +29,109 @@ export const SEGMENT_STATES = [
 
 export const REFERENCE_MODES = ["continuity", "multi_reference"];
 export const MAX_REFERENCE_ASSETS = 8;
+export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
+export const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
+// The H3 Realism People adapter is the only long-video LoRA that is admitted
+// for Ref2VA/multi-reference.  Keep its trigger bridge-owned: the planner
+// must not duplicate it in prompts.
+export const H3_REALISM_PEOPLE_PRESET = "h3-realism-people-t2v-i2v-r2v.safetensors";
+export const H3_REALISM_PEOPLE_TRIGGER = "r34l1sm";
+export const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
+export const H3_REALISM_PEOPLE_LORA_NAME = H3_REALISM_PEOPLE_PRESET;
+export const H3_REALISM_PEOPLE_LORA_TRIGGER = H3_REALISM_PEOPLE_TRIGGER;
+
+function normalizeCharacterLoraName(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return undefined;
+  if (typeof value !== "string") fail("CHARACTER_LORA_NAME_INVALID", "Character LoRA name must be a string.");
+  const normalized = value.trim().replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized || normalized.length > CHARACTER_LORA_MAX_NAME_LENGTH || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0") || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) fail("CHARACTER_LORA_NAME_INVALID", "Character LoRA must be a safe relative path under models/loras.");
+  return normalized;
+}
+
+function normalizeCharacterLoraId(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return undefined;
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())) {
+    fail("CHARACTER_LORA_ID_INVALID", "Character LoRA registry id must be a UUID.");
+  }
+  return value.trim().toLowerCase();
+}
+
+function normalizeCharacterLoraStrength(value, fallback = CHARACTER_LORA_DEFAULT_STRENGTH) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 2) fail("CHARACTER_LORA_STRENGTH_INVALID", "Character LoRA strength must be a finite number between 0 and 2.");
+  return number;
+}
+
+export function validateCharacterLora(value, { rejectProvenance = true } = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  if (rejectProvenance && (Object.prototype.hasOwnProperty.call(source, "loraProvenance") || Object.prototype.hasOwnProperty.call(source, "characterLoraProvenance"))) {
+    fail("CHARACTER_LORA_PROVENANCE_FORBIDDEN", "LoRA provenance is server-owned and cannot be supplied by the client.");
+  }
+  const h3Enabled = source.h3LoraEnabled === true;
+  const h3Disabled = source.h3LoraEnabled === false;
+  const h3Preset = text(source.h3LoraPreset);
+  const name = normalizeCharacterLoraName(source.characterLoraName);
+  const id = normalizeCharacterLoraId(source.characterLoraId);
+  const inferredH3 = h3Enabled || h3Preset || name === H3_REALISM_PEOPLE_PRESET;
+  if (h3Disabled && ((!name && !id && !h3Preset) || h3Preset || name === H3_REALISM_PEOPLE_PRESET)) {
+    // An explicit disabled selection is a clear operation.  This prevents a
+    // stale persisted LoRA from surviving a UI toggle/PATCH.
+    return {
+      h3LoraEnabled: false,
+      h3LoraPreset: null,
+      characterLoraName: null,
+      characterLoraId: null,
+      characterLoraStrength: null,
+    };
+  }
+  if (inferredH3) {
+    if (h3Preset && h3Preset !== H3_REALISM_PEOPLE_PRESET) {
+      fail("CHARACTER_LORA_PRESET_INVALID", `Unsupported H3 LoRA preset: ${h3Preset}.`);
+    }
+    if (name && name !== H3_REALISM_PEOPLE_PRESET) {
+      fail("CHARACTER_LORA_PRESET_INVALID", "H3 Realism People must use its fixed preset filename.");
+    }
+    if (id) fail("CHARACTER_LORA_PRESET_INVALID", "H3 Realism People uses its fixed preset filename, not a registry id.");
+    return {
+      h3LoraEnabled: true,
+      h3LoraPreset: H3_REALISM_PEOPLE_PRESET,
+      characterLoraName: H3_REALISM_PEOPLE_PRESET,
+      characterLoraStrength: normalizeCharacterLoraStrength(source.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH),
+    };
+  }
+  if (!name && !id) {
+    if (source.characterLoraStrength !== undefined && source.characterLoraStrength !== null && source.characterLoraStrength !== "") fail("CHARACTER_LORA_STRENGTH_WITHOUT_LORA", "Character LoRA strength requires a LoRA name or registry id.");
+    return {};
+  }
+  return {
+    ...(name ? { characterLoraName: name } : {}),
+    ...(id ? { characterLoraId: id } : {}),
+    characterLoraStrength: normalizeCharacterLoraStrength(source.characterLoraStrength),
+  };
+}
+
+export function assertLongLoraSupported(value, { mode } = {}) {
+  const lora = validateCharacterLora(value);
+  const hasLora = Boolean(lora.characterLoraName || lora.characterLoraId || lora.h3LoraEnabled === true);
+  if (!hasLora) return lora;
+  const profile = text(value?.modelProfile, "nvfp4_blackwell");
+  const fixedH3 = lora.h3LoraEnabled === true && lora.characterLoraName === H3_REALISM_PEOPLE_PRESET;
+  const ref2v = mode === "ref2v" || value?.referenceMode === "multi_reference" || value?.segments?.some?.((segment) => segment?.mode === "ref2v");
+  if (!fixedH3 && ref2v) {
+    fail("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference long-video segments.", 422);
+  }
+  const profileSupported = ["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot"].includes(profile)
+    || (fixedH3 && ref2v && profile === "ref2va_pruned_nvfp4");
+  if (!profileSupported) {
+    fail("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${profile}.`, 422, { modelProfile: profile });
+  }
+  return lora;
+}
 
 export class LongVideoError extends Error {
   constructor(code, message, status = 400, details = undefined) {
@@ -154,6 +257,7 @@ export function validateTimeline(segments, allowedDuration = undefined) {
 
 export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   if (!value || typeof value !== "object") fail("SEQUENCE_INVALID", "Sequence payload must be an object.");
+  const characterLora = validateCharacterLora(value);
   const title = text(value.title, "Untitled sequence");
   if (value.inputType !== undefined && value.inputType !== "text" && value.inputType !== "image") fail("INPUT_TYPE_INVALID", "inputType must be text or image.");
   const inputType = value.inputType === "image" ? "image" : "text";
@@ -219,7 +323,7 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   if (!Number.isInteger(width) || width < 32 || width > 2048 || width % 32 !== 0) fail("WIDTH_INVALID", "Sequence width must be an integer multiple of 32 between 32 and 2048.");
   if (!Number.isInteger(height) || height < 32 || height > 2048 || height % 32 !== 0) fail("HEIGHT_INVALID", "Sequence height must be an integer multiple of 32 between 32 and 2048.");
   if (value.seam === "drop_next_first_frame") fail("SEAM_UNSUPPORTED", "drop_next_first_frame seam handling is not available in this slice; use keep_duplicate_frame.", 400);
-  return {
+  const normalized = {
     ...value,
     title,
     inputType,
@@ -237,7 +341,12 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
     negativePrompt: text(value.negativePrompt),
     modelProfile: text(value.modelProfile, "nvfp4_blackwell"),
     seam: value.seam === "drop_next_first_frame" ? "drop_next_first_frame" : "keep_duplicate_frame",
+    ...characterLora,
   };
+  for (const field of ["h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]) {
+    if (!Object.prototype.hasOwnProperty.call(characterLora, field)) delete normalized[field];
+  }
+  return normalized;
 }
 
 export function createSequenceRecord(input, { id = newId("seq"), now = new Date().toISOString() } = {}) {
@@ -290,6 +399,17 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     ...(payload.codexModel ? { codexModel: payload.codexModel } : {}),
     ...(payload.codexReasoningEffort ? { codexReasoningEffort: payload.codexReasoningEffort } : {}),
     seam: payload.seam,
+    ...(Object.prototype.hasOwnProperty.call(payload, "h3LoraEnabled") ? {
+      h3LoraEnabled: payload.h3LoraEnabled,
+      h3LoraPreset: payload.h3LoraPreset ?? null,
+      characterLoraName: payload.characterLoraName ?? null,
+      characterLoraId: payload.characterLoraId ?? null,
+      characterLoraStrength: payload.characterLoraStrength ?? null,
+    } : {
+      ...(payload.characterLoraName ? { characterLoraName: payload.characterLoraName } : {}),
+      ...(payload.characterLoraId ? { characterLoraId: payload.characterLoraId } : {}),
+      ...(payload.characterLoraName || payload.characterLoraId ? { characterLoraStrength: payload.characterLoraStrength ?? CHARACTER_LORA_DEFAULT_STRENGTH } : {}),
+    }),
     ...(payload.planMeta ? { planMeta: payload.planMeta } : {}),
   };
 }

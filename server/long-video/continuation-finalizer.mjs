@@ -183,6 +183,12 @@ function finalizerSystemPrompt() {
   ].join(" ");
 }
 
+function isOllamaUnloadFailure(error) {
+  return error?.code === "OLLAMA_UNLOAD_FAILED"
+    || error?.details?.unloadError?.code === "OLLAMA_UNLOAD_FAILED"
+    || error?.cause?.code === "OLLAMA_UNLOAD_FAILED";
+}
+
 function normalizeCandidate(candidate) {
   if (typeof candidate === "string") {
     const raw = candidate.trim();
@@ -264,6 +270,7 @@ export function createContinuationPromptFinalizer({
         error.code = "VISION_FINALIZER_UNAVAILABLE";
         throw error;
       }
+      const usesCoordinator = typeof request !== "function" && typeof ollamaCoordinator?.generate === "function";
       const response = typeof request === "function"
         ? await request({
             ...target,
@@ -301,8 +308,10 @@ export function createContinuationPromptFinalizer({
       return {
         prompt: candidate,
         provenance: provenance({ provider, model: selectedModel, fallback: false, reason: "vision_success" }),
+        ...(usesCoordinator ? { ollamaPromptBarrier: Promise.resolve({ ok: true, scope: "continuation-prompt" }) } : {}),
       };
     } catch (error) {
+      if (isOllamaUnloadFailure(error)) throw error;
       return fallback(errorReason(error), error);
     }
   };

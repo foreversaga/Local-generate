@@ -156,6 +156,8 @@ test("Ollama prompt output accepts malformed H3 structure without repair", async
     const result = await invoke("/api/prompt", { brief: "A subject enters", mode: "t2v", duration: 5 });
     assert.equal(result.status, 200);
     assert.equal(result.body.prompt, "integrated_multimodal_description: malformed\n\noverall_soundscape: Footsteps\n\nnon_diegetic_music: N/A");
+    assert.match(result.body.ollamaPromptReceipt?.id || "", /^ollama-prompt-[0-9a-f-]+$/i);
+    assert.equal(result.body.ollamaPromptReceipt.unload, "explicit");
     const generationCalls = calls.filter((body) => body.prompt);
     assert.equal(generationCalls.length, 1);
     assert.equal(generationCalls[0].options.temperature, 0.2);

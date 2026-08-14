@@ -20,6 +20,10 @@ export type SingleCreateDraftInput = {
   outputName: string;
   characterLoraName: string;
   characterLoraStrength: number | "";
+  h3LoraEnabled: boolean;
+  h3LoraStrength: number | "";
+  h3LoraPreset: string | null;
+  characterLoraTrigger: string | null;
   referenceImageKey: string | null;
   referenceImageKeys: string[];
   lastFrameImageKey: string | null;

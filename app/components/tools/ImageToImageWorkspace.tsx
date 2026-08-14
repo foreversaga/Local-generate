@@ -87,6 +87,7 @@ type PromptHealth = {
 type PromptApiPayload = {
     prompt?: string;
     negativePrompt?: string;
+    ollamaPromptReceipt?: string | { id?: string };
     error?: string | { code?: string; message?: string };
     code?: string;
 };
@@ -230,6 +231,7 @@ export function ImageToImageWorkspace() {
     const [promptDescription, setPromptDescription] = useState("");
     const [prompt, setPrompt] = useState("");
     const [negativePrompt, setNegativePrompt] = useState("");
+    const [ollamaPromptReceipt, setOllamaPromptReceipt] = useState("");
     const [promptModel, setPromptModel] = useState("");
     const [promptHealth, setPromptHealth] = useState<PromptHealth | null>(null);
     const [promptBusy, setPromptBusy] = useState(false);
@@ -582,6 +584,7 @@ export function ImageToImageWorkspace() {
 
         setPromptBusy(true);
         setError("");
+        setOllamaPromptReceipt("");
         try {
             const response = await fetch("/app/api/prompt", {
                 method: "POST",
@@ -601,6 +604,10 @@ export function ImageToImageWorkspace() {
             if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama 沒有回傳提示詞。"));
             setPrompt(typeof payload.prompt === "string" ? payload.prompt.trim() : "");
             setNegativePrompt(typeof payload.negativePrompt === "string" ? payload.negativePrompt.trim() : "");
+            const receipt = typeof payload.ollamaPromptReceipt === "string"
+                ? payload.ollamaPromptReceipt
+                : payload.ollamaPromptReceipt?.id || "";
+            setOllamaPromptReceipt(receipt);
         } catch (reason) {
             setError(errorMessage(reason, "無法產生以圖生圖提示詞。"));
         } finally {
@@ -680,6 +687,7 @@ export function ImageToImageWorkspace() {
                 : {}),
             prompt: prompt.trim(),
             negativePrompt: negativePrompt.trim(),
+            ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
             model,
             ...(characterLoraName.trim()
                 ? { characterLoraName: characterLoraName.trim(), characterLoraStrength: Number(characterLoraStrength) }

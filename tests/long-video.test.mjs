@@ -14,6 +14,7 @@ import { normalizePlannerImages, parsePlannerResponse, planSequence } from "../s
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
 import { longJobIsActive } from "../app/lib/long-create-contract.mjs";
+import { createOllamaCoordinator } from "../server/ollama-coordinator.mjs";
 
 function apiRequest(method, url, value = {}) {
   return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
@@ -135,6 +136,7 @@ test("planner normalizes attached reference image bytes and forwards them only t
       requestBodies.push(JSON.parse(init.body));
       return { ok: true, text: async () => JSON.stringify({ continuityBible: {}, segments: [{ start: 0, end: 5, description: "waits" }, { start: 5, end: 10, description: "boards" }] }) };
     },
+    ollamaCoordinator: createOllamaCoordinator({ commandRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }),
   });
   assert.equal(plan.segments.length, 2);
   assert.equal(requestBodies.length, 2);

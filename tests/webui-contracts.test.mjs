@@ -12,6 +12,9 @@ import {
   batchOutputName,
   batchSeed,
   buildSingleRenderRequest,
+  H3_REALISM_PEOPLE_LORA_NAME,
+  H3_REALISM_PEOPLE_LORA_TRIGGER,
+  H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
 } from "../app/lib/single-render-request.mjs";
 import { normalizeImageResolution } from "../app/lib/single-image-resolution.mjs";
 import {
@@ -119,6 +122,13 @@ test("single render requires a non-empty prompt and enforces H3 prompt length", 
   );
 });
 
+test("Single render carries an Ollama prompt receipt only for an Ollama-backed prompt operation", () => {
+  const withReceipt = buildSingleRenderRequest(validRequestInput({ ollamaPromptReceipt: "ollama-prompt-test" }));
+  assert.equal(withReceipt.ollamaPromptReceipt, "ollama-prompt-test");
+  const withoutReceipt = buildSingleRenderRequest(validRequestInput());
+  assert.equal("ollamaPromptReceipt" in withoutReceipt, false);
+});
+
 test("replace request sends character LoRA fields only when a name is selected", () => {
   const payload = buildSingleRenderRequest(validRequestInput({
     mode: "replace",
@@ -143,6 +153,55 @@ test("replace request sends character LoRA fields only when a name is selected",
   }));
   assert.equal("characterLoraName" in nonReplace, false);
   assert.equal("characterLoraStrength" in nonReplace, false);
+});
+
+test("Single H3 preset request is canonical across every supported H3 mode", () => {
+  for (const mode of ["t2v", "i2v", "fl2v", "l2v", "ref2v"]) {
+    const payload = buildSingleRenderRequest(validRequestInput({
+      mode,
+      h3LoraEnabled: true,
+      characterLoraStrength: H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
+    }));
+    assert.equal(payload.h3LoraEnabled, true, mode);
+    assert.equal(payload.h3LoraPreset, H3_REALISM_PEOPLE_LORA_NAME, mode);
+    assert.equal(payload.characterLoraName, H3_REALISM_PEOPLE_LORA_NAME, mode);
+    assert.equal(payload.characterLoraTrigger, H3_REALISM_PEOPLE_LORA_TRIGGER, mode);
+    assert.equal(payload.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH, mode);
+  }
+});
+
+test("Single H3 preset disable clears all LoRA fields without retaining trigger or strength", () => {
+  for (const mode of ["t2v", "i2v", "fl2v", "l2v", "ref2v"]) {
+    const payload = buildSingleRenderRequest(validRequestInput({
+      mode,
+      h3LoraEnabled: false,
+      h3LoraPreset: H3_REALISM_PEOPLE_LORA_NAME,
+      characterLoraName: H3_REALISM_PEOPLE_LORA_NAME,
+      characterLoraTrigger: H3_REALISM_PEOPLE_LORA_TRIGGER,
+      characterLoraStrength: H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
+    }));
+    assert.equal(payload.h3LoraEnabled, false, mode);
+    assert.equal(payload.h3LoraPreset, null, mode);
+    assert.equal(payload.characterLoraName, null, mode);
+    assert.equal(payload.characterLoraTrigger, null, mode);
+    assert.equal(payload.characterLoraStrength, null, mode);
+  }
+});
+
+test("Replace request never forwards H3 preset fields", () => {
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "replace",
+    h3LoraEnabled: true,
+    h3LoraPreset: H3_REALISM_PEOPLE_LORA_NAME,
+    characterLoraName: "characters/hero.safetensors",
+    characterLoraTrigger: H3_REALISM_PEOPLE_LORA_TRIGGER,
+    characterLoraStrength: 0.8,
+  }));
+  assert.equal(payload.characterLoraName, "characters/hero.safetensors");
+  assert.equal(payload.characterLoraStrength, 0.8);
+  assert.equal("h3LoraEnabled" in payload, false);
+  assert.equal("h3LoraPreset" in payload, false);
+  assert.equal("characterLoraTrigger" in payload, false);
 });
 
 test("single render validates required assets per mode", () => {

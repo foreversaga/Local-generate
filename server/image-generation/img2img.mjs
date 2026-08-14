@@ -1557,6 +1557,9 @@ export function createImg2ImgController({
       assertPoseReadiness(profile, readiness);
     }
     const prompt = String(input.prompt || "").trim();
+    const ollamaPromptReceipt = typeof input.ollamaPromptReceipt === "string"
+      ? input.ollamaPromptReceipt.trim()
+      : "";
     const batchCount = normalizeBatchCount(input.batchCount);
     const baseSeed = input.seed === undefined ? Math.floor(randomSource() * 2_147_483_647) : input.seed;
     const parameters = boundedModelParameters(profile, {
@@ -1578,6 +1581,7 @@ export function createImg2ImgController({
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
+      ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
       ...(characterLoraName ? {
         characterLoraName,
         characterLoraStrength,
@@ -1646,6 +1650,7 @@ export function createImg2ImgController({
           prompt,
           negativePrompt: String(input.negativePrompt || "").trim(),
           model,
+          ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
           characterLoraName: characterLoraName || null,
           characterLoraStrength,
           denoise: parameters.denoise,
@@ -1733,6 +1738,7 @@ export function createImg2ImgController({
       prompt: source.prompt,
       negativePrompt: source.negativePrompt,
       model: source.model,
+      ...(source.ollamaPromptReceipt ? { ollamaPromptReceipt: source.ollamaPromptReceipt } : {}),
       characterLoraId: source.characterLoraId,
       characterLoraName: source.characterLoraName,
       characterLoraStrength: source.characterLoraStrength,

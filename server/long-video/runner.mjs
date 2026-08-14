@@ -4,7 +4,7 @@ import { assembleSegments as defaultAssemble } from "./assembler.mjs";
 import { extractTailFrame as defaultExtractTail, normalizeVideo as defaultNormalize } from "./media.mjs";
 import { outputRoot, sequenceAssemblyDir, sequenceOutputFile } from "./paths.mjs";
 import { appendEvent, getJob, updateJob, updateSegment, writeAttempt, writeAssemblyJson, writeSequenceManifest } from "./store.mjs";
-import { LongVideoError } from "./schema.mjs";
+import { H3_REALISM_PEOPLE_PRESET, LongVideoError, assertLongLoraSupported } from "./schema.mjs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 import { buildDeterministicContinuationPrompt } from "./continuation-finalizer.mjs";
@@ -130,6 +130,12 @@ function fallbackPromptFinalization({ model, reason, error } = {}) {
   }, { provider: "deterministic", fallback: true });
 }
 
+function isOllamaUnloadFailure(error) {
+  return error?.code === "OLLAMA_UNLOAD_FAILED"
+    || error?.details?.unloadError?.code === "OLLAMA_UNLOAD_FAILED"
+    || error?.cause?.code === "OLLAMA_UNLOAD_FAILED";
+}
+
 async function setJob(job, patch, deps) {
   Object.assign(job, patch, { updatedAt: new Date().toISOString() });
   if (deps.updateJob) return deps.updateJob(job, patch);
@@ -174,6 +180,21 @@ export async function runSequence(sequenceOrId, deps = {}) {
   if (!folder) throw new LongVideoError("OUTPUT_PATH_REQUIRED", "Sequence output folder is not allocated.");
   const generate = deps.generate || deps.generation || deps.generateSegment;
   if (typeof generate !== "function") throw new LongVideoError("GENERATION_DEPENDENCY_REQUIRED", "A generation dependency is required to run a sequence.", 500);
+  const normalizedLora = assertLongLoraSupported(job);
+  const loraPayload = normalizedLora.h3LoraEnabled === true
+    ? {
+      h3LoraEnabled: true,
+      h3LoraPreset: H3_REALISM_PEOPLE_PRESET,
+      characterLoraName: H3_REALISM_PEOPLE_PRESET,
+      characterLoraStrength: Number(normalizedLora.characterLoraStrength ?? 0.8),
+    }
+    : normalizedLora.characterLoraName || normalizedLora.characterLoraId
+      ? {
+        ...(normalizedLora.characterLoraName ? { characterLoraName: normalizedLora.characterLoraName } : {}),
+        ...(normalizedLora.characterLoraId ? { characterLoraId: normalizedLora.characterLoraId } : {}),
+        characterLoraStrength: Number(normalizedLora.characterLoraStrength ?? 0.75),
+      }
+      : {};
   const normalize = deps.normalize || deps.media?.normalize || defaultNormalize;
   const extractTail = deps.extractTail || deps.media?.extractTail || defaultExtractTail;
   const assemble = deps.assemble || deps.media?.assemble || defaultAssemble;
@@ -219,6 +240,14 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const tailPath = fileFor(folder, `${prefix}-tail.png`);
       const multiReference = job.referenceMode === "multi_reference";
       const mode = multiReference ? "ref2v" : index === 0 && job.inputType === "text" ? "t2v" : "i2v";
+      // The planner receipt gates the first H3 submission only. Later
+      // segments either use their own continuation cleanup barrier or retain
+      // the already-admitted prompt state without an unnecessary TTL wait.
+      const ollamaPromptReceipt = index === 0 ? job.planMeta?.ollamaPromptReceipt || null : null;
+      const hasCharacterLora = Boolean(loraPayload.characterLoraName || loraPayload.characterLoraId || loraPayload.h3LoraEnabled);
+      if (hasCharacterLora && mode === "ref2v" && loraPayload.h3LoraEnabled !== true) {
+        throw new LongVideoError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference long-video segments.", 422);
+      }
       const references = multiReference ? segmentReferenceAssets(job, index > 0 ? previousTail : null) : [];
       const shouldFinalizeContinuation = index > 0 && Boolean(previousTail);
       const previousSegment = index > 0 ? job.segments[index - 1] : null;
@@ -230,6 +259,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const finalizerModel = job.ollamaModel || deps.finalizerModel || null;
       let prompt = draftPrompt;
       let promptFinalization = null;
+      let ollamaPromptBarrier = null;
       if (shouldFinalizeContinuation) {
         const finalizerContext = {
           job,
@@ -253,6 +283,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
             const candidate = typeof finalized === "string" ? finalized : finalized?.prompt;
             if (!String(candidate || "").trim()) throw Object.assign(new Error("Continuation finalizer returned an empty prompt."), { code: "FINALIZER_EMPTY" });
             prompt = String(candidate).trim();
+            ollamaPromptBarrier = finalized?.ollamaPromptBarrier || null;
             promptFinalization = normalizePromptFinalization(finalized?.provenance || finalized, {
               provider: "custom",
               model: finalizerModel,
@@ -260,6 +291,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
               reason: "vision_success",
             });
           } catch (error) {
+            if (isOllamaUnloadFailure(error)) throw error;
             prompt = buildDeterministicContinuationPrompt(finalizerContext);
             promptFinalization = fallbackPromptFinalization({ model: finalizerModel, reason: "vision_finalizer_failed", error });
           }
@@ -323,6 +355,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         seed: Number(job.seed || 0) + index,
         modelProfile: job.modelProfile,
         negativePrompt,
+        ...loraPayload,
         ...(promptFinalization ? { promptFinalization } : {}),
       };
       await setSegment(job, index, { status: "queued", attempt, prompt, error: null, ...(promptFinalization ? { promptFinalization } : {}) }, deps);
@@ -346,6 +379,8 @@ export async function runSequence(sequenceOrId, deps = {}) {
         attempt,
         mode,
         prompt,
+        ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
+        ...(ollamaPromptBarrier ? { ollamaPromptBarrier } : {}),
         negativePrompt,
         width: job.width,
         height: job.height,
@@ -353,6 +388,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         seed: Number(job.seed || 0) + index,
         modelProfile: job.modelProfile,
         duration: segment.duration,
+        ...loraPayload,
         inputAsset: index === 0 ? job.inputAsset : null,
         inputImagePath: multiReference ? null : index === 0 ? job.inputAsset?.path || job.inputAsset?.fullPath || job.inputAsset?.name || null : previousTail,
         ...(multiReference ? {

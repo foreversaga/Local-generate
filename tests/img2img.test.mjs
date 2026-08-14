@@ -1047,6 +1047,7 @@ test("queued cancellation is durable and does not submit a ComfyUI prompt", asyn
     comfyUrl: "http://cancel-comfy",
     inputRoot,
     outputRoot,
+    storeRoot: path.join(root, "records"),
     fetchImpl,
     pollIntervalMs: 1,
     idFactory: (() => { const ids = ["active-cancel-job", "queued-cancel-job"]; return () => ids.shift(); })(),

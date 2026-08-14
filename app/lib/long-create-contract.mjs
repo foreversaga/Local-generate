@@ -1,5 +1,59 @@
 const MAX_LONG_REFERENCE_IMAGES = 8;
 const ACTIVE_STATUSES = new Set(["queued", "running", "paused", "assembling", "planning"]);
+export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
+export const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
+export const H3_REALISM_PEOPLE_PRESET = "h3-realism-people-t2v-i2v-r2v.safetensors";
+export const H3_REALISM_PEOPLE_TRIGGER = "r34l1sm";
+export const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
+export const H3_REALISM_PEOPLE_LORA_NAME = H3_REALISM_PEOPLE_PRESET;
+export const H3_REALISM_PEOPLE_LORA_TRIGGER = H3_REALISM_PEOPLE_TRIGGER;
+
+/** Keep the long-video contract aligned with the bridge admission rules. */
+export function normalizeCharacterLoraName(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return "";
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized || normalized.length > CHARACTER_LORA_MAX_NAME_LENGTH || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)
+    || normalized.includes("\0") || segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*]/.test(segment))
+  ) return null;
+  return normalized;
+}
+
+export function normalizeCharacterLoraStrength(value, fallback = CHARACTER_LORA_DEFAULT_STRENGTH) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 2 ? number : null;
+}
+
+function characterLoraIssue(input) {
+  if (input.h3LoraEnabled === false && !String(input.characterLoraName || "").trim() && !String(input.characterLoraId || "").trim() && !String(input.h3LoraPreset || "").trim()) return null;
+  if (input.h3LoraEnabled === true || String(input.h3LoraPreset || "").trim() || String(input.characterLoraName || "").trim() === H3_REALISM_PEOPLE_PRESET) {
+    const preset = String(input.h3LoraPreset || "").trim();
+    const name = String(input.characterLoraName || "").trim().replaceAll("\\", "/");
+    if (preset && preset !== H3_REALISM_PEOPLE_PRESET) return { field: "h3LoraPreset", message: "Unsupported H3 Realism People preset." };
+    if (name && name !== H3_REALISM_PEOPLE_PRESET) return { field: "characterLoraName", message: "H3 Realism People uses its fixed preset filename." };
+    if (String(input.characterLoraId || "").trim()) return { field: "characterLoraId", message: "H3 Realism People uses its fixed preset filename, not a registry id." };
+    if (normalizeCharacterLoraStrength(input.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH) === null) return { field: "characterLoraStrength", message: "Character LoRA strength must be between 0 and 2." };
+    return null;
+  }
+  const rawName = String(input.characterLoraName || "").trim();
+  const rawId = String(input.characterLoraId || "").trim();
+  if (!rawName && !rawId) {
+    const strength = input.characterLoraStrength;
+    if (strength !== undefined && strength !== null && strength !== "" && Number(strength) !== CHARACTER_LORA_DEFAULT_STRENGTH) {
+      return { field: "characterLoraStrength", message: "LoRA strength requires a LoRA name or registry id." };
+    }
+    return null;
+  }
+  if (rawName && !normalizeCharacterLoraName(rawName)) return { field: "characterLoraName", message: "Character LoRA must be a safe relative path under models/loras." };
+  if (rawId && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawId) || rawId.length > 128)) {
+    return { field: "characterLoraId", message: "Character LoRA registry id is invalid." };
+  }
+  if (normalizeCharacterLoraStrength(input.characterLoraStrength) === null) return { field: "characterLoraStrength", message: "Character LoRA strength must be between 0 and 2." };
+  return null;
+}
 
 export function selectHydratableLongJob(jobs) {
   if (!Array.isArray(jobs)) return null;
@@ -35,6 +89,10 @@ export function parseLongTimelineDraft(value, fallback = []) {
 
 export function buildLongPlanRequest(input) {
   const refs = (input.referenceAssets || []).slice(0, MAX_LONG_REFERENCE_IMAGES);
+  const characterLoraName = String(input.characterLoraName || "").trim().replaceAll("\\", "/");
+  const characterLoraId = String(input.characterLoraId || "").trim();
+  const h3LoraEnabled = input.h3LoraEnabled === true;
+  const explicitH3Disabled = input.h3LoraEnabled === false && !characterLoraName && !characterLoraId;
   return {
     title: input.title || "Untitled long video",
     inputType: input.inputType,
@@ -53,11 +111,23 @@ export function buildLongPlanRequest(input) {
     reasoningEffort: input.reasoningEffort,
     negativePrompt: input.negativePrompt,
     ...(input.plannerImages?.length ? { plannerImages: input.plannerImages } : {}),
+    ...(h3LoraEnabled
+      ? { h3LoraEnabled: true, h3LoraPreset: H3_REALISM_PEOPLE_PRESET, characterLoraName: H3_REALISM_PEOPLE_PRESET, characterLoraStrength: normalizeCharacterLoraStrength(input.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH) ?? H3_REALISM_PEOPLE_DEFAULT_STRENGTH }
+      : explicitH3Disabled
+        ? { h3LoraEnabled: false, h3LoraPreset: null, characterLoraName: null, characterLoraId: null, characterLoraStrength: null }
+        : characterLoraName || characterLoraId
+          ? { ...(characterLoraName ? { characterLoraName } : {}), ...(characterLoraId ? { characterLoraId } : {}), characterLoraStrength: normalizeCharacterLoraStrength(input.characterLoraStrength) ?? CHARACTER_LORA_DEFAULT_STRENGTH }
+          : {}),
   };
 }
 
 export function buildLongSaveRequest(input) {
   const refs = (input.referenceAssets || []).slice(0, MAX_LONG_REFERENCE_IMAGES);
+  const characterLoraName = String(input.characterLoraName || "").trim().replaceAll("\\", "/");
+  const characterLoraId = String(input.characterLoraId || "").trim();
+  const clearCharacterLora = input.clearCharacterLora === true;
+  const h3LoraEnabled = input.h3LoraEnabled === true;
+  const explicitH3Disabled = input.h3LoraEnabled === false && !characterLoraName && !characterLoraId;
   const parsed = parseLongTimelineDraft(input.timelineText, input.plan.segments || []);
   const segments = parsed.map((segment, index) => ({
     ...(input.plan.segments?.[index] || {}),
@@ -93,12 +163,21 @@ export function buildLongSaveRequest(input) {
     codexReasoningEffort: input.reasoningEffort,
     negativePrompt: input.negativePrompt,
     seam: input.seam,
+    ...(clearCharacterLora || explicitH3Disabled
+      ? { h3LoraEnabled: false, h3LoraPreset: null, characterLoraName: null, characterLoraId: null, characterLoraStrength: null }
+      : h3LoraEnabled
+        ? { h3LoraEnabled: true, h3LoraPreset: H3_REALISM_PEOPLE_PRESET, characterLoraName: H3_REALISM_PEOPLE_PRESET, characterLoraStrength: normalizeCharacterLoraStrength(input.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH) ?? H3_REALISM_PEOPLE_DEFAULT_STRENGTH }
+        : characterLoraName || characterLoraId
+          ? { ...(characterLoraName ? { characterLoraName } : {}), ...(characterLoraId ? { characterLoraId } : {}), characterLoraStrength: normalizeCharacterLoraStrength(input.characterLoraStrength) ?? CHARACTER_LORA_DEFAULT_STRENGTH }
+          : {}),
     ...(input.revision !== undefined ? { revision: input.revision } : {}),
   };
 }
 
 export function validateLongCreate(input) {
   const issues = [];
+  const loraIssue = characterLoraIssue(input);
+  if (loraIssue) issues.push(loraIssue);
   if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
   if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "從圖片開始時需要至少一張起始參考圖片。" });
   if (input.timelineMode === "manual") {

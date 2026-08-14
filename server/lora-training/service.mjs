@@ -141,7 +141,9 @@ export function createLoraTrainingService(options = {}) {
   const registry = options.registry ?? createRegistryStore({ paths, clock: options.clock, idFactory: options.registryIdFactory });
   const dataset = options.dataset ?? createDatasetService({ paths, resolveSource: options.resolveSource, clock: options.clock });
   const captions = options.captions ?? createCaptionService({
-    dataset, fetchImpl: options.fetchImpl, ollamaUrl: options.ollamaUrl,
+    dataset, fetchImpl: options.fetchImpl, ollamaCoordinator: options.ollamaCoordinator,
+    commandRunner: options.ollamaCommandRunner,
+    ollamaUrl: options.ollamaUrl, comfyUrl: options.comfyUrl, remoteComfy: options.gpuRuntime === 'remote',
     model: options.ollamaModel, prompt: options.captionPrompt,
     promptVersion: options.captionPromptVersion, clock: options.clock,
     maxAttempts: options.captionMaxAttempts, requestTimeoutMs: options.captionTimeoutMs,

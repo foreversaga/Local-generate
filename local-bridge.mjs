@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { EventEmitter } from "node:events";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,8 +91,15 @@ async function requireBridgePython() {
   }
   return resolution;
 }
-const REF2VA_MODEL_NAME = "minimax_h3_ref2va_pruned_nvfp4.safetensors";
-const REF2VA_MODEL = path.join(COMFY_ROOT, "models", "diffusion_models", REF2VA_MODEL_NAME);
+const REF2VA_MODEL_NAMES = Object.freeze({
+  ref2va_pruned_nvfp4: "minimax_h3_ref2va_pruned_nvfp4.safetensors",
+  ref2va_pruned_int8_convrot: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+});
+const REF2VA_PROFILE_ALIASES = Object.freeze({
+  nvfp4_blackwell: "ref2va_pruned_nvfp4",
+  official_pruned_int8_convrot: "ref2va_pruned_int8_convrot",
+});
+const REF2VA_MODEL_NAME = REF2VA_MODEL_NAMES.ref2va_pruned_nvfp4;
 const INITIAL_REMOTE_MODE = /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
 const LOCAL_COMFY_URL = (process.env.LOCAL_COMFY_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:8188" : process.env.COMFY_URL) || "http://127.0.0.1:8188").replace(/\/$/, "");
 const LOCAL_OLLAMA_URL = (process.env.LOCAL_OLLAMA_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:11434" : process.env.OLLAMA_URL) || "http://127.0.0.1:11434").replace(/\/$/, "");
@@ -107,7 +114,7 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   ownerId: `h3-studio-${process.pid}`,
   runtimeMode: () => runtimeContext.mode,
 });
-const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+const QWEN_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
@@ -126,6 +133,13 @@ const CODEX_IMAGE_LIMIT_BYTES = 12 * 1024 * 1024;
 const MAX_PLANNER_IMAGES = 8;
 const DEFAULT_SHORT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark, identity drift, face drift, face morphing, facial feature drift, age drift, hairstyle drift, costume drift, body-shape drift, asymmetrical eyes, mismatched pupils, extra eyes, duplicated facial features, distorted jaw, facial flicker";
 const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
+// The Realism People adapter is an H3/FL2VA LoRA, not a Wan2.2 Animate
+// replacement adapter.  Keep its contract separate from the legacy character
+// LoRA contract so a fixed H3 selection can never fall through to Animate.
+const H3_REALISM_PEOPLE_LORA_NAME = "h3-realism-people-t2v-i2v-r2v.safetensors";
+const H3_REALISM_PEOPLE_TRIGGER = "r34l1sm";
+const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
+const H3_LORA_MODES = new Set(["t2v", "i2v", "fl2v", "l2v", "ref2v"]);
 const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
 const BUILTIN_ANIMATE_LORAS = new Set([
   "lightx2v_i2v_14b_480p_cfg_step_distill_rank64_bf16.safetensors",
@@ -152,6 +166,8 @@ const timingSampleWindow = 5;
 let timingSamples = [];
 let timingHistoryWrite = Promise.resolve();
 let generatorSupportsLastImage;
+const OLLAMA_PROMPT_RECEIPT_TTL_MS = 15 * 60 * 1000;
+const ollamaPromptReceipts = new Map();
 const ollamaCoordinator = createOllamaCoordinator({
   beforeRequest: (target) => releaseComfyForOllama(target),
 });
@@ -1014,8 +1030,11 @@ async function releaseComfyForOllama(target = {}) {
   }
 }
 
-async function releaseOllamaForComfy() {
-  await ollamaCoordinator.waitForIdle();
+async function releaseOllamaForComfy(ollamaPromptReceipt = null) {
+  if (!ollamaPromptReceipt) return;
+  await ollamaCoordinator.acquireConditionalGenerationBarrier({
+    wait: () => waitForOllamaPromptReceipt(ollamaPromptReceipt),
+  });
 }
 
 async function health() {
@@ -1067,6 +1086,10 @@ function cleanPromptText(value) {
 function promptMode(value) {
   if (value === undefined || value === null || String(value).trim() === "") return "t2v";
   const normalized = String(value).trim().toLowerCase();
+  // R2V is the native H3 naming used by the model card; the bridge's
+  // historical API spelling is Ref2V.  Canonicalize both before validation so
+  // the same graph/preflight policy applies to either caller spelling.
+  if (normalized === "r2v") return "ref2v";
   if (["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"].includes(normalized)) return normalized;
   throw new LongVideoError(
     "PROMPT_MODE_INVALID",
@@ -1702,15 +1725,29 @@ async function planSequenceWithPromptProvider(input, options = {}) {
   const provider = promptProvider(plannerInput?.provider || plannerInput?.promptProvider);
   if (provider !== "codex") {
     const model = plannerInput?.ollamaModel || plannerInput?.model || defaultOllamaModel();
-    return withGpuResource(
-      "ollama-vision",
-      `sequence-plan:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      () => defaultPlanSequence(
-        { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
-        { ...options, model },
-      ),
-      { phase: "long-video-planning", model },
-    );
+    const receipt = createOllamaPromptReceipt();
+    try {
+      const plan = await withGpuResource(
+        "ollama-vision",
+        `sequence-plan:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        () => defaultPlanSequence(
+          { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
+          { ...options, model },
+        ),
+        { phase: "long-video-planning", model },
+      );
+      settleOllamaPromptReceipt(receipt);
+      return {
+        ...plan,
+        planMeta: {
+          ...(plan?.planMeta || {}),
+          ollamaPromptReceipt: receipt.id,
+        },
+      };
+    } catch (error) {
+      settleOllamaPromptReceipt(receipt, error);
+      throw error;
+    }
   }
   const model = codexModel(plannerInput.codexModel || plannerInput.model);
   const reasoningEffort = codexReasoningEffort(plannerInput.reasoningEffort || plannerInput.codexReasoningEffort);
@@ -1782,6 +1819,256 @@ function normalizeCharacterLoraStrength(value, fallback = CHARACTER_LORA_DEFAULT
     throw makeRuntimeError("CHARACTER_LORA_STRENGTH_INVALID", "Character LoRA strength must be a number between 0 and 2.", 400);
   }
   return number;
+}
+
+function h3RealismPeopleName(value) {
+  try {
+    return normalizeCharacterLoraName(value).toLowerCase() === H3_REALISM_PEOPLE_LORA_NAME.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function h3PresetValue(value) {
+  if (value === undefined || value === null || value === false) return false;
+  if (value === true) return true;
+  const normalized = String(value).trim().toLowerCase().replaceAll("_", "-").replaceAll(" ", "-");
+  return [
+    H3_REALISM_PEOPLE_LORA_NAME.toLowerCase(),
+    "h3-realism-people",
+    "realism-people",
+    "realism",
+  ].includes(normalized);
+}
+
+function h3PresetRequested(payload = {}) {
+  const trigger = payload?.characterLoraTrigger ?? payload?.h3LoraTrigger;
+  return payload?.h3LoraEnabled === true
+    || h3PresetValue(payload?.h3LoraPreset)
+    || (trigger !== undefined && trigger !== null && String(trigger).trim() !== "")
+    || h3RealismPeopleName(payload?.characterLoraName);
+}
+
+function completePromptToken(value, token = H3_REALISM_PEOPLE_TRIGGER) {
+  const prompt = String(value || "");
+  const escaped = String(token).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu").test(prompt);
+}
+
+/**
+ * Resolve the optional fixed H3 preset without treating arbitrary LoRA names
+ * as H3 presets.  The returned name is canonical and the trigger is injected
+ * by startGeneration exactly once (including persisted retries).
+ */
+function resolveH3LoraSelection(payload = {}, mode = promptMode(payload?.mode)) {
+  const normalizedMode = promptMode(mode || "t2v");
+  const rawName = payload?.characterLoraName;
+  const normalizedName = rawName === undefined || rawName === null || String(rawName).trim() === ""
+    ? ""
+    : normalizeCharacterLoraName(rawName);
+  const fixedName = h3RealismPeopleName(normalizedName);
+  const triggerValue = payload?.characterLoraTrigger ?? payload?.h3LoraTrigger;
+  const trigger = triggerValue === undefined || triggerValue === null ? "" : String(triggerValue).trim();
+  const presetFieldPresent = payload?.h3LoraPreset !== undefined && payload?.h3LoraPreset !== null;
+  const preset = h3PresetValue(payload?.h3LoraPreset);
+  const presetRequested = h3PresetRequested(payload);
+
+  if (presetFieldPresent && payload.h3LoraPreset !== false && !preset) {
+    throw makeRuntimeError("H3_LORA_PRESET_INVALID", "Unsupported H3 LoRA preset.", 400, {
+      preset: payload.h3LoraPreset,
+      allowed: [H3_REALISM_PEOPLE_LORA_NAME],
+    });
+  }
+  if (trigger && trigger !== H3_REALISM_PEOPLE_TRIGGER) {
+    throw makeRuntimeError("H3_LORA_TRIGGER_INVALID", `H3 Realism People trigger must be ${H3_REALISM_PEOPLE_TRIGGER}.`, 400, {
+      trigger,
+      expected: H3_REALISM_PEOPLE_TRIGGER,
+    });
+  }
+  if (payload?.h3LoraEnabled === false && presetRequested) {
+    throw makeRuntimeError("H3_LORA_PRESET_CONFLICT", "H3 LoRA fields cannot select a preset while h3LoraEnabled is false.", 400);
+  }
+  if (presetRequested && normalizedMode === "replace") {
+    throw makeRuntimeError("H3_LORA_MODE_UNSUPPORTED", "H3 Realism People LoRA is not supported by Wan2.2 replacement generation.", 422, {
+      mode: normalizedMode,
+      lora: H3_REALISM_PEOPLE_LORA_NAME,
+    });
+  }
+  if (presetRequested && !H3_LORA_MODES.has(normalizedMode)) {
+    throw makeRuntimeError("H3_LORA_MODE_UNSUPPORTED", "H3 Realism People LoRA requires an H3 generation mode.", 422, {
+      mode: normalizedMode,
+      supportedModes: [...H3_LORA_MODES],
+    });
+  }
+  if (presetRequested && normalizedName && !fixedName) {
+    throw makeRuntimeError("H3_LORA_PRESET_NAME_INVALID", `H3 Realism People preset must use ${H3_REALISM_PEOPLE_LORA_NAME}.`, 400, {
+      name: normalizedName,
+      expected: H3_REALISM_PEOPLE_LORA_NAME,
+    });
+  }
+  if (presetRequested && String(payload?.characterLoraId || "").trim()) {
+    throw makeRuntimeError("H3_LORA_ID_INVALID", "H3 Realism People uses its fixed preset filename, not a registry id.", 400);
+  }
+
+  const selected = presetRequested || fixedName;
+  if (!selected) return { selected: false, name: normalizedName, trigger: "", strength: null };
+  if (normalizedMode === "replace") {
+    // This branch is defensive for callers that pass a fixed name while
+    // explicitly disabling the preset; never route the file through Animate.
+    throw makeRuntimeError("H3_LORA_MODE_UNSUPPORTED", "H3 Realism People LoRA is not supported by Wan2.2 replacement generation.", 422, {
+      mode: normalizedMode,
+      lora: H3_REALISM_PEOPLE_LORA_NAME,
+    });
+  }
+  const strength = normalizeCharacterLoraStrength(payload?.characterLoraStrength, H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
+  return {
+    selected: true,
+    name: H3_REALISM_PEOPLE_LORA_NAME,
+    trigger: H3_REALISM_PEOPLE_TRIGGER,
+    strength,
+    preset: H3_REALISM_PEOPLE_LORA_NAME,
+  };
+}
+
+function pruneOllamaPromptReceipts() {
+  const nowMs = Date.now();
+  for (const [id, receipt] of ollamaPromptReceipts) {
+    if (receipt.expiresAt <= nowMs) ollamaPromptReceipts.delete(id);
+  }
+}
+
+function promptReceiptId(value) {
+  const candidate = value && typeof value === "object" ? value.id : value;
+  const id = String(candidate || "").trim();
+  return /^ollama-prompt-[0-9a-f-]{20,80}$/i.test(id) ? id : "";
+}
+
+function promptReceiptError(error) {
+  return {
+    code: error?.code || "OLLAMA_PROMPT_FAILED",
+    message: error instanceof Error ? error.message : String(error || "Ollama prompt operation failed."),
+    ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+    ...(error?.details && typeof error.details === "object" ? { details: error.details } : {}),
+  };
+}
+
+function createOllamaPromptReceipt() {
+  pruneOllamaPromptReceipts();
+  let resolveCompletion;
+  const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+  const receipt = {
+    id: `ollama-prompt-${randomUUID()}`,
+    completion,
+    resolveCompletion,
+    settled: false,
+    expiresAt: Date.now() + OLLAMA_PROMPT_RECEIPT_TTL_MS,
+  };
+  ollamaPromptReceipts.set(receipt.id, receipt);
+  return receipt;
+}
+
+function settleOllamaPromptReceipt(receipt, error = null) {
+  if (!receipt || receipt.settled) return;
+  receipt.settled = true;
+  receipt.resolveCompletion(error
+    ? { ok: false, error: promptReceiptError(error) }
+    : { ok: true });
+}
+
+function publicOllamaPromptReceipt(receipt) {
+  return receipt ? { id: receipt.id, provider: "ollama", unload: "explicit" } : undefined;
+}
+
+function waitForOllamaPromptReceipt(value) {
+  const id = promptReceiptId(value);
+  if (!id) {
+    return Promise.reject(makeRuntimeError(
+      "OLLAMA_PROMPT_BARRIER_INVALID",
+      "An Ollama prompt receipt is required for this generation operation.",
+      409,
+    ));
+  }
+  pruneOllamaPromptReceipts();
+  const receipt = ollamaPromptReceipts.get(id);
+  if (!receipt) {
+    return Promise.reject(makeRuntimeError(
+      "OLLAMA_PROMPT_BARRIER_EXPIRED",
+      "The Ollama prompt cleanup receipt is missing or expired; video generation is blocked.",
+      409,
+      { receiptId: id },
+    ));
+  }
+  return receipt.completion.then((result) => {
+    if (result?.ok !== true) {
+      const detail = result?.error || {};
+      throw makeRuntimeError(
+        detail.code || "OLLAMA_UNLOAD_FAILED",
+        detail.message || "Ollama prompt cleanup did not complete successfully; video generation is blocked.",
+        Number.isInteger(detail.status) ? detail.status : 503,
+        detail.details || { receiptId: id },
+      );
+    }
+    return result;
+  });
+}
+
+async function runPromptWithReceipt(payload, operation) {
+  if (promptProvider(payload?.provider || payload?.promptProvider) !== "ollama") {
+    return { value: await operation(), receipt: null };
+  }
+  const receipt = createOllamaPromptReceipt();
+  try {
+    const value = await operation();
+    settleOllamaPromptReceipt(receipt);
+    return { value, receipt };
+  } catch (error) {
+    settleOllamaPromptReceipt(receipt, error);
+    throw error;
+  }
+}
+
+function injectH3LoraTrigger(prompt, trigger = H3_REALISM_PEOPLE_TRIGGER) {
+  const value = String(prompt || "").trim();
+  if (!value || !trigger || completePromptToken(value, trigger)) return value;
+  return `${trigger}, ${value}`;
+}
+
+function h3LoraLoaderOptions(objectInfo) {
+  return [
+    ...comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name"),
+    ...comboValues(objectInfo?.LoraLoader, "lora_name"),
+  ].map((value) => value.replaceAll("\\", "/").trim()).filter(Boolean);
+}
+
+function h3RuntimeGraphSupportsMode(objectInfo, mode) {
+  const classType = ["ref2v", "r2v", "ref2va"].includes(String(mode).toLowerCase())
+    ? "MiniMaxH3ReferenceToVideo"
+    : "MiniMaxH3ImageToVideo";
+  return Boolean(objectInfo && Object.hasOwn(objectInfo, classType));
+}
+
+async function preflightH3LoraSelection(selection, mode) {
+  if (!selection?.selected) return;
+  const objectInfo = await fetchJson(runtimeContext.comfyUrl + "/object_info", {}, 5000).catch(() => null);
+  if (!objectInfo) {
+    throw makeRuntimeError("H3_LORA_RUNTIME_UNAVAILABLE", "ComfyUI object_info is unavailable for the selected H3 LoRA.", 503, {
+      mode,
+      lora: selection.name,
+    });
+  }
+  const loaded = h3LoraLoaderOptions(objectInfo).some((value) => value.toLowerCase() === selection.name.toLowerCase());
+  if (!loaded) {
+    throw makeRuntimeError("H3_LORA_NOT_LOADED", `ComfyUI does not advertise ${selection.name}.`, 409, {
+      mode,
+      lora: selection.name,
+    });
+  }
+  if (!h3RuntimeGraphSupportsMode(objectInfo, mode)) {
+    throw makeRuntimeError("H3_LORA_GRAPH_UNSUPPORTED", `ComfyUI does not expose the H3 graph required for ${mode}.`, 422, {
+      mode,
+      lora: selection.name,
+    });
+  }
 }
 
 function comboValues(nodeInfo, key) {
@@ -2031,6 +2318,7 @@ async function getLoraTrainingService() {
         comfyRoot: COMFY_ROOT,
         comfyUrl: runtimeContext.comfyUrl,
         ollamaUrl: runtimeContext.ollamaUrl,
+        ollamaCoordinator,
         gpuCoordinator: gpuResourceCoordinator,
         gpuRuntime: runtimeContext.mode,
         ollamaModel: OLLAMA_CAPTION_MODEL,
@@ -2610,6 +2898,7 @@ function publicJob(job) {
     progress: job.progress,
     stage: job.stage,
     prompt: job.prompt,
+    negativePrompt: job.negativePrompt || "",
     seed: job.seed,
     batchId: job.batchId,
     batchIndex: job.batchIndex,
@@ -2617,12 +2906,19 @@ function publicJob(job) {
     width: job.width,
     height: job.height,
     duration: job.duration,
+    steps: job.steps,
+    timeoutSeconds: job.timeoutSeconds ?? 3600,
     modelProfile: job.modelProfile,
     dimensions: { width: job.width, height: job.height },
     inputRefs: job.inputRefs ? structuredClone(job.inputRefs) : {},
+    outputName: job.outputName || "",
     ...(job.characterLoraName ? {
       characterLoraName: job.characterLoraName,
       characterLoraStrength: job.characterLoraStrength,
+      ...(job.h3LoraPreset ? {
+        h3LoraPreset: job.h3LoraPreset,
+        characterLoraTrigger: job.characterLoraTrigger || H3_REALISM_PEOPLE_TRIGGER,
+      } : {}),
       loraProvenance: job.loraProvenance ? structuredClone(job.loraProvenance) : { relativePath: job.characterLoraName, legacy: true },
     } : {}),
     output: job.output,
@@ -2806,7 +3102,7 @@ function attachProcessOutput(job, stream, isError = false) {
   });
 }
 
-function queueSpawn(command, args, options, job) {
+function queueSpawn(command, args, options, job, { ollamaBarrier, conditionalOllamaBarrier = false } = {}) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
@@ -2814,7 +3110,7 @@ function queueSpawn(command, args, options, job) {
   child.cancelled = false;
   child.actualChild = null;
 
-  const entry = { command, args, options, job, child };
+  const entry = { command, args, options, job, child, ollamaBarrier, conditionalOllamaBarrier };
   entry.gpuAdmission = gpuResourceCoordinator.request({
     requestId: `video-generation:${job.id}`,
     jobId: `video-generation:${job.id}`,
@@ -2880,9 +3176,19 @@ async function pumpGenerationQueue() {
       queueMicrotask(pumpGenerationQueue);
       return;
     }
-    entry.job.stage = "Waiting for Ollama cleanup";
-    touchJob(entry.job);
-    ollamaLease = await ollamaCoordinator.acquireGenerationBarrier();
+    if (entry.conditionalOllamaBarrier) {
+      if (entry.ollamaBarrier) {
+        entry.job.stage = "Waiting for Ollama cleanup";
+        touchJob(entry.job);
+        ollamaLease = await ollamaCoordinator.acquireConditionalGenerationBarrier(entry.ollamaBarrier);
+      }
+    } else {
+      // Legacy callers retain the runtime-wide safety barrier until they opt
+      // into a scoped prompt receipt.
+      entry.job.stage = "Waiting for Ollama cleanup";
+      touchJob(entry.job);
+      ollamaLease = await ollamaCoordinator.acquireGenerationBarrier();
+    }
     const actualChild = spawn(entry.command, entry.args, entry.options);
     entry.child.actualChild = actualChild;
     entry.job.progress = Math.max(entry.job.progress, 9);
@@ -2905,31 +3211,80 @@ async function pumpGenerationQueue() {
   }
 }
 
+function resolveGenerationModelProfile(mode, value) {
+  const requested = String(value || "").trim();
+  if (mode === "replace") return "wan22_animate_fp8";
+  if (mode !== "ref2v") return requested || "nvfp4_blackwell";
+  const profile = REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4";
+  if (!Object.hasOwn(REF2VA_MODEL_NAMES, profile)) {
+    throw makeRuntimeError(
+      "REF2VA_PROFILE_UNSUPPORTED",
+      `Unsupported Ref2VA model profile: ${requested || "(empty)"}. Use NVFP4 or Ref2VA INT8 ConvRot.`,
+      422,
+      { modelProfile: requested },
+    );
+  }
+  return profile;
+}
+
 async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
   const requestedMode = String(payload.mode || "").trim().toLowerCase();
-  if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
+  if (requestedMode === "img2img") {
+    if (h3PresetRequested(payload)) {
+      throw makeRuntimeError("H3_LORA_MODE_UNSUPPORTED", "H3 Realism People LoRA is not supported by img2img generation.", 422, {
+        mode: requestedMode,
+        lora: H3_REALISM_PEOPLE_LORA_NAME,
+      });
+    }
+    return await createImg2ImgPrompt(payload);
+  }
   const mode = promptMode(payload.mode);
-  const requestedCharacterLora = mode === "replace"
-    ? String(payload.characterLoraId || payload.characterLoraName || "").trim()
+  const modelProfile = resolveGenerationModelProfile(mode, payload.modelProfile);
+  const h3Selection = resolveH3LoraSelection(payload, mode);
+  const requestedCharacterLora = ["replace", "t2v", "i2v", "fl2v", "l2v", "ref2v"].includes(mode)
+    ? (h3Selection.selected ? h3Selection.name : String(payload.characterLoraId || payload.characterLoraName || "").trim())
     : "";
+  if (requestedCharacterLora && mode === "ref2v" && !h3Selection.selected) {
+    throw makeRuntimeError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference generation.", 422);
+  }
+  if (requestedCharacterLora && mode !== "replace" && !["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(String(payload.modelProfile || "nvfp4_blackwell"))) {
+    throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${String(payload.modelProfile || "nvfp4_blackwell")}.`, 422, { modelProfile: String(payload.modelProfile || "nvfp4_blackwell") });
+  }
   const registryLora = requestedCharacterLora
-    ? await resolveRegistryLora(requestedCharacterLora, { family: "wan22-animate", profile: "wan22_animate_fp8", consumer: "single-replace" })
+    ? h3Selection.selected
+      ? null
+      : mode === "replace"
+      ? await resolveRegistryLora(requestedCharacterLora, { family: "wan22-animate", profile: "wan22_animate_fp8", consumer: "single-replace" })
+      : await resolveRegistryLora(requestedCharacterLora).catch((error) => {
+        // A safe relative path is a valid legacy input when registry discovery
+        // is unavailable; registry ids still fail closed below.
+        if (payload.characterLoraId || error?.code === "LORA_NOT_LOADED" || error?.code === "LORA_FAMILY_MISMATCH") throw error;
+        return null;
+      })
     : null;
-  const characterLoraName = mode === "replace"
-    ? normalizeCharacterLoraName(registryLora?.name || requestedCharacterLora)
+  const characterLoraName = requestedCharacterLora
+    ? h3Selection.selected
+      ? h3Selection.name
+      : normalizeCharacterLoraName(registryLora?.name || requestedCharacterLora)
     : "";
   const characterLoraStrength = characterLoraName
-    ? normalizeCharacterLoraStrength(payload.characterLoraStrength)
+    ? normalizeCharacterLoraStrength(payload.characterLoraStrength, h3Selection.selected ? H3_REALISM_PEOPLE_DEFAULT_STRENGTH : CHARACTER_LORA_DEFAULT_STRENGTH)
     : null;
+  const characterLoraId = characterLoraName && !h3Selection.selected && (registryLora?.registry?.id || payload.characterLoraId)
+    ? String(registryLora?.registry?.id || payload.characterLoraId).trim()
+    : "";
   const referenceImageNames = normalizeReferenceImageNames(payload, { mode });
   const referenceImageRoots = mode === "ref2v"
     ? normalizeReferenceImageRoots(payload, { mode, referenceCount: referenceImageNames.length })
     : [];
-  const prompt = String(payload.prompt || "").trim();
+  const prompt = h3Selection.selected
+    ? injectH3LoraTrigger(payload.prompt, h3Selection.trigger)
+    : String(payload.prompt || "").trim();
   if (!prompt) throw new Error("提示詞不能是空白。");
   const duration = normalizeSingleRenderDuration(payload.duration);
   if (mode !== "replace") validateH3Prompt(prompt, { mode, duration });
+  await preflightH3LoraSelection(h3Selection, mode);
   if (!(await fs.stat(H3_ROOT).catch(() => null))) {
     throw new Error("找不到 minimax-h3-local，請確認本機路徑。");
   }
@@ -2995,9 +3350,11 @@ async function startGeneration(payload, internal = {}) {
     if (!inputImagePath && !inputVideoPath) {
       throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
     }
-    if (!runtimeContext.isRemote && !(await fs.stat(REF2VA_MODEL).catch(() => null))) {
+    const ref2vaModelName = REF2VA_MODEL_NAMES[modelProfile] || REF2VA_MODEL_NAME;
+    const ref2vaModelPath = path.join(COMFY_ROOT, "models", "diffusion_models", ref2vaModelName);
+    if (!runtimeContext.isRemote && !(await fs.stat(ref2vaModelPath).catch(() => null))) {
       throw new Error(
-        `尚未安裝 Ref2VA diffusion model：${REF2VA_MODEL_NAME}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
+        `尚未安裝 Ref2VA diffusion model：${ref2vaModelName}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
       );
     }
   }
@@ -3012,15 +3369,24 @@ async function startGeneration(payload, internal = {}) {
   const height = Math.round(clampNumber(payload.height, mode === "replace" ? 480 : 416, 32, 2048));
   const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
-  const modelProfile = mode === "replace"
-    ? "wan22_animate_fp8"
-    : mode === "ref2v"
-      ? "ref2va_pruned_nvfp4"
-      : String(payload.modelProfile || "nvfp4_blackwell");
+  const timeoutSeconds = Math.round(clampNumber(payload.timeoutSeconds, 3600, 60, 86400));
+  if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(modelProfile)) {
+    throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${modelProfile}.`, 422, { modelProfile });
+  }
   const negativePrompt = String(payload.negativePrompt || "").trim();
   const batchId = String(payload.batchId || "");
   const batchIndex = Math.round(clampNumber(payload.batchIndex, 1, 1, 20));
   const batchTotal = Math.round(clampNumber(payload.batchTotal, 1, 1, 20));
+  const existingJob = internal.existingJob && typeof internal.existingJob === "object" ? internal.existingJob : null;
+  const ollamaPromptReceipt = payload.ollamaPromptReceipt
+    || internal.ollamaPromptReceipt
+    || existingJob?.provenance?.request?.ollamaPromptReceipt
+    || "";
+  const ollamaPromptBarrier = internal.ollamaPromptBarrier
+    ? { completion: internal.ollamaPromptBarrier }
+    : ollamaPromptReceipt
+      ? { wait: () => waitForOllamaPromptReceipt(ollamaPromptReceipt) }
+      : null;
   const inputRefs = {
     inputImage: String(payload.inputImageName || "").trim(),
     lastFrame: String(payload.lastImageName || "").trim(),
@@ -3040,6 +3406,7 @@ async function startGeneration(payload, internal = {}) {
     duration,
     steps,
     seed,
+    timeoutSeconds,
     inputImageName: inputRefs.inputImage,
     lastImageName: inputRefs.lastFrame,
     inputVideoName: inputRefs.inputVideo,
@@ -3047,13 +3414,18 @@ async function startGeneration(payload, internal = {}) {
     referenceImageNames: referenceImageNames.slice(),
     characterLoraName,
     characterLoraStrength,
+    ...(h3Selection.selected ? {
+      h3LoraPreset: h3Selection.preset,
+      characterLoraTrigger: h3Selection.trigger,
+    } : {}),
+    ...(characterLoraId ? { characterLoraId } : {}),
     outputName: requestedOutputName,
     batchId,
     batchIndex,
     batchTotal,
     inputRefs,
+    ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
   };
-  const existingJob = internal.existingJob && typeof internal.existingJob === "object" ? internal.existingJob : null;
   const attempt = Math.max(1, Number(existingJob?.attempt || internal.attempt || 1));
   const createdAt = existingJob?.createdAt || now();
   const queuedAt = now();
@@ -3067,6 +3439,7 @@ async function startGeneration(payload, internal = {}) {
     estimatedProgress: 2,
     stage: "準備本機輸入…",
     prompt,
+    negativePrompt,
     seed,
     batchId,
     batchIndex,
@@ -3075,11 +3448,17 @@ async function startGeneration(payload, internal = {}) {
     height,
     duration,
     steps,
+    timeoutSeconds,
     model: modelProfile,
     modelProfile,
     ...(characterLoraName ? {
       characterLoraName,
       characterLoraStrength,
+      ...(characterLoraId ? { characterLoraId } : {}),
+      ...(h3Selection.selected ? {
+        h3LoraPreset: h3Selection.preset,
+        characterLoraTrigger: h3Selection.trigger,
+      } : {}),
       loraProvenance: registryLora?.registry ? {
         registryId: registryLora.registry.id,
         displayName: registryLora.registry.displayName,
@@ -3141,6 +3520,8 @@ async function startGeneration(payload, internal = {}) {
       String(steps),
       "--seed",
       String(seed),
+      "--timeout",
+      String(timeoutSeconds),
       "--output",
       outputPath,
       "--model-profile",
@@ -3174,6 +3555,8 @@ async function startGeneration(payload, internal = {}) {
       String(steps),
       "--seed",
       String(seed),
+      "--timeout",
+      String(timeoutSeconds),
       "--output",
       outputPath,
       "--model-profile",
@@ -3183,6 +3566,9 @@ async function startGeneration(payload, internal = {}) {
     ];
     if (runtimeContext.isRemote) {
       args.push("--remote-comfy", "--sage-attention", "sageattn3");
+    }
+    if (characterLoraName) {
+      args.push("--lora-name", characterLoraName, "--lora-strength", String(characterLoraStrength));
     }
     if (inputImagePath && mode !== "ref2v") args.push("--input-image", inputImagePath);
     if (lastImagePath) args.push("--last-frame", lastImagePath);
@@ -3205,7 +3591,10 @@ async function startGeneration(payload, internal = {}) {
     cwd: H3_ROOT,
     windowsHide: true,
     env: childEnv,
-  }, job);
+  }, job, {
+    ollamaBarrier: ollamaPromptBarrier,
+    conditionalOllamaBarrier: true,
+  });
   job.status = child.started ? "running" : "queued";
   if (!child.started) job.stage = "等待前一個影片完成…";
   jobProcesses.set(job.id, child);
@@ -3287,6 +3676,13 @@ function requestFromPersistedSingleJob(job) {
     duration: request.duration ?? job.duration,
     steps: request.steps ?? job.steps,
     seed: request.seed ?? job.seed,
+    timeoutSeconds: request.timeoutSeconds ?? job.timeoutSeconds ?? 3600,
+    characterLoraName: request.characterLoraName ?? job.characterLoraName,
+    characterLoraStrength: request.characterLoraStrength ?? job.characterLoraStrength,
+    ...(request.h3LoraPreset || job.h3LoraPreset ? {
+      h3LoraPreset: request.h3LoraPreset || job.h3LoraPreset,
+      characterLoraTrigger: request.characterLoraTrigger || job.characterLoraTrigger || H3_REALISM_PEOPLE_TRIGGER,
+    } : {}),
     outputName: request.outputName || job.outputName || job.output?.name || "h3-render",
     batchId: request.batchId || job.batchId || "",
     batchIndex: request.batchIndex ?? job.batchIndex ?? 1,
@@ -3299,7 +3695,44 @@ async function resumeSingleVideoJob(job) {
   return await startGeneration(request, { existingJob: job });
 }
 
-async function retrySingleVideoJob(id) {
+function retryOverrideValue(value, key) {
+  if (["prompt", "negativePrompt", "modelProfile", "outputName"].includes(key)) {
+    if (typeof value !== "string") {
+      const error = new Error(`Retry parameter ${key} must be text.`);
+      error.code = "RETRY_PARAMETER_INVALID";
+      error.status = 400;
+      throw error;
+    }
+    return value;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    const error = new Error(`Retry parameter ${key} must be a finite number.`);
+    error.code = "RETRY_PARAMETER_INVALID";
+    error.status = 400;
+    throw error;
+  }
+  return number;
+}
+
+function normalizeRetryOverrides(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    const error = new Error("Retry parameters must be a JSON object.");
+    error.code = "RETRY_PARAMETER_INVALID";
+    error.status = 400;
+    throw error;
+  }
+  const allowed = [
+    "prompt", "negativePrompt", "modelProfile", "width", "height", "duration",
+    "steps", "seed", "timeoutSeconds", "outputName",
+  ];
+  return Object.fromEntries(allowed
+    .filter((key) => Object.hasOwn(value, key))
+    .map((key) => [key, retryOverrideValue(value[key], key)]));
+}
+
+async function retrySingleVideoJob(id, overrides = {}) {
   await ensureSingleVideoStore();
   const source = await singleVideoJobStore.read(id);
   if (!source) {
@@ -3321,7 +3754,11 @@ async function retrySingleVideoJob(id) {
     throw error;
   }
   const nextAttempt = Math.max(1, Number(source.attempt || source.provenance?.attempt || 1) + 1);
-  return await startGeneration(requestFromPersistedSingleJob(source), {
+  const request = {
+    ...requestFromPersistedSingleJob(source),
+    ...normalizeRetryOverrides(overrides),
+  };
+  return await startGeneration(request, {
     retryOf: source.id,
     attempt: nextAttempt,
   });
@@ -3503,6 +3940,7 @@ export function sequenceGenerationReferenceFields(payload = {}, stagedReferences
 }
 
 async function startSequenceGeneration(payload) {
+  const sequenceH3Selection = resolveH3LoraSelection(payload, payload.mode);
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
     : null;
@@ -3541,11 +3979,24 @@ async function startSequenceGeneration(payload) {
       steps: payload.steps,
       seed: payload.seed,
       modelProfile: payload.modelProfile || "nvfp4_blackwell",
+      ...(sequenceH3Selection.selected ? {
+        characterLoraName: sequenceH3Selection.name,
+        h3LoraEnabled: true,
+        h3LoraPreset: sequenceH3Selection.preset,
+        characterLoraTrigger: sequenceH3Selection.trigger,
+        ...(payload.characterLoraStrength !== undefined ? { characterLoraStrength: payload.characterLoraStrength } : {}),
+      } : {
+        ...(payload.characterLoraName ? { characterLoraName: payload.characterLoraName } : {}),
+        ...(payload.characterLoraId ? { characterLoraId: payload.characterLoraId } : {}),
+        ...(payload.characterLoraName || payload.characterLoraId ? { characterLoraStrength: payload.characterLoraStrength ?? CHARACTER_LORA_DEFAULT_STRENGTH } : {}),
+      }),
       sequenceOutputPath,
     }, {
       inputImagePath: stagedInput?.path,
       referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
       workloadType: "long-video-segment",
+      ollamaPromptReceipt: payload.ollamaPromptReceipt,
+      ollamaPromptBarrier: payload.ollamaPromptBarrier,
     });
     return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
   } finally {
@@ -3921,7 +4372,7 @@ function createImg2ImgControllerForRuntime() {
     toAsset,
     gpuCoordinator: gpuResourceCoordinator,
     gpuRuntime: runtimeContext.mode,
-    beforeRun: () => releaseOllamaForComfy(),
+    beforeRun: (job) => releaseOllamaForComfy(job?.ollamaPromptReceipt),
     resolveCharacterLora: (value, { model }) => {
       const expected = IMG2IMG_LORA_PROFILES[model];
       return resolveRegistryLora(value, {
@@ -4066,7 +4517,8 @@ async function route(req, res) {
   if (req.method === "POST" && pathname.startsWith("/api/jobs/") && pathname.endsWith("/retry")) {
     const id = pathname.split("/")[3];
     try {
-      const job = await withAssetLifecycleLock(() => withRuntimeOperation(() => retrySingleVideoJob(id)));
+      const payload = await readJson(req);
+      const job = await withAssetLifecycleLock(() => withRuntimeOperation(() => retrySingleVideoJob(id, payload)));
       sendJson(res, 201, { job });
     } catch (error) {
       const status = Number.isInteger(error?.status) ? error.status : 500;
@@ -4100,12 +4552,16 @@ async function route(req, res) {
     let payload = null;
     try {
       payload = { ...(await readJson(req)), provider: "ollama" };
-      sendJson(res, 200, await withRuntimeOperation(() => withGpuResource(
+      const result = await withRuntimeOperation(() => withGpuResource(
         "ollama-vision",
         `prompt:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        () => createPrompt(payload),
+        () => runPromptWithReceipt(payload, () => createPrompt(payload)),
         { phase: "prompt", mode: payload?.mode || "t2v" },
-      )));
+      ));
+      sendJson(res, 200, {
+        ...result.value,
+        ...(result.receipt ? { ollamaPromptReceipt: publicOllamaPromptReceipt(result.receipt) } : {}),
+      });
     } catch (error) {
       const saved = await persistPromptError({ stage: "prompt_generation", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 502;
@@ -4121,7 +4577,11 @@ async function route(req, res) {
     let payload = null;
     try {
       payload = await readJson(req);
-      sendJson(res, 200, await withRuntimeOperation(async () => createPrompt(payload)));
+      const result = await withRuntimeOperation(() => runPromptWithReceipt(payload, () => createPrompt(payload)));
+      sendJson(res, 200, {
+        ...result.value,
+        ...(result.receipt ? { ollamaPromptReceipt: publicOllamaPromptReceipt(result.receipt) } : {}),
+      });
     } catch (error) {
       const saved = await persistPromptError({ stage: "prompt_generation", endpoint: pathname, payload, error });
       const status = Number.isInteger(error?.status) ? error.status : 502;
@@ -4229,6 +4689,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
 export {
   route,
+  promptMode,
   walkMedia,
   summarizeMediaFolders,
   listAssetLibrary,
@@ -4251,4 +4712,10 @@ export {
   normalizeCharacterLoraName,
   normalizeCharacterLoraStrength,
   characterLoraOptions,
+  H3_REALISM_PEOPLE_LORA_NAME,
+  H3_REALISM_PEOPLE_TRIGGER,
+  H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
+  resolveH3LoraSelection,
+  injectH3LoraTrigger,
+  h3RuntimeGraphSupportsMode,
 };

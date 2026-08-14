@@ -1,5 +1,7 @@
 /** @typedef {number | ""} NumberDraft */
 
+const H3_LORA_SUPPORTED_MODES = new Set(["t2v", "i2v", "fl2v", "l2v", "ref2v"]);
+
 import {
   SINGLE_RENDER_DURATION_MAX_SECONDS,
   SINGLE_RENDER_DURATION_UI_MIN_SECONDS,
@@ -18,6 +20,8 @@ import {
  *   sourceVideo: SingleRenderAssetRef | null;
  *   characterLoraName?: string;
  *   characterLoraStrength?: NumberDraft;
+ *   h3LoraEnabled?: boolean;
+ *   h3LoraStrength?: NumberDraft;
  * }} SingleRenderAssetValidationInput
  */
 
@@ -103,6 +107,10 @@ export function validateSingleRender(input) {
       issues.push(...validateCharacterLoraName(characterLoraName));
       issues.push(...validateCharacterLoraStrength(input.characterLoraStrength));
     }
+  }
+
+  if (input.mode !== "replace" && H3_LORA_SUPPORTED_MODES.has(input.mode) && input.h3LoraEnabled === true) {
+    issues.push(...validateCharacterLoraStrength(input.h3LoraStrength));
   }
 
   return issues;

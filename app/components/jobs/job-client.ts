@@ -3,6 +3,19 @@ import { mergeJobCollections } from "../../lib/job-adapter.mjs";
 
 export type UnifiedJob = ReturnType<typeof mergeJobCollections>[number];
 
+export type VideoRetryOverrides = {
+  prompt: string;
+  negativePrompt: string;
+  modelProfile: string;
+  width: number;
+  height: number;
+  duration: number;
+  steps: number;
+  seed: number;
+  timeoutSeconds: number;
+  outputName: string;
+};
+
 const BRIDGE_URL = "/app";
 
 export type JobSourceError = {
@@ -26,9 +39,9 @@ export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promi
   return await fetchUnifiedJobSnapshot(options) as UnifiedJobsSnapshot;
 }
 
-export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry") {
+export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
   if (job.source === "video" && action === "cancel") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/cancel`, "POST");
-  if (job.source === "video" && action === "retry") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/retry`, "POST");
+  if (job.source === "video" && action === "retry") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/retry`, "POST", retryOverrides);
   if (job.source === "long" && ["cancel", "pause", "resume"].includes(action)) return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "long" && action === "retry") return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/start`, "POST");
   if (job.source === "lora" && (action === "cancel" || action === "retry")) {

@@ -55,6 +55,18 @@ export function adaptJob(raw, source = "video") {
     rawStatus: String(raw?.status || "queued"),
     title: jobTitle(raw, source),
     subtitle: jobSubtitle(raw, source),
+    prompt: typeof raw?.prompt === "string" ? raw.prompt : "",
+    negativePrompt: typeof raw?.negativePrompt === "string" ? raw.negativePrompt : "",
+    modelProfile: typeof raw?.modelProfile === "string" ? raw.modelProfile : typeof raw?.model === "string" ? raw.model : "",
+    width: numericOrNull(raw?.width),
+    height: numericOrNull(raw?.height),
+    duration: numericOrNull(raw?.duration),
+    steps: numericOrNull(raw?.steps),
+    seed: numericOrNull(raw?.seed),
+    timeoutSeconds: numericOrNull(raw?.timeoutSeconds),
+    outputName: typeof raw?.outputName === "string" ? raw.outputName : "",
+    attempt: numericOrNull(raw?.attempt) || 1,
+    inputRefs: raw?.inputRefs && typeof raw.inputRefs === "object" ? raw.inputRefs : {},
     stage: jobStage(raw, source),
     progress,
     createdAt,
@@ -103,6 +115,11 @@ function nonNegativeInteger(value) {
 function positiveInteger(value) {
   const numeric = Number(value);
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function numericOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function jobTitle(raw, source) {

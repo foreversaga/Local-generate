@@ -30,6 +30,7 @@ async function createFixture({ createRunner, executeTraining, installArtifact } 
     fetchImpl: async (url) => String(url).endsWith('/api/tags')
       ? { ok: true, json: async () => ({ models: [{ name: 'gemma4:latest' }] }) }
       : { ok: true, json: async () => ({ response: JSON.stringify({ caption: 'portrait' }) }) },
+    ollamaCommandRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
     preflight: { validateConfig: async () => ({}), run: async () => ({ status: 'pass', token: 'diagnostic-preflight', checks: [] }) },
     resolveBaseModel: async () => ({ path: path.join(root, 'base.safetensors') }),
     resolveCommand: async ({ outputDirectory, outputName, datasetDirectory }) => ({ command: 'fake-trainer', args: ['--train_data_dir', datasetDirectory, '--output_dir', outputDirectory, '--output_name', outputName], cwd: root, shell: false, preset: 'sdxl' }),

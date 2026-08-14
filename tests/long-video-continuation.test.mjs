@@ -54,6 +54,50 @@ test("vision finalizer sends actual normalized tail bytes and all continuation c
   assert.doesNotMatch(JSON.stringify(result), /normalized-tail|base64|iVBOR/);
 });
 
+test("coordinator continuation exposes cleanup completion and blocks on explicit unload failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-tail-coordinator-"));
+  const tailPath = path.join(root, "normalized-tail.png");
+  await writeFile(tailPath, Buffer.from([137, 80, 78, 71]));
+  const draftPrompt = buildI2VAPrompt({ description: "continue the locked movement" });
+  const successful = createContinuationPromptFinalizer({
+    model: "vision-test-model",
+    tailRoot: root,
+    ollamaCoordinator: {
+      generate: async () => ({ payload: { response: draftPrompt } }),
+    },
+  });
+  const result = await successful({
+    mode: "i2v",
+    segment: { prompt: draftPrompt },
+    draftPrompt,
+    previousTail: tailPath,
+    tailRoot: root,
+    continuityBible: {},
+  });
+  assert.deepEqual(await result.ollamaPromptBarrier, { ok: true, scope: "continuation-prompt" });
+
+  const failed = createContinuationPromptFinalizer({
+    model: "vision-test-model",
+    tailRoot: root,
+    ollamaCoordinator: {
+      generate: async () => {
+        throw Object.assign(new Error("explicit stop denied"), { code: "OLLAMA_UNLOAD_FAILED" });
+      },
+    },
+  });
+  await assert.rejects(
+    failed({
+      mode: "i2v",
+      segment: { prompt: draftPrompt },
+      draftPrompt,
+      previousTail: tailPath,
+      tailRoot: root,
+      continuityBible: {},
+    }),
+    (error) => error?.code === "OLLAMA_UNLOAD_FAILED" && /explicit stop denied/.test(error.message),
+  );
+});
+
 test("vision timeout and unsafe tail use deterministic fallback without rejecting", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-tail-fallback-"));
   const tailPath = path.join(root, "normalized-tail.png");
@@ -165,9 +209,59 @@ test("runner invokes finalizer only for later segments and persists previous-end
   }
 });
 
+test("planner cleanup receipt gates only the initial H3 segment", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-runner-planner-receipt-"));
+  const previousDataRoot = process.env.H3_SEQUENCE_DATA_ROOT;
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "planner-receipt");
+  const job = {
+    id: "planner-receipt",
+    inputType: "text",
+    outputPath: output,
+    outputFolder: "planner-receipt",
+    status: "ready",
+    revision: 1,
+    width: 736,
+    height: 416,
+    steps: 2,
+    seed: 1,
+    planMeta: { ollamaPromptReceipt: "ollama-prompt-1234567890abcdef1234" },
+    continuityBible: {},
+    segments: [
+      { id: "s1", start: 0, end: 5, duration: 5, description: "opening", prompt: buildT2VAPrompt({ description: "opening" }) },
+      { id: "s2", start: 5, end: 10, duration: 5, description: "continue", prompt: buildI2VAPrompt({ description: "continue" }) },
+    ],
+  };
+  const generationCalls = [];
+  try {
+    const result = await runSequence(job, {
+      generate: async (payload) => { generationCalls.push(payload); return { rawPath: payload.outputPath }; },
+      normalize: async () => {},
+      extractTail: async () => {},
+      assemble: async ({ outputFolder }) => ({ outputPath: path.join(outputFolder, "final.mp4") }),
+      updateJob: async (target, patch) => Object.assign(target, patch),
+      updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+      writeManifest: async () => {},
+      log: async () => {},
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(generationCalls[0].ollamaPromptReceipt, job.planMeta.ollamaPromptReceipt);
+    assert.equal("ollamaPromptReceipt" in generationCalls[1], false);
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.H3_SEQUENCE_DATA_ROOT;
+    else process.env.H3_SEQUENCE_DATA_ROOT = previousDataRoot;
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+  }
+});
+
 test("runner continues after a rejected vision finalizer under strict unhandled rejection", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-runner-fallback-"));
+  const previousDataRoot = process.env.H3_SEQUENCE_DATA_ROOT;
   const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
   process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
   const output = path.join(root, "output", "runner-fallback");
   const job = {
@@ -205,6 +299,8 @@ test("runner continues after a rejected vision finalizer under strict unhandled 
     assert.match(job.segments[1].prompt, /actual normalized previous-segment tail frame/i);
     assert.match(job.segments[1].prompt, /continue locked walk/);
   } finally {
+    if (previousDataRoot === undefined) delete process.env.H3_SEQUENCE_DATA_ROOT;
+    else process.env.H3_SEQUENCE_DATA_ROOT = previousDataRoot;
     if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
     else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
   }

@@ -15,6 +15,7 @@ const BRIDGE_URL = "/app";
 const MAX_REF2V_IMAGES = 9;
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
+const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 const H3_IMAGE_PROMPT_MODES = new Set<Mode>(["i2v", "fl2v", "l2v", "ref2v"]);
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
@@ -60,6 +61,7 @@ type ApiErrorPayload = {
     finalValidation?: { code?: string; message?: string };
     secondValidation?: { code?: string; message?: string };
   };
+  ollamaPromptReceipt?: string | { id?: string };
 };
 type Props = {
   mode: Mode;
@@ -69,13 +71,18 @@ type Props = {
   referenceImages: Asset[];
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
-  onPromptGenerated: (value: string) => void;
+  onPromptGenerated: (value: string, ollamaPromptReceipt?: string) => void;
   onNegativePromptGenerated: (value: string) => void;
 };
 
 type IconName = "spark" | "refresh" | "check" | "close";
 
 const PROMPT_MODEL_CATALOG = [
+  {
+    value: QWEN35_HAUHAUCS_OLLAMA_MODEL,
+    label: "Qwen3.5 9B HauhauCS Aggressive Q6_K",
+    note: "Local · text prompt generation",
+  },
   {
     value: GEMMA4_OLLAMA_MODEL,
     label: "Gemma 4 26B-A4B Uncensored",
@@ -317,7 +324,12 @@ export function SinglePromptAssistant({
         );
       }
 
-      if (payload.prompt) onPromptGenerated(payload.prompt);
+      if (payload.prompt) {
+        const receipt = typeof payload.ollamaPromptReceipt === "string"
+          ? payload.ollamaPromptReceipt
+          : payload.ollamaPromptReceipt?.id || "";
+        onPromptGenerated(payload.prompt, receipt);
+      }
       if (payload.negativePrompt) onNegativePromptGenerated(payload.negativePrompt);
       setNotice(`${providerLabel(provider)} 已產生 ${formatLabel} 提示詞。`);
     } catch (promptError) {

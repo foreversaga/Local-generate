@@ -4,7 +4,7 @@ export const STUDIO_SETTINGS_VERSION = 1;
 export const STUDIO_SETTINGS_DEFAULTS = Object.freeze({
   version: STUDIO_SETTINGS_VERSION,
   promptProvider: "ollama",
-  ollamaModel: "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M",
+  ollamaModel: "qwen3.5-hauhaucs-aggressive:9b-q6_k",
   codexModel: "gpt-5.6-luna",
   codexReasoningEffort: "medium",
 });

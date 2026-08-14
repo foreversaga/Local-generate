@@ -1,7 +1,7 @@
 import { planSequence as defaultPlan } from "./planner.mjs";
 import { allocateSequenceOutputPath, outputRoot, validateOutputFolderName } from "./paths.mjs";
 import { appendEvent, createJob, getJob, listJobs, readEvents, saveJob, writeSequenceManifest } from "./store.mjs";
-import { LongVideoError, validateSequenceInput, validateTimeline } from "./schema.mjs";
+import { LongVideoError, assertLongLoraSupported, validateSequenceInput, validateTimeline } from "./schema.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 import { recoverInterruptedJobs } from "./recovery.mjs";
 import { runSequence } from "./runner.mjs";
@@ -43,8 +43,8 @@ function segmentFromPath(pathname) {
   return { id: decodeURIComponent(match[1]), index: Number(match[2]), suffix: pathname.endsWith("/prompt") ? "prompt" : pathname.endsWith("/retry") ? "retry" : "" };
 }
 
-const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings"]);
+const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -123,7 +123,15 @@ export async function handleLongVideoRoute(req, res, context = {}) {
           : undefined,
         hasNegativeConstraints: Boolean(String(input.negativePrompt || "").trim()),
       }));
-      const plan = await (context.plan || defaultPlan)(input, context.planOptions || {});
+      const planResult = await (context.plan || defaultPlan)(input, context.planOptions || {});
+      // Planner prompts deliberately never receive the LoRA trigger. Preserve
+      // the selection in the returned plan so the subsequent save/PATCH uses
+      // exactly the same setting for every segment.
+      const planLora = validateSequenceInput({ ...input, timeline: planResult.segments || planResult.timeline }, { requireTimeline: true });
+      const plan = { ...planResult };
+      for (const field of ["h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]) {
+        if (Object.prototype.hasOwnProperty.call(planLora, field)) plan[field] = planLora[field];
+      }
       console.info("[long-video] plan.success", JSON.stringify({
         model: plan.planMeta?.model,
         timelineSource: plan.planMeta?.timelineSource,
@@ -140,6 +148,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
     if (req.method === "POST" && pathname === "/api/sequences") {
       const input = await body(req);
       const normalized = validateSequenceInput(input, { requireTimeline: true });
+      assertLongLoraSupported(normalized);
       if (!normalized.outputFolder) throw new LongVideoError("OUTPUT_FOLDER_REQUIRED", "outputFolder is required.", 400);
       // Planning/saving a draft must not touch ComfyUI/output.  Folder
       // allocation is intentionally deferred to the start endpoint.
@@ -160,6 +169,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       const id = decodeURIComponent(single[1]);
       const current = await getJob(id);
       const patch = await body(req);
+      if (Object.prototype.hasOwnProperty.call(patch, "loraProvenance") || Object.prototype.hasOwnProperty.call(patch, "characterLoraProvenance")) {
+        throw new LongVideoError("CHARACTER_LORA_PROVENANCE_FORBIDDEN", "LoRA provenance is server-owned and cannot be supplied by the client.", 400);
+      }
       const expectedRevision = patch.revision ?? current.revision;
       delete patch.revision;
       removeServerOwnedSequenceFields(patch);
@@ -189,11 +201,17 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       // complete merged payload so image assets, dimensions, seam, duration,
       // and timeline invariants cannot be bypassed by partial updates.
       const normalized = validateSequenceInput(candidate, { requireTimeline: true });
-      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible"];
+      assertLongLoraSupported(normalized);
+      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
+      }
+      // Explicitly clear a previously persisted LoRA when the client removes
+      // its name/id. Undefined is omitted by storage JSON serialization.
+      for (const field of ["h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]) {
+        if (Object.prototype.hasOwnProperty.call(candidate, field) && !Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = undefined;
       }
       let mergedSegments = patch.segments || patch.timeline || current.segments;
       if (normalized.referenceMode === "multi_reference") mergedSegments = mergedSegments.map((segment) => ({ ...segment, mode: "ref2v" }));
@@ -274,6 +292,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       const current = await getJob(id);
       if (operation === "start") {
         if (["planning", "running", "queued", "paused", "assembling"].includes(current.status)) throw new LongVideoError("SEQUENCE_ALREADY_RUNNING", "Sequence is already running.", 409);
+        assertLongLoraSupported(current);
         const control = controls.get(id) || { cancel: false, pause: false };
         control.cancel = false;
         control.pause = false;
