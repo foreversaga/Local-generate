@@ -9,6 +9,7 @@ import {
   IMG2IMG_MODEL_PROFILES,
   IMG2IMG_POSE_REQUIRED_NODES,
   buildImg2ImgPrompt,
+  comfyWebSocketUrl,
   createImg2ImgController,
   evaluateImg2ImgReadiness,
   normalizeCharacterLoraName,
@@ -19,6 +20,7 @@ import {
   normalizePoseControlStrength,
   normalizePoseResolution,
   normalizePoseRoot,
+  parseComfyWebSocketMessage,
   parseImg2ImgHistory,
 } from "../server/image-generation/img2img.mjs";
 import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs";
@@ -49,6 +51,31 @@ function apiResponse() {
     writeHead(status) { this.status = status; this.headersSent = true; },
     end(value) { this.body = value ? JSON.parse(value) : null; },
   };
+}
+
+class FakeComfyWebSocket {
+  static instances = [];
+
+  constructor(url) {
+    this.url = url;
+    this.listeners = new Map();
+    this.closed = false;
+    FakeComfyWebSocket.instances.push(this);
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  emit(type, data) {
+    for (const listener of this.listeners.get(type) || []) listener(data);
+  }
+
+  close() {
+    this.closed = true;
+  }
 }
 
 const requiredObjectInfo = {
@@ -159,6 +186,16 @@ test("allows image-to-image workflows without a positive prompt", () => {
   });
   assert.equal(graph["4"].inputs.text, "");
   assert.equal(graph["5"].inputs.text, "");
+});
+
+test("builds a matching ComfyUI WebSocket URL and parses native progress events", () => {
+  assert.equal(comfyWebSocketUrl("http://127.0.0.1:8188/", "img2img-client"), "ws://127.0.0.1:8188/ws?clientId=img2img-client");
+  assert.equal(comfyWebSocketUrl("https://comfy.example/", "img2img-client"), "wss://comfy.example/ws?clientId=img2img-client");
+  assert.deepEqual(parseComfyWebSocketMessage(JSON.stringify({
+    type: "progress",
+    data: { prompt_id: "prompt-1", node: "6", value: 4, max: 4 },
+  })), { type: "progress", prompt_id: "prompt-1", node: "6", value: 4, max: 4 });
+  assert.equal(parseComfyWebSocketMessage("not-json"), null);
 });
 
 test("adds a checkpoint LoRA without changing the unselected graph node ids", () => {
@@ -1017,6 +1054,310 @@ test("restart recovers queued and running jobs without ghost state", async () =>
   }
   await new Promise((resolve) => setTimeout(resolve, 50));
   await rm(root, { recursive: true, force: true });
+});
+
+test("publishes native ComfyUI node and sampler progress while history is pending", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-websocket-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  FakeComfyWebSocket.instances = [];
+  let historyReady = false;
+  let postedClientId = "";
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://ws-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") {
+      const payload = JSON.parse(init.body || "{}");
+      postedClientId = payload.client_id;
+      setTimeout(() => {
+        const socket = FakeComfyWebSocket.instances.at(-1);
+        socket?.emit("open");
+        const emit = (type, data) => socket?.emit("message", JSON.stringify({ type, data }));
+        emit("execution_start", { prompt_id: "ws-prompt-1" });
+        emit("executing", { prompt_id: "ws-prompt-1", node: "6", display_node: "6" });
+        emit("progress", { prompt_id: "ws-prompt-1", node: "6", value: 4, max: 4 });
+      }, 0);
+      return response({ prompt_id: "ws-prompt-1" });
+    }
+    if (endpoint === "/history/ws-prompt-1") {
+      if (!historyReady) return response({});
+      await mkdir(path.join(outputRoot, "img2img"), { recursive: true });
+      await writeFile(path.join(outputRoot, "img2img", "ws-result.png"), Buffer.from([137, 80, 78, 71]));
+      return response({
+        "ws-prompt-1": {
+          status: { status_str: "success", completed: true },
+          outputs: { "8": { images: [{ filename: "ws-result.png", subfolder: "img2img", type: "output" }] } },
+        },
+      });
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://ws-comfy",
+    inputRoot,
+    outputRoot,
+    storeRoot: path.join(root, "records"),
+    fetchImpl,
+    webSocketImpl: FakeComfyWebSocket,
+    pollIntervalMs: 10,
+    idFactory: () => "websocket-job",
+    clientId: "test-img2img",
+  });
+  try {
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "native progress" });
+    let running = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && running.nativeCurrent !== 4; count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      running = await controller.getJob(queued.id);
+    }
+    assert.equal(running.status, "running", running.error || running.stage);
+    assert.equal(running.progressSource, "native");
+    assert.equal(running.nativeCurrent, 4);
+    assert.equal(running.nativeMaximum, 4);
+    assert.equal(running.comfyNode, "KSampler");
+    assert.match(running.stage, /KSampler.*4\/4/);
+    assert.match(postedClientId, /^test-img2img-/);
+    assert.equal(FakeComfyWebSocket.instances[0].url, `ws://ws-comfy/ws?clientId=${postedClientId}`);
+    historyReady = true;
+    let completed = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && completed.status === "running"; count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      completed = await controller.getJob(queued.id);
+    }
+    assert.equal(completed.status, "completed");
+    assert.equal(FakeComfyWebSocket.instances[0].closed, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("classifies a matching ComfyUI execution_error without waiting for history timeout", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-websocket-error-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  FakeComfyWebSocket.instances = [];
+  const fetchImpl = async (url) => {
+    const endpoint = String(url).replace("http://ws-error-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") {
+      setTimeout(() => {
+        const socket = FakeComfyWebSocket.instances.at(-1);
+        socket?.emit("open");
+        const emit = (type, data) => socket?.emit("message", JSON.stringify({ type, data }));
+        emit("status", { status: { exec_info: { queue_remaining: 1 } } });
+        emit("execution_start", { prompt_id: "ws-error-prompt" });
+        emit("executing", { prompt_id: "ws-error-prompt", node: "6", display_node: "6" });
+        emit("execution_error", { prompt_id: "ws-error-prompt", node_id: "6", exception_message: "simulated KSampler failure" });
+      }, 0);
+      return response({ prompt_id: "ws-error-prompt" });
+    }
+    if (endpoint === "/history/ws-error-prompt") return response({});
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://ws-error-comfy",
+    inputRoot,
+    outputRoot,
+    storeRoot: path.join(root, "records"),
+    fetchImpl,
+    webSocketImpl: FakeComfyWebSocket,
+    pollIntervalMs: 10,
+    maxPollMs: 5_000,
+    idFactory: () => "websocket-error-job",
+  });
+  try {
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "error progress" });
+    let failed = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && ["queued", "running"].includes(failed.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failed = await controller.getJob(queued.id);
+    }
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /simulated KSampler failure/);
+    assert.equal(FakeComfyWebSocket.instances[0].closed, true);
+  } finally {
+    for (let count = 0; count < 100 && controller.active(); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("history timeout cancels the exact ComfyUI prompt and preserves timeout semantics", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-timeout-cancel-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  const cancelRequests = [];
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://timeout-cancel-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") return response({ prompt_id: "timeout-cancel-prompt" });
+    if (endpoint === "/history/timeout-cancel-prompt") return response({});
+    if (endpoint === "/api/jobs/timeout-cancel-prompt/cancel") {
+      cancelRequests.push({ method: init.method, body: init.body });
+      return response({ cancelled: true });
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://timeout-cancel-comfy",
+    inputRoot,
+    outputRoot,
+    storeRoot: path.join(root, "records"),
+    fetchImpl,
+    webSocketImpl: null,
+    pollIntervalMs: 1,
+    maxPollMs: 5,
+    idFactory: () => "timeout-cancel-job",
+  });
+  try {
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "timeout" });
+    let failed = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && ["queued", "running"].includes(failed.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failed = await controller.getJob(queued.id);
+    }
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /Timed out waiting for the generated image/);
+    assert.deepEqual(cancelRequests, [{ method: "POST", body: "{}" }]);
+  } finally {
+    for (let count = 0; count < 100 && controller.active(); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed targeted timeout cancellation uses only prompt-scoped fallbacks and keeps the timeout error", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-timeout-fallback-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  const requests = [];
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://timeout-fallback-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") return response({ prompt_id: "timeout-fallback-prompt" });
+    if (endpoint === "/history/timeout-fallback-prompt") return response({});
+    if (endpoint === "/api/jobs/timeout-fallback-prompt/cancel") {
+      requests.push({ endpoint, method: init.method, body: init.body });
+      return response({ error: "unsupported" }, 503);
+    }
+    if (endpoint === "/queue" || endpoint === "/interrupt") {
+      requests.push({ endpoint, method: init.method, body: init.body });
+      return response({});
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://timeout-fallback-comfy",
+    inputRoot,
+    outputRoot,
+    storeRoot: path.join(root, "records"),
+    fetchImpl,
+    webSocketImpl: null,
+    pollIntervalMs: 1,
+    maxPollMs: 5,
+    idFactory: () => "timeout-fallback-job",
+  });
+  try {
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "timeout fallback" });
+    let failed = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && ["queued", "running"].includes(failed.status); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failed = await controller.getJob(queued.id);
+    }
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error, /Timed out waiting for the generated image/);
+    assert.deepEqual(requests, [
+      { endpoint: "/api/jobs/timeout-fallback-prompt/cancel", method: "POST", body: "{}" },
+      { endpoint: "/queue", method: "POST", body: JSON.stringify({ delete: ["timeout-fallback-prompt"] }) },
+      { endpoint: "/interrupt", method: "POST", body: JSON.stringify({ prompt_id: "timeout-fallback-prompt" }) },
+    ]);
+  } finally {
+    for (let count = 0; count < 100 && controller.active(); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("active manual cancellation uses the targeted ComfyUI cancel endpoint", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-manual-cancel-targeted-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
+  let promptSubmitted;
+  const promptReady = new Promise((resolve) => { promptSubmitted = resolve; });
+  const requests = [];
+  const fetchImpl = async (url, init = {}) => {
+    const endpoint = String(url).replace("http://manual-cancel-comfy", "");
+    if (endpoint === "/system_stats") return response({});
+    if (endpoint === "/object_info") return response(requiredObjectInfo);
+    if (endpoint === "/prompt") {
+      promptSubmitted();
+      return response({ prompt_id: "manual-cancel-prompt" });
+    }
+    if (endpoint === "/history/manual-cancel-prompt") return response({});
+    if (endpoint === "/api/jobs/manual-cancel-prompt/cancel") {
+      requests.push({ endpoint, method: init.method, body: init.body });
+      return response({ cancelled: true });
+    }
+    if (endpoint === "/interrupt" || endpoint === "/queue") {
+      requests.push({ endpoint, method: init.method, body: init.body });
+      return response({});
+    }
+    throw new Error(`Unexpected endpoint: ${endpoint}`);
+  };
+  const controller = createImg2ImgController({
+    comfyUrl: "http://manual-cancel-comfy",
+    inputRoot,
+    outputRoot,
+    storeRoot: path.join(root, "records"),
+    fetchImpl,
+    webSocketImpl: null,
+    pollIntervalMs: 1,
+    maxPollMs: 30_000,
+    idFactory: () => "manual-cancel-job",
+  });
+  try {
+    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "manual cancel" });
+    await promptReady;
+    const cancelResponse = apiResponse();
+    await controller.handleRoute({ method: "POST", url: `/api/img2img/jobs/${queued.id}/cancel` }, cancelResponse, {
+      readJson: async () => ({ reason: "stop active" }),
+    });
+    assert.equal(cancelResponse.status, 200);
+    let cancelled = await controller.getJob(queued.id);
+    for (let count = 0; count < 100 && cancelled.status !== "cancelled"; count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      cancelled = await controller.getJob(queued.id);
+    }
+    assert.equal(cancelled.status, "cancelled");
+    assert.deepEqual(requests, [{ endpoint: "/api/jobs/manual-cancel-prompt/cancel", method: "POST", body: "{}" }]);
+  } finally {
+    for (let count = 0; count < 100 && controller.active(); count += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("queued cancellation is durable and does not submit a ComfyUI prompt", async () => {

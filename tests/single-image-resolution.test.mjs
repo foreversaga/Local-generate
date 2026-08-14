@@ -1,14 +1,38 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  calculateAspectRatioDimensions,
   clampResolutionScale,
   normalizeImageResolution,
   normalizeResolutionDimension,
+  parseAspectRatio,
   readImageDimensions,
   resolutionGridForMode,
   resolutionScaleForDimensions,
   scaleImageResolution,
 } from "../app/lib/single-image-resolution.mjs";
+
+test("aspect ratio parsing and linked retry dimensions stay on the 32px grid", () => {
+  assert.deepEqual(parseAspectRatio("16:9"), { width: 16, height: 9 });
+  assert.deepEqual(parseAspectRatio("2.39:1"), { width: 2.39, height: 1 });
+  assert.equal(parseAspectRatio("custom"), null);
+  assert.equal(parseAspectRatio("0:1"), null);
+
+  assert.deepEqual(calculateAspectRatioDimensions("16:9", 736, "width"), { width: 736, height: 416 });
+  assert.deepEqual(calculateAspectRatioDimensions("16:9", 416, "height"), { width: 736, height: 416 });
+  assert.deepEqual(calculateAspectRatioDimensions("9:16", 704, "width"), { width: 704, height: 1248 });
+  assert.deepEqual(calculateAspectRatioDimensions("1:1", 1500, "width"), { width: 1504, height: 1504 });
+  assert.deepEqual(calculateAspectRatioDimensions("4:3", 2048, "width"), { width: 2048, height: 1536 });
+  assert.deepEqual(calculateAspectRatioDimensions("3:4", 2048, "width"), { width: 1536, height: 2048 });
+});
+
+test("aspect ratio dimensions clamp maximums and custom boundary anchors", () => {
+  assert.deepEqual(calculateAspectRatioDimensions("9:16", 2048, "width"), { width: 1152, height: 2048 });
+  assert.deepEqual(calculateAspectRatioDimensions("3:2", 32, "width"), { width: 64, height: 32 });
+  assert.deepEqual(calculateAspectRatioDimensions("2.39:1", 2048, "width"), { width: 2048, height: 864 });
+  assert.throws(() => calculateAspectRatioDimensions("custom", 736), /valid aspect ratio/);
+  assert.throws(() => calculateAspectRatioDimensions("16:9", 736, "depth"), /anchor must be width or height/);
+});
 
 test("image resolution uses the H3 grid and preserves landscape, portrait, and square ratios", () => {
   assert.equal(resolutionGridForMode("i2v"), 32);

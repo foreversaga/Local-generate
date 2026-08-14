@@ -3,6 +3,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
+import { calculateAspectRatioDimensions, normalizeResolutionDimension } from "../../lib/single-image-resolution.mjs";
 import { ACTION_LABELS, sourceLabel } from "../../lib/ui-copy.mjs";
 import { fetchUnifiedJobs, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
@@ -12,6 +13,8 @@ type RetryDraft = {
   prompt: string;
   negativePrompt: string;
   modelProfile: string;
+  aspectRatio: string;
+  aspectLocked: boolean;
   width: string;
   height: string;
   duration: string;
@@ -29,6 +32,15 @@ const RETRY_PROFILES = [
   "ref2va_pruned_int8_convrot",
 ];
 
+const ASPECT_RATIO_OPTIONS = [
+  { value: "custom", label: "Custom (free adjustment)" },
+  { value: "16:9", label: "16:9 (Landscape)" },
+  { value: "9:16", label: "9:16 (Portrait)" },
+  { value: "1:1", label: "1:1 (Square)" },
+  { value: "4:3", label: "4:3 (Landscape)" },
+  { value: "3:4", label: "3:4 (Portrait)" },
+];
+
 function draftNumber(value: number | null | undefined, fallback: number) {
   return Number.isFinite(Number(value)) ? String(value) : String(fallback);
 }
@@ -38,6 +50,8 @@ function retryDraftFromJob(job: UnifiedJob): RetryDraft {
     prompt: job.prompt || "",
     negativePrompt: job.negativePrompt || "",
     modelProfile: job.modelProfile || "nvfp4_blackwell",
+    aspectRatio: "custom",
+    aspectLocked: false,
     width: draftNumber(job.width, 736),
     height: draftNumber(job.height, 416),
     duration: draftNumber(job.duration, 5),
@@ -50,7 +64,7 @@ function retryDraftFromJob(job: UnifiedJob): RetryDraft {
 
 function numericDraft(value: string, label: string) {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`${label} 必須是有效數字。`);
+  if (!Number.isFinite(parsed)) throw new Error(`${label} must be a valid number.`);
   return parsed;
 }
 
@@ -112,21 +126,81 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     setRetryDraft((current) => current ? { ...current, [field]: value } : current);
   }
 
+  function updateRetryAspectRatio(value: string) {
+    setRetryDraft((current) => {
+      if (!current) return current;
+      if (value === "custom") {
+        return { ...current, aspectRatio: value, aspectLocked: false };
+      }
+      const currentWidth = Number(current.width);
+      const dimensions = calculateAspectRatioDimensions(
+        value,
+        Number.isFinite(currentWidth) && currentWidth > 0 ? currentWidth : 736,
+        "width",
+      );
+      return {
+        ...current,
+        aspectRatio: value,
+        aspectLocked: true,
+        width: String(dimensions.width),
+        height: String(dimensions.height),
+      };
+    });
+  }
+
+  function updateRetryAspectLock(locked: boolean) {
+    setRetryDraft((current) => {
+      if (!current || current.aspectRatio === "custom") return current;
+      if (!locked) return { ...current, aspectLocked: false };
+      const currentWidth = Number(current.width);
+      if (!Number.isFinite(currentWidth) || currentWidth <= 0) {
+        return { ...current, aspectLocked: true };
+      }
+      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, currentWidth, "width");
+      return {
+        ...current,
+        aspectLocked: true,
+        width: String(dimensions.width),
+        height: String(dimensions.height),
+      };
+    });
+  }
+
+  function updateRetryDimension(field: "width" | "height", value: string) {
+    setRetryDraft((current) => {
+      if (!current) return current;
+      const next = { ...current, [field]: value };
+      if (!current.aspectLocked || current.aspectRatio === "custom") return next;
+      const anchorValue = Number(value);
+      if (!Number.isFinite(anchorValue) || anchorValue < 32 || anchorValue > 2048) return next;
+      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, anchorValue, field);
+      return { ...next, width: String(dimensions.width), height: String(dimensions.height) };
+    });
+  }
+
   async function submitRetry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!job || !retryDraft || busy) return;
     if (!retryDraft.prompt.trim()) {
-      setError("提示詞不能是空白。請保留原提示詞或輸入新的描述。");
+      setError("Prompt cannot be empty. Keep the original prompt or enter a new description.");
       return;
     }
     try {
+      const width = numericDraft(retryDraft.width, "Width");
+      const height = numericDraft(retryDraft.height, "Height");
+      const dimensions = retryDraft.aspectLocked && retryDraft.aspectRatio !== "custom"
+        ? calculateAspectRatioDimensions(retryDraft.aspectRatio, width, "width")
+        : {
+            width: normalizeResolutionDimension(width, "i2v"),
+            height: normalizeResolutionDimension(height, "i2v"),
+          };
       const overrides: VideoRetryOverrides = {
         prompt: retryDraft.prompt,
         negativePrompt: retryDraft.negativePrompt,
         modelProfile: retryDraft.modelProfile.trim(),
-        width: numericDraft(retryDraft.width, "寬度"),
-        height: numericDraft(retryDraft.height, "高度"),
-        duration: numericDraft(retryDraft.duration, "片長"),
+        width: dimensions.width,
+        height: dimensions.height,
+        duration: numericDraft(retryDraft.duration, "Duration"),
         steps: numericDraft(retryDraft.steps, "Steps"),
         seed: numericDraft(retryDraft.seed, "Seed"),
         timeoutSeconds: numericDraft(retryDraft.timeoutSeconds, "Timeout"),
@@ -134,7 +208,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
       };
       await action("retry", overrides);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "重試參數無效。");
+      setError(reason instanceof Error ? reason.message : "Retry parameters are invalid.");
     }
   }
 
@@ -151,6 +225,12 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   if (!job) return <div className={styles.error} role="alert">找不到工作。</div>;
   const outputHref = jobOutputHref(job);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
+  const hasNativeStep = job.source === "img2img"
+    && job.nativeCurrent !== null
+    && job.nativeMaximum !== null
+    && Number.isFinite(Number(job.nativeCurrent))
+    && Number.isFinite(Number(job.nativeMaximum))
+    && Number(job.nativeMaximum) > 0;
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
@@ -160,9 +240,21 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         <dl className={styles.metaGrid}>
           <div><dt>ID</dt><dd>{job.id}</dd></div>
           <div><dt>階段</dt><dd>{job.stage}</dd></div>
-          <div><dt>進度</dt><dd>{progress}%</dd></div>
+          <div className={styles.progressMeta}>
+            <dt>進度</dt>
+            <dd>{progress}%</dd>
+            {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}><span style={{ width: `${progress}%` }} /></div>}
+          </div>
           <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
         </dl>
+        {job.source === "img2img" && (job.comfyNode || hasNativeStep) && (
+          <p className={styles.helper}>
+            ComfyUI node: {job.comfyNode || "running"}
+            {job.comfyNodeTitle ? ` (${job.comfyNodeTitle})` : ""}
+            {hasNativeStep ? ` · sampler step ${job.nativeCurrent}/${job.nativeMaximum}` : ""}
+            {hasNativeStep ? " · overall bar is coarse" : job.progressSource === "estimated" ? " · overall progress is estimated" : ""}
+          </p>
+        )}
         {job.source === "video" && (
           <div className={styles.promptStack}>
             <details className={styles.promptDetails} open>
@@ -177,7 +269,6 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             )}
           </div>
         )}
-        {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}><span style={{ width: `${progress}%` }} /></div>}
         {job.artifact && <p className={styles.helper}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}{job.artifact.registryId ? ` · 註冊編號 ${job.artifact.registryId}` : ""}</p>}
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
         {error && <div className={styles.error} role="alert">{error}</div>}
@@ -185,14 +276,14 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
           <section className={styles.retryEditor} aria-labelledby="retry-editor-title">
             <div className={styles.retryEditorHeader}>
               <div>
-                <h3 id="retry-editor-title">編輯參數後重試</h3>
-                <p>原工作會保留；送出後會建立新的 retry 工作。提示詞可完整修改。</p>
+                <h3 id="retry-editor-title">Edit parameters and retry</h3>
+                <p>The original job is preserved. Submitting creates a new retry job, and the prompts can be fully edited.</p>
               </div>
-              <span className={styles.retryAttempt}>原工作 #{job.attempt || 1}</span>
+              <span className={styles.retryAttempt}>Original job #{job.attempt || 1}</span>
             </div>
             <form className={styles.retryForm} onSubmit={(event) => void submitRetry(event)}>
               <label className={styles.retryFieldWide}>
-                <span>Prompt（完整，可修改）</span>
+                <span>Prompt (full, editable)</span>
                 <textarea
                   value={retryDraft.prompt}
                   onChange={(event) => updateRetryDraft("prompt", event.target.value)}
@@ -226,19 +317,38 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
                 </datalist>
               </label>
               <label className={styles.retryField}>
-                <span>輸出檔名</span>
+                <span>Output filename</span>
                 <input value={retryDraft.outputName} onChange={(event) => updateRetryDraft("outputName", event.target.value)} required />
               </label>
               <label className={styles.retryField}>
-                <span>寬度</span>
-                <input type="number" min={32} max={2048} step={32} value={retryDraft.width} onChange={(event) => updateRetryDraft("width", event.target.value)} required />
+                <span>Aspect ratio</span>
+                <select value={retryDraft.aspectRatio} onChange={(event) => updateRetryAspectRatio(event.target.value)}>
+                  {ASPECT_RATIO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                <small>{retryDraft.aspectRatio === "custom" ? "Custom: width and height can be edited independently." : retryDraft.aspectLocked ? "Locked: changing either dimension keeps this ratio." : "Unlocked: width and height can be edited independently."}</small>
               </label>
               <label className={styles.retryField}>
-                <span>高度</span>
-                <input type="number" min={32} max={2048} step={32} value={retryDraft.height} onChange={(event) => updateRetryDraft("height", event.target.value)} required />
+                <span>Aspect ratio lock</span>
+                <span className={styles.retryLockControl}>
+                  <input
+                    type="checkbox"
+                    checked={retryDraft.aspectLocked}
+                    disabled={retryDraft.aspectRatio === "custom"}
+                    onChange={(event) => updateRetryAspectLock(event.target.checked)}
+                  />
+                  Keep width and height linked
+                </span>
               </label>
               <label className={styles.retryField}>
-                <span>片長（秒）</span>
+                <span>Width</span>
+                <input type="number" min={32} max={2048} step={32} value={retryDraft.width} onChange={(event) => updateRetryDimension("width", event.target.value)} required />
+              </label>
+              <label className={styles.retryField}>
+                <span>Height</span>
+                <input type="number" min={32} max={2048} step={32} value={retryDraft.height} onChange={(event) => updateRetryDimension("height", event.target.value)} required />
+              </label>
+              <label className={styles.retryField}>
+                <span>Duration (seconds)</span>
                 <input type="number" min={0.1} max={120} step={0.1} value={retryDraft.duration} onChange={(event) => updateRetryDraft("duration", event.target.value)} required />
               </label>
               <label className={styles.retryField}>
@@ -250,13 +360,13 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
                 <input type="number" min={0} max={2147483647} step={1} value={retryDraft.seed} onChange={(event) => updateRetryDraft("seed", event.target.value)} required />
               </label>
               <label className={styles.retryField}>
-                <span>Timeout（秒）</span>
+                <span>Timeout (seconds)</span>
                 <input type="number" min={60} max={86400} step={60} value={retryDraft.timeoutSeconds} onChange={(event) => updateRetryDraft("timeoutSeconds", event.target.value)} required />
-                <small>目前預設 3600；長片可改 7200。</small>
+                <small>Default 3600; long shots can use 7200.</small>
               </label>
               <div className={styles.retryActions}>
-                <button type="submit" className={styles.retryPrimary} disabled={Boolean(busy)}>{busy === "retry" ? "建立重試中…" : "以修改後參數重試"}</button>
-                <button type="button" className={styles.retrySecondary} disabled={Boolean(busy)} onClick={() => setRetryDraft(null)}>取消</button>
+                <button type="submit" className={styles.retryPrimary} disabled={Boolean(busy)}>{busy === "retry" ? "Creating retry…" : "Retry with edited parameters"}</button>
+                <button type="button" className={styles.retrySecondary} disabled={Boolean(busy)} onClick={() => setRetryDraft(null)}>Cancel</button>
               </div>
             </form>
           </section>
@@ -267,7 +377,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         {job.canCancel && <button type="button" className={styles.dangerButton} disabled={Boolean(busy)} onClick={() => void action("cancel")}>{busy === "cancel" ? "取消中…" : ACTION_LABELS.cancel}</button>}
         {job.canPause && <button type="button" disabled={Boolean(busy)} onClick={() => void action("pause")}>{ACTION_LABELS.pause}</button>}
         {job.canResume && <button type="button" disabled={Boolean(busy)} onClick={() => void action("resume")}>{ACTION_LABELS.resume}</button>}
-        {job.canRetry && !retryDraft && <button type="button" disabled={Boolean(busy)} onClick={openRetryEditor}>{job.source === "video" ? "編輯後重試" : (busy === "retry" ? "重試中…" : ACTION_LABELS.retry)}</button>}
+        {job.canRetry && !retryDraft && <button type="button" disabled={Boolean(busy)} onClick={openRetryEditor}>{job.source === "video" ? "Edit and retry" : (busy === "retry" ? "Retrying…" : ACTION_LABELS.retry)}</button>}
         {outputHref && <a href={outputHref} className={styles.outputButton}>{job.source === "lora" ? ACTION_LABELS.downloadResult : ACTION_LABELS.openOutput}</a>}
         <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
         {(job.source === "upscale" || job.source === "img2img") && !job.canCancel && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>目前工具服務未提供取消端點，因此此頁不會顯示虛假的取消結果。</p>}

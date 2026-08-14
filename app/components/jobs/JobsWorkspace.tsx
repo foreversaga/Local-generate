@@ -84,6 +84,10 @@ export function JobsWorkspace() {
 
 function JobRow({ job }: { job: UnifiedJob }) {
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
+  const hasNativeStep = job.source === "img2img"
+    && job.nativeCurrent !== null
+    && job.nativeMaximum !== null
+    && Number(job.nativeMaximum) > 0;
   return (
     <article className={styles.jobCard}>
       <div className={styles.jobMain}>
@@ -94,6 +98,12 @@ function JobRow({ job }: { job: UnifiedJob }) {
         </div>
         <h2>{job.title}</h2>
         <p>{job.subtitle || job.stage}</p>
+        {job.source === "img2img" && (job.comfyNode || hasNativeStep) && (
+          <small className={styles.helper}>
+            ComfyUI: {job.comfyNode || "running"}
+            {hasNativeStep ? ` · ${job.nativeCurrent}/${job.nativeMaximum}` : ""}
+          </small>
+        )}
         {(job.status === "queued" || job.status === "running") && (
           <div className={styles.progressWrap}>
             <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}>

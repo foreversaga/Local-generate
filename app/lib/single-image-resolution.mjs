@@ -32,6 +32,67 @@ export function resolutionGridForMode(mode) {
 }
 
 /**
+ * Parse a ratio written as `width:height`. Returning null keeps the Custom
+ * retry-editor option distinct from a real ratio while still allowing decimal
+ * custom ratios such as `2.39:1`.
+ *
+ * @param {unknown} value
+ * @returns {{ width: number; height: number } | null}
+ */
+export function parseAspectRatio(value) {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+/**
+ * Calculate a linked width/height pair for the retry editor. The requested
+ * anchor is kept as closely as possible, then the pair is clamped to the
+ * legal 32px H3 grid and 32–2048 bounds. The API still receives only this
+ * resulting width and height pair; the ratio itself is UI state.
+ *
+ * @param {string | { width: number; height: number }} aspectRatio
+ * @param {number} anchorValue
+ * @param {"width" | "height"} [anchorDimension]
+ * @param {number} [grid]
+ * @returns {{ width: number; height: number }}
+ */
+export function calculateAspectRatioDimensions(aspectRatio, anchorValue, anchorDimension = "width", grid = H3_GRID) {
+  const parsed = typeof aspectRatio === "string" ? parseAspectRatio(aspectRatio) : aspectRatio;
+  if (!parsed || !Number.isFinite(parsed.width) || !Number.isFinite(parsed.height) || parsed.width <= 0 || parsed.height <= 0) {
+    throw new Error("A valid aspect ratio is required.");
+  }
+  if (anchorDimension !== "width" && anchorDimension !== "height") {
+    throw new Error("The aspect-ratio anchor must be width or height.");
+  }
+  if (!Number.isFinite(anchorValue) || anchorValue <= 0) {
+    throw new Error("The aspect-ratio anchor must be a positive number.");
+  }
+  if (!Number.isInteger(grid) || grid <= 0) {
+    throw new Error("The resolution grid must be a positive integer.");
+  }
+
+  const rawWidth = anchorDimension === "height"
+    ? anchorValue * parsed.width / parsed.height
+    : anchorValue;
+  const rawHeight = anchorDimension === "height"
+    ? anchorValue
+    : anchorValue * parsed.height / parsed.width;
+  const maximumScale = Math.min(1, MAX_DIMENSION / rawWidth, MAX_DIMENSION / rawHeight);
+  const minimumScale = Math.max(MIN_DIMENSION / rawWidth, MIN_DIMENSION / rawHeight);
+  const scale = Math.max(minimumScale, maximumScale);
+
+  return {
+    width: clampToLegalGrid(rawWidth * scale, grid),
+    height: clampToLegalGrid(rawHeight * scale, grid),
+  };
+}
+
+/**
  * Keep the resolution slider bounded to a percentage of the source image.
  * A value outside the range is clamped so keyboard input and restored drafts
  * cannot create an invalid request.

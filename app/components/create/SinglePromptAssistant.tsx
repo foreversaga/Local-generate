@@ -16,7 +16,6 @@ const MAX_REF2V_IMAGES = 9;
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
-const H3_IMAGE_PROMPT_MODES = new Set<Mode>(["i2v", "fl2v", "l2v", "ref2v"]);
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type PromptProvider = "ollama" | "codex";
@@ -183,7 +182,7 @@ export function SinglePromptAssistant({
       return {
         value: model,
         label: known?.label || model,
-        note: known?.note || (modelSupportsPromptImages(model) ? "已安裝 · 支援圖片" : "已安裝"),
+        note: known?.note || "已安裝",
       };
     });
   }, [visibleModels]);
@@ -259,10 +258,6 @@ export function SinglePromptAssistant({
         setError(`模型 ${effectiveOllamaModel} 尚未安裝。`);
         return;
       }
-      if (H3_IMAGE_PROMPT_MODES.has(mode) && !modelSupportsPromptImages(effectiveOllamaModel)) {
-        setError(`模型 ${effectiveOllamaModel} 不支援圖片理解，請改用 vision 模型或 Codex CLI。`);
-        return;
-      }
     } else {
       if (!health?.codex?.online) {
         setError("Codex CLI 尚未安裝或無法執行。");
@@ -277,8 +272,6 @@ export function SinglePromptAssistant({
     setBusy(true);
     try {
       const images = await buildPromptImages({
-        provider,
-        ollamaModel: effectiveOllamaModel,
         mode,
         referenceImage,
         referenceImages,
@@ -422,24 +415,18 @@ export function SinglePromptAssistant({
 }
 
 async function buildPromptImages({
-  provider,
-  ollamaModel,
   mode,
   referenceImage,
   referenceImages,
   lastFrameImage,
   sourceVideo,
 }: {
-  provider: PromptProvider;
-  ollamaModel: string;
   mode: Mode;
   referenceImage: Asset | null;
   referenceImages: Asset[];
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
 }) {
-  if (provider === "ollama" && !modelSupportsPromptImages(ollamaModel)) return [];
-
   const images: Array<{ role: string; data: string }> = [];
   if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
     images.push({ role: "reference_image", data: await assetToPromptImage(referenceImage) });
@@ -505,12 +492,6 @@ async function assetToPromptImage(asset: Asset) {
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
-}
-
-function modelSupportsPromptImages(model: string) {
-  const normalized = model.toLowerCase();
-  if (normalized === "gemma3:1b") return false;
-  return normalized.includes("-vl") || normalized.includes("gemma3") || normalized.includes("gemma4") || normalized.includes("gemma3n");
 }
 
 function promptFormatLabel(mode: Mode) {

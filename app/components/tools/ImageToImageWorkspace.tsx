@@ -169,12 +169,6 @@ function persistExplicitPromptModel(model: string) {
     }
 }
 
-function modelSupportsPromptImages(model: string) {
-    const normalized = model.toLowerCase();
-    if (normalized === "gemma3:1b") return false;
-    return normalized.includes("-vl") || normalized.includes("gemma3") || normalized.includes("gemma4") || normalized.includes("gemma3n");
-}
-
 const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機執行環境。";
 
 function parseNumberDraft(raw: string, label: string, min: number, max: number, integer = false, step?: number) {
@@ -450,7 +444,7 @@ export function ImageToImageWorkspace() {
         ? promptModel
         : "";
     const promptProviderReady = Boolean(promptHealth?.ollama?.online && visiblePromptModels.includes(effectivePromptModel));
-    const promptGenerationReady = Boolean(effectivePromptModel && promptProviderReady && modelSupportsPromptImages(effectivePromptModel));
+    const promptGenerationReady = Boolean(effectivePromptModel && promptProviderReady);
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
     const characterLoraRequested = Boolean(characterLoraName.trim());
     const characterLoraReady = !characterLoraRequested || Boolean(health?.profiles?.[model]?.loraAvailable);
@@ -574,10 +568,6 @@ export function ImageToImageWorkspace() {
         }
         if (!promptProviderReady) {
             setError("Ollama 無法使用，或尚未安裝提示詞模型。");
-            return;
-        }
-        if (!modelSupportsPromptImages(effectivePromptModel)) {
-            setError(`提示詞模型 ${effectivePromptModel} 不支援圖片理解，請選擇視覺模型。`);
             return;
         }
         if (promptBusy || uploading || submitting || retrying || active) return;

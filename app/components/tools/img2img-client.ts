@@ -3,6 +3,7 @@ import type { StudioAsset } from "../library/asset-client";
 const BRIDGE_URL = "/app";
 
 export type Img2ImgStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "partial" | "cancelled" | "interrupted";
+export type Img2ImgProgressSource = "estimated" | "native" | string;
 
 export type Img2ImgRandomRange = {
     min: number;
@@ -30,6 +31,15 @@ export type Img2ImgItem = {
     parameters?: Partial<Img2ImgParameters>;
     output?: StudioAsset;
     error?: string;
+    progress?: number;
+    stage?: string;
+    progressSource?: Img2ImgProgressSource;
+    connectionState?: string;
+    comfyNode?: string;
+    comfyNodeId?: string;
+    comfyNodeTitle?: string;
+    nativeCurrent?: number;
+    nativeMaximum?: number;
     startedAt?: string | null;
     completedAt?: string | null;
     promptId?: string;
@@ -65,6 +75,14 @@ export type Img2ImgJob = {
     status: Img2ImgStatus;
     progress: number;
     stage: string;
+    progressSource?: Img2ImgProgressSource;
+    connectionState?: string;
+    comfyNode?: string;
+    comfyNodeId?: string;
+    comfyNodeTitle?: string;
+    nativeCurrent?: number;
+    nativeMaximum?: number;
+    comfyQueueRemaining?: number;
     sourceName: string;
     sourceRoot: "input" | "output";
     /** Optional pose/control reference image. The source image remains the required character reference. */

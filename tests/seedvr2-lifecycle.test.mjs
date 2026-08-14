@@ -41,6 +41,31 @@ function apiResponse() {
   };
 }
 
+class FakeComfyWebSocket {
+  static instances = [];
+
+  constructor(url) {
+    this.url = url;
+    this.listeners = new Map();
+    this.closed = false;
+    FakeComfyWebSocket.instances.push(this);
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  emit(type, data) {
+    for (const listener of this.listeners.get(type) || []) listener(data);
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
 async function waitFor(read, predicate, message = "condition was not reached") {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
@@ -68,7 +93,7 @@ test("job store canonicalizes the public source shape and mirrored timestamps", 
   assert.equal(job.updatedAt, "2026-08-12T03:01:00.000Z");
 });
 
-async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job" } = {}) {
+async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job", webSocketImpl = null, onPrompt = null } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-lifecycle-"));
   const inputRoot = path.join(root, "input");
   const outputRoot = path.join(root, "output");
@@ -95,8 +120,10 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
     if (url.endsWith("/object_info")) return response(objectInfo());
     if (url.endsWith("/prompt")) {
       state.promptCount += 1;
+      const promptId = `seedvr2-prompt-${state.promptCount}`;
       state.prompts.push(JSON.parse(init.body));
-      return response({ prompt_id: `seedvr2-prompt-${state.promptCount}` });
+      onPrompt?.(promptId, state);
+      return response({ prompt_id: promptId });
     }
     if (url.endsWith("/interrupt")) {
       state.interruptCount += 1;
@@ -121,6 +148,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
     jobStore: store,
     now: () => NOW,
     idFactory,
+    webSocketImpl,
     pollIntervalMs: 1,
     toAsset: async (assetRoot, name) => {
       state.assets.push({ root: assetRoot, name });
@@ -157,6 +185,65 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(listResponse.status, 200);
   assert.equal(listResponse.body.jobs.find((job) => job.id === queued.id).output.name, "seedvr2-result.mp4");
   assert.equal(listResponse.body.jobs.find((job) => job.id === queued.id).prompt["10"].inputs.seed, 42);
+});
+
+test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the history artifact", async (t) => {
+  FakeComfyWebSocket.instances = [];
+  const value = await fixture({
+    historyMode: "pending",
+    webSocketImpl: FakeComfyWebSocket,
+    onPrompt: (promptId) => {
+      setTimeout(() => {
+        const socket = FakeComfyWebSocket.instances.at(-1);
+        socket?.emit("open");
+        const emit = (type, data) => socket?.emit("message", JSON.stringify({ type, data }));
+        emit("execution_start", { prompt_id: promptId });
+        emit("executing", { prompt_id: promptId, node: "10", display_node: "10" });
+        emit("progress", { prompt_id: promptId, node: "10", value: 3, max: 4 });
+      }, 0);
+    },
+  });
+  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+
+  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, seed: 42 });
+  const running = await waitFor(
+    () => value.store.read(queued.id),
+    (job) => job?.status === "running" && job.progress >= 64 && /KSampler.*3\/4/.test(job.stage || ""),
+    "native SeedVR2 WebSocket progress was not persisted",
+  );
+  assert.ok(running.progress >= 64);
+  assert.match(running.stage, /KSampler.*3\/4/);
+  assert.equal(FakeComfyWebSocket.instances[0].url, "ws://127.0.0.1:8188/ws?clientId=h3-seedvr2");
+
+  FakeComfyWebSocket.instances[0].emit("message", JSON.stringify({ type: "execution_success", data: { prompt_id: running.promptId } }));
+  value.state.historyMode = "success";
+  const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
+  assert.equal(completed.output.name, "seedvr2-result.mp4");
+  assert.equal(FakeComfyWebSocket.instances[0].closed, true);
+});
+
+test("SeedVR2 turns a matching WebSocket execution_error into a failed job without waiting for poll timeout", async (t) => {
+  FakeComfyWebSocket.instances = [];
+  const value = await fixture({
+    historyMode: "pending",
+    webSocketImpl: FakeComfyWebSocket,
+    onPrompt: (promptId) => {
+      setTimeout(() => {
+        const socket = FakeComfyWebSocket.instances.at(-1);
+        socket?.emit("open");
+        socket?.emit("message", JSON.stringify({
+          type: "execution_error",
+          data: { prompt_id: promptId, node_id: "10", exception_message: "simulated SeedVR2 failure" },
+        }));
+      }, 0);
+    },
+  });
+  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+
+  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2 });
+  const failed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "failed");
+  assert.match(failed.error, /simulated SeedVR2 failure/);
+  assert.equal(FakeComfyWebSocket.instances[0].closed, true);
 });
 
 test("restart reconciles queued work and turns a stale running job into recoverable interrupted history", async (t) => {

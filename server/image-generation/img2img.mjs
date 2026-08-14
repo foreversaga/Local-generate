@@ -118,6 +118,23 @@ const IMG2IMG_SEED_RANGE = Object.freeze({ min: 0, max: 2_147_483_647 });
 const IMG2IMG_POSE_CONTROLNET_ENV = "H3_IMG2IMG_POSE_CONTROLNET";
 const IMG2IMG_POSE_STRENGTH_ENV = "H3_IMG2IMG_POSE_STRENGTH";
 const IMG2IMG_POSE_RESOLUTION_ENV = "H3_IMG2IMG_POSE_RESOLUTION";
+const COMFY_WS_BUFFER_MAX = 64;
+const COMFY_NODE_PROGRESS = Object.freeze({
+  CheckpointLoaderSimple: 30,
+  UNETLoader: 30,
+  CLIPLoader: 32,
+  VAELoader: 32,
+  LoadImage: 34,
+  VAEEncode: 38,
+  CLIPTextEncode: 42,
+  DWPreprocessor: 46,
+  ControlNetLoader: 48,
+  ControlNetApplyAdvanced: 50,
+  ModelSamplingAuraFlow: 50,
+  KSampler: 54,
+  VAEDecode: 88,
+  SaveImage: 92,
+});
 
 function isoNow(now = Date.now()) {
   return new Date(now).toISOString();
@@ -133,6 +150,258 @@ function makeError(message, status = 500, code = "IMG2IMG_ERROR") {
 function errorMessage(error, fallback = "Image-to-image generation failed.") {
   const value = typeof error === "string" ? error : error?.message;
   return String(value || fallback).replace(/[\r\n]+/g, " ").slice(0, 1200);
+}
+
+export function comfyWebSocketUrl(comfyUrl, clientId) {
+  try {
+    const url = new URL(String(comfyUrl || ""));
+    if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return "";
+    url.protocol = ["https:", "wss:"].includes(url.protocol) ? "wss:" : "ws:";
+    const basePath = url.pathname.replace(/\/+$/, "");
+    url.pathname = basePath ? `${basePath}/ws` : "/ws";
+    url.searchParams.set("clientId", String(clientId || ""));
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function parseComfyWebSocketMessage(value) {
+  if (typeof value !== "string") return null;
+  let payload;
+  try {
+    payload = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || typeof payload.type !== "string") return null;
+  const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+    ? payload.data
+    : {};
+  return { ...data, type: payload.type };
+}
+
+function createComfyProgressSession({ comfyUrl, clientId, WebSocketImpl = globalThis.WebSocket, onEvent } = {}) {
+  const wsUrl = comfyWebSocketUrl(comfyUrl, clientId);
+  const emit = (event) => {
+    if (typeof onEvent === "function") onEvent(event);
+  };
+  if (!wsUrl || typeof WebSocketImpl !== "function") {
+    emit({ type: "websocket_unavailable", connectionState: "unavailable" });
+    return {
+      available: false,
+      setPromptId() {},
+      close() {},
+      get state() { return "unavailable"; },
+    };
+  }
+
+  let socket = null;
+  let promptId = "";
+  let state = "connecting";
+  let closed = false;
+  const buffered = [];
+
+  const deliver = (event) => {
+    if (!event) return;
+    const eventPromptId = String(event.prompt_id || "");
+    if (event.type === "status" || !eventPromptId) {
+      emit(event);
+      return;
+    }
+    if (promptId) {
+      if (eventPromptId === promptId) emit(event);
+      return;
+    }
+    if (buffered.length < COMFY_WS_BUFFER_MAX) buffered.push(event);
+  };
+
+  const handleMessage = (message) => {
+    if (closed) return;
+    const event = parseComfyWebSocketMessage(message?.data ?? message);
+    if (event) deliver(event);
+  };
+  const handleOpen = () => {
+    if (closed) return;
+    state = "connected";
+    emit({ type: "websocket_connected", connectionState: state });
+  };
+  const handleError = () => {
+    if (closed) return;
+    state = "error";
+    emit({ type: "websocket_error", connectionState: state, error: "ComfyUI WebSocket is unavailable; using history polling." });
+  };
+  const handleClose = () => {
+    if (closed) return;
+    state = "closed";
+    emit({ type: "websocket_closed", connectionState: state });
+  };
+
+  try {
+    socket = new WebSocketImpl(wsUrl);
+    if (typeof socket.addEventListener === "function") {
+      socket.addEventListener("message", handleMessage);
+      socket.addEventListener("open", handleOpen);
+      socket.addEventListener("error", handleError);
+      socket.addEventListener("close", handleClose);
+    } else {
+      socket.onmessage = handleMessage;
+      socket.onopen = handleOpen;
+      socket.onerror = handleError;
+      socket.onclose = handleClose;
+    }
+  } catch {
+    state = "error";
+    emit({ type: "websocket_error", connectionState: state, error: "ComfyUI WebSocket could not be opened; using history polling." });
+  }
+
+  return {
+    available: true,
+    setPromptId(value) {
+      promptId = String(value || "");
+      if (!promptId) return;
+      const pending = buffered.splice(0, buffered.length);
+      for (const event of pending) deliver(event);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      state = "closed";
+      try { socket?.close?.(); } catch { /* best effort */ }
+    },
+    get state() { return state; },
+  };
+}
+
+function comfyNodeInfo(graph, event = {}) {
+  const rawNodeId = event.node ?? event.display_node ?? event.node_id ?? event.display_node_id;
+  const nodeId = rawNodeId === undefined || rawNodeId === null || rawNodeId === "" ? "" : String(rawNodeId);
+  const node = nodeId ? graph?.[nodeId] : null;
+  const classType = String(node?.class_type || event.class_type || nodeId || "ComfyUI");
+  const title = String(node?._meta?.title || node?.title || event.node_title || "").trim();
+  const label = title && title !== classType ? `${title} (${classType})` : classType;
+  return { nodeId, classType, title, label };
+}
+
+function comfyNodeBaseline(classType) {
+  return Number(COMFY_NODE_PROGRESS[classType]) || 28;
+}
+
+function resetComfyProgress(target, connectionState = "connecting") {
+  if (!target) return;
+  target.progressSource = "estimated";
+  target.nativeCurrent = null;
+  target.nativeMaximum = null;
+  target.comfyNode = null;
+  target.comfyNodeId = null;
+  target.comfyNodeTitle = null;
+  target.connectionState = connectionState;
+  target.comfyQueueRemaining = null;
+}
+
+function applyComfyProgressEvent(job, item, graph, event, runtime) {
+  if (!event?.type) return;
+  const targets = [job, item].filter(Boolean);
+  const assign = (patch) => {
+    for (const target of targets) Object.assign(target, patch);
+  };
+  const node = comfyNodeInfo(graph, event);
+  const setNode = (extra = {}) => assign({
+    comfyNode: node.classType,
+    comfyNodeId: node.nodeId || null,
+    comfyNodeTitle: node.title || null,
+    ...extra,
+  });
+  const setStage = (stage) => {
+    for (const target of targets) target.stage = stage;
+  };
+  const stageForNode = (suffix = "") => `ComfyUI / ${node.label}${suffix ? ` · ${suffix}` : ""}`;
+
+  if (event.type === "websocket_connected") {
+    assign({ connectionState: "connected" });
+    return;
+  }
+  if (event.type === "websocket_unavailable" || event.type === "websocket_error") {
+    assign({ connectionState: event.connectionState || "error", progressSource: "estimated" });
+    if (job.status === "running" && !job.comfyNode) setStage("Generating image (history fallback)");
+    return;
+  }
+  if (event.type === "websocket_closed") {
+    assign({ connectionState: "closed", progressSource: "estimated" });
+    return;
+  }
+  if (event.type === "status") {
+    const remaining = Number(event.status?.exec_info?.queue_remaining);
+    assign({
+      connectionState: "connected",
+      ...(Number.isFinite(remaining) ? { comfyQueueRemaining: remaining } : {}),
+    });
+    if (job.status === "running" && !job.comfyNode && job.progress < 28) setStage("Waiting for ComfyUI");
+    return;
+  }
+  if (event.type === "execution_start") {
+    assign({ connectionState: "connected" });
+    if (job.status === "running") setStage("ComfyUI / starting execution");
+    return;
+  }
+  if (event.type === "execution_cached") {
+    assign({ connectionState: "connected" });
+    const count = Array.isArray(event.nodes) ? event.nodes.length : 0;
+    if (job.status === "running") setStage(count ? `ComfyUI / cached ${count} node${count === 1 ? "" : "s"}` : "ComfyUI / loading workflow");
+    return;
+  }
+  if (event.type === "executing") {
+    assign({ connectionState: "connected" });
+    if (event.node === null || event.node === undefined || event.node === "") {
+      assign({ comfyNode: "finalizing", comfyNodeId: null, comfyNodeTitle: null });
+      if (job.status === "running") setStage("ComfyUI / finalizing output");
+      return;
+    }
+    setNode();
+    for (const target of targets) target.progress = Math.min(90, Math.max(Number(target.progress) || 0, comfyNodeBaseline(node.classType)));
+    if (job.status === "running") setStage(stageForNode());
+    return;
+  }
+  if (event.type === "progress") {
+    const current = Number(event.value);
+    const maximum = Number(event.max);
+    if (!Number.isFinite(current) || !Number.isFinite(maximum) || maximum <= 0) return;
+    assign({
+      progressSource: "native",
+      nativeCurrent: Math.max(0, current),
+      nativeMaximum: Math.max(1, maximum),
+      connectionState: "connected",
+    });
+    setNode();
+    for (const target of targets) target.progress = Math.min(90, Math.max(Number(target.progress) || 0, comfyNodeBaseline(node.classType)));
+    if (job.status === "running") setStage(stageForNode(`${Math.max(0, current)}/${Math.max(1, maximum)}`));
+    return;
+  }
+  if (event.type === "progress_state") {
+    const entries = Object.entries(event.nodes || {});
+    const active = entries.find(([, value]) => value?.state === "running");
+    if (!active) return;
+    const [nodeId, value] = active;
+    applyComfyProgressEvent(job, item, graph, {
+      type: "progress",
+      node: nodeId,
+      display_node: value?.display_node_id,
+      value: value?.value,
+      max: value?.max,
+    }, runtime);
+    return;
+  }
+  if (event.type === "execution_error" || event.type === "execution_interrupted") {
+    const message = errorMessage(event.exception_message || event.message || event.error || "ComfyUI reported an image execution error.");
+    setNode({ connectionState: "error" });
+    if (job.status === "running") setStage(`ComfyUI error / ${node.label}`);
+    runtime.comfyError = { message, code: "COMFY_EXECUTION_FAILED" };
+    return;
+  }
+  if (event.type === "execution_success") {
+    assign({ connectionState: "connected" });
+    if (job.status === "running") setStage("ComfyUI / completed, reading output");
+  }
 }
 
 function compactComfyValue(value) {
@@ -870,6 +1139,20 @@ function publicGpuLease(gpuCoordinator, workloadType, job) {
   };
 }
 
+function publicComfyProgress(target) {
+  if (!target || typeof target !== "object") return {};
+  return {
+    ...(target.progressSource ? { progressSource: target.progressSource } : {}),
+    ...(target.connectionState ? { connectionState: target.connectionState } : {}),
+    ...(target.comfyNode ? { comfyNode: target.comfyNode } : {}),
+    ...(target.comfyNodeId ? { comfyNodeId: target.comfyNodeId } : {}),
+    ...(target.comfyNodeTitle ? { comfyNodeTitle: target.comfyNodeTitle } : {}),
+    ...(Number.isFinite(target.nativeCurrent) ? { nativeCurrent: target.nativeCurrent } : {}),
+    ...(Number.isFinite(target.nativeMaximum) ? { nativeMaximum: target.nativeMaximum } : {}),
+    ...(Number.isFinite(target.comfyQueueRemaining) ? { comfyQueueRemaining: target.comfyQueueRemaining } : {}),
+  };
+}
+
 function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
   const gpu = publicGpuLease(gpuCoordinator, gpuWorkloadType, job);
   return {
@@ -878,6 +1161,7 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
     ...(gpu ? { gpu } : {}),
     progress: job.progress,
     stage: job.stage,
+    ...publicComfyProgress(job),
     sourceName: job.sourceName,
     sourceRoot: job.sourceRoot,
     ...(job.poseName ? { poseName: job.poseName, poseRoot: job.poseRoot || "input" } : {}),
@@ -912,6 +1196,7 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
       error: item.error || null,
       ...(item.stage ? { stage: item.stage } : {}),
       ...(Number.isFinite(item.progress) ? { progress: item.progress } : {}),
+      ...publicComfyProgress(item),
       startedAt: item.startedAt ?? null,
       completedAt: item.completedAt ?? null,
     })) : [],
@@ -937,9 +1222,10 @@ export function createImg2ImgController({
   now = () => new Date(),
   idFactory = randomUUID,
   pollIntervalMs = 1000,
-  maxPollMs = 10 * 60 * 1000,
+  maxPollMs = 30 * 60 * 1000,
   requestTimeoutMs = 30_000,
   clientId = "h3-img2img",
+  webSocketImpl = globalThis.WebSocket,
   store = null,
   storeRoot,
   randomFn = null,
@@ -1146,6 +1432,58 @@ export function createImg2ImgController({
     return payload;
   }
 
+  async function cancelComfyPrompt(promptId, { runtime = null, reason = "cleanup" } = {}) {
+    const normalizedPromptId = String(promptId || "").trim();
+    if (!normalizedPromptId) {
+      console.warn(`[img2img] Cannot cancel Comfy prompt: missing prompt id (${reason}).`);
+      return { attempted: false, cancelled: false };
+    }
+    if (runtime?.comfyCancel?.promptId === normalizedPromptId && runtime.comfyCancel.promise) {
+      return runtime.comfyCancel.promise;
+    }
+
+    const promise = (async () => {
+      try {
+        const result = await requestJson(`/api/jobs/${encodeURIComponent(normalizedPromptId)}/cancel`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (result?.cancelled === false) {
+          console.warn(`[img2img] Comfy prompt ${normalizedPromptId} was already terminal or not found during ${reason} cleanup.`);
+          return { attempted: true, cancelled: false, terminal: true };
+        }
+        return { attempted: true, cancelled: true, fallback: false };
+      } catch (primaryError) {
+        console.warn(`[img2img] Targeted Comfy cancel failed for prompt ${normalizedPromptId} during ${reason}:`, errorMessage(primaryError));
+        let fallbackSucceeded = false;
+        try {
+          await requestJson("/queue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ delete: [normalizedPromptId] }),
+          });
+          fallbackSucceeded = true;
+        } catch (queueError) {
+          console.warn(`[img2img] Targeted Comfy queue deletion failed for prompt ${normalizedPromptId}:`, errorMessage(queueError));
+        }
+        try {
+          await requestJson("/interrupt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt_id: normalizedPromptId }),
+          });
+          fallbackSucceeded = true;
+        } catch (interruptError) {
+          console.warn(`[img2img] Targeted Comfy interrupt failed for prompt ${normalizedPromptId}:`, errorMessage(interruptError));
+        }
+        return { attempted: true, cancelled: fallbackSucceeded, fallback: true };
+      }
+    })();
+    if (runtime) runtime.comfyCancel = { promptId: normalizedPromptId, promise };
+    return promise;
+  }
+
   async function inspectReadiness() {
     const [stats, objectInfo] = await Promise.all([
       requestJson("/system_stats").then(() => true).catch(() => false),
@@ -1209,17 +1547,22 @@ export function createImg2ImgController({
     if (stat?.isFile()) await fsApi.unlink(candidate).catch(() => {});
   }
 
-  async function waitForHistory(job, promptId, onProgress = null, signal) {
+  async function waitForHistory(job, promptId, onProgress = null, signal, { getComfyError = null, runtime = null } = {}) {
     const started = Date.now();
     while (true) {
       assertNotCancelled(job);
+      const comfyError = typeof getComfyError === "function" ? getComfyError() : null;
+      if (comfyError) throw makeError(comfyError.message, 502, comfyError.code || "COMFY_EXECUTION_FAILED");
       const parsed = parseImg2ImgHistory(await requestJson(`/history/${encodeURIComponent(promptId)}`, {}, requestTimeoutMs, signal), promptId);
       assertNotCancelled(job);
       if (parsed.state === "failed") throw makeError(parsed.error, 502, "COMFY_EXECUTION_FAILED");
       if (parsed.state === "completed" && parsed.artifact) return parsed.artifact;
       if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveImage artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
       const elapsed = Date.now() - started;
-      if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out waiting for the generated image.", 504, "COMFY_POLL_TIMEOUT");
+      if (maxPollMs > 0 && elapsed >= maxPollMs) {
+        await cancelComfyPrompt(promptId, { runtime, reason: "history timeout" });
+        throw makeError("Timed out waiting for the generated image.", 504, "COMFY_POLL_TIMEOUT");
+      }
       const progress = Math.min(90, 28 + Math.floor(Math.min(62, elapsed / 3000)));
       if (typeof onProgress === "function") await onProgress(progress, "Generating image");
       else {
@@ -1272,6 +1615,12 @@ export function createImg2ImgController({
     let stagedPose = null;
     runtime.itemIndex = itemIndex;
     runtime.promptId = "";
+    runtime.clientId = "";
+    runtime.comfySession = null;
+    runtime.comfyError = null;
+    runtime.comfyCancel = null;
+    resetComfyProgress(job, "idle");
+    resetComfyProgress(item, "idle");
     item.parameters = { ...parameters };
     item.status = "running";
     item.progress = 4;
@@ -1339,25 +1688,49 @@ export function createImg2ImgController({
       updateParentProgress(job, itemIndex, item.progress, item.stage);
       await persistJob(job);
       assertNotCancelled(job);
+      const promptClientId = `${String(clientId || "h3-img2img")}-${randomUUID()}`;
+      runtime.clientId = promptClientId;
+      resetComfyProgress(job, "connecting");
+      resetComfyProgress(item, "connecting");
+      runtime.comfySession = createComfyProgressSession({
+        comfyUrl,
+        clientId: promptClientId,
+        WebSocketImpl: webSocketImpl,
+        onEvent: (event) => {
+          applyComfyProgressEvent(job, item, graph, event, runtime);
+          updateParentProgress(job, itemIndex, item.progress, item.stage);
+          void persistJob(job);
+        },
+      });
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: graph, client_id: clientId }),
+        body: JSON.stringify({ prompt: graph, client_id: promptClientId }),
       }, requestTimeoutMs, runtime.abortController?.signal);
       const promptId = submitted.prompt_id || submitted.promptId;
       if (!promptId) throw makeError("ComfyUI rejected the image workflow.", 502, "COMFY_PROMPT_REJECTED");
       runtime.promptId = String(promptId);
+      runtime.comfySession?.setPromptId(runtime.promptId);
       item.promptId = runtime.promptId;
-      item.progress = 28;
-      item.stage = "Generating image";
-      updateParentProgress(job, itemIndex, item.progress, item.stage);
+      if (!(item.connectionState === "connected" && item.comfyNode)) {
+        item.progress = 28;
+        item.stage = "Generating image";
+        updateParentProgress(job, itemIndex, item.progress, item.stage);
+      } else {
+        updateParentProgress(job, itemIndex, item.progress, item.stage);
+      }
       await persistJob(job);
       const artifact = await waitForHistory(job, runtime.promptId, async (progress, stage) => {
-        item.progress = progress;
-        item.stage = stage;
-        updateParentProgress(job, itemIndex, progress, stage);
+        const comfyStageActive = item.connectionState === "connected" && item.comfyNode;
+        if (!comfyStageActive) {
+          item.progress = progress;
+          item.stage = stage;
+        }
+        const visibleProgress = comfyStageActive ? item.progress : progress;
+        const visibleStage = comfyStageActive ? item.stage : stage;
+        updateParentProgress(job, itemIndex, visibleProgress, visibleStage);
         await persistJob(job);
-      }, runtime.abortController?.signal);
+      }, runtime.abortController?.signal, { getComfyError: () => runtime.comfyError, runtime });
       runtime.promptId = "";
       assertNotCancelled(job);
       item.progress = 94;
@@ -1392,7 +1765,11 @@ export function createImg2ImgController({
       await persistJob(job);
       return { success: false, cancelled: false };
     } finally {
+      runtime.comfySession?.close?.();
+      runtime.comfySession = null;
       runtime.promptId = "";
+      runtime.clientId = "";
+      runtime.comfyError = null;
       await cleanupLocalTemp(staged);
       await cleanupLocalTemp(stagedPose);
     }
@@ -1717,8 +2094,8 @@ export function createImg2ImgController({
     job.stage = "Cancelling image generation";
     await persistJob(job, { required: true });
     cancelGpuAdmission(key, job.cancelReason);
+    if (runtime) await cancelComfyPrompt(runtime.promptId, { runtime, reason: "manual cancellation" });
     runtime?.abortController?.abort();
-    if (runtime?.promptId) await request("/interrupt", { method: "POST" }, requestTimeoutMs).catch(() => null);
     return toPublicJob(job);
   }
 

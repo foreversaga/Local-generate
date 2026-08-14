@@ -42,6 +42,24 @@ const VIDEO_MIME_TYPES = Object.freeze({
 const ARTIFACT_KEYS = ["images", "videos", "files", "gifs"];
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
+const COMFY_WS_BUFFER_MAX = 64;
+const SEEDVR2_NODE_PROGRESS = Object.freeze({
+  LoadVideo: 25,
+  GetVideoComponents: 27,
+  ResizeImageMaskNode: 30,
+  SeedVR2Preprocess: 34,
+  VAELoader: 36,
+  VAEEncodeTiled: 42,
+  UNETLoader: 38,
+  SeedVR2Conditioning: 46,
+  SeedVR2TemporalChunk: 50,
+  KSampler: 58,
+  SeedVR2TemporalMerge: 72,
+  VAEDecodeTiled: 84,
+  SeedVR2PostProcessing: 88,
+  CreateVideo: 90,
+  SaveVideo: 90,
+});
 
 function isoNow(now = Date.now()) {
   return new Date(now).toISOString();
@@ -58,6 +76,232 @@ function makeError(message, status = 500, code = "SEEDVR2_ERROR") {
   error.status = status;
   error.code = code;
   return error;
+}
+
+export function comfyWebSocketUrl(comfyUrl, clientId) {
+  try {
+    const url = new URL(String(comfyUrl || ""));
+    if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return "";
+    url.protocol = ["https:", "wss:"].includes(url.protocol) ? "wss:" : "ws:";
+    const basePath = url.pathname.replace(/\/+$/, "");
+    url.pathname = basePath ? `${basePath}/ws` : "/ws";
+    url.searchParams.set("clientId", String(clientId || ""));
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function parseSeedVR2WebSocketMessage(value) {
+  let text = value;
+  if (typeof text !== "string") {
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(text)) text = text.toString("utf8");
+    else if (typeof ArrayBuffer !== "undefined" && text instanceof ArrayBuffer) text = Buffer.from(text).toString("utf8");
+    else return null;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || typeof payload.type !== "string") return null;
+  const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+    ? payload.data
+    : {};
+  return { ...data, type: payload.type };
+}
+
+function createSeedVR2ProgressSession({ comfyUrl, clientId, WebSocketImpl = globalThis.WebSocket, onEvent } = {}) {
+  const wsUrl = comfyWebSocketUrl(comfyUrl, clientId);
+  const emit = (event) => {
+    if (typeof onEvent === "function") onEvent(event);
+  };
+  if (!wsUrl || typeof WebSocketImpl !== "function") {
+    emit({ type: "websocket_unavailable", connectionState: "unavailable" });
+    return {
+      available: false,
+      setPromptId() {},
+      close() {},
+      get state() { return "unavailable"; },
+    };
+  }
+
+  let socket = null;
+  let promptId = "";
+  let state = "connecting";
+  let closed = false;
+  const buffered = [];
+
+  const deliver = (event) => {
+    if (!event) return;
+    const eventPromptId = String(event.prompt_id || event.promptId || "");
+    if (event.type === "status" || !eventPromptId) {
+      emit(event);
+      return;
+    }
+    if (promptId) {
+      if (eventPromptId === promptId) emit(event);
+      return;
+    }
+    if (buffered.length < COMFY_WS_BUFFER_MAX) buffered.push(event);
+  };
+
+  const handleMessage = (message) => {
+    if (closed) return;
+    const event = parseSeedVR2WebSocketMessage(message?.data ?? message);
+    if (event) deliver(event);
+  };
+  const handleOpen = () => {
+    if (closed) return;
+    state = "connected";
+    emit({ type: "websocket_connected", connectionState: state });
+  };
+  const handleError = () => {
+    if (closed) return;
+    state = "error";
+    emit({ type: "websocket_error", connectionState: state, error: "ComfyUI WebSocket is unavailable; using history polling." });
+  };
+  const handleClose = () => {
+    if (closed) return;
+    state = "closed";
+    emit({ type: "websocket_closed", connectionState: state });
+  };
+
+  try {
+    socket = new WebSocketImpl(wsUrl);
+    if (typeof socket.addEventListener === "function") {
+      socket.addEventListener("message", handleMessage);
+      socket.addEventListener("open", handleOpen);
+      socket.addEventListener("error", handleError);
+      socket.addEventListener("close", handleClose);
+    } else {
+      socket.onmessage = handleMessage;
+      socket.onopen = handleOpen;
+      socket.onerror = handleError;
+      socket.onclose = handleClose;
+    }
+  } catch {
+    state = "error";
+    emit({ type: "websocket_error", connectionState: state, error: "ComfyUI WebSocket could not be opened; using history polling." });
+  }
+
+  return {
+    available: true,
+    setPromptId(value) {
+      promptId = String(value || "");
+      if (!promptId) return;
+      const pending = buffered.splice(0, buffered.length);
+      for (const event of pending) deliver(event);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      state = "closed";
+      try { socket?.close?.(); } catch { /* best effort */ }
+    },
+    get state() { return state; },
+  };
+}
+
+function seedvr2NodeInfo(graph, event = {}) {
+  const rawNodeId = event.node ?? event.display_node ?? event.node_id ?? event.display_node_id;
+  const nodeId = rawNodeId === undefined || rawNodeId === null || rawNodeId === "" ? "" : String(rawNodeId);
+  const node = nodeId ? graph?.[nodeId] : null;
+  const classType = String(node?.class_type || event.class_type || nodeId || "ComfyUI");
+  const title = String(node?._meta?.title || node?.title || event.node_title || "").trim();
+  const label = title && title !== classType ? `${title} (${classType})` : classType;
+  return { nodeId, classType, label };
+}
+
+function seedvr2NodeBaseline(classType) {
+  return Number(SEEDVR2_NODE_PROGRESS[classType]) || 28;
+}
+
+function applySeedVR2ProgressEvent(job, graph, event, runtime) {
+  if (!event?.type) return;
+  const node = seedvr2NodeInfo(graph, event);
+  const setProgressFloor = (value) => {
+    job.progress = Math.min(90, Math.max(Number(job.progress) || 0, value));
+  };
+
+  if (event.type === "websocket_connected") {
+    runtime.wsState = "connected";
+    return;
+  }
+  if (event.type === "websocket_unavailable" || event.type === "websocket_error") {
+    runtime.wsState = event.connectionState || "error";
+    if (job.status === "running" && job.progress >= 25) job.stage = "Processing SeedVR2 (history fallback)";
+    return;
+  }
+  if (event.type === "websocket_closed") {
+    runtime.wsState = "closed";
+    return;
+  }
+  if (event.type === "status") {
+    runtime.wsState = "connected";
+    if (job.status === "running" && job.progress < 25) job.stage = "Waiting for ComfyUI";
+    return;
+  }
+  if (event.type === "execution_start") {
+    runtime.wsState = "connected";
+    if (job.status === "running") job.stage = "ComfyUI / starting execution";
+    return;
+  }
+  if (event.type === "execution_cached") {
+    runtime.wsState = "connected";
+    if (job.status === "running") job.stage = "ComfyUI / loading workflow";
+    return;
+  }
+  if (event.type === "executing") {
+    runtime.wsState = "connected";
+    runtime.wsProgressSeen = true;
+    if (event.node === null || event.node === undefined || event.node === "") {
+      runtime.wsTerminal = "executing";
+      if (job.status === "running") job.stage = "ComfyUI / finalizing output";
+      return;
+    }
+    setProgressFloor(seedvr2NodeBaseline(node.classType));
+    if (job.status === "running") job.stage = `ComfyUI / ${node.label}`;
+    return;
+  }
+  if (event.type === "progress") {
+    const current = Number(event.value);
+    const maximum = Number(event.max);
+    if (!Number.isFinite(current) || !Number.isFinite(maximum) || maximum <= 0) return;
+    runtime.wsState = "connected";
+    runtime.wsProgressSeen = true;
+    const fraction = Math.min(1, Math.max(0, current / maximum));
+    setProgressFloor(seedvr2NodeBaseline(node.classType) + Math.round(fraction * 8));
+    if (job.status === "running") job.stage = `ComfyUI / ${node.label} (${Math.max(0, current)}/${Math.max(1, maximum)})`;
+    return;
+  }
+  if (event.type === "progress_state") {
+    const active = Object.entries(event.nodes || {}).find(([, value]) => value?.state === "running");
+    if (!active) return;
+    const [nodeId, value] = active;
+    applySeedVR2ProgressEvent(job, graph, {
+      type: "progress",
+      node: nodeId,
+      display_node: value?.display_node_id,
+      value: value?.value,
+      max: value?.max,
+    }, runtime);
+    return;
+  }
+  if (event.type === "execution_error" || event.type === "execution_interrupted") {
+    const message = asErrorMessage(event.exception_message || event.message || event.error || "ComfyUI reported a SeedVR2 execution error.");
+    runtime.wsState = "error";
+    runtime.wsTerminal = "error";
+    runtime.comfyError = { message, code: "COMFY_EXECUTION_FAILED" };
+    if (job.status === "running") job.stage = `ComfyUI error / ${node.label}`;
+    return;
+  }
+  if (event.type === "execution_success") {
+    runtime.wsState = "connected";
+    runtime.wsTerminal = "success";
+    if (job.status === "running") job.stage = "ComfyUI / completed, reading output";
+  }
 }
 
 function isInside(root, candidate) {
@@ -419,6 +663,7 @@ export function createSeedVR2Controller({
   pollIntervalMs = 1_000,
   maxPollMs = 0,
   clientId = "h3-seedvr2",
+  webSocketImpl = globalThis.WebSocket,
   gpuCoordinator = null,
   gpuWorkloadType = "seedvr2-upscale",
   gpuRuntime = remote ? "remote" : "local",
@@ -700,12 +945,18 @@ export function createSeedVR2Controller({
     return { name: localName, root: "output", kind: "video" };
   }
 
-  async function waitForHistory(job, promptId, signal) {
+  async function waitForHistory(job, promptId, signal, runtime = null) {
     const started = Date.now();
     while (true) {
       assertNotCancelled(job);
+      if (runtime?.comfyError) {
+        throw makeError(runtime.comfyError.message, 502, runtime.comfyError.code || "COMFY_EXECUTION_FAILED");
+      }
       const payload = await requestJson(`/history/${encodeURIComponent(promptId)}`, {}, requestTimeoutMs, signal);
       assertNotCancelled(job);
+      if (runtime?.comfyError) {
+        throw makeError(runtime.comfyError.message, 502, runtime.comfyError.code || "COMFY_EXECUTION_FAILED");
+      }
       const parsed = parseSeedVR2History(payload, promptId);
       if (parsed.state === "failed") throw makeError(parsed.error || "ComfyUI reported an execution error.", 502, "COMFY_EXECUTION_FAILED");
       const artifact = parsed.state === "completed" ? historyArtifact(payload, promptId) : null;
@@ -713,8 +964,11 @@ export function createSeedVR2Controller({
       if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveVideo artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
       const elapsed = Date.now() - started;
       if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out while waiting for ComfyUI output.", 504, "COMFY_POLL_TIMEOUT");
-      job.progress = Math.min(90, Math.max(25, 25 + Math.floor(Math.min(65, elapsed / 4000))));
-      job.stage = "Processing SeedVR2";
+      const websocketProgressActive = runtime?.wsProgressSeen && !["error", "closed", "unavailable"].includes(runtime.wsState);
+      if (!websocketProgressActive) {
+        job.progress = Math.min(90, Math.max(Number(job.progress) || 0, 25 + Math.floor(Math.min(65, elapsed / 4000))));
+        job.stage = "Processing SeedVR2";
+      }
       await persistJob(job);
       await sleep(pollIntervalMs, signal);
     }
@@ -725,7 +979,15 @@ export function createSeedVR2Controller({
     let succeeded = false;
     let failure = null;
     const abortController = typeof AbortController === "function" ? new AbortController() : null;
-    const runtime = { abortController, promptId: "" };
+    const runtime = {
+      abortController,
+      promptId: "",
+      wsState: "connecting",
+      wsProgressSeen: false,
+      wsTerminal: "",
+      comfyError: null,
+      comfySession: null,
+    };
     const gpuAdmission = ensureGpuAdmission(job);
     let gpuLease = null;
     runtimes.set(job.id, runtime);
@@ -774,6 +1036,15 @@ export function createSeedVR2Controller({
       });
       await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
       assertNotCancelled(job);
+      runtime.comfySession = createSeedVR2ProgressSession({
+        comfyUrl,
+        clientId,
+        WebSocketImpl: webSocketImpl,
+        onEvent: (event) => {
+          applySeedVR2ProgressEvent(job, prompt, event, runtime);
+          void persistJob(job).catch(() => {});
+        },
+      });
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -786,7 +1057,8 @@ export function createSeedVR2Controller({
       }
       runtime.promptId = String(promptId);
       await updateJob(job, { promptId: runtime.promptId, progress: 25, stage: "Processing SeedVR2", provenance: { ...job.provenance, submittedAt: isoNow(now()) } });
-      const artifact = await waitForHistory(job, runtime.promptId, abortController?.signal);
+      runtime.comfySession?.setPromptId(runtime.promptId);
+      const artifact = await waitForHistory(job, runtime.promptId, abortController?.signal, runtime);
       assertNotCancelled(job);
       await updateJob(job, { progress: 92, stage: remote ? "Downloading output video" : "Registering output video" });
       const output = remote
@@ -803,6 +1075,7 @@ export function createSeedVR2Controller({
         await persistJob(job);
       }
     } finally {
+      runtime.comfySession?.close?.();
       gpuLease?.release?.();
       gpuAdmissions.delete(String(job.id));
       await cleanupStagedTemp(staged, job);
