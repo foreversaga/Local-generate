@@ -3,8 +3,10 @@ import { LongVideoError, sanitizeAssetRef, validateContinuityBible, validateSequ
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 import { createOllamaCoordinator } from "../ollama-coordinator.mjs";
+import { loadH3PromptSkillPack, resolveH3OllamaContextLength } from "../h3-prompt/skill-loader.mjs";
+import { DEFAULT_NEGATIVE_PROMPT, mergeLongVideoNegativePrompt } from "./quality-defaults.mjs";
 
-const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, identity drift, costume drift, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark";
+export { DEFAULT_NEGATIVE_PROMPT } from "./quality-defaults.mjs";
 export const DEFAULT_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 
 async function releasePlannerComfy(target = {}) {
@@ -95,11 +97,7 @@ function segmentDurationHint(value) {
 }
 
 function mergeNegativePrompt(userValue, modelValue) {
-  const user = clean(userValue);
-  const model = clean(modelValue);
-  if (!user) return model || DEFAULT_NEGATIVE_PROMPT;
-  if (!model || model.toLocaleLowerCase().includes(user.toLocaleLowerCase())) return user;
-  return `${user}, ${model}`;
+  return mergeLongVideoNegativePrompt(clean(userValue), clean(modelValue));
 }
 
 function effectiveReferenceAssets(input) {
@@ -162,6 +160,7 @@ function plannerPrompt(input, canonicalTimeline = null) {
     "continuityBible keys: visualStyle, characters, environment, lighting, camera, motionDirection, keyObjects, sound, nonDiegeticMusic, mustPreserve, mustAvoid.",
     "Each character uses id, faceIdentity, hair, silhouette, palette, distinctiveMarks, appearance, clothing, and optional voice. Define these identity anchors once and reuse the same values for every segment where that character is visible.",
     "When a face is visible, every segment's endingState must preserve the same faceIdentity, hair, silhouette, palette, and distinctiveMarks for the next segment.",
+    "For visible hands, describe stable anatomy and finger count, natural articulation, and physically correct contact, grip, occlusion, and release. For clothing, preserve design and fit while making fabric follow gravity, body motion, contact, inertia, and wind without clipping, penetration, floating, rigidity, implausible stretching, or independent motion.",
     "Each segment must use these keys: start, end, description, integratedMultimodalDescription, overallSoundscape, nonDiegeticMusic, continuityNote, endingState, negativePrompt.",
     "start and end are global seconds. description is a concise editable storyboard summary. endingState is a concise description of the exact final visual state that the next segment must continue.",
     "integratedMultimodalDescription is English H3 content for this segment only. It must begin with [Shot 1], cover composition, subjects, environment, action, camera, dialogue and diegetic sound, and use timestamps relative to this segment starting at 0 only for later cuts.",
@@ -170,7 +169,7 @@ function plannerPrompt(input, canonicalTimeline = null) {
     input.referenceMode === "multi_reference"
       ? "For every Ref2VA segment, provide concrete subjectDefinitions, summary, retentionAnalysis, and detailedDescription. Define each visible subject with the continuityBible identity anchors; do not use a generic principal-subject fallback when a character identity is available."
       : "",
-    "negativePrompt is the full-video negative prompt. A segment negativePrompt may add only segment-specific exclusions and may otherwise be an empty string.",
+    `The server always adds this global quality baseline to negativePrompt: ${DEFAULT_NEGATIVE_PROMPT}. Add only useful story-specific global exclusions instead of repeating that baseline. A segment negativePrompt may add only segment-specific exclusions and may otherwise be an empty string.`,
     source,
   ].join("\n");
 }
@@ -233,6 +232,59 @@ function recoverContiguousTimeline(segments, duration, segmentDurationHint) {
   }
 }
 
+function deterministicTimeline(input, duration, segmentDurationHint) {
+  const totalDuration = Number(duration);
+  const maxSegments = Math.max(2, Math.floor(totalDuration / 0.5));
+  const requestedCount = Math.max(2, Math.ceil(totalDuration / segmentDurationHint), Math.ceil(totalDuration / 60));
+  const segmentCount = Math.min(120, maxSegments, requestedCount);
+  const idea = clean(input?.inputText || input?.brief) || "Continue the requested story with stable audiovisual continuity.";
+  let cursor = 0;
+  return Array.from({ length: segmentCount }, (_, index) => {
+    const remaining = totalDuration - cursor;
+    const remainingSegments = segmentCount - index;
+    const segmentDuration = index === segmentCount - 1 ? remaining : remaining / remainingSegments;
+    const start = Number(cursor.toFixed(3));
+    const end = index === segmentCount - 1 ? Number(totalDuration.toFixed(3)) : Number((cursor + segmentDuration).toFixed(3));
+    cursor = end;
+    const phase = index === 0
+      ? "Establish the opening state and begin the requested action."
+      : index === segmentCount - 1
+        ? "Continue from the previous state, complete the requested action, and land on a stable final state."
+        : "Continue directly from the previous state while advancing the requested action.";
+    return { start, end, duration: end - start, description: `${idea} ${phase}` };
+  });
+}
+
+function addUnique(values, additions) {
+  const result = Array.isArray(values) ? values.map(String).map((value) => value.trim()).filter(Boolean) : [];
+  const seen = new Set(result.map((value) => value.toLocaleLowerCase()));
+  for (const addition of additions) {
+    const key = addition.toLocaleLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(addition);
+    }
+  }
+  return result;
+}
+
+function qualityContinuityBible(value) {
+  const bible = validateContinuityBible(value);
+  return {
+    ...bible,
+    mustPreserve: addUnique(bible.mustPreserve, [
+      "When visible, preserve each character's facial identity, facial proportions, hairstyle silhouette, body silhouette, clothing design, colors, and distinctive marks across every shot and segment.",
+      "When hands are visible, preserve coherent anatomy and finger count with natural articulation and physically correct object contact, grip, occlusion, and release.",
+      "Keep clothing design and fit stable while fabric follows gravity, body motion, contact, inertia, and wind naturally.",
+    ]),
+    mustAvoid: addUnique(bible.mustAvoid, [
+      "Face morphing, facial feature drift, inconsistent eyes, identity resets, or facial flicker.",
+      "Extra, missing, fused, malformed, or independently moving fingers; broken grips or hands passing through objects.",
+      "Costume drift, cloth/body intersection, fabric penetration, floating or rigid fabric, implausible stretching, or garment motion detached from the body.",
+    ]),
+  };
+}
+
 function responseExcerpt(value) {
   let content = value;
   if (content && typeof content === "object" && content.response !== undefined) content = content.response;
@@ -259,21 +311,22 @@ function repairPlannerPrompt(basePrompt, raw, error, { duration, timelineMode })
   ].join("\n");
 }
 
-async function requestPlannerModel({ request, requestInput, model, prompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator }) {
+async function requestPlannerModel({ request, requestInput, model, prompt, system, contextLength, skillPolicy, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator }) {
   const provider = plannerProvider(requestInput);
   const label = provider === "codex" ? "Codex CLI" : "Ollama";
   try {
-    if (request) return await request({ input: requestInput, model, prompt, attempt, repair: attempt > 1 });
+    if (request) return await request({ input: requestInput, model, prompt, system, contextLength, skillPolicy, attempt, repair: attempt > 1 });
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
     const plannerImages = normalizePlannerImages(requestInput?.plannerImages || requestInput?.images);
     const requestBody = {
       model,
+      ...(system ? { system } : {}),
       prompt,
       stream: false,
       format: "json",
       think: false,
       keep_alive: 0,
-      options: { temperature: 0.2, top_p: attempt > 1 ? 0.75 : 0.85, num_ctx: 8192 },
+      options: { temperature: 0, top_p: attempt > 1 ? 0.75 : 0.85, num_ctx: contextLength },
       ...(plannerImages.length ? { images: plannerImages.map((image) => image.data) } : {}),
     };
     const coordinator = ollamaCoordinator || defaultOllamaCoordinator;
@@ -313,22 +366,22 @@ function promptDraft(segment, bible, mode, provider = "ollama", options = {}) {
     }
   }
   const prompt = buildSegmentPrompt(segment, bible, { mode, firstFrame: mode === "i2v", pictureLabel: "Picture 1", shotId: "Shot 1", ...options });
+  let structuredWarning = null;
   try {
     validatePrompt(prompt, { mode, duration: segment.duration });
   } catch (error) {
-    throw new LongVideoError("PROMPT_FALLBACK_INVALID", "Deterministic H3 prompt fallback failed validation.", 502, {
-      mode,
-      segmentDuration: segment.duration,
-      fallbackError: { code: error?.code || "PROMPT_INVALID", message: error?.message || String(error) },
-      ...(fallbackReason ? { originalError: fallbackReason } : {}),
-    });
+    structuredWarning = {
+      code: error?.code || "PROMPT_INVALID",
+      message: error?.message || String(error),
+    };
   }
-  if (fallbackReason) {
+  if (fallbackReason || structuredWarning) {
     const notice = {
       source: `${provider}_structured`,
-      reasonCode: fallbackReason.code,
-      reason: fallbackReason.message,
-      ...fallbackReason,
+      reasonCode: fallbackReason?.code || structuredWarning.code,
+      reason: fallbackReason?.message || structuredWarning.message,
+      ...(fallbackReason || structuredWarning),
+      ...(structuredWarning ? { nonBlocking: true, structuredWarning } : {}),
     };
     if (typeof options.onFallback === "function") options.onFallback(notice);
     return { prompt, promptSource: `${provider}_structured`, promptFallback: notice };
@@ -354,6 +407,8 @@ export async function planSequence(input, options = {}) {
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
   const ollamaCoordinator = options.ollamaCoordinator || null;
+  const loadSkillPack = options.loadSkillPack || loadH3PromptSkillPack;
+  const contextLength = resolveH3OllamaContextLength(options.contextLength);
   const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
   const normalizedInput = validateSequenceInput(input || {});
   const normalizedReferenceAssets = effectiveReferenceAssets(normalizedInput);
@@ -384,6 +439,15 @@ export async function planSequence(input, options = {}) {
     ...(plannerImages.length ? { plannerImages } : {}),
     ...(canonicalTimeline ? { timeline: canonicalTimeline } : {}),
   };
+  const skillPack = provider === "ollama"
+    ? await loadSkillPack({
+        purpose: "planning",
+        mode: normalizedInput.referenceMode === "multi_reference" ? "ref2v" : "t2v",
+        referenceMode: normalizedInput.referenceMode,
+        hasVisualReference: plannerImages.length > 0,
+        skillPath: options.skillPath,
+      })
+    : null;
   const basePrompt = plannerPrompt(requestInput, canonicalTimeline);
   let activePrompt = basePrompt;
   let parsed;
@@ -393,11 +457,27 @@ export async function planSequence(input, options = {}) {
   let lastCandidate = null;
   let lastCandidateSegments = [];
   let serverTimelineRepair = false;
+  let validationFallback = null;
   const promptFallbacks = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     let raw;
     try {
-      raw = await requestPlannerModel({ request, requestInput, model, prompt: activePrompt, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator });
+      raw = await requestPlannerModel({
+        request,
+        requestInput,
+        model,
+        prompt: activePrompt,
+        system: skillPack?.systemPrompt,
+        contextLength,
+        skillPolicy: skillPack?.policy,
+        fetchImpl,
+        ollamaUrl,
+        comfyUrl,
+        remoteComfy,
+        timeoutMs,
+        attempt,
+        ollamaCoordinator,
+      });
       const candidate = parseResponse(raw, provider);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
         const label = provider === "codex" ? "Codex CLI" : "Ollama";
@@ -439,13 +519,7 @@ export async function planSequence(input, options = {}) {
             ].join("\n");
         continue;
       }
-      if (
-        attempt === 2 &&
-        provider === "codex" &&
-        timelineMode === "auto" &&
-        error instanceof LongVideoError &&
-        error.code === "CODEX_TIMELINE_INVALID"
-      ) {
+      if (attempt === 2 && repairable) {
         const recovered = recoverContiguousTimeline(lastCandidateSegments, normalizedInput.duration, durationHint);
         if (recovered && lastCandidate) {
           parsed = lastCandidate;
@@ -461,6 +535,21 @@ export async function planSequence(input, options = {}) {
           }));
           break;
         }
+        canonicalTimeline ||= deterministicTimeline(normalizedInput, normalizedInput.duration, durationHint);
+        parsed = lastCandidate && typeof lastCandidate === "object" ? lastCandidate : { continuityBible: {}, segments: [] };
+        semanticSegments = lastCandidateSegments;
+        validationFallback = {
+          code: error.code,
+          strategy: timelineMode === "manual" ? "author_timeline_structured" : "server_storyboard_structured",
+        };
+        console.warn("[long-video] planner.validation_fallback", JSON.stringify({
+          model,
+          provider,
+          errorCode: error.code,
+          strategy: validationFallback.strategy,
+          segments: canonicalTimeline.length,
+        }));
+        break;
       }
       throw error;
     }
@@ -469,7 +558,7 @@ export async function planSequence(input, options = {}) {
     const label = provider === "codex" ? "Codex CLI" : "Ollama";
     throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} did not return a usable sequence plan.`, 502);
   }
-  const bible = validateContinuityBible(parsed.continuityBible || parsed.continuity_bible);
+  const bible = qualityContinuityBible(parsed.continuityBible || parsed.continuity_bible);
   const negativePrompt = mergeNegativePrompt(normalizedInput.negativePrompt, parsed.negativePrompt || parsed.negative_prompt);
   const segments = canonicalTimeline.map((canonical, index) => ({
     ...canonical,
@@ -536,6 +625,8 @@ export async function planSequence(input, options = {}) {
       repairAttempts,
       ...(retryCodes.length ? { retryAttempts: retryCodes.length, retryCodes } : {}),
       ...(serverTimelineRepair ? { timelineRepair: "server_contiguous" } : {}),
+      ...(validationFallback ? { validationFallback } : {}),
+      ...(skillPack?.policy ? { promptPolicy: skillPack.policy, ollamaContextLength: contextLength } : {}),
       ...(promptFallbacks.length ? { promptFallbacks } : {}),
     },
   };

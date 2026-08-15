@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
+import { loadH3PromptSkillPack, resolveH3OllamaContextLength } from "../h3-prompt/skill-loader.mjs";
 
 export const DEFAULT_TAIL_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
 const IMAGE_MIME_TYPES = Object.freeze({
@@ -39,20 +40,24 @@ function errorCode(error) {
   return code ? code.slice(0, 120) : undefined;
 }
 
-function provenance({ provider, model, fallback, reason, error }) {
+function provenance({ provider, model, fallback, reason, error, skill }) {
   return {
     provider: text(provider, "deterministic"),
     model: text(model) || null,
     fallback: Boolean(fallback),
     ...(reason ? { reason: text(reason).slice(0, 160) } : {}),
     ...(errorCode(error) ? { errorCode: errorCode(error) } : {}),
+    ...(skill ? { skill } : {}),
   };
 }
 
-function continuationInstruction(previousEndingState) {
+function continuationInstruction(previousEndingState, { mode = "i2v", references = [] } = {}) {
   const ending = text(previousEndingState);
+  const referenceInstruction = mode === "ref2v"
+    ? `Use the supplied actual normalized previous-segment tail as <Picture ${Math.max(1, references.length)}> after the ordered static references. It is an ordinary continuity reference, not a frame-zero lock.`
+    : "Begin directly from the supplied actual normalized previous-segment tail frame as Picture 1 at 0.00 seconds.";
   return [
-    "Continuation: begin directly from the supplied actual normalized previous-segment tail frame as Picture 1.",
+    `Continuation: ${referenceInstruction}`,
     ending ? `Preserve the previous segment's ending state exactly: ${ending}.` : "Preserve the previous segment's ending state and motion direction.",
     "Change only continuity details; preserve the next segment's user-authored subjects, actions, setting, camera, sound, and negative constraints.",
   ].join(" ");
@@ -109,7 +114,7 @@ export function buildDeterministicContinuationPrompt({
         shotId: "Shot 1",
         references,
       });
-  const instruction = continuationInstruction(previousEndingState);
+  const instruction = continuationInstruction(previousEndingState, { mode, references });
   if (base.toLocaleLowerCase().includes(instruction.toLocaleLowerCase())) return base;
   return appendToPromptBody(base, mode, instruction);
 }
@@ -162,10 +167,17 @@ function responseText(response) {
   return text(payload?.response || payload?.message?.content || response?.text);
 }
 
-function finalizerRequestPrompt({ continuityBible, previousEndingState, draftPrompt }) {
+function finalizerRequestPrompt({ mode, segment, references, continuityBible, previousEndingState, draftPrompt }) {
+  const referenceCount = Array.isArray(references) ? references.length : 0;
+  const tailLabel = mode === "ref2v" ? `<Picture ${Math.max(1, referenceCount)}>` : "<Picture 1>";
   return [
-    "Use the attached image as the actual normalized tail frame from the previous segment.",
+    `Use the attached image as the actual normalized tail frame from the previous segment and treat it as ${tailLabel}.`,
+    mode === "ref2v"
+      ? "Keep all earlier ordered static references in their original slots. The tail is the final ordinary continuity reference and must not become a frame-zero lock."
+      : "The tail is the actual first frame at 0.00 seconds for this I2VA continuation.",
     "Finalize only continuity for the next segment.",
+    `NEXT SEGMENT METADATA:\n${compactValue(segment)}`,
+    orderedReferenceDescription(references),
     `CONTINUITY BIBLE:\n${compactValue(continuityBible)}`,
     `PREVIOUS SEGMENT ENDING STATE:\n${compactValue(previousEndingState)}`,
     `NEXT SEGMENT DRAFT PROMPT (preserve its locked intent):\n${text(draftPrompt, "No draft was supplied; construct the prompt from the segment metadata.")}`,
@@ -178,6 +190,7 @@ function finalizerSystemPrompt() {
     "You are a vision-capable long-video continuation prompt finalizer.",
     "Inspect the attached normalized tail image and use it as visual truth for continuity.",
     "Change only continuity details needed to connect the previous ending to the next segment.",
+    "Maximize facial identity stability, anatomically coherent hands and finger motion, physically correct hand-object contact, and clothing motion governed by gravity, body motion, contact, inertia, and wind without clipping or penetration.",
     "Preserve every user-locked subject, action, setting, camera direction, sound choice, and negative constraint in the next-segment draft.",
     "Return only one complete valid H3 prompt with no markdown, headings, explanation, file path, base64, or image metadata.",
   ].join(" ");
@@ -226,14 +239,18 @@ export function createContinuationPromptFinalizer({
   maxTailBytes = DEFAULT_TAIL_IMAGE_MAX_BYTES,
   tailRoot,
   validate = validatePrompt,
+  loadSkillPack = loadH3PromptSkillPack,
+  skillPath,
+  contextLength,
 } = {}) {
   return async function finalizeContinuationPrompt(context = {}) {
     const selectedModel = text(optionValue(getModel, context) || optionValue(model, context) || context.model);
     const provider = "ollama-vision";
+    let skillPolicy = null;
     const fallbackPrompt = buildDeterministicContinuationPrompt(context);
     const fallback = (reason, error = undefined) => ({
       prompt: fallbackPrompt,
-      provenance: provenance({ provider, model: selectedModel, fallback: true, reason, error }),
+      provenance: provenance({ provider, model: selectedModel, fallback: true, reason, error, skill: skillPolicy }),
     });
     try {
       if (!context.previousTail) return fallback("tail_missing");
@@ -247,16 +264,28 @@ export function createContinuationPromptFinalizer({
         tailRoot: context.tailRoot || optionValue(tailRoot, context),
         maxBytes: maxTailBytes,
       });
+      const skillPack = await loadSkillPack({
+        purpose: "prompt",
+        mode: context.mode,
+        referenceMode: context.job?.referenceMode,
+        duration: context.segment?.duration,
+        hasVisualReference: true,
+        skillPath,
+      });
+      skillPolicy = skillPack?.policy || null;
       const draftPrompt = text(context.draftPrompt || context.segment?.prompt) || buildDeterministicContinuationPrompt(context);
       const body = {
-        system: finalizerSystemPrompt(),
+        system: [skillPack?.systemPrompt, finalizerSystemPrompt()].filter(Boolean).join("\n\n"),
         prompt: finalizerRequestPrompt({
+          mode: context.mode,
+          segment: context.segment,
+          references: context.references,
           continuityBible: context.continuityBible,
           previousEndingState: context.previousEndingState,
           draftPrompt,
         }),
         think: false,
-        options: { temperature: 0.2, top_p: 0.9, num_ctx: 8192 },
+        options: { temperature: 0, top_p: 0.9, num_ctx: resolveH3OllamaContextLength(contextLength) },
         images: [tail.data],
       };
       const target = {
@@ -307,7 +336,7 @@ export function createContinuationPromptFinalizer({
       }
       return {
         prompt: candidate,
-        provenance: provenance({ provider, model: selectedModel, fallback: false, reason: "vision_success" }),
+        provenance: provenance({ provider, model: selectedModel, fallback: false, reason: "vision_success", skill: skillPolicy }),
         ...(usesCoordinator ? { ollamaPromptBarrier: Promise.resolve({ ok: true, scope: "continuation-prompt" }) } : {}),
       };
     } catch (error) {

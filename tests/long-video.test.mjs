@@ -10,7 +10,7 @@ import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailFrame } from "../server/long-video/media.mjs";
 import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
-import { normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
+import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
 import { longJobIsActive } from "../app/lib/long-create-contract.mjs";
@@ -137,15 +137,21 @@ test("planner normalizes attached reference image bytes and forwards them only t
       return { ok: true, text: async () => JSON.stringify({ continuityBible: {}, segments: [{ start: 0, end: 5, description: "waits" }, { start: 5, end: 10, description: "boards" }] }) };
     },
     ollamaCoordinator: createOllamaCoordinator({ commandRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }),
+    loadSkillPack: async () => ({
+      systemPrompt: "trusted H3 test skill",
+      policy: { name: "h3-prompt-writing", guide: "base-en.txt", contentHash: "test-hash", source: "filesystem" },
+    }),
   });
   assert.equal(plan.segments.length, 2);
   assert.equal(requestBodies.length, 2);
   const [bodyWithImage, unloadBody] = requestBodies;
   assert.deepEqual(bodyWithImage.images, ["aGVsbG8="]);
-  assert.equal(bodyWithImage.options.temperature, 0.2);
+  assert.equal(bodyWithImage.options.temperature, 0);
   assert.equal(bodyWithImage.options.top_p, 0.85);
+  assert.equal(bodyWithImage.options.num_ctx, 32768);
   assert.equal(bodyWithImage.stream, false);
   assert.equal(bodyWithImage.keep_alive, 0);
+  assert.equal(bodyWithImage.system, "trusted H3 test skill");
   assert.match(bodyWithImage.prompt, /Actual reference image bytes are attached/);
   assert.deepEqual(unloadBody, { model: bodyWithImage.model, prompt: "", stream: false, keep_alive: 0 });
 });
@@ -269,8 +275,12 @@ test("automatic planner uses Ollama storyboard timing and structured H3 content"
   assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 4.5], [4.5, 8], [8, 12]]);
   assert.equal(plan.planMeta.timelineSource, "ollama");
   assert.equal(plan.planningSettings.segmentCount, 3);
-  assert.match(plan.negativePrompt, /no readable signs/);
-  assert.match(plan.negativePrompt, /flicker, watermark/);
+  assert.equal(plan.negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, no readable signs`);
+  assert.match(plan.negativePrompt, /facial identity drift/);
+  assert.match(plan.negativePrompt, /incorrect finger count/);
+  assert.match(plan.negativePrompt, /broken cloth physics/);
+  assert.equal(plan.continuityBible.mustPreserve.length, 3);
+  assert.equal(plan.continuityBible.mustAvoid.length, 3);
   assert.match(plan.segments[0].prompt, /a wide shot follows the courier/);
   assert.match(plan.segments[1].prompt, /^For the target video, at 0\.00 seconds into the target video/);
   assert.equal(plan.segments[1].negativePrompt, "hand distortion");
@@ -373,15 +383,17 @@ test("Codex planner keeps provider-specific request failures", async () => {
   });
 });
 
-test("automatic planner rejects invalid Ollama storyboard arithmetic", async () => {
+test("automatic planner recovers invalid Ollama storyboard arithmetic without blocking", async () => {
   let attempts = 0;
-  await assert.rejects(() => planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
     request: async () => {
       attempts += 1;
       return { continuityBible: {}, segments: [{ start: 0, end: 5, description: "first" }, { start: 6, end: 10, description: "second" }] };
     },
-  }), { code: "OLLAMA_TIMELINE_INVALID" });
+  });
   assert.equal(attempts, 2);
+  assert.equal(plan.planMeta.timelineRepair, "server_contiguous");
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
 });
 
 test("automatic planner repairs one invalid Ollama timeline response", async () => {
@@ -415,6 +427,22 @@ test("automatic planner repairs one invalid JSON response", async () => {
   });
   assert.equal(attempts, 2);
   assert.equal(plan.planMeta.repairAttempts, 1);
+});
+
+test("automatic planner uses a deterministic storyboard after repeated invalid JSON", async () => {
+  let attempts = 0;
+  const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
+    request: async () => {
+      attempts += 1;
+      return "not JSON";
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
+  assert.deepEqual(plan.planMeta.validationFallback, {
+    code: "OLLAMA_INVALID_JSON",
+    strategy: "server_storyboard_structured",
+  });
 });
 
 test("planner preserves malformed segment prompt text without format fallback", async () => {
@@ -646,8 +674,8 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
   assert.equal(calls.length, 2);
   assert.equal(calls[0].mode, "t2v");
   assert.equal(calls[1].mode, "i2v");
-  assert.equal(calls[0].negativePrompt, "global blur constraint");
-  assert.equal(calls[1].negativePrompt, "global blur constraint, hand distortion");
+  assert.equal(calls[0].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint`);
+  assert.equal(calls[1].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint, hand distortion`);
   assert.ok(calls[1].tailImagePath);
 });
 

@@ -22,6 +22,10 @@ test("vision finalizer sends actual normalized tail bytes and all continuation c
   const finalizer = createContinuationPromptFinalizer({
     model: "vision-test-model",
     tailRoot: root,
+    loadSkillPack: async () => ({
+      systemPrompt: "trusted H3 continuation skill",
+      policy: { name: "h3-prompt-writing", guide: "base-en.txt", contentHash: "test-hash", source: "filesystem" },
+    }),
     request: async (input) => {
       request = input;
       return { payload: { response: draftPrompt } };
@@ -44,12 +48,19 @@ test("vision finalizer sends actual normalized tail bytes and all continuation c
   assert.match(request.body.prompt, /CONTINUITY BIBLE/);
   assert.match(request.body.prompt, /the subject's left hand is raised/);
   assert.match(request.body.prompt, /locked next action continues/);
+  assert.match(request.body.system, /trusted H3 continuation skill/);
+  assert.match(request.body.system, /facial identity stability/);
+  assert.deepEqual(request.body.options, { temperature: 0, top_p: 0.9, num_ctx: 32768 });
   assert.equal(result.prompt, draftPrompt);
-  assert.deepEqual(result.provenance, {
-    provider: "ollama-vision",
-    model: "vision-test-model",
-    fallback: false,
-    reason: "vision_success",
+  assert.equal(result.provenance.provider, "ollama-vision");
+  assert.equal(result.provenance.model, "vision-test-model");
+  assert.equal(result.provenance.fallback, false);
+  assert.equal(result.provenance.reason, "vision_success");
+  assert.deepEqual(result.provenance.skill, {
+    name: "h3-prompt-writing",
+    guide: "base-en.txt",
+    contentHash: "test-hash",
+    source: "filesystem",
   });
   assert.doesNotMatch(JSON.stringify(result), /normalized-tail|base64|iVBOR/);
 });

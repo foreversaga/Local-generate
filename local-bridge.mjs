@@ -192,6 +192,8 @@ const continuationPromptFinalizer = createContinuationPromptFinalizer({
   getOllamaUrl: () => runtimeContext.ollamaUrl,
   getComfyUrl: () => runtimeContext.comfyUrl,
   getRemoteComfy: () => runtimeContext.isRemote,
+  skillPath: H3_PROMPT_SKILL_PATH,
+  contextLength: process.env.H3_OLLAMA_PROMPT_CONTEXT,
 });
 const gpuContinuationPromptFinalizer = (context = {}) => withGpuResource(
   "ollama-vision",
@@ -1839,7 +1841,12 @@ async function planSequenceWithPromptProvider(input, options = {}) {
         `sequence-plan:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         () => defaultPlanSequence(
           { ...plannerInput, promptProvider: "ollama", ollamaModel: model },
-          { ...options, model },
+          {
+            ...options,
+            model,
+            skillPath: H3_PROMPT_SKILL_PATH,
+            contextLength: process.env.H3_OLLAMA_PROMPT_CONTEXT,
+          },
         ),
         { phase: "long-video-planning", model },
       );

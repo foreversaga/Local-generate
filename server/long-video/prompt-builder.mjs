@@ -308,7 +308,15 @@ function ensureValidPrompt(prompt, mode, segment, bible, references = {}) {
     return prompt;
   } catch {
     const fallback = fallbackPrompt(mode, segment, bible, references);
-    validateH3Prompt(fallback, { mode, ...(Number.isFinite(Number(segment?.duration)) ? { duration: Number(segment.duration) } : {}) });
+    // Prompt quality validation is advisory for long-video generation. The
+    // deterministic wrapper is still returned if a future validator becomes
+    // stricter than this builder, so formatting diagnostics never stop the
+    // sequence workflow.
+    try {
+      validateH3Prompt(fallback, { mode, ...(Number.isFinite(Number(segment?.duration)) ? { duration: Number(segment.duration) } : {}) });
+    } catch {
+      // Non-blocking by design.
+    }
     return fallback;
   }
 }

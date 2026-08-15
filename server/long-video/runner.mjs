@@ -8,6 +8,7 @@ import { H3_REALISM_PEOPLE_PRESET, LongVideoError, assertLongLoraSupported } fro
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 import { buildDeterministicContinuationPrompt } from "./continuation-finalizer.mjs";
+import { mergeLongVideoNegativePrompt } from "./quality-defaults.mjs";
 
 async function logEvent(id, event, deps) {
   if (deps.log) return deps.log(event);
@@ -20,11 +21,7 @@ function fileFor(folder, name) {
 }
 
 function combinedNegativePrompt(globalValue, segmentValue) {
-  const globalPrompt = String(globalValue || "").trim();
-  const segmentPrompt = String(segmentValue || "").trim();
-  if (!globalPrompt) return segmentPrompt;
-  if (!segmentPrompt || globalPrompt.toLocaleLowerCase().includes(segmentPrompt.toLocaleLowerCase())) return globalPrompt;
-  return `${globalPrompt}, ${segmentPrompt}`;
+  return mergeLongVideoNegativePrompt(globalValue, segmentValue);
 }
 
 function outputAssetRef(filePath) {
@@ -117,6 +114,16 @@ function normalizePromptFinalization(value, fallback = {}) {
   const errorCode = source.errorCode || fallback.errorCode;
   if (reason) result.reason = String(reason).slice(0, 160);
   if (errorCode) result.errorCode = String(errorCode).slice(0, 120);
+  const skill = source.skill && typeof source.skill === "object" ? source.skill : fallback.skill;
+  if (skill && typeof skill === "object") {
+    result.skill = {
+      name: String(skill.name || "h3-prompt-writing").slice(0, 120),
+      guide: String(skill.guide || "").slice(0, 120),
+      contentHash: String(skill.contentHash || "").slice(0, 120),
+      source: String(skill.source || "").slice(0, 120),
+      ...(skill.warning ? { warning: String(skill.warning).slice(0, 240) } : {}),
+    };
+  }
   return result;
 }
 
