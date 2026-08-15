@@ -2,14 +2,13 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSqliteJobRepository } from "../persistence/sqlite-job-repository.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const PERSISTED_STATUSES = new Set(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
 const DEFAULT_PROFILE = "seedvr2_3b_int8";
-const TRANSIENT_RENAME_ERRORS = new Set(["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"]);
-const RENAME_DELAYS_MS = Object.freeze([5, 10, 20, 40, 80]);
-const writes = new Map();
+const LEGACY_JSON_MIGRATION = "seedvr2-json-v1";
 
 function defaultRoot() {
   return path.resolve(
@@ -183,89 +182,65 @@ function isTerminal(job) {
   return TERMINAL_STATUSES.has(String(job?.status || "")) && !job?.recoverable;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function renameWithRetry(source, destination, fsApi, platform) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await fsApi.rename(source, destination);
-      return;
-    } catch (error) {
-      if (platform !== "win32" || !TRANSIENT_RENAME_ERRORS.has(error?.code) || attempt >= RENAME_DELAYS_MS.length) throw error;
-      await delay(RENAME_DELAYS_MS[attempt]);
-    }
-  }
-}
-
-async function atomicWrite(filePath, value, { fsApi, platform }) {
-  await fsApi.mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    await fsApi.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await renameWithRetry(temporary, filePath, fsApi, platform);
-  } catch (error) {
-    await fsApi.unlink(temporary).catch(() => {});
-    throw error;
-  }
-}
-
 export function createSeedVR2JobStore({
   root = defaultRoot(),
   fsApi = fs,
-  platform = process.platform,
   clock = () => new Date(),
   idFactory = () => randomUUID(),
   maxTerminalJobs = 100,
+  databasePath = path.join(root, "jobs.sqlite"),
 } = {}) {
   const jobsRoot = path.resolve(root);
+  const repository = createSqliteJobRepository({ databasePath, namespace: "seedvr2" });
+  const writes = new Map();
+  let ready = null;
 
   function timestamp(value = clock()) {
     return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
   }
 
-  function jobFile(id) {
-    const safe = safeId(id);
-    const candidate = path.resolve(jobsRoot, `${safe}.json`);
-    if (!inside(jobsRoot, candidate)) throw new Error("SeedVR2 job path is unsafe.");
-    return candidate;
-  }
-
   async function ensure() {
-    await fsApi.mkdir(jobsRoot, { recursive: true });
-  }
-
-  async function readRaw(id) {
-    try {
-      return canonicalSeedVR2Job(JSON.parse(await fsApi.readFile(jobFile(id), "utf8")));
-    } catch (error) {
-      if (error?.code === "ENOENT") return null;
-      throw error;
+    if (!ready) {
+      ready = (async () => {
+        await fsApi.mkdir(jobsRoot, { recursive: true });
+        if (repository.hasMigration(LEGACY_JSON_MIGRATION)) {
+          return { imported: 0, alreadyCompleted: true };
+        }
+        const entries = await fsApi.readdir(jobsRoot, { withFileTypes: true });
+        const records = [];
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+          const id = entry.name.slice(0, -5);
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(id)) continue;
+          const filePath = path.resolve(jobsRoot, entry.name);
+          if (!inside(jobsRoot, filePath)) continue;
+          const record = canonicalSeedVR2Job(JSON.parse(await fsApi.readFile(filePath, "utf8")));
+          records.push({ record, terminal: isTerminal(record) });
+        }
+        return repository.importOnce(LEGACY_JSON_MIGRATION, records, { completedAt: timestamp() });
+      })().catch((error) => {
+        ready = null;
+        throw error;
+      });
     }
+    return await ready;
   }
 
-  async function read(id) {
-    const filePath = jobFile(id);
-    const pending = writes.get(filePath);
-    if (pending) await pending;
-    return await readRaw(id);
+  function serialize(id, operation) {
+    const previous = writes.get(id) || Promise.resolve();
+    const next = previous.then(operation, operation);
+    const barrier = next.then(
+      () => { if (writes.get(id) === barrier) writes.delete(id); },
+      () => { if (writes.get(id) === barrier) writes.delete(id); },
+    );
+    writes.set(id, barrier);
+    return next;
   }
 
   async function save(job) {
+    await ensure();
     const canonical = canonicalSeedVR2Job({ ...job, updatedAt: job.updatedAt || timestamp() });
-    const filePath = jobFile(canonical.id);
-    const previous = writes.get(filePath) || Promise.resolve();
-    const next = previous.catch(() => {}).then(async () => {
-      await ensure();
-      await atomicWrite(filePath, canonical, { fsApi, platform });
-      return canonical;
-    });
-    const tracked = next.finally(() => {
-      if (writes.get(filePath) === tracked) writes.delete(filePath);
-    });
-    writes.set(filePath, tracked);
-    return await next;
+    return await serialize(canonical.id, () => repository.upsert(canonical, { terminal: isTerminal(canonical) }));
   }
 
   async function create(input, options = {}) {
@@ -274,10 +249,10 @@ export function createSeedVR2JobStore({
   }
 
   async function update(id, patchOrUpdater) {
-    const filePath = jobFile(id);
-    const previous = writes.get(filePath) || Promise.resolve();
-    const next = previous.catch(() => {}).then(async () => {
-      const current = await readRaw(id);
+    await ensure();
+    const safe = safeId(id);
+    return await serialize(safe, async () => {
+      const current = repository.read(safe);
       if (!current) {
         const error = new Error(`SeedVR2 job not found: ${id}`);
         error.code = "SEEDVR2_JOB_NOT_FOUND";
@@ -285,29 +260,20 @@ export function createSeedVR2JobStore({
         throw error;
       }
       const patch = typeof patchOrUpdater === "function" ? await patchOrUpdater(current) : patchOrUpdater;
-      const updated = canonicalSeedVR2Job({ ...current, ...(patch || {}), id, updatedAt: timestamp() });
-      await atomicWrite(filePath, updated, { fsApi, platform });
-      return updated;
+      const updated = canonicalSeedVR2Job({ ...current, ...(patch || {}), id: safe, updatedAt: timestamp() });
+      return repository.upsert(updated, { terminal: isTerminal(updated) });
     });
-    const tracked = next.finally(() => {
-      if (writes.get(filePath) === tracked) writes.delete(filePath);
-    });
-    writes.set(filePath, tracked);
-    return await next;
   }
 
   async function list() {
     await ensure();
-    const entries = await fsApi.readdir(jobsRoot, { withFileTypes: true });
-    const result = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const id = entry.name.slice(0, -5);
-      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(id)) continue;
-      const job = await read(id);
-      if (job) result.push(job);
-    }
-    return result.sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)));
+    return repository.list().map(canonicalSeedVR2Job);
+  }
+
+  async function read(id) {
+    await ensure();
+    const record = repository.read(safeId(id));
+    return record ? canonicalSeedVR2Job(record) : null;
   }
 
   async function recover({ ownerId = `bridge-${process.pid}`, recoveredAt = timestamp() } = {}) {
@@ -358,11 +324,24 @@ export function createSeedVR2JobStore({
     if (cutoff !== null) {
       for (const job of terminal) if (Date.parse(job.updatedAt || job.completedAt || job.createdAt) < cutoff) ids.add(job.id);
     }
-    for (const id of ids) await fsApi.unlink(jobFile(id)).catch((error) => { if (error?.code !== "ENOENT") throw error; });
+    for (const id of ids) repository.remove(id);
     return { removed: [...ids], retained: (await list()).filter((job) => !ids.has(job.id)) };
   }
 
-  return Object.freeze({ root: jobsRoot, ensure, read, list, create, save, update, recover, prune, isTerminal, jobFile });
+  return Object.freeze({
+    root: jobsRoot,
+    databasePath: repository.databasePath,
+    ensure,
+    read,
+    list,
+    create,
+    save,
+    update,
+    recover,
+    prune,
+    isTerminal,
+    close: repository.close,
+  });
 }
 
 export const SEEDVR2_DATA_ROOT = defaultRoot;

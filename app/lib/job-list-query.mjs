@@ -21,6 +21,7 @@ export function summarizeJobRecord(job) {
     "model", "modelProfile", "width", "height", "duration", "steps", "seed", "attempt",
     "stage", "progress", "segmentProgress", "progressSource", "connectionState",
     "comfyNode", "comfyNodeId", "comfyNodeTitle", "nativeCurrent", "nativeMaximum",
+    "etaMs", "etaLowerMs", "etaUpperMs", "etaSource", "etaConfidence", "timingSampleCount",
     "comfyQueueRemaining", "batchCount", "completedCount", "failedCount", "timeoutSeconds",
     "createdAt", "startedAt", "updatedAt", "finishedAt", "completedAt", "error",
     "output", "finalAsset", "artifact", "outputName", "recoverable",

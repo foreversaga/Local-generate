@@ -205,6 +205,28 @@ test("retry is blocked while the original Comfy prompt is still active", async (
   assert.equal(finished.status, "failed");
 });
 
+test("completed video jobs can create an edited retry attempt", async () => {
+  const response = await invoke(postRequest("/api/jobs/sv-completed-api/retry", {
+    prompt: `${request.prompt}\n\nintegrated_multimodal_description: [Retry] Use a new camera angle.`,
+    seed: 99,
+    outputName: "completed-retry.mp4",
+  }));
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+  assert.equal(response.body.job.retryOf, "sv-completed-api");
+  assert.equal(response.body.job.attempt, 2);
+  assert.equal(response.body.job.seed, 99);
+  assert.equal(response.body.job.outputName, "completed-retry.mp4");
+
+  const cancelled = await invoke(postRequest(`/api/jobs/${encodeURIComponent(response.body.job.id)}/cancel`));
+  assert.equal(cancelled.status, 200);
+  const finished = await waitFor(async () => {
+    const job = await store.read(response.body.job.id);
+    return job?.status === "cancelled" ? job : null;
+  });
+  assert.equal(finished.retryOf, "sv-completed-api");
+  assert.equal((await store.read("sv-completed-api")).status, "completed");
+});
+
 test("retry creates a new attempt with edited prompt and render parameters", async () => {
   const retryDimensions = calculateAspectRatioDimensions("9:16", 704, "width");
   const edited = {

@@ -6,6 +6,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$launchGuard = Join-Path $PSScriptRoot "service-launch-guard.ps1"
+. $launchGuard
+Assert-H3InteractiveServiceLaunch -ProjectRoot $projectRoot -ServiceName "H3 Studio Web/API"
 $healthUrl = "http://127.0.0.1:8787/app/api/health"
 $webPort = 8787
 

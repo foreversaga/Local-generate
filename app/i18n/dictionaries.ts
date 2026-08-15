@@ -101,6 +101,9 @@ const zhTW = {
   "jobs.emptyUnavailable": "來源暫時無法使用，工作數量不完整；系統會繼續重試。",
   "jobs.progress": "工作進度",
   "jobs.progressText": "{progress}% 已完成",
+  "jobs.eta": "預估剩餘 {duration}",
+  "jobs.etaRange": "預估剩餘 {lower}–{upper}",
+  "jobs.etaEstimating": "正在建立預估",
   "time.seconds": "{seconds} 秒",
   "time.minutesSeconds": "{minutes} 分 {seconds} 秒",
   "service.runtime": "執行環境 {runtime}，ComfyUI {status}",
@@ -137,6 +140,7 @@ const en: Record<keyof typeof zhTW, string> = {
   "create.recent": "Recent jobs", "create.noRecent": "No recent jobs yet.",
   "jobs.trigger": "Jobs", "jobs.recent": "Recent jobs", "jobs.activeCount": "{count} active", "jobs.closeRecent": "Close recent jobs", "jobs.partialWarning": "Some job sources are unavailable; this list is incomplete.", "jobs.none": "No jobs yet.", "jobs.noneUnavailable": "Jobs cannot be counted while sources are unavailable.", "jobs.viewAll": "View all jobs",
   "jobs.filters": "Job filters", "jobs.search": "Search jobs", "jobs.searchPlaceholder": "Search title, ID, or source", "jobs.sourceFilter": "Filter by source", "jobs.statusFilter": "Filter by status", "jobs.loadError": "Unable to load jobs.", "jobs.sourcesUnavailable": "Some job sources are unavailable.", "jobs.loading": "Loading jobs…", "jobs.summary": "{visible} jobs · {active} active", "jobs.summaryUnavailable": "Showing {visible} jobs · {errors} sources unavailable", "jobs.empty": "No jobs match the current filters.", "jobs.emptyUnavailable": "Sources are temporarily unavailable, so the job count is incomplete. Retrying automatically.", "jobs.progress": "Job progress", "jobs.progressText": "{progress}% complete",
+  "jobs.eta": "ETA {duration}", "jobs.etaRange": "ETA {lower}–{upper}", "jobs.etaEstimating": "Estimating ETA",
   "time.seconds": "{seconds} sec", "time.minutesSeconds": "{minutes} min {seconds} sec",
   "service.runtime": "Runtime {runtime}, ComfyUI {status}", "service.local": "Local", "service.remote": "Vast remote", "service.connected": "connected", "service.disconnected": "disconnected",
 };

@@ -2,8 +2,10 @@ import { createServer, request as requestHttp } from "node:http";
 import { fileURLToPath } from "node:url";
 
 import { startProdServer } from "vinext/server/prod-server";
+import { installProcessErrorBoundary } from "./process-error-boundary.mjs";
 
-import { route as h3ApiRoute } from "../local-bridge.mjs";
+const processErrorBoundary = installProcessErrorBoundary();
+const { route: h3ApiRoute } = await import("../local-bridge.mjs");
 
 const PUBLIC_HOST = "0.0.0.0";
 const PUBLIC_PORT = 8787;
@@ -65,4 +67,5 @@ const server = createServer((req, res) => {
 
 server.listen(PUBLIC_PORT, PUBLIC_HOST, () => {
   console.log(`[production-web] H3 Studio production server running at http://${PUBLIC_HOST}:${PUBLIC_PORT}${WEB_BASE_PATH}`);
+  console.log(`[production-web] Process error boundary installed at ${processErrorBoundary.snapshot().installedAt}`);
 });

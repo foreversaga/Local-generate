@@ -1,6 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$launchGuard = Join-Path $projectRoot "scripts\service-launch-guard.ps1"
+. $launchGuard
+Assert-H3InteractiveServiceLaunch -ProjectRoot $projectRoot -ServiceName "Local ComfyUI/Ollama runtime"
 $envFile = Join-Path $projectRoot ".env.local"
 
 function Import-LocalEnvFile([string]$Path) {

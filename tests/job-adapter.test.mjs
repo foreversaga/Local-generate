@@ -18,6 +18,7 @@ test("job adapter exposes only the actions backed by each source contract", () =
   const interrupted = adaptJob({ id: "v-recoverable", status: "interrupted", recoverable: true, attempt: 1 }, "video");
   assert.equal(interrupted.status, "error");
   assert.equal(interrupted.canRetry, true);
+  assert.equal(adaptJob({ id: "v-completed", status: "completed" }, "video").canRetry, true);
   assert.equal(adaptJob({ id: "l", status: "paused" }, "long").canResume, true);
   assert.equal(adaptJob({ id: "done", status: "completed" }, "long").canRetry, false);
 });
@@ -83,6 +84,12 @@ test("job adapter integrates LoRA status, training progress, ETA, artifact and a
   assert.equal(training.status, "running");
   assert.equal(training.progress, 25);
   assert.equal(training.etaMs, 90_000);
+
+  const hybridEta = adaptJob({ id: "video-running", status: "running", etaMs: 60_000, etaLowerMs: 48_000, etaUpperMs: 75_000, etaSource: "hybrid", etaConfidence: "medium", timingSampleCount: 4 }, "video");
+  assert.equal(hybridEta.etaLowerMs, 48_000);
+  assert.equal(hybridEta.etaUpperMs, 75_000);
+  assert.equal(hybridEta.etaSource, "hybrid");
+  assert.equal(hybridEta.timingSampleCount, 4);
 
   const overrunTraining = adaptJob({ id: "lora-overrun", status: "training", training: { step: 101, totalSteps: 100 } }, "lora");
   assert.equal(overrunTraining.progress, 99, "active training must not report terminal 100% progress");

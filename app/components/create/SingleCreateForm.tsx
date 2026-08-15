@@ -26,7 +26,7 @@ import {
 } from "../../lib/single-duration.mjs";
 import { localizedCopy } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { uploadAssets } from "../library/asset-client";
+import { uploadAssets, type StudioAsset } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
@@ -1183,7 +1183,7 @@ function SourceFields({
               maxSelection={MAX_REF2V_IMAGES}
               selectedKeys={referenceImages.map(assetKey)}
               label="從素材庫加入圖片"
-              onSelect={onAddReferences}
+              onSelect={(chosen) => onAddReferences(chosen.filter(isCreateAsset))}
             />
             <UploadButton
               kind="image"
@@ -1276,7 +1276,10 @@ function SingleAssetPicker({
           allowedKinds={[kind]}
           selectedKeys={selected ? [assetKey(selected)] : []}
           label="從素材庫選擇"
-          onSelect={(chosen) => { if (chosen[0]) onSelect(chosen[0]); }}
+          onSelect={(chosen) => {
+            const asset = chosen.find(isCreateAsset);
+            if (asset) onSelect(asset);
+          }}
         />
         <UploadButton kind={kind} busy={uploading} onFiles={onUpload} />
       </div>
@@ -1415,6 +1418,10 @@ function resolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | n
     return `來源 ${info.originalWidth} × ${info.originalHeight}；縮放 ${info.scalePercent}%；輸出 ${info.width} × ${info.height}。`;
   }
   return "預設輸出解析度；選擇圖片後會計算最終尺寸。";
+}
+
+function isCreateAsset(asset: StudioAsset): asset is Asset {
+  return asset.root === "input" || asset.root === "output";
 }
 
 function assetKey(asset: Asset) {

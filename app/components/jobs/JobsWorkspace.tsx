@@ -96,6 +96,18 @@ function JobRow({ job }: { job: UnifiedJob }) {
     && job.nativeCurrent !== null
     && job.nativeMaximum !== null
     && Number(job.nativeMaximum) > 0;
+  const hasEta = Number.isFinite(job.etaMs);
+  const hasEtaRange = Number.isFinite(job.etaLowerMs)
+    && Number.isFinite(job.etaUpperMs)
+    && Number(job.etaUpperMs) - Number(job.etaLowerMs) >= 15_000;
+  const etaText = hasEtaRange
+    ? t("jobs.etaRange", {
+        lower: formatDuration(Number(job.etaLowerMs), t),
+        upper: formatDuration(Number(job.etaUpperMs), t),
+      })
+    : hasEta
+      ? t("jobs.eta", { duration: formatDuration(Number(job.etaMs), t) })
+      : t("jobs.etaEstimating");
   return (
     <article className={styles.jobCard}>
       <div className={styles.jobMain}>
@@ -117,7 +129,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
             <div className={styles.progressTrack} role="progressbar" aria-label={t("jobs.progress")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={t("jobs.progressText", { progress })}>
               <span style={{ width: `${progress}%` }} />
             </div>
-            <span>{progress}%{job.etaMs ? ` · ETA ${formatDuration(job.etaMs, t)}` : ""}</span>
+            <span title={job.etaSource ? `${job.etaSource} · ${job.etaConfidence || "unknown"}` : undefined}>{progress}% · {etaText}</span>
           </div>
         )}
         {job.error && <p className={styles.jobError}>{job.error}</p>}

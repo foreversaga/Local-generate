@@ -40,6 +40,12 @@ import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coor
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
+import {
+  combineEta,
+  estimateHistoricalDuration,
+  estimateNativeRemaining,
+  recordNativeProgress,
+} from "./server/video-generation/eta-estimator.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
 import { createAssetLibraryCache } from "./server/media/asset-library-cache.mjs";
 import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "./app/lib/job-list-query.mjs";
@@ -360,53 +366,65 @@ function jsonHeaders() {
   };
 }
 
-function withinTenPercent(value, target) {
-  const tolerance = Math.max(Math.abs(target) * 0.1, 1);
-  return Math.abs(value - target) <= tolerance;
-}
-
-function matchingTimingSamples(job) {
-  return timingSamples
-    .filter((sample) =>
-      withinTenPercent(Number(sample.width), job.width) &&
-      withinTenPercent(Number(sample.height), job.height) &&
-      withinTenPercent(Number(sample.duration), job.duration),
-    )
-    .slice(-timingSampleWindow);
-}
-
 function timingEstimate(job) {
-  const samples = matchingTimingSamples(job);
-  if (!samples.length) return { durationMs: null, sampleCount: 0 };
-  const total = samples.reduce((sum, sample) => sum + Number(sample.elapsedMs), 0);
-  return {
-    durationMs: Math.round(total / samples.length),
-    sampleCount: samples.length,
-  };
+  return estimateHistoricalDuration(timingSamples.slice(-Math.max(timingSampleWindow * 20, 100)), job);
 }
 
 function elapsedMilliseconds(job) {
-  if (job.status === "running" && Number.isFinite(job.executionStartedMs)) {
-    return Math.max(0, Date.now() - job.executionStartedMs);
+  if (job.status === "running") {
+    const startedMs = Number.isFinite(job.executionStartedMs)
+      ? job.executionStartedMs
+      : Date.parse(job.executionStartedAt || job.startedAt || "");
+    if (Number.isFinite(startedMs)) return Math.max(0, Date.now() - startedMs);
   }
   if (Number.isFinite(job.elapsedMs)) return Math.max(0, job.elapsedMs);
-  if (!Number.isFinite(job.executionStartedMs)) return 0;
-  return Math.max(0, Date.now() - job.executionStartedMs);
+  return 0;
 }
 
 function updateJobTiming(job) {
   const elapsedMs = elapsedMilliseconds(job);
-  const estimate = timingEstimate(job);
+  const historical = timingEstimate(job);
+  if (job.status === "completed") {
+    job.elapsedMs = elapsedMs;
+    job.estimatedDurationMs = elapsedMs || historical?.durationMs || null;
+    job.timingSampleCount = historical?.sampleCount ?? 0;
+    job.etaMs = 0;
+    job.etaLowerMs = 0;
+    job.etaUpperMs = 0;
+    job.etaSource = "completed";
+    job.etaConfidence = "high";
+    return;
+  }
+  if (["failed", "cancelled", "interrupted"].includes(job.status)) {
+    job.elapsedMs = elapsedMs;
+    job.estimatedDurationMs = historical?.durationMs ?? null;
+    job.timingSampleCount = historical?.sampleCount ?? 0;
+    job.etaMs = null;
+    job.etaLowerMs = null;
+    job.etaUpperMs = null;
+    job.etaSource = "unavailable";
+    job.etaConfidence = "unavailable";
+    return;
+  }
+  const postprocessMs = historical
+    ? Math.min(120_000, Math.max(10_000, historical.durationMs * 0.08))
+    : 30_000;
+  const native = Number.isFinite(job.nativeCurrent) && Number.isFinite(job.nativeMaximum)
+    ? estimateNativeRemaining(job.nativeProgressSamples, job.nativeCurrent, job.nativeMaximum, postprocessMs)
+    : null;
+  const eta = combineEta({ historical, native, elapsedMs });
   job.elapsedMs = elapsedMs;
-  job.estimatedDurationMs = estimate.durationMs;
-  job.timingSampleCount = estimate.sampleCount;
-  job.etaMs = estimate.durationMs === null
-    ? null
-    : Math.max(0, estimate.durationMs - elapsedMs);
+  job.estimatedDurationMs = historical?.durationMs ?? (eta ? elapsedMs + eta.remainingMs : null);
+  job.timingSampleCount = historical?.sampleCount ?? 0;
+  job.etaMs = eta?.remainingMs ?? null;
+  job.etaLowerMs = eta?.lowerMs ?? null;
+  job.etaUpperMs = eta?.upperMs ?? null;
+  job.etaSource = eta?.source || "unavailable";
+  job.etaConfidence = eta?.confidence || "unavailable";
   if (job.status !== "running") return;
 
-  if (estimate.durationMs) {
-    job.estimatedProgress = Math.min(95, Math.max(2, (elapsedMs / estimate.durationMs) * 100));
+  if (historical?.durationMs) {
+    job.estimatedProgress = Math.min(95, Math.max(2, (elapsedMs / historical.durationMs) * 100));
     if (job.progressSource !== "native") {
       job.progress = Math.max(job.progress, job.estimatedProgress);
       job.progressSource = "estimated";
@@ -432,6 +450,10 @@ function recordTimingSample(job, elapsedMs) {
     width: job.width,
     height: job.height,
     duration: job.duration,
+    steps: job.steps,
+    mode: job.mode,
+    modelProfile: job.modelProfile || job.model,
+    runtimeMode: job.runtimeMode,
     elapsedMs: Math.round(elapsedMs),
     completedAt: now(),
   });
@@ -3017,6 +3039,10 @@ function publicJob(job) {
     elapsedMs: job.elapsedMs,
     estimatedDurationMs: job.estimatedDurationMs,
     etaMs: job.etaMs,
+    etaLowerMs: job.etaLowerMs,
+    etaUpperMs: job.etaUpperMs,
+    etaSource: job.etaSource,
+    etaConfidence: job.etaConfidence,
     timingSampleCount: job.timingSampleCount,
     progressSource: job.progressSource,
     estimatedProgress: job.estimatedProgress,
@@ -3104,6 +3130,7 @@ function updateJobFromStructuredEvent(job, event) {
   if (type === "progress") {
     const current = Math.max(0, Number(event.value) || 0);
     const maximum = Math.max(1, Number(event.max) || 1);
+    recordNativeProgress(job, current, maximum);
     job.nativeCurrent = current;
     job.nativeMaximum = maximum;
     job.progressSource = "native";
@@ -3141,6 +3168,7 @@ function updateJobFromLine(job, line) {
   if (progress) {
     const current = Number(progress[1]);
     const maximum = Math.max(1, Number(progress[2]));
+    recordNativeProgress(job, current, maximum);
     // Reserve the first 20% for input preparation and ComfyUI queueing;
     // map the actual node progress into the remaining generation band.
     job.progress = Math.min(94, Math.max(job.progress, 20 + (current / maximum) * 72));
@@ -4014,6 +4042,7 @@ async function guardSingleVideoRetryAgainstComfy(source) {
     );
   }
   if (snapshot.state === "completed") {
+    if (source.status === "completed") return snapshot;
     await adoptRecoveredSingleVideoArtifact(source, snapshot);
     throw makeRuntimeError(
       "SINGLE_VIDEO_PROMPT_ALREADY_COMPLETED",
@@ -4145,8 +4174,8 @@ async function retrySingleVideoJob(id, overrides = {}) {
     error.status = 409;
     throw error;
   }
-  if (!["failed", "cancelled", "interrupted"].includes(source.status)) {
-    const error = new Error("Only failed, cancelled, or interrupted Single Video jobs can be retried.");
+  if (!["completed", "failed", "cancelled", "interrupted"].includes(source.status)) {
+    const error = new Error("Only completed, failed, cancelled, or interrupted Single Video jobs can be retried.");
     error.code = "SINGLE_VIDEO_JOB_NOT_RETRYABLE";
     error.status = 409;
     throw error;

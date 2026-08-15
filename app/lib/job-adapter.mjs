@@ -81,6 +81,11 @@ export function adaptJob(raw, source = "video") {
     createdAt,
     updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
     etaMs: etaMilliseconds(raw, source),
+    etaLowerMs: numericOrNull(raw?.etaLowerMs),
+    etaUpperMs: numericOrNull(raw?.etaUpperMs),
+    etaSource: typeof raw?.etaSource === "string" ? raw.etaSource : "",
+    etaConfidence: typeof raw?.etaConfidence === "string" ? raw.etaConfidence : "",
+    timingSampleCount: nonNegativeInteger(raw?.timingSampleCount),
     error: typeof raw?.error === "string" ? raw.error : raw?.error?.message || "",
     output,
     outputAvailable: outputAvailability(output),
@@ -204,8 +209,11 @@ function canCancel(raw, source) {
 
 function retryable(raw, source) {
   const status = normalizeJobStatus(raw?.status);
+  if (source === "video") {
+    return ["completed", "complete", "success", "succeeded", "failed", "interrupted", "canceled", "cancelled", "error"]
+      .includes(String(raw?.status || "").toLowerCase());
+  }
   if (!["error", "partial", "cancelled"].includes(status)) return false;
-  if (source === "video") return ["failed", "interrupted", "canceled", "cancelled", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "lora") return ["failed", "preflight_failed", "caption_failed", "canceled", "cancelled", "interrupted", "error"].includes(String(raw?.status || "").toLowerCase());
   if (source === "long" || source === "upscale" || source === "img2img") return true;
   return false;

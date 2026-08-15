@@ -2,7 +2,14 @@
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { calculateAspectRatioDimensions, normalizeResolutionDimension } from "../../lib/single-image-resolution.mjs";
+import {
+  calculateAspectRatioDimensions,
+  clampResolutionScale,
+  normalizeResolutionDimension,
+  resolutionGridForMode,
+  resolutionScaleForDimensions,
+  scaleImageResolution,
+} from "../../lib/single-image-resolution.mjs";
 import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
@@ -15,6 +22,10 @@ type RetryDraft = {
   modelProfile: string;
   aspectRatio: string;
   aspectLocked: boolean;
+  mode: string;
+  scaleBaseWidth: number;
+  scaleBaseHeight: number;
+  resolutionScale: number;
   width: string;
   height: string;
   duration: string;
@@ -46,14 +57,22 @@ function draftNumber(value: number | null | undefined, fallback: number) {
 }
 
 function retryDraftFromJob(job: UnifiedJob): RetryDraft {
+  const jobWidth = Number(job.width);
+  const jobHeight = Number(job.height);
+  const width = Number.isFinite(jobWidth) && jobWidth >= 32 ? jobWidth : 736;
+  const height = Number.isFinite(jobHeight) && jobHeight >= 32 ? jobHeight : 416;
   return {
     prompt: job.prompt || "",
     negativePrompt: job.negativePrompt || "",
     modelProfile: job.modelProfile || "nvfp4_blackwell",
     aspectRatio: "custom",
     aspectLocked: false,
-    width: draftNumber(job.width, 736),
-    height: draftNumber(job.height, 416),
+    mode: typeof job.raw?.mode === "string" ? job.raw.mode : "i2v",
+    scaleBaseWidth: width,
+    scaleBaseHeight: height,
+    resolutionScale: 100,
+    width: String(width),
+    height: String(height),
     duration: draftNumber(job.duration, 5),
     steps: draftNumber(job.steps, 20),
     seed: draftNumber(job.seed, 12345),
@@ -69,7 +88,7 @@ function numericDraft(value: string, label: string) {
 }
 
 export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourceHint?: string }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const { ACTION_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [job, setJob] = useState<UnifiedJob | null>(null);
@@ -78,6 +97,8 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [error, setError] = useState("");
   const actionErrorRef = useRef<HTMLDivElement>(null);
   const retryEditorRef = useRef<HTMLElement>(null);
+  const retryPromptDetailsRef = useRef<HTMLDetailsElement>(null);
+  const retryPromptRef = useRef<HTMLTextAreaElement>(null);
   const [sourceUnavailable, setSourceUnavailable] = useState<JobSourceError | null>(null);
   const [retryDraft, setRetryDraft] = useState<RetryDraft | null>(null);
 
@@ -162,11 +183,15 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         value,
         Number.isFinite(currentWidth) && currentWidth > 0 ? currentWidth : 736,
         "width",
+        resolutionGridForMode(current.mode),
       );
       return {
         ...current,
         aspectRatio: value,
         aspectLocked: true,
+        scaleBaseWidth: dimensions.width,
+        scaleBaseHeight: dimensions.height,
+        resolutionScale: 100,
         width: String(dimensions.width),
         height: String(dimensions.height),
       };
@@ -181,10 +206,13 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
       if (!Number.isFinite(currentWidth) || currentWidth <= 0) {
         return { ...current, aspectLocked: true };
       }
-      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, currentWidth, "width");
+      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, currentWidth, "width", resolutionGridForMode(current.mode));
       return {
         ...current,
         aspectLocked: true,
+        scaleBaseWidth: dimensions.width,
+        scaleBaseHeight: dimensions.height,
+        resolutionScale: 100,
         width: String(dimensions.width),
         height: String(dimensions.height),
       };
@@ -195,11 +223,45 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     setRetryDraft((current) => {
       if (!current) return current;
       const next = { ...current, [field]: value };
-      if (!current.aspectLocked || current.aspectRatio === "custom") return next;
+      if (!current.aspectLocked || current.aspectRatio === "custom") {
+        const nextWidth = Number(next.width);
+        const nextHeight = Number(next.height);
+        if (![nextWidth, nextHeight].every((dimension) => Number.isFinite(dimension) && dimension >= 32 && dimension <= 2048)) return next;
+        return {
+          ...next,
+          scaleBaseWidth: normalizeResolutionDimension(nextWidth, current.mode),
+          scaleBaseHeight: normalizeResolutionDimension(nextHeight, current.mode),
+          resolutionScale: 100,
+        };
+      }
       const anchorValue = Number(value);
       if (!Number.isFinite(anchorValue) || anchorValue < 32 || anchorValue > 2048) return next;
-      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, anchorValue, field);
-      return { ...next, width: String(dimensions.width), height: String(dimensions.height) };
+      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, anchorValue, field, resolutionGridForMode(current.mode));
+      return {
+        ...next,
+        resolutionScale: resolutionScaleForDimensions(
+          current.scaleBaseWidth,
+          current.scaleBaseHeight,
+          dimensions.width,
+          dimensions.height,
+        ),
+        width: String(dimensions.width),
+        height: String(dimensions.height),
+      };
+    });
+  }
+
+  function applyRetryResolutionScale(value: number) {
+    setRetryDraft((current) => {
+      if (!current) return current;
+      const resolutionScale = clampResolutionScale(value);
+      const dimensions = scaleImageResolution(current.scaleBaseWidth, current.scaleBaseHeight, current.mode, resolutionScale);
+      return {
+        ...current,
+        resolutionScale,
+        width: String(dimensions.width),
+        height: String(dimensions.height),
+      };
     });
   }
 
@@ -208,16 +270,18 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     if (!job || !retryDraft || busy) return;
     if (!retryDraft.prompt.trim()) {
       setError("Prompt cannot be empty. Keep the original prompt or enter a new description.");
+      if (retryPromptDetailsRef.current) retryPromptDetailsRef.current.open = true;
+      window.requestAnimationFrame(() => retryPromptRef.current?.focus());
       return;
     }
     try {
       const width = numericDraft(retryDraft.width, "Width");
       const height = numericDraft(retryDraft.height, "Height");
       const dimensions = retryDraft.aspectLocked && retryDraft.aspectRatio !== "custom"
-        ? calculateAspectRatioDimensions(retryDraft.aspectRatio, width, "width")
+        ? calculateAspectRatioDimensions(retryDraft.aspectRatio, width, "width", resolutionGridForMode(retryDraft.mode))
         : {
-            width: normalizeResolutionDimension(width, "i2v"),
-            height: normalizeResolutionDimension(height, "i2v"),
+            width: normalizeResolutionDimension(width, retryDraft.mode),
+            height: normalizeResolutionDimension(height, retryDraft.mode),
           };
       const overrides: VideoRetryOverrides = {
         prompt: retryDraft.prompt,
@@ -253,6 +317,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   // renderer has created the file. Only treat that reference as stale after
   // the job has actually completed.
   const outputMissing = Boolean(job.status === "complete" && job.output && job.outputAvailable === false);
+  const retryResolutionStep = retryDraft ? resolutionGridForMode(retryDraft.mode) : 32;
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const hasNativeStep = job.source === "img2img"
     && job.nativeCurrent !== null
@@ -260,6 +325,18 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     && Number.isFinite(Number(job.nativeCurrent))
     && Number.isFinite(Number(job.nativeMaximum))
     && Number(job.nativeMaximum) > 0;
+  const hasEta = Number.isFinite(job.etaMs);
+  const hasEtaRange = Number.isFinite(job.etaLowerMs)
+    && Number.isFinite(job.etaUpperMs)
+    && Number(job.etaUpperMs) - Number(job.etaLowerMs) >= 15_000;
+  const etaText = hasEtaRange
+    ? t("jobs.etaRange", {
+        lower: formatEtaDuration(Number(job.etaLowerMs), t),
+        upper: formatEtaDuration(Number(job.etaUpperMs), t),
+      })
+    : hasEta
+      ? t("jobs.eta", { duration: formatEtaDuration(Number(job.etaMs), t) })
+      : t("jobs.etaEstimating");
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
@@ -274,6 +351,12 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             <dd>{progress}%</dd>
             {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}><span style={{ width: `${progress}%` }} /></div>}
           </div>
+          {(job.status === "queued" || job.status === "running") && (
+            <div>
+              <dt>ETA</dt>
+              <dd title={job.etaSource ? `${job.etaSource} · ${job.etaConfidence || "unknown"}` : undefined}>{etaText}</dd>
+            </div>
+          )}
           <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
         </dl>
         {job.source === "img2img" && (job.comfyNode || hasNativeStep) && (
@@ -286,12 +369,12 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         )}
         {job.source === "video" && (
           <div className={styles.promptStack}>
-            <details className={styles.promptDetails} open>
+            <details className={styles.promptDetails}>
               <summary>查看完整提示詞</summary>
               <pre className={styles.promptPreview}>{job.prompt || "（沒有保存提示詞）"}</pre>
             </details>
             {job.negativePrompt && (
-              <details className={styles.promptDetails} open>
+              <details className={styles.promptDetails}>
                 <summary>查看完整 Negative Prompt</summary>
                 <pre className={styles.promptPreview}>{job.negativePrompt}</pre>
               </details>
@@ -311,28 +394,34 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               <span className={styles.retryAttempt}>Original job #{job.attempt || 1}</span>
             </div>
             <form className={styles.retryForm} onSubmit={(event) => void submitRetry(event)}>
-              <label className={styles.retryFieldWide}>
-                <span>Prompt (full, editable)</span>
-                <textarea
-                  value={retryDraft.prompt}
-                  onChange={(event) => updateRetryDraft("prompt", event.target.value)}
-                  rows={16}
-                  maxLength={20000}
-                  spellCheck={false}
-                  required
-                />
-                <small>{retryDraft.prompt.length}/20000</small>
-              </label>
-              <label className={styles.retryFieldWide}>
-                <span>Negative Prompt</span>
-                <textarea
-                  value={retryDraft.negativePrompt}
-                  onChange={(event) => updateRetryDraft("negativePrompt", event.target.value)}
-                  rows={5}
-                  maxLength={20000}
-                  spellCheck={false}
-                />
-              </label>
+              <details ref={retryPromptDetailsRef} className={styles.retryPromptDetails}>
+                <summary>Edit prompt fields</summary>
+                <div className={styles.retryPromptFields}>
+                  <label className={styles.retryFieldWide}>
+                    <span>Prompt (full, editable)</span>
+                    <textarea
+                      ref={retryPromptRef}
+                      value={retryDraft.prompt}
+                      onChange={(event) => updateRetryDraft("prompt", event.target.value)}
+                      rows={16}
+                      maxLength={20000}
+                      spellCheck={false}
+                      required
+                    />
+                    <small>{retryDraft.prompt.length}/20000</small>
+                  </label>
+                  <label className={styles.retryFieldWide}>
+                    <span>Negative Prompt</span>
+                    <textarea
+                      value={retryDraft.negativePrompt}
+                      onChange={(event) => updateRetryDraft("negativePrompt", event.target.value)}
+                      rows={5}
+                      maxLength={20000}
+                      spellCheck={false}
+                    />
+                  </label>
+                </div>
+              </details>
               <label className={styles.retryField}>
                 <span>Model Profile</span>
                 <input
@@ -370,12 +459,31 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               </label>
               <label className={styles.retryField}>
                 <span>Width</span>
-                <input type="number" min={32} max={2048} step={32} value={retryDraft.width} onChange={(event) => updateRetryDimension("width", event.target.value)} required />
+                <input type="number" min={32} max={2048} step={retryResolutionStep} value={retryDraft.width} onChange={(event) => updateRetryDimension("width", event.target.value)} required />
               </label>
               <label className={styles.retryField}>
                 <span>Height</span>
-                <input type="number" min={32} max={2048} step={32} value={retryDraft.height} onChange={(event) => updateRetryDimension("height", event.target.value)} required />
+                <input type="number" min={32} max={2048} step={retryResolutionStep} value={retryDraft.height} onChange={(event) => updateRetryDimension("height", event.target.value)} required />
               </label>
+              <div className={styles.retryScaleField}>
+                <div className={styles.retryScaleMeta}>
+                  <span>Resolution scale</span>
+                  <strong>{retryDraft.resolutionScale}%</strong>
+                </div>
+                <input
+                  className={styles.retryRange}
+                  type="range"
+                  min={10}
+                  max={100}
+                  step={1}
+                  value={retryDraft.resolutionScale}
+                  aria-label="Retry resolution scale"
+                  aria-valuetext={`${retryDraft.resolutionScale}%; ${retryDraft.width} by ${retryDraft.height} pixels`}
+                  onInput={(event) => applyRetryResolutionScale(Number(event.currentTarget.value))}
+                />
+                <div className={styles.retryScaleTicks} aria-hidden="true"><span>10%</span><span>50%</span><span>100%</span></div>
+                <small>Scales width and height together. 100% is {retryDraft.scaleBaseWidth} × {retryDraft.scaleBaseHeight}; output is {retryDraft.width} × {retryDraft.height}.</small>
+              </div>
               <label className={styles.retryField}>
                 <span>Duration (seconds)</span>
                 <input type="number" min={0.1} max={120} step={0.1} value={retryDraft.duration} onChange={(event) => updateRetryDraft("duration", event.target.value)} required />
@@ -414,4 +522,14 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
       </aside>
     </div>
   );
+}
+
+function formatEtaDuration(
+  ms: number,
+  t: (key: "time.seconds" | "time.minutesSeconds", values: Record<string, number>) => string,
+) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return seconds < 60
+    ? t("time.seconds", { seconds })
+    : t("time.minutesSeconds", { minutes: Math.floor(seconds / 60), seconds: seconds % 60 });
 }

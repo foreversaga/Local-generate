@@ -19,6 +19,12 @@ test("job summaries preserve list metadata while dropping heavy detail collectio
     status: "running",
     prompt: "x".repeat(500),
     duration: 10,
+    etaMs: 45_000,
+    etaLowerMs: 38_000,
+    etaUpperMs: 55_000,
+    etaSource: "hybrid",
+    etaConfidence: "medium",
+    timingSampleCount: 4,
     segments: [{ prompt: "large" }, { prompt: "large" }],
     items: [{ output: "large" }],
     training: { stage: "training", step: 2, totalSteps: 10, internal: "drop" },
@@ -27,6 +33,9 @@ test("job summaries preserve list metadata while dropping heavy detail collectio
   assert.equal(summary.id, "job-1");
   assert.equal(summary.prompt.length, 240);
   assert.equal(summary.segmentCount, 2);
+  assert.equal(summary.etaMs, 45_000);
+  assert.equal(summary.etaSource, "hybrid");
+  assert.equal(summary.timingSampleCount, 4);
   assert.equal(summary.items, undefined);
   assert.equal(summary.segments, undefined);
   assert.deepEqual(summary.training, { stage: "training", step: 2, totalSteps: 10 });

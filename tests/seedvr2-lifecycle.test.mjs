@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -93,6 +94,56 @@ test("job store canonicalizes the public source shape and mirrored timestamps", 
   assert.equal(job.updatedAt, "2026-08-12T03:01:00.000Z");
 });
 
+test("SeedVR2 imports legacy JSON once into SQLite WAL and ignores legacy files afterward", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-sqlite-"));
+  const jobsRoot = path.join(root, "jobs");
+  const legacyPath = path.join(jobsRoot, "legacy-job.json");
+  await fs.mkdir(jobsRoot, { recursive: true });
+  await fs.writeFile(legacyPath, JSON.stringify({
+    id: "legacy-job",
+    sourceName: "legacy.mp4",
+    status: "completed",
+    createdAt: "2026-08-12T03:00:00.000Z",
+    updatedAt: "2026-08-12T03:01:00.000Z",
+  }));
+
+  const first = createSeedVR2JobStore({ root: jobsRoot });
+  assert.equal((await first.read("legacy-job")).sourceName, "legacy.mp4");
+  first.close();
+
+  const database = new DatabaseSync(path.join(jobsRoot, "jobs.sqlite"));
+  assert.equal(database.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
+  database.close();
+
+  await fs.writeFile(legacyPath, "{ legacy JSON is no longer authoritative");
+  const second = createSeedVR2JobStore({ root: jobsRoot });
+  t.after(async () => {
+    second.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  assert.equal((await second.read("legacy-job")).sourceName, "legacy.mp4");
+});
+
+test("SeedVR2 serializes concurrent updates to the same SQLite record", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-sqlite-updates-"));
+  const store = createSeedVR2JobStore({ root });
+  t.after(async () => {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await store.create({ id: "concurrent-job", sourceName: "source.mp4", status: "queued" });
+  await Promise.all([
+    store.update("concurrent-job", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { progress: 45 };
+    }),
+    store.update("concurrent-job", { stage: "Sampling" }),
+  ]);
+  const saved = await store.read("concurrent-job");
+  assert.equal(saved.progress, 45);
+  assert.equal(saved.stage, "Sampling");
+});
+
 async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job", webSocketImpl = null, onPrompt = null } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-lifecycle-"));
   const inputRoot = path.join(root, "input");
@@ -161,7 +212,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
 
 test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, and provenance", async (t) => {
   const value = await fixture();
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
   const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: SEEDVR2_PROFILE, seed: 42 });
   const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
 
@@ -203,7 +254,7 @@ test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the hi
       }, 0);
     },
   });
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
 
   const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, seed: 42 });
   const running = await waitFor(
@@ -238,7 +289,7 @@ test("SeedVR2 turns a matching WebSocket execution_error into a failed job witho
       }, 0);
     },
   });
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
 
   const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2 });
   const failed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "failed");
@@ -248,7 +299,7 @@ test("SeedVR2 turns a matching WebSocket execution_error into a failed job witho
 
 test("restart reconciles queued work and turns a stale running job into recoverable interrupted history", async (t) => {
   const value = await fixture();
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
   await value.store.create({
     id: "queued-restart",
     sourceName: "source.mp4",
@@ -296,6 +347,7 @@ test("queued cancel is durable and never submits a ComfyUI prompt", async (t) =>
   t.after(async () => {
     await value.controller.cancel("active-job", "test cleanup").catch(() => {});
     await waitFor(() => value.store.read("active-job"), (job) => job?.status === "cancelled").catch(() => null);
+    value.store.close();
     await fs.rm(value.root, { recursive: true, force: true });
   });
   await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, seed: 1 });
@@ -317,7 +369,7 @@ test("queued cancel is durable and never submits a ComfyUI prompt", async (t) =>
 
 test("active cancel interrupts ComfyUI, prevents output registration, and persists reason/status", async (t) => {
   const value = await fixture({ historyMode: "pending" });
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
   const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, seed: 9 });
   await waitFor(() => value.store.read(queued.id), (job) => Boolean(job?.promptId));
   const result = apiResponse();
@@ -325,7 +377,7 @@ test("active cancel interrupts ComfyUI, prevents output registration, and persis
     readJson: async () => ({ reason: "User stopped this upscale" }),
   });
   assert.equal(result.status, 200);
-  assert.equal(result.body.job.status, "cancelling");
+  assert.ok(["cancelling", "cancelled"].includes(result.body.job.status));
 
   const cancelled = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "cancelled");
   assert.equal(cancelled.cancelReason, "User stopped this upscale");
@@ -337,7 +389,7 @@ test("active cancel interrupts ComfyUI, prevents output registration, and persis
 
 test("retry creates a new attempt while preserving SeedVR2 provenance", async (t) => {
   const value = await fixture({ historyMode: (promptCount) => promptCount === 1 ? "failed" : "success", idFactory: (() => { const ids = ["failed-job", "retry-job"]; return () => ids.shift(); })() });
-  t.after(() => fs.rm(value.root, { recursive: true, force: true }));
+  t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
   const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: SEEDVR2_PROFILE, seed: 77 });
   await waitFor(() => value.store.read(failed.id), (job) => job?.status === "failed");
   const result = apiResponse();

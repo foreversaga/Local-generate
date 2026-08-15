@@ -8,6 +8,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$launchGuard = Join-Path $projectRoot "scripts\service-launch-guard.ps1"
+. $launchGuard
+Assert-H3InteractiveServiceLaunch -ProjectRoot $projectRoot -ServiceName "Vast SSH tunnel"
 $configModule = Join-Path $PSScriptRoot "runtime-config.ps1"
 . $configModule
 $configState = Get-VastRuntimeConfig $ConfigPath
@@ -27,7 +31,6 @@ foreach ($port in @($sshPortValue, $localComfyPortValue, $localOllamaPortValue, 
   }
 }
 
-$projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $logRoot = Join-Path $projectRoot "logs"
 $pidPath = Join-Path $logRoot "vast-ssh-tunnel.pid"
 $stdoutPath = Join-Path $logRoot "vast-ssh-tunnel.stdout.log"
