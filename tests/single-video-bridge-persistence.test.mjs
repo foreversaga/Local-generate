@@ -18,8 +18,27 @@ const logsRoot = path.join(tempRoot, "logs");
 const activePromptId = "22222222-2222-4222-8222-222222222222";
 let promptActive = false;
 let promptErrored = false;
+let targetedCancelStopsPrompt = true;
+const comfyCancelRequests = [];
 const comfyServer = createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
+  if (req.method === "POST" && req.url === `/api/jobs/${activePromptId}/cancel`) {
+    comfyCancelRequests.push(req.url);
+    if (targetedCancelStopsPrompt) promptActive = false;
+    res.end(JSON.stringify({ cancelled: true }));
+    return;
+  }
+  if (req.method === "POST" && req.url === "/queue") {
+    comfyCancelRequests.push(req.url);
+    res.end("{}");
+    return;
+  }
+  if (req.method === "POST" && req.url === "/interrupt") {
+    comfyCancelRequests.push(req.url);
+    promptActive = false;
+    res.end("{}");
+    return;
+  }
   if (req.url === "/queue") {
     res.end(JSON.stringify({
       queue_running: promptActive ? [[1, activePromptId, {}, { client_id: "test" }]] : [],
@@ -189,20 +208,53 @@ test("Jobs API reads durable history and recovery never exposes a ghost running 
   assert.equal((await invoke(getRequest("/api/jobs/sv-running-api"))).body.status, "interrupted");
 });
 
-test("retry is blocked while the original Comfy prompt is still active", async () => {
+test("a recovered running Comfy prompt can be cancelled after a bridge restart", async () => {
   promptActive = true;
   const response = await invoke(postRequest("/api/jobs/sv-active-prompt-api/retry"));
   assert.equal(response.status, 409, JSON.stringify(response.body));
   assert.equal(response.body.code, "SINGLE_VIDEO_PROMPT_STILL_ACTIVE");
   assert.equal((await store.read("sv-active-prompt-api")).status, "running");
 
-  promptActive = false;
-  promptErrored = true;
+  const cancelledResponse = await invoke(postRequest("/api/jobs/sv-active-prompt-api/cancel"));
+  assert.equal(cancelledResponse.status, 200, JSON.stringify(cancelledResponse.body));
+  assert.equal(cancelledResponse.body.job.status, "cancelled");
+  assert.equal(promptActive, false);
+  assert.deepEqual(comfyCancelRequests, [`/api/jobs/${activePromptId}/cancel`]);
+
   const finished = await waitFor(async () => {
     const job = await store.read("sv-active-prompt-api");
-    return job?.status === "failed" ? job : null;
+    return job?.status === "cancelled" ? job : null;
   }, 4000);
-  assert.equal(finished.status, "failed");
+  assert.equal(finished.status, "cancelled");
+  assert.equal(finished.recovery.reason, "recovered_comfy_prompt_cancelled");
+});
+
+test("an unconfirmed targeted cancel falls back to queue deletion and interrupt", async () => {
+  targetedCancelStopsPrompt = false;
+  promptActive = true;
+  comfyCancelRequests.length = 0;
+  await store.update("sv-active-prompt-api", {
+    status: "running",
+    stage: "Reattached to the running ComfyUI prompt",
+    recoverable: false,
+    finishedAt: null,
+  });
+
+  const response = await invoke(postRequest("/api/jobs/sv-active-prompt-api/cancel"));
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.job.status, "cancelling");
+  assert.deepEqual(comfyCancelRequests, [
+    `/api/jobs/${activePromptId}/cancel`,
+    "/queue",
+    "/interrupt",
+  ]);
+
+  const finished = await waitFor(async () => {
+    const job = await store.read("sv-active-prompt-api");
+    return job?.status === "cancelled" ? job : null;
+  }, 4000);
+  assert.equal(finished.status, "cancelled");
+  targetedCancelStopsPrompt = true;
 });
 
 test("completed video jobs can create an edited retry attempt", async () => {

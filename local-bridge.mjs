@@ -3805,6 +3805,78 @@ async function inspectSingleVideoComfyPrompt(job) {
   });
 }
 
+async function cancelSingleVideoComfyPrompt(job) {
+  const promptId = String(job?.promptId || "").trim();
+  if (!promptId) return { attempted: false, cancelled: false };
+
+  const snapshot = await inspectSingleVideoComfyPrompt(job);
+  if (snapshot.state === "unavailable") {
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_CANCEL_STATE_UNKNOWN",
+      "ComfyUI prompt state could not be verified, so cancellation was not applied.",
+      503,
+      { promptId },
+    );
+  }
+  if (!["running", "pending"].includes(snapshot.state)) {
+    return { attempted: true, cancelled: false, terminal: true, state: snapshot.state };
+  }
+
+  const comfyUrl = singleVideoComfyUrl(job);
+  const request = (endpoint, body) => fetchJson(comfyUrl + endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }, 10000);
+
+  let targetedAccepted = false;
+  try {
+    const result = await request(`/api/jobs/${encodeURIComponent(promptId)}/cancel`, {});
+    targetedAccepted = result?.cancelled !== false;
+    if (targetedAccepted) {
+      const verified = await inspectSingleVideoComfyPrompt(job);
+      if (!["running", "pending"].includes(verified.state)) {
+        return { attempted: true, cancelled: true, confirmed: true, fallback: false, state: verified.state };
+      }
+    }
+  } catch (error) {
+    console.warn(`[single-video] Targeted ComfyUI cancel failed for ${promptId}:`, error?.message || error);
+  }
+
+  let fallbackSucceeded = false;
+  const failures = [];
+  try {
+    await request("/queue", { delete: [promptId] });
+    fallbackSucceeded = true;
+  } catch (error) {
+    failures.push(error);
+  }
+  if (snapshot.state === "running") {
+    try {
+      await request("/interrupt", { prompt_id: promptId });
+      fallbackSucceeded = true;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (!fallbackSucceeded) {
+    throw makeRuntimeError(
+      "SINGLE_VIDEO_CANCEL_FAILED",
+      failures[0]?.message || "ComfyUI rejected the cancellation request.",
+      502,
+      { promptId, state: snapshot.state },
+    );
+  }
+  return {
+    attempted: true,
+    cancelled: true,
+    confirmed: false,
+    fallback: true,
+    state: snapshot.state,
+    targetedAccepted,
+  };
+}
+
 async function updateRecoveredSingleVideoJob(job, patch) {
   const updated = await singleVideoJobStore.update(job.id, patch);
   const runtimeJob = { ...updated, startedAt: updated.startedAt || updated.createdAt || now(), persistent: true };
@@ -3899,12 +3971,25 @@ function monitorRecoveredSingleVideoPrompt(job) {
     const timeoutMs = Math.max(60_000, Math.min(86_400_000, Number(job.timeoutSeconds || 3600) * 1000));
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      const persisted = await singleVideoJobStore.read(key);
+      if (persisted?.status === "cancelled") return;
+      if (persisted?.status === "cancelling") current = persisted;
       const snapshot = await inspectSingleVideoComfyPrompt(current);
       if (snapshot.state === "completed") {
         await adoptRecoveredSingleVideoArtifact(current, snapshot);
         return;
       }
       if (snapshot.state === "error") {
+        if (current.status === "cancelling") {
+          await updateRecoveredSingleVideoJob(current, {
+            status: "cancelled",
+            stage: "cancelled",
+            recoverable: false,
+            error: "",
+            finishedAt: now(),
+          });
+          return;
+        }
         await updateRecoveredSingleVideoJob(current, {
           status: "failed",
           stage: "failed",
@@ -3922,6 +4007,16 @@ function monitorRecoveredSingleVideoPrompt(job) {
       }
       if (snapshot.state === "running" || snapshot.state === "pending") {
         missingChecks = 0;
+        if (current.status === "cancelling") {
+          current = await updateRecoveredSingleVideoJob(current, {
+            status: "cancelling",
+            stage: "正在停止…",
+            recoverable: false,
+            connectionState: "polling",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          continue;
+        }
         current = await updateRecoveredSingleVideoJob(current, {
           status: "running",
           stage: snapshot.state === "running"
@@ -3937,6 +4032,16 @@ function monitorRecoveredSingleVideoPrompt(job) {
           },
         });
       } else if (snapshot.state === "missing") {
+        if (current.status === "cancelling") {
+          await updateRecoveredSingleVideoJob(current, {
+            status: "cancelled",
+            stage: "cancelled",
+            recoverable: false,
+            error: "",
+            finishedAt: now(),
+          });
+          return;
+        }
         missingChecks += 1;
         if (missingChecks >= 3) {
           await updateRecoveredSingleVideoJob(current, {
@@ -5063,16 +5168,64 @@ async function route(req, res) {
     await ensureSingleVideoStore();
     const job = jobs.get(id) || await singleVideoJobStore.read(id);
     const child = jobProcesses.get(id);
-    if (!job || !child) {
+    if (!job) {
       sendError(res, 404, "這個工作目前不在執行中。");
       return;
     }
+    if (job.status === "cancelled" && !job.promptId) {
+      sendJson(res, 200, { job: publicJob(job) });
+      return;
+    }
+    if (!["queued", "running", "cancelling", "interrupted", "cancelled"].includes(job.status)) {
+      sendError(res, 409, "Only an active or queued generation can be cancelled.", "SINGLE_VIDEO_JOB_NOT_CANCELLABLE");
+      return;
+    }
+    const previousStatus = job.status;
+    const previousStage = job.stage;
     job.cancelRequested = true;
     job.status = "cancelling";
     job.stage = "正在停止…";
     touchJob(job);
-    child.kill();
-    sendJson(res, 200, { job: publicJob(job) });
+    jobs.set(id, job);
+    await persistSingleJob(job);
+    try {
+      const comfyCancellation = await cancelSingleVideoComfyPrompt(job);
+      child?.kill();
+      if (!child) {
+        if (comfyCancellation.attempted && !comfyCancellation.confirmed && !comfyCancellation.terminal) {
+          monitorRecoveredSingleVideoPrompt(job);
+          sendJson(res, 200, { job: publicJob(job) });
+          return;
+        }
+        const cancelled = await updateRecoveredSingleVideoJob(job, {
+          status: "cancelled",
+          stage: "cancelled",
+          error: "",
+          recoverable: false,
+          finishedAt: now(),
+          recovery: {
+            reason: comfyCancellation.attempted
+              ? "recovered_comfy_prompt_cancelled"
+              : "recovered_queued_job_cancelled",
+            previousStatus,
+            recoveredBy: SINGLE_VIDEO_OWNER_ID,
+            recoveredAt: now(),
+          },
+        });
+        sendJson(res, 200, { job: publicJob(cancelled) });
+        return;
+      }
+      sendJson(res, 200, { job: publicJob(job) });
+    } catch (error) {
+      job.cancelRequested = false;
+      job.status = previousStatus;
+      job.stage = previousStage;
+      job.error = error instanceof Error ? error.message : String(error);
+      touchJob(job);
+      await persistSingleJob(job).catch(() => {});
+      const status = Number.isInteger(error?.status) ? error.status : 502;
+      sendError(res, status, job.error, error?.code || "SINGLE_VIDEO_CANCEL_FAILED");
+    }
     return;
   }
   if (req.method === "GET" && pathname === "/media") {
