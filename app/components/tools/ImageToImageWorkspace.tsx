@@ -2,7 +2,7 @@
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AssetPickerButton } from "../library/AssetPickerButton";
-import { assetKey, assetUrl, deleteAsset, type StudioAsset, uploadAssets } from "../library/asset-client";
+import { assetKey, assetLibraryContains, assetUrl, deleteAsset, fetchAssetLibrary, type StudioAsset, uploadAssets } from "../library/asset-client";
 import {
     fetchImg2ImgHealth,
     fetchImg2ImgJob,
@@ -258,6 +258,7 @@ export function ImageToImageWorkspace() {
     const [historyLoading, setHistoryLoading] = useState(false);
     const [historyError, setHistoryError] = useState("");
     const [expandedHistory, setExpandedHistory] = useState<Record<string, boolean>>({});
+    const [availableOutputs, setAvailableOutputs] = useState<Record<string, boolean>>({});
     const [health, setHealth] = useState<Img2ImgHealth | null>(null);
     const [runtimeMode, setRuntimeMode] = useState<Img2ImgRuntimeMode | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
@@ -426,6 +427,42 @@ export function ImageToImageWorkspace() {
         const timer = window.setTimeout(() => void refreshHistory(historyQuery), 0);
         return () => window.clearTimeout(timer);
     }, [trackedJobId, trackedJobStatus, historyQuery, refreshHistory]);
+
+    useEffect(() => {
+        const outputs = [
+            ...(job?.output ? [job.output] : []),
+            ...((job?.items || []).map((item) => item.output).filter((output): output is StudioAsset => Boolean(output))),
+            ...history.flatMap((record) => [
+                ...(record.output ? [record.output] : []),
+                ...((record.items || []).map((item) => item.output).filter((output): output is StudioAsset => Boolean(output))),
+            ]),
+        ];
+        const unique = new Map(outputs.map((output) => [assetKey(output), output]));
+        let active = true;
+        if (!unique.size) {
+            queueMicrotask(() => {
+                if (active) setAvailableOutputs({});
+            });
+            return () => {
+                active = false;
+            };
+        }
+        void fetchAssetLibrary("library")
+            .then((library) => {
+                if (!active) return;
+                setAvailableOutputs(Object.fromEntries([...unique].map(([key, output]) => [key, assetLibraryContains(library, output)])));
+            })
+            .catch(() => {
+                if (!active) return;
+                setAvailableOutputs(Object.fromEntries([...unique].map(([key, output]) => [key, Boolean(output.url)])));
+            });
+        return () => {
+            active = false;
+        };
+        // Output verification is keyed by the current job/history snapshots;
+        // polling an active job does not render output cards yet.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [history, job?.id, job?.status]);
 
     const selectedKey = useMemo(() => (source ? [assetKey(source)] : []), [source]);
     const poseSelectedKey = useMemo(() => (poseReference ? [assetKey(poseReference)] : []), [poseReference]);
@@ -1111,6 +1148,8 @@ export function ImageToImageWorkspace() {
                             const itemSteps = itemParameter(item, "steps", Number(steps));
                             const itemCfg = itemParameter(item, "cfg", Number(cfg));
                             const itemSeed = itemParameter(item, "seed", Number(seed));
+                            const itemOutputKey = item.output ? assetKey(item.output) : "";
+                            const itemOutputAvailable = item.output ? availableOutputs[itemOutputKey] === true : false;
                             return (
                                 <article className={styles.itemCard} key={item.index}>
                                     <div className={styles.itemHeader}>
@@ -1123,7 +1162,7 @@ export function ImageToImageWorkspace() {
                                         <div><dt>CFG</dt><dd>{itemCfg}</dd></div>
                                         <div><dt>{FIELD_LABELS.seed}</dt><dd>{itemSeed}</dd></div>
                                     </dl>
-                                    {item.output && (
+                                    {item.output && itemOutputAvailable && (
                                         <>
                                             {/* eslint-disable-next-line @next/next/no-img-element */}
                                             <img className={styles.itemImage} src={assetUrl(item.output)} alt={`第 ${item.index + 1} 張輸出`} />
@@ -1135,6 +1174,7 @@ export function ImageToImageWorkspace() {
                                             </div>
                                         </>
                                     )}
+                                    {item.output && availableOutputs[itemOutputKey] === false && <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>}
                                     {item.error && <p className={styles.error} role="alert">{item.error}</p>}
                                 </article>
                             );
@@ -1143,7 +1183,11 @@ export function ImageToImageWorkspace() {
                 </section>
             )}
 
-            {job?.status === "completed" && job.output && (
+            {job?.status === "completed" && job.output && availableOutputs[assetKey(job.output)] === false && (
+                <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>
+            )}
+
+            {job?.status === "completed" && job.output && availableOutputs[assetKey(job.output)] === true && (
                 <section className={styles.outputCard} aria-labelledby="img2img-output-title">
                     <div className={styles.sectionHeader}>
                         <div>
@@ -1209,7 +1253,8 @@ export function ImageToImageWorkspace() {
                                         {recordItems.map((item) => (
                                             <div className={styles.historyItem} key={item.index}>
                                                 <span>第 {item.index + 1} 張 · {itemStatusLabel(item.status, locale)} · {FIELD_LABELS.seed} {item.parameters?.seed ?? record.seed}</span>
-                                                {item.output && <a href={assetUrl(item.output)} target="_blank" rel="noreferrer">開啟輸出</a>}
+                                                {item.output && availableOutputs[assetKey(item.output)] === true && <a href={assetUrl(item.output)} target="_blank" rel="noreferrer">開啟輸出</a>}
+                                                {item.output && availableOutputs[assetKey(item.output)] === false && <span className={styles.error} role="status">輸出檔案不存在或已失效。</span>}
                                                 <dl className={styles.itemParameters}>
                                                     <div><dt>{FIELD_LABELS.denoise}</dt><dd>{itemParameter(item, "denoise", Number(record.denoise)).toFixed(2)}</dd></div>
                                                     <div><dt>{FIELD_LABELS.steps}</dt><dd>{itemParameter(item, "steps", Number(record.steps))}</dd></div>

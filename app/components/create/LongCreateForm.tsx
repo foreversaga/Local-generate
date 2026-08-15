@@ -8,6 +8,7 @@ import {
   H3_REALISM_PEOPLE_PRESET,
   H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
   longJobIsActive,
+  resizeLongSegment,
   selectHydratableLongJob,
   validateLongCreate,
 } from "../../lib/long-create-contract.mjs";
@@ -135,6 +136,7 @@ export function LongCreateForm() {
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("auto");
   const [duration, setDuration] = useState<NumberDraft>(10);
   const [segmentDurationHint, setSegmentDurationHint] = useState<NumberDraft>(5);
+  const [segmentDurationDrafts, setSegmentDurationDrafts] = useState<Record<string, string>>({});
   const [timeline, setTimeline] = useState("");
   const [promptProvider, setPromptProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
   const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
@@ -252,13 +254,17 @@ export function LongCreateForm() {
 
   function hydrateFromJob(next: LongJob, assetList: Asset[]) {
     const byKey = new Map(assetList.map((asset) => [assetKey(asset), asset]));
-    const hydrateAsset = (candidate?: Asset) => candidate ? byKey.get(assetKey(candidate)) || candidate : null;
+    const hydrateAsset = (candidate?: Asset) => {
+      if (!candidate) return null;
+      return byKey.get(assetKey(candidate)) || assetReference(candidate);
+    };
     const nextRefs = uniqueAssets([
       hydrateAsset(next.inputAsset),
       ...(next.referenceAssets || []).map(hydrateAsset),
     ].filter((asset): asset is Asset => Boolean(asset)), MAX_LONG_REFERENCE_IMAGES);
     setJob(next);
     setPlan(next);
+    setSegmentDurationDrafts({});
     setTitle(next.title || "");
     setInputType(next.inputType || "text");
     setBrief(next.inputText || "");
@@ -452,6 +458,7 @@ export function LongCreateForm() {
             : { characterLoraName: characterLoraName.trim(), ...(characterLoraId ? { characterLoraId } : {}), characterLoraStrength: characterLoraStrength === "" ? 0.75 : Number(characterLoraStrength) }),
       } as LongPlan;
       setPlan(nextPlan);
+      setSegmentDurationDrafts({});
       setPlanDirty(false);
       setTimeline((nextPlan.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
       if (nextPlan.duration) setDuration(nextPlan.duration);
@@ -525,6 +532,7 @@ export function LongCreateForm() {
     if (!response.ok || !payload.job) throw new Error(apiError(payload, "無法儲存長影片工作。"));
     setJob(payload.job);
     setPlan(payload.job);
+    setSegmentDurationDrafts({});
     setPlanDirty(false);
     return payload.job;
   }
@@ -574,11 +582,41 @@ export function LongCreateForm() {
     }
   }
 
+  function timelineTextForSegments(segments: LongSegment[]) {
+    return segments.map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n");
+  }
+
+  function applySegmentTimeline(segments: LongSegment[]) {
+    const totalDuration = segments.length ? segments[segments.length - 1].end : 0;
+    setPlan((current) => current ? { ...current, duration: totalDuration, segments } : current);
+    setTimeline(timelineTextForSegments(segments));
+    setDuration(totalDuration);
+    setPlanDirty(true);
+  }
+
   function updateSegment(index: number, patch: Partial<LongSegment>) {
-    setPlan((current) => current ? {
+    if (!plan) return;
+    applySegmentTimeline(plan.segments.map((segment, itemIndex) => itemIndex === index ? { ...segment, ...patch } : segment));
+  }
+
+  function updateSegmentDuration(index: number, rawValue: string) {
+    const segment = plan?.segments[index];
+    if (!segment) return;
+    const key = segment.id || String(index);
+    setSegmentDurationDrafts((current) => ({ ...current, [key]: rawValue }));
+    const nextDuration = Number(rawValue);
+    if (!Number.isFinite(nextDuration) || nextDuration < 0.5 || nextDuration > 60) return;
+    applySegmentTimeline(resizeLongSegment(plan.segments, index, nextDuration));
+  }
+
+  function commitSegmentDuration(index: number) {
+    const segment = plan?.segments[index];
+    if (!segment) return;
+    const key = segment.id || String(index);
+    setSegmentDurationDrafts((current) => ({
       ...current,
-      segments: current.segments.map((segment, itemIndex) => itemIndex === index ? { ...segment, ...patch } : segment),
-    } : current);
+      [key]: String((segment.end - segment.start).toFixed(3)),
+    }));
   }
 
   function randomizeSeed() {
@@ -593,7 +631,7 @@ export function LongCreateForm() {
     setBrief(""); setNegativePrompt(""); setTimelineMode("auto"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); setWidth(736); setHeight(416); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
     setH3LoraEnabled(false); setCharacterLoraName(""); setCharacterLoraId(""); setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
-    setPlan(null); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
+    setPlan(null); setSegmentDurationDrafts({}); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
   }
 
   const visibleIssues = attempted ? submitIssues : [];
@@ -658,7 +696,7 @@ export function LongCreateForm() {
           <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} aria-pressed={timelineMode === "auto"} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} aria-pressed={timelineMode === "manual"} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
           <div className={styles.twoColumns}>
             {timelineMode === "auto" && <Field label="目標總長（秒）" error={attempted ? issuesByField.get("duration") : ""}><input id="long-duration" className={styles.input} type="number" min={1} max={3600} value={duration} onChange={(event) => { setDuration(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>}
-            <Field label="目標單段長度（秒）" error={attempted ? issuesByField.get("segmentDurationHint") : ""}><input id="long-segment-duration" className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationHint} onChange={(event) => { setSegmentDurationHint(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
+            <p className={styles.helper}>規劃完成後，可在下方每個分鏡卡片中獨立設定長度；後續分鏡會自動順延，時間軸保持連續。</p>
           </div>
           {timelineMode === "manual" && <Field label="手動時間軸" helper="例如：[0 - 5] Opening；[5 - 10] Ending" error={attempted ? issuesByField.get("timelineText") : ""}><textarea id="long-timeline" className={styles.textarea} value={timeline} onChange={(event) => { setTimeline(event.target.value); markPlanDirty(); }} /></Field>}
           <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "規劃失敗。"))}>{planning ? "規劃中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡與 H3 提示詞`}</button>
@@ -669,6 +707,7 @@ export function LongCreateForm() {
           {!plan && <div className={styles.empty}>尚無分段提示詞。先完成 Planner，再在此逐段檢查與編輯。</div>}
           {plan?.segments.map((segment, index) => <article className={styles.segmentCard} key={segment.id || index}>
             <div className={styles.segmentHeading}><div><span>片段 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || (index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
+            <Field label="分鏡長度（秒）"><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
             <div className={styles.twoColumns}><Field label="分鏡描述"><textarea className={styles.compactTextarea} value={segment.description} onChange={(event) => updateSegment(index, { description: event.target.value })} /></Field><Field label="段尾狀態"><textarea className={styles.compactTextarea} value={segment.endingState || ""} onChange={(event) => updateSegment(index, { endingState: event.target.value })} /></Field></div>
             <Field label="H3 提示詞"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
             <Field label="此段負面提示詞" helper="空白則使用全片設定。"><textarea className={styles.compactTextarea} value={segment.negativePrompt || ""} onChange={(event) => updateSegment(index, { negativePrompt: event.target.value })} /></Field>
@@ -789,6 +828,13 @@ function AssetThumb({ asset }: { asset: Asset }) {
       <img src={`${BRIDGE_URL}${asset.url}`} alt="" />
     </span>
   );
+}
+function assetReference(asset: Asset): Asset {
+  if (asset.url) return asset;
+  return {
+    ...asset,
+    url: `/media?root=${encodeURIComponent(asset.root)}&name=${encodeURIComponent(asset.name)}`,
+  };
 }
 function assetKey(asset: Pick<Asset, "root" | "name">) { return `${asset.root}:${asset.name}`; }
 function uniqueAssets(values: Asset[], limit: number) { const map = new Map<string, Asset>(); for (const asset of values) if (asset?.name) map.set(assetKey(asset), asset); return [...map.values()].slice(0, limit); }

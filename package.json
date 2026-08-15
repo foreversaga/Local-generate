@@ -9,8 +9,9 @@
   "scripts": {
     "dev": "vinext dev",
     "restart:web": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1",
+    "restart:web:dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1 -Mode development",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "node server/production-web.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "test:unit": "node --test --test-concurrency=1 tests/*.test.mjs",
     "web:smoke": "node --test tests/webui-smoke.test.mjs",

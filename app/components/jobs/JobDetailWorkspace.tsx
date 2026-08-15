@@ -227,6 +227,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   }
   if (!job) return <div className={styles.error} role="alert">找不到工作。</div>;
   const outputHref = jobOutputHref(job);
+  const outputMissing = Boolean(job.output && job.outputAvailable === false);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const hasNativeStep = job.source === "img2img"
     && job.nativeCurrent !== null
@@ -382,6 +383,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         {job.canResume && <button type="button" disabled={Boolean(busy)} onClick={() => void action("resume")}>{ACTION_LABELS.resume}</button>}
         {job.canRetry && !retryDraft && <button type="button" disabled={Boolean(busy)} onClick={openRetryEditor}>{job.source === "video" ? "Edit and retry" : (busy === "retry" ? "Retrying…" : ACTION_LABELS.retry)}</button>}
         {outputHref && <a href={outputHref} className={styles.outputButton}>{job.source === "lora" ? ACTION_LABELS.downloadResult : ACTION_LABELS.openOutput}</a>}
+        {outputMissing && <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>}
         <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
         {(job.source === "upscale" || job.source === "img2img") && !job.canCancel && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>目前工具服務未提供取消端點，因此此頁不會顯示虛假的取消結果。</p>}
       </aside>

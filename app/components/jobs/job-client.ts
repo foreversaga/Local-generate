@@ -1,5 +1,5 @@
 import { fetchUnifiedJobSnapshot } from "../../lib/job-source-fetch.mjs";
-import { mergeJobCollections } from "../../lib/job-adapter.mjs";
+import { mergeJobCollections, outputAvailability } from "../../lib/job-adapter.mjs";
 
 export type UnifiedJob = ReturnType<typeof mergeJobCollections>[number];
 
@@ -35,8 +35,40 @@ export type FetchUnifiedJobsOptions = {
   timeoutMs?: number;
 };
 
+type OutputReference = {
+  root?: string;
+  name?: string;
+  url?: string;
+  downloadUrl?: string;
+};
+
+async function fetchOutputAssetKeys(fetchImpl: typeof fetch): Promise<Set<string> | null> {
+  try {
+    const response = await fetchImpl(`${BRIDGE_URL}/api/assets?root=all`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = await response.json() as { assets?: Array<{ root?: string; name?: string }> };
+    const assets = Array.isArray(payload.assets) ? payload.assets : [];
+    return new Set(assets
+      .filter((asset) => (asset.root === "input" || asset.root === "output") && typeof asset.name === "string" && asset.name)
+      .map((asset) => `${asset.root}:${asset.name!.replaceAll("\\", "/")}`));
+  } catch {
+    // A temporary library failure should not make the whole jobs view fail.
+    return null;
+  }
+}
+
+function markOutputAvailability(job: UnifiedJob, availableKeys: Set<string> | null): UnifiedJob {
+  const output = job.output as OutputReference | null;
+  if (!output) return job;
+  const nextAvailability = outputAvailability(output, availableKeys);
+  return nextAvailability === job.outputAvailable ? job : { ...job, outputAvailable: nextAvailability };
+}
+
 export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promise<UnifiedJobsSnapshot> {
-  return await fetchUnifiedJobSnapshot(options) as UnifiedJobsSnapshot;
+  const snapshot = await fetchUnifiedJobSnapshot(options) as UnifiedJobsSnapshot;
+  const fetchImpl = options?.fetchImpl || globalThis.fetch;
+  const availableKeys = typeof fetchImpl === "function" ? await fetchOutputAssetKeys(fetchImpl) : null;
+  return { ...snapshot, jobs: snapshot.jobs.map((job) => markOutputAvailability(job, availableKeys)) };
 }
 
 export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
@@ -60,11 +92,13 @@ async function request(url: string, method: string, body?: object) {
 }
 
 export function jobOutputHref(job: UnifiedJob) {
-  const output = job.output as { root?: string; name?: string; url?: string; downloadUrl?: string } | null;
+  const output = job.output as OutputReference | null;
   if (!output) return "";
+  if (job.outputAvailable === false) return "";
   const url = output.url || output.downloadUrl;
   if (url) return url.startsWith(`${BRIDGE_URL}/`) ? url : `${BRIDGE_URL}${url}`;
   if (job.source === "lora") return "";
+  if (job.outputAvailable !== true) return "";
   if (output.name) return `${BRIDGE_URL}/media?root=${encodeURIComponent(output.root || "output")}&name=${encodeURIComponent(output.name)}`;
   return "";
 }

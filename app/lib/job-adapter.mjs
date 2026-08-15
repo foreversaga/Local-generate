@@ -48,6 +48,7 @@ export function adaptJob(raw, source = "video") {
     ? loraTrainingProgress(raw, status)
     : clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
   const artifact = artifactRef(raw, source);
+  const output = outputRef(raw, source, artifact);
   return {
     id: String(raw?.id || ""),
     source,
@@ -81,7 +82,8 @@ export function adaptJob(raw, source = "video") {
     updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
     etaMs: etaMilliseconds(raw, source),
     error: typeof raw?.error === "string" ? raw.error : raw?.error?.message || "",
-    output: outputRef(raw, source, artifact),
+    output,
+    outputAvailable: outputAvailability(output),
     artifact,
     batchCount: positiveInteger(raw?.batchCount),
     randomRanges: raw?.randomRanges || null,
@@ -165,6 +167,29 @@ function outputRef(raw, source, artifact = null) {
   if (source === "long") return raw?.finalAsset || null;
   if (source === "lora") return artifact;
   return raw?.output || null;
+}
+
+/**
+ * A persisted job may retain an output reference after the media file has
+ * been removed. Callers can pass the current asset-key set to distinguish
+ * that stale reference from a real file. Without a key set, only an
+ * explicit backend URL is considered usable.
+ * @param {Record<string, unknown>|null|undefined} output
+ * @param {Set<string>|null} [availableKeys]
+ * @returns {boolean|null}
+ */
+export function outputAvailability(output, availableKeys = null) {
+  if (!output || typeof output !== "object") return null;
+  if (typeof output.available === "boolean") return output.available;
+  const root = typeof output.root === "string" ? output.root : "";
+  const name = typeof output.name === "string" ? output.name.replaceAll("\\", "/") : "";
+  const explicitUrl = typeof output.url === "string" && output.url.trim()
+    || typeof output.downloadUrl === "string" && output.downloadUrl.trim();
+  if (root && name) {
+    if (availableKeys instanceof Set) return availableKeys.has(`${root}:${name}`);
+    return Boolean(explicitUrl);
+  }
+  return Boolean(explicitUrl);
 }
 
 function canCancel(raw, source) {

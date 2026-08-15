@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, watch as watchFileSystem } from "node:fs";
 import { EventEmitter } from "node:events";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -41,6 +41,7 @@ import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.m
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
+import { createAssetLibraryCache } from "./server/media/asset-library-cache.mjs";
 import {
   SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
   SINGLE_RENDER_DURATION_MAX_SECONDS,
@@ -149,6 +150,7 @@ const BUILTIN_ANIMATE_LORAS = new Set([
 const MAX_BODY_BYTES = 260 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
+const ASSET_METADATA_CONCURRENCY = 12;
 const jobs = new Map();
 const jobProcesses = new Map();
 const singleJobPersistence = new Map();
@@ -756,46 +758,94 @@ function summarizeMediaFolders(rootName, folders, files) {
   return [...summaries.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-async function listAssetLibrary(rootName, { limit = 100 } = {}) {
-  const roots = rootName === "all" ? ["input", "output"] : [rootName];
+function applyAssetLimit(assets, limit = Infinity) {
+  return Number.isFinite(limit) ? assets.slice(0, Math.max(0, limit)) : assets;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const values = Array.from(items || []);
+  const results = new Array(values.length);
+  const workerCount = Math.min(values.length, Math.max(1, Math.floor(Number(concurrency) || 1)));
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(values[index], index);
+    }
+  }));
+  return results;
+}
+
+async function loadAssetLibraryRoot(currentRoot) {
   const all = [];
   const folders = [];
   const seen = new Set();
-  for (const currentRoot of roots) {
-    for (const root of mediaRoots(currentRoot)) {
-      const tree = await walkMedia(root);
-      folders.push(...summarizeMediaFolders(currentRoot, tree.folders, tree.files));
-      for (const file of tree.files) {
-        const key = currentRoot + ":" + file.relativeName;
-        if (seen.has(key)) continue;
-        try {
-          all.push(await toAsset(currentRoot, file.relativeName));
-          seen.add(key);
-        } catch {
-          // A file can disappear while the directory is being scanned.
-        }
+  for (const root of mediaRoots(currentRoot)) {
+    const tree = await walkMedia(root);
+    folders.push(...summarizeMediaFolders(currentRoot, tree.folders, tree.files));
+    const files = tree.files.filter((file) => {
+      const key = currentRoot + ":" + file.relativeName;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const assets = await mapWithConcurrency(files, ASSET_METADATA_CONCURRENCY, async (file) => {
+      try {
+        const stat = await fs.stat(file.fullPath);
+        const kind = classifyFile(file.relativeName);
+        if (!kind) return null;
+        return {
+          name: file.relativeName.replaceAll("\\", "/"),
+          root: currentRoot,
+          kind,
+          mime: mimeFor(file.relativeName),
+          size: stat.size,
+          modified: stat.mtime.toISOString(),
+          url: "/media?root=" + currentRoot + "&name=" + encodeURIComponent(file.relativeName),
+        };
+      } catch {
+        return null;
       }
-    }
+    });
+    all.push(...assets.filter(Boolean));
   }
-  const assets = all.sort((left, right) => right.modified.localeCompare(left.modified));
-  return {
-    assets: Number.isFinite(limit) ? assets.slice(0, Math.max(0, limit)) : assets,
-    folders,
-  };
+  return { assets: all.sort((left, right) => right.modified.localeCompare(left.modified)), folders };
+}
+
+const assetLibraryCache = createAssetLibraryCache({
+  loadRoot: loadAssetLibraryRoot,
+  watchRoot(rootName, invalidate) {
+    const [root] = mediaRoots(rootName);
+    return watchFileSystem(root, { recursive: true, persistent: false }, invalidate);
+  },
+});
+
+function invalidateAssetLibraryCache(rootName) {
+  assetLibraryCache.invalidate(rootName);
+}
+
+async function listAssetLibrary(rootName, { limit = Infinity } = {}) {
+  const roots = rootName === "all" ? ["input", "output"] : [rootName];
+  const libraries = await Promise.all(roots.map((name) => assetLibraryCache.get(name)));
+  const assets = libraries.flatMap((library) => library.assets)
+    .sort((left, right) => right.modified.localeCompare(left.modified));
+  const folders = libraries.flatMap((library) => library.folders);
+  return { assets: applyAssetLimit(assets, limit), folders };
 }
 
 async function listTrainingAssets() {
   const context = await trainingRootContext();
   const files = await walkTrainingMedia(context);
-  const all = [];
-  for (const file of files) {
+  const all = await mapWithConcurrency(files, ASSET_METADATA_CONCURRENCY, async (file) => {
     try {
-      all.push(await toAsset("training", file.relativeName));
+      return await toAsset("training", file.relativeName);
     } catch {
       // A file can disappear or change while the directory is being scanned.
+      return null;
     }
-  }
-  return all.sort((left, right) => right.modified.localeCompare(left.modified));
+  });
+  return all.filter(Boolean).sort((left, right) => right.modified.localeCompare(left.modified));
 }
 
 function assetFolderRecords(rootName, assets) {
@@ -4785,6 +4835,7 @@ async function route(req, res) {
       const asset = await withAssetLifecycleLock(() => requestUrl.searchParams.get("kind") === "folder"
         ? deleteMediaFolder(root, relativeName)
         : root === "input" ? deleteInputAsset(relativeName) : deleteOutputAsset(relativeName));
+      invalidateAssetLibraryCache(root);
       sendJson(res, 200, { asset });
     } catch (error) {
       const status = Number.isInteger(error?.status) ? error.status : 500;
@@ -4838,6 +4889,7 @@ async function route(req, res) {
         mimeType: req.headers?.["x-asset-mime"] || requestUrl.searchParams.get("mimeType") || "",
         contentType,
       }));
+      invalidateAssetLibraryCache("input");
       sendJson(res, 201, { asset });
     } catch (error) {
       if (!req.readableEnded) req.resume?.();
@@ -4989,6 +5041,9 @@ export {
   promptMode,
   walkMedia,
   summarizeMediaFolders,
+  applyAssetLimit,
+  mapWithConcurrency,
+  invalidateAssetLibraryCache,
   listAssetLibrary,
   mergeLoraTrainingAssetLibrary,
   listLoraTrainingAssetLibrary,

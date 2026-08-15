@@ -1,3 +1,8 @@
+param(
+  [ValidateSet("production", "development")]
+  [string]$Mode = "production"
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -50,8 +55,12 @@ if (Test-WebHealth) {
 $logRoot = Join-Path $projectRoot "logs"
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$stdoutPath = Join-Path $logRoot ("web-dev-" + $runStamp + ".stdout.log")
-$stderrPath = Join-Path $logRoot ("web-dev-" + $runStamp + ".stderr.log")
+$runScript = if ($Mode -eq "production") { "start" } else { "dev" }
+if ($Mode -eq "production" -and -not (Test-Path (Join-Path $projectRoot "dist\server\index.js"))) {
+  throw "Production build is missing. Run npm.cmd run build before restarting the production Web/API service."
+}
+$stdoutPath = Join-Path $logRoot ("web-" + $Mode + "-" + $runStamp + ".stdout.log")
+$stderrPath = Join-Path $logRoot ("web-" + $Mode + "-" + $runStamp + ".stderr.log")
 $npmPath = (Get-Command npm.cmd -CommandType Application).Source
 
 # The managed shell can expose both Path and PATH. Normalize that process-local
@@ -62,14 +71,14 @@ $env:Path = $pathValue
 
 $child = Start-Process `
   -FilePath $npmPath `
-  -ArgumentList @("run", "dev") `
+  -ArgumentList @("run", $runScript) `
   -WorkingDirectory $projectRoot `
   -RedirectStandardOutput $stdoutPath `
   -RedirectStandardError $stderrPath `
   -WindowStyle Hidden `
   -PassThru
 
-Write-Host "Started H3 Studio Web/API launcher PID $($child.Id)."
+Write-Host "Started H3 Studio Web/API in $Mode mode; launcher PID $($child.Id)."
 Write-Host "Waiting for $healthUrl ..."
 for ($attempt = 0; $attempt -lt 40; $attempt += 1) {
   if (Test-WebHealth) {

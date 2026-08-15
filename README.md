@@ -101,12 +101,15 @@ After `.env.local` is configured, either reuse healthy local Ollama and ComfyUI 
 .\scripts\vast\start-local-runtime.ps1
 ```
 
-Then start the Web/API from the project root:
+Build after application changes, then start the production Web/API from the project root:
 
 ```powershell
 Set-Location '<PROJECT_ROOT>'
-npm.cmd run dev
+npm.cmd run build
+npm.cmd run restart:web
 ```
+
+For active development only, use `npm.cmd run restart:web:dev`.
 
 ## Restart the web service
 
@@ -123,7 +126,7 @@ You can also use the npm command:
 npm.cmd run restart:web
 ```
 
-The script identifies the existing H3 Studio process on port `8787`, stops it, starts `npm.cmd run dev`, and waits for `/app/api/health` to return `200`. ComfyUI on `8188` and Ollama on `11434` are reused and do not need to restart together. Startup records are written to the project `logs` directory.
+The script identifies the existing H3 Studio process on port `8787`, stops it, and starts the existing Vinext production build through `server/production-web.mjs`, which keeps `/app` and the same-origin local API on the public `8787` process. It then waits for `/app/api/health` to return `200`. It fails clearly when the production build is missing instead of falling back to development mode. ComfyUI on `8188` and Ollama on `11434` are reused and do not need to restart together. Startup records are written to the project `logs` directory. Use `npm.cmd run restart:web:dev` only while actively editing the application.
 
 ## Local services
 

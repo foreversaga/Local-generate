@@ -26,7 +26,7 @@ import {
 } from "../../lib/single-duration.mjs";
 import { localizedCopy } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
+import { uploadAssets } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
@@ -93,7 +93,6 @@ export function SingleCreateForm() {
   const { FIELD_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [assetsReady, setAssetsReady] = useState(false);
   const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false });
   const [mode, setMode] = useState<Mode>("t2v");
   const [prompt, setPrompt] = useState("");
@@ -129,7 +128,6 @@ export function SingleCreateForm() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
-  const inputAssets = useMemo(() => assets.filter((asset) => asset.root === "input"), [assets]);
   const availableModels = useMemo(() => modelOptionsForMode(mode), [mode]);
   const modeOption = MODE_OPTIONS.find((option) => option.value === mode) || MODE_OPTIONS[0];
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
@@ -272,22 +270,19 @@ export function SingleCreateForm() {
     width,
   ]);
   const { clearDraft, status: draftStatus } = useSingleCreateDraft({
-    ready: assetsReady,
+    ready: true,
     value: draftValue,
     onHydrate: hydrateSingleCreateDraft,
   });
 
-  async function refreshAssets(): Promise<boolean> {
+  async function refreshAssets(): Promise<void> {
     try {
       const response = await fetch(`${BRIDGE_URL}/api/assets?root=all`);
-      if (!response.ok) return false;
+      if (!response.ok) return;
       const payload = (await response.json()) as { assets?: Asset[] };
       setAssets(payload.assets || []);
-      setAssetsReady(true);
-      return true;
     } catch {
       setAssets([]);
-      return false;
     }
   }
 
@@ -320,13 +315,16 @@ export function SingleCreateForm() {
   }
 
   async function initializeSingleCreate() {
-    const [assetsLoaded] = await Promise.all([refreshAssets(), refreshHealth(), refreshCharacterLoras()]);
-    setAssetsReady(assetsLoaded);
+    await Promise.all([refreshHealth(), refreshCharacterLoras()]);
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void initializeSingleCreate(); }, 0);
-    return () => window.clearTimeout(timer);
+    const bootstrapTimer = window.setTimeout(() => { void initializeSingleCreate(); }, 0);
+    const assetsTimer = window.setTimeout(() => { void refreshAssets(); }, 250);
+    return () => {
+      window.clearTimeout(bootstrapTimer);
+      window.clearTimeout(assetsTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The bridge bootstrap intentionally runs once on mount.
   }, []);
 
@@ -338,13 +336,13 @@ export function SingleCreateForm() {
     const nextModelProfile = modelOptions.some((option) => option.value === draft.modelProfile)
       ? draft.modelProfile
       : modelOptions[0]?.value || "nvfp4_blackwell";
-    const assetByKey = new Map(inputAssets.map((asset) => [assetKey(asset), asset]));
+    const assetByKey = new Map(assets.map((asset) => [assetKey(asset), asset]));
     const imageByKey = (key: string | null) => {
-      const asset = key ? assetByKey.get(key) : null;
+      const asset = key ? assetByKey.get(key) || assetReferenceFromKey(key, "image") : null;
       return asset?.kind === "image" ? asset : null;
     };
     const videoByKey = (key: string | null) => {
-      const asset = key ? assetByKey.get(key) : null;
+      const asset = key ? assetByKey.get(key) || assetReferenceFromKey(key, "video") : null;
       return asset?.kind === "video" ? asset : null;
     };
 
@@ -520,8 +518,7 @@ export function SingleCreateForm() {
     } : current);
   }
 
-  function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, key: string) {
-    const nextAsset = assets.find((asset) => assetKey(asset) === key) || null;
+  function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, nextAsset: Asset | null) {
     if (target === "referenceImage") setReferenceImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "lastFrameImage") setLastFrameImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "sourceVideo") setSourceVideo(nextAsset?.kind === "video" ? nextAsset : null);
@@ -529,9 +526,9 @@ export function SingleCreateForm() {
     markTouched(target);
   }
 
-  function addReferenceImage(key: string) {
-    const asset = assets.find((item) => assetKey(item) === key && item.kind === "image");
-    if (!asset || referenceImages.some((item) => assetKey(item) === key)) return;
+  function addReferenceImage(asset: Asset) {
+    const key = assetKey(asset);
+    if (asset.kind !== "image" || referenceImages.some((item) => assetKey(item) === key)) return;
     setReferenceImages((current) => [...current, asset].slice(0, MAX_REF2V_IMAGES));
     markTouched("referenceImages");
   }
@@ -684,7 +681,7 @@ export function SingleCreateForm() {
               uploadingTarget={uploadingTarget}
               errorFor={visibleFieldError}
               onSelectSingle={selectSingleAsset}
-              onAddReferences={(keys) => keys.forEach(addReferenceImage)}
+              onAddReferences={(chosen) => chosen.forEach(addReferenceImage)}
               onRemoveReference={removeReferenceImage}
               onClearReference={() => {
                 setReferenceImage(null);
@@ -1127,8 +1124,8 @@ function SourceFields({
   sourceVideo: Asset | null;
   uploadingTarget: UploadTarget | null;
   errorFor: (field: string) => string;
-  onSelectSingle: (target: Exclude<UploadTarget, "referenceImages">, key: string) => void;
-  onAddReferences: (keys: string[]) => void;
+  onSelectSingle: (target: Exclude<UploadTarget, "referenceImages">, asset: Asset | null) => void;
+  onAddReferences: (assets: Asset[]) => void;
   onRemoveReference: (asset: Asset) => void;
   onClearReference: () => void;
   onClearLastFrame: () => void;
@@ -1187,7 +1184,7 @@ function SourceFields({
               maxSelection={MAX_REF2V_IMAGES}
               selectedKeys={referenceImages.map(assetKey)}
               label="從素材庫加入圖片"
-              onSelect={(chosen) => onAddReferences(chosen.map(libraryAssetKey))}
+              onSelect={onAddReferences}
             />
             <UploadButton
               kind="image"
@@ -1261,7 +1258,7 @@ function SingleAssetPicker({
   selected: Asset | null;
   error: string;
   uploading: boolean;
-  onSelect: (key: string) => void;
+  onSelect: (asset: Asset) => void;
   onClear: () => void;
   onUpload: (files: File[]) => Promise<void>;
 }) {
@@ -1280,7 +1277,7 @@ function SingleAssetPicker({
           allowedKinds={[kind]}
           selectedKeys={selected ? [assetKey(selected)] : []}
           label="從素材庫選擇"
-          onSelect={(chosen) => { if (chosen[0]) onSelect(libraryAssetKey(chosen[0])); }}
+          onSelect={(chosen) => { if (chosen[0]) onSelect(chosen[0]); }}
         />
         <UploadButton kind={kind} busy={uploading} onFiles={onUpload} />
       </div>
@@ -1423,6 +1420,22 @@ function resolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | n
 
 function assetKey(asset: Asset) {
   return `${asset.root}:${asset.name}`;
+}
+
+function assetReferenceFromKey(key: string, kind: AssetKind): Asset | null {
+  const separator = key.indexOf(":");
+  const root = separator > 0 ? key.slice(0, separator) : "";
+  const name = separator > 0 ? key.slice(separator + 1).replaceAll("\\", "/") : "";
+  if ((root !== "input" && root !== "output") || !name) return null;
+  return {
+    root,
+    name,
+    kind,
+    mime: kind === "video" ? "video/mp4" : "image/png",
+    size: 0,
+    modified: "",
+    url: `/media?root=${encodeURIComponent(root)}&name=${encodeURIComponent(name)}`,
+  };
 }
 
 function mergeAssets(current: Asset[], incoming: Asset[]) {

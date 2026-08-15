@@ -4,7 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { jobStatusLabel, localizedCopy, readinessLabel as localizedReadinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import { AssetPickerButton } from "../library/AssetPickerButton";
-import { assetKey, uploadAssets, type StudioAsset } from "../library/asset-client";
+import { assetKey, uploadAssets, verifyAssetAvailable, type StudioAsset } from "../library/asset-client";
 import {
     fetchUpscaleHealth,
     fetchUpscaleJob,
@@ -32,6 +32,7 @@ export function UpscaleWorkspace() {
     const [healthError, setHealthError] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState<"upload" | "submit" | "cancel" | "retry" | "">("");
+    const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
@@ -171,6 +172,28 @@ export function UpscaleWorkspace() {
         };
     }, [active, job?.id]);
 
+    useEffect(() => {
+        const output = job?.status === "completed" ? job.output : null;
+        let active = true;
+        if (!output) {
+            queueMicrotask(() => {
+                if (active) setOutputAvailable(null);
+            });
+            return () => {
+                active = false;
+            };
+        }
+        queueMicrotask(() => {
+            if (active) setOutputAvailable(null);
+        });
+        void verifyAssetAvailable(output).then((available) => {
+            if (active) setOutputAvailable(available);
+        });
+        return () => {
+            active = false;
+        };
+    }, [job?.id, job?.output, job?.output?.name, job?.output?.root, job?.output?.url, job?.status]);
+
     const statusLabel = job
         ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale", locale)}${job.stage ? ` · ${job.stage}` : ""}`
         : "已就緒，可開始升頻";
@@ -257,7 +280,11 @@ export function UpscaleWorkspace() {
 
             {error && <p className={styles.error} role="alert">{error}</p>}
 
-            {job?.status === "completed" && job.output && (
+            {job?.status === "completed" && job.output && outputAvailable === false && (
+                <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>
+            )}
+
+            {job?.status === "completed" && job.output && outputAvailable === true && (
                 <section className={styles.result} aria-live="polite">
                     <div className={styles.cardHeading}>
                         <div>

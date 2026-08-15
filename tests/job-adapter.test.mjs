@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activeJobCount, adaptJob, mergeJobCollections, normalizeJobStatus } from "../app/lib/job-adapter.mjs";
+import { activeJobCount, adaptJob, mergeJobCollections, normalizeJobStatus, outputAvailability } from "../app/lib/job-adapter.mjs";
 
 test("job adapter normalizes backend statuses into five UI states", () => {
   assert.equal(normalizeJobStatus("queued"), "queued");
@@ -20,6 +20,14 @@ test("job adapter exposes only the actions backed by each source contract", () =
   assert.equal(interrupted.canRetry, true);
   assert.equal(adaptJob({ id: "l", status: "paused" }, "long").canResume, true);
   assert.equal(adaptJob({ id: "done", status: "completed" }, "long").canRetry, false);
+});
+
+test("job output references are marked unavailable when their media key is stale", () => {
+  const available = new Set(["output:valid/render.mp4"]);
+  assert.equal(outputAvailability({ root: "output", name: "valid/render.mp4" }, available), true);
+  assert.equal(outputAvailability({ root: "output", name: "missing/render.mp4", url: "/app/media?root=output&name=missing%2Frender.mp4" }, available), false);
+  assert.equal(adaptJob({ id: "stale", status: "completed", output: { root: "output", name: "missing/render.mp4" } }, "video").outputAvailable, false);
+  assert.equal(outputAvailability({ downloadUrl: "/app/api/lora-training/jobs/lora/artifact/download" }), true);
 });
 
 test("merged jobs sort recent first and count active states", () => {

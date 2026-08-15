@@ -4,6 +4,7 @@ import {
   buildLongPlanRequest,
   buildLongSaveRequest,
   parseLongTimelineDraft,
+  resizeLongSegment,
   selectHydratableLongJob,
   validateLongCreate,
 } from "../app/lib/long-create-contract.mjs";
@@ -99,5 +100,23 @@ test("Long timeline draft parses range and duration forms", () => {
   assert.deepEqual(parseLongTimelineDraft("[0 - 4] A\n3 sec B", []), [
     { start: 0, end: 4, duration: 4, description: "A" },
     { start: 4, end: 7, duration: 3, description: "B" },
+  ]);
+});
+
+test("resizing one long-video segment reflows only that segment and following timestamps", () => {
+  const timeline = [
+    { id: "s1", start: 0, end: 4, duration: 4, description: "A" },
+    { id: "s2", start: 4, end: 7, duration: 3, description: "B" },
+    { id: "s3", start: 7, end: 10, duration: 3, description: "C" },
+  ];
+  assert.deepEqual(resizeLongSegment(timeline, 1, 5).map(({ start, end, duration }) => ({ start, end, duration })), [
+    { start: 0, end: 4, duration: 4 },
+    { start: 4, end: 9, duration: 5 },
+    { start: 9, end: 12, duration: 3 },
+  ]);
+  assert.deepEqual(resizeLongSegment(timeline, 0, 2).map(({ start, end, duration }) => ({ start, end, duration })), [
+    { start: 0, end: 2, duration: 2 },
+    { start: 2, end: 5, duration: 3 },
+    { start: 5, end: 8, duration: 3 },
   ]);
 });

@@ -87,6 +87,32 @@ export function parseLongTimelineDraft(value, fallback = []) {
   return parsed.length >= 2 ? parsed : fallback;
 }
 
+/**
+ * Resize one storyboard segment while keeping the timeline contiguous.
+ * Segments before the edited one keep their timestamps; the edited segment
+ * and every following segment are reflowed from the preceding end time.
+ */
+export function resizeLongSegment(segments, index, duration) {
+  if (!Array.isArray(segments) || index < 0 || index >= segments.length) return segments;
+  const nextDuration = Number(duration);
+  if (!Number.isFinite(nextDuration) || nextDuration < 0.5 || nextDuration > 60) return segments;
+  let cursor = 0;
+  return segments.map((segment, segmentIndex) => {
+    const originalStart = Number(segment?.start);
+    const originalEnd = Number(segment?.end);
+    const originalDuration = originalEnd - originalStart;
+    if (segmentIndex < index) {
+      cursor = Number(originalEnd.toFixed(3));
+      return segment;
+    }
+    const start = segmentIndex === 0 ? 0 : cursor;
+    const segmentDuration = segmentIndex === index ? nextDuration : originalDuration;
+    const end = Number((start + segmentDuration).toFixed(3));
+    cursor = end;
+    return { ...segment, start, end, duration: Number((end - start).toFixed(3)) };
+  });
+}
+
 export function buildLongPlanRequest(input) {
   const refs = (input.referenceAssets || []).slice(0, MAX_LONG_REFERENCE_IMAGES);
   const characterLoraName = String(input.characterLoraName || "").trim().replaceAll("\\", "/");
