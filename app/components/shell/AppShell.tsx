@@ -9,6 +9,8 @@ import {
 } from "../../lib/webui-routes.mjs";
 import { RecentJobsDrawer } from "../jobs/RecentJobsDrawer";
 import { ServiceStatusLink } from "./ServiceStatusLink";
+import { LanguageSwitcher } from "./LanguageSwitcher";
+import { useI18n } from "../../i18n/I18nProvider";
 import styles from "./AppShell.module.css";
 
 type AppShellProps = {
@@ -28,13 +30,14 @@ function NavIcon({ id }: { id: string }) {
 }
 
 export function AppShell({ children }: AppShellProps) {
+  const { locale, t } = useI18n();
   const pathname = usePathname() || "/app/create";
   const activeRoute = primaryRouteForPath(pathname);
-  const title = routeTitle(pathname);
+  const title = routeTitle(pathname, locale);
 
   return (
     <div className={styles.shell}>
-      <aside className={styles.desktopSidebar} aria-label="主要導覽">
+      <aside className={styles.desktopSidebar} aria-label={t("shell.primaryNav")}>
         <a className={styles.brand} href="/app/create">
           <span className={styles.brandMark} aria-hidden="true">
             <span />
@@ -44,7 +47,7 @@ export function AppShell({ children }: AppShellProps) {
           <span className={styles.brandName}>H3 STUDIO</span>
         </a>
 
-        <div className={styles.navLabel}>工作區</div>
+        <div className={styles.navLabel}>{t("shell.workspace")}</div>
         <nav className={styles.nav}>
           {WEB_UI_ROUTES.map((route) => {
             const active = route.id === activeRoute;
@@ -56,15 +59,14 @@ export function AppShell({ children }: AppShellProps) {
                 aria-current={active ? "page" : undefined}
               >
                 <span className={styles.navIcon}><NavIcon id={route.id} /></span>
-                <span>{route.label}</span>
+                <span>{t(`nav.${route.id}` as "nav.create")}</span>
               </a>
             );
           })}
         </nav>
 
         <div className={styles.sidebarFooter}>
-          本機優先工作區<br />
-          既有生成服務介面在遷移期間維持不變。
+          {t("shell.footer").split("\n").map((line) => <span key={line}>{line}<br /></span>)}
         </div>
       </aside>
 
@@ -75,6 +77,7 @@ export function AppShell({ children }: AppShellProps) {
             <span className={styles.pageTitle}>{title}</span>
           </div>
           <div className={styles.topActions}>
+            <LanguageSwitcher />
             <RecentJobsDrawer />
             <ServiceStatusLink />
           </div>
@@ -83,7 +86,7 @@ export function AppShell({ children }: AppShellProps) {
         <main className={styles.content}>{children}</main>
       </div>
 
-      <nav className={styles.mobileNav} aria-label="主要導覽">
+      <nav className={styles.mobileNav} aria-label={t("shell.primaryNav")}>
         {WEB_UI_ROUTES.map((route) => {
           const active = route.id === activeRoute;
           return (
@@ -94,7 +97,7 @@ export function AppShell({ children }: AppShellProps) {
               aria-current={active ? "page" : undefined}
             >
               <span className={styles.mobileNavIcon}><NavIcon id={route.id} /></span>
-              <span>{route.label}</span>
+              <span>{t(`nav.${route.id}` as "nav.create")}</span>
             </a>
           );
         })}

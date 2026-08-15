@@ -38,6 +38,7 @@ test("dev RSC module paths keep one /app prefix", async () => {
   assert.doesNotMatch(modulePrefixer, /\.replace\(\s*\/"BASE_URL":/);
   assert.doesNotMatch(modulePrefixer, /\/app\/app/);
   assert.match(viteConfig, /parsed\.pathname\.startsWith\("\/components\/"\)/);
+  assert.match(viteConfig, /parsed\.pathname\.startsWith\("\/i18n\/"\)/);
   assert.match(viteConfig, /parsed\.pathname\.startsWith\("\/lib\/"\)/);
   assert.match(viteConfig, /\["\/globals\.css", "\/page\.tsx", "\/layout\.tsx"\]/);
   assert.match(rootPage, /<AppShell>[\s\S]*<CreateLanding \/>/);

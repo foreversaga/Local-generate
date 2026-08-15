@@ -1,7 +1,8 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { ACTION_LABELS, jobStatusLabel, readinessLabel as localizedReadinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
+import { jobStatusLabel, localizedCopy, readinessLabel as localizedReadinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { assetKey, uploadAssets, type StudioAsset } from "../library/asset-client";
 import {
@@ -22,6 +23,8 @@ const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 export function UpscaleWorkspace() {
+    const { locale } = useI18n();
+    const { ACTION_LABELS } = localizedCopy(locale);
     const [source, setSource] = useState<StudioAsset | null>(null);
     const [job, setJob] = useState<UpscaleJob | null>(null);
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
@@ -169,9 +172,9 @@ export function UpscaleWorkspace() {
     }, [active, job?.id]);
 
     const statusLabel = job
-        ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale")}${job.stage ? ` · ${job.stage}` : ""}`
+        ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale", locale)}${job.stage ? ` · ${job.stage}` : ""}`
         : "已就緒，可開始升頻";
-    const readinessLabel = healthLoading ? localizedReadinessLabel("checking") : health?.ready ? localizedReadinessLabel("ready") : localizedReadinessLabel("unavailable");
+    const readinessLabel = healthLoading ? localizedReadinessLabel("checking", locale) : health?.ready ? localizedReadinessLabel("ready", locale) : localizedReadinessLabel("unavailable", locale);
 
     return (
         <div className={styles.workspace}>
@@ -199,7 +202,7 @@ export function UpscaleWorkspace() {
                                 <track kind="captions" />
                             </video>
                             <div className={styles.sourceMeta}>
-                                <span>{source.kind === "video" ? "影片" : source.kind} · {sourceLabel(source.root)}</span>
+                                <span>{source.kind === "video" ? (locale === "en" ? "Video" : "影片") : source.kind} · {sourceLabel(source.root, locale)}</span>
                                 <button type="button" className={styles.textButton} disabled={active || Boolean(busy)} onClick={() => { setSource(null); setJob(null); setError(""); }}>
                                     {ACTION_LABELS.clearSource}
                                 </button>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ACTION_LABELS, SOURCE_LABELS } from "../../lib/ui-copy.mjs";
+import { localizedCopy } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import { assetKey, assetUrl, deleteAsset, deleteAssetFolder, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
 import styles from "./LibraryWorkspace.module.css";
@@ -9,6 +10,8 @@ import styles from "./LibraryWorkspace.module.css";
 const NEW_UPLOAD_FOLDER = "__new_upload_folder__";
 
 export function LibraryWorkspace() {
+    const { locale } = useI18n();
+    const { ACTION_LABELS, SOURCE_LABELS } = localizedCopy(locale);
     const [assets, setAssets] = useState<StudioAsset[]>([]);
     const [folderRecords, setFolderRecords] = useState<StudioAssetFolder[]>([]);
     const [root, setRoot] = useState<"all" | "input" | "output">("all");

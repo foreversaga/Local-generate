@@ -18,7 +18,8 @@ import {
 } from "../../lib/studio-settings.mjs";
 import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
-import { FIELD_LABELS, jobStatusLabel } from "../../lib/ui-copy.mjs";
+import { FIELD_LABELS, jobStatusLabel, localizedCopy } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import styles from "./LongCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
@@ -119,6 +120,8 @@ const RENDER_MODELS = [
 ] as const;
 
 export function LongCreateForm() {
+  const { locale } = useI18n();
+  const { FIELD_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
@@ -698,7 +701,7 @@ export function LongCreateForm() {
         <section className={styles.summaryCard}>
           <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
           <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="時間軸" value={timelineMode === "auto" ? `${duration || "—"} 秒 / 自動` : "手動"} /><Summary label="分段" value={`${plan?.segments.length || 0} 段`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="提示詞提供者" value={promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel} /></div>
-          {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long")}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
+          {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>
           <span className={styles.eyebrow}>檢查結果</span>

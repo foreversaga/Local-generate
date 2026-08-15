@@ -4,9 +4,9 @@ import { ImageToImageWorkspace } from "../../../components/tools/ImageToImageWor
 export default function ImageToImagePage() {
   return (
     <RoutePage
-      eyebrow="Tools / Image to Image"
-      title="Image to Image"
-      description="選擇來源圖片、設定提示詞與 ComfyUI checkpoint，提交可恢復的圖生圖工作並在此查看結果。"
+      eyebrow="page.img2img.eyebrow"
+      title="page.img2img.title"
+      description="page.img2img.description"
     >
       <ImageToImageWorkspace />
     </RoutePage>

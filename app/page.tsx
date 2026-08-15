@@ -8,9 +8,9 @@ export default function Home() {
   return (
     <AppShell>
       <RoutePage
-        eyebrow="建立"
-        title="選擇生成工作流"
-        description="單次影片與長影片使用獨立流程；也可以直接從素材庫的素材開始。"
+        eyebrow="page.create.eyebrow"
+        title="page.create.title"
+        description="page.create.description"
       >
         <CreateLanding />
       </RoutePage>
