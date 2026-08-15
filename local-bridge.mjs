@@ -54,6 +54,7 @@ import {
   SINGLE_RENDER_DURATION_MAX_SECONDS,
   SINGLE_RENDER_DURATION_RUNTIME_MIN_SECONDS,
 } from "./app/lib/single-duration.mjs";
+import { buildRef2VCameraPlanContext, mergeNegativePromptTerms } from "./app/lib/ref2v-camera-plan.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -1464,7 +1465,17 @@ async function createPrompt(payload) {
       }))
       .filter((item) => item.data)
     : [];
-  const negativePrompt = String(payload.negativePrompt || "").trim();
+  const inputNegativePrompt = String(payload.negativePrompt || "").trim();
+  const compiledCameraPlan = mode === "ref2v" && payload.cameraPlan && typeof payload.cameraPlan === "object"
+    ? buildRef2VCameraPlanContext(payload.cameraPlan, {
+      duration: durationSeconds,
+      referenceCount: referenceImageNames.length,
+      hasVideo: Boolean(sourceVideoName),
+    })
+    : null;
+  const negativePrompt = compiledCameraPlan
+    ? mergeNegativePromptTerms(inputNegativePrompt || DEFAULT_SHORT_NEGATIVE_PROMPT, compiledCameraPlan.negativeTerms)
+    : inputNegativePrompt;
   if (!brief) throw new LongVideoError("PROMPT_INPUT_REQUIRED", "請先輸入一段畫面想法。", 400);
   if (provider === "ollama" && ["i2v", "fl2v", "l2v", "ref2v"].includes(mode) && !visualInputs.length) {
     throw new LongVideoError(
@@ -1509,6 +1520,7 @@ async function createPrompt(payload) {
     visualInputs.length
       ? `Attached visual references in order: ${visualInputs.map((item, index) => `<Picture ${index + 1}> (${item.role})`).join(", ")}. Inspect every attached image and keep each visible identity and composition consistent.`
       : "",
+    compiledCameraPlan?.context || "",
     negativePrompt ? `User-provided negative constraints: ${negativePrompt}` : "",
   ].filter(Boolean).join("\n");
   if (provider === "codex") {

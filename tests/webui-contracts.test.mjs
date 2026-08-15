@@ -433,9 +433,19 @@ test("ref2v prompt request caps references and uses Picture 1 as primary referen
     lastFrameName: "",
     sourceVideoName: "motion.mp4",
     images: [],
+    cameraPlan: { version: 1, shots: [{ id: "shot-1" }] },
   });
 
   assert.equal(payload.referenceImageName, "ref-1.png");
   assert.deepEqual(payload.referenceImageNames, referenceImageNames.slice(0, 9));
   assert.equal(payload.sourceVideoName, "motion.mp4");
+  assert.deepEqual(payload.cameraPlan, { version: 1, shots: [{ id: "shot-1" }] });
+});
+
+test("camera planning data is omitted from non-Ref2V prompt requests", () => {
+  const payload = buildSinglePromptRequest({
+    provider: "ollama", model: "vision-model", codexModel: "gpt-5.6-luna", reasoningEffort: "medium",
+    brief: "A scene", negativePrompt: "", mode: "i2v", duration: 5, images: [], cameraPlan: { version: 1 },
+  });
+  assert.equal(Object.hasOwn(payload, "cameraPlan"), false);
 });

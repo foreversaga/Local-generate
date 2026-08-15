@@ -208,6 +208,37 @@ test("Ollama image modes reject requests without an actual visual input", async 
   }
 });
 
+test("Ref2V camera planning is compiled into the model request and negative prompt", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const validRef2V = `subject_definitions:\n<Picture 1> is the supplied appearance reference.\n<Subject 1> is the principal person shown in <Picture 1>.\n\nsummary:\n[reference generation] Preserve <Subject 1> from <Picture 1>.\n\nretention_analysis:\n<Picture 1>: fully_preserved - appearance and identity remain consistent.\n<Subject 1> ([Shot 1]): fully_preserved - identity remains consistent.\n\ndetailed_description:\n[Shot 1] <Subject 1> walks through the scene in a handheld follow shot.\n\noverall_soundscape:\nNatural room tone and footsteps.\n\nnon_diegetic_music:\nN/A`;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return new Response(JSON.stringify({ response: validRef2V }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      provider: "ollama", model: "vision-model", brief: "Keep the same person walking.", mode: "ref2v", duration: 5,
+      referenceImageNames: ["person.png"], images: [{ role: "picture_1", data: "aGVsbG8=" }],
+      cameraPlan: {
+        videoPolicy: "none",
+        global: { style: "smartphone", composition: "thirds", transition: "cut", imperfections: ["film_grain"], avoidances: ["random_zoom"] },
+        shots: [{ startMs: 0, pictureRefs: [1], pictureRole: "appearance", size: "medium", angle: "eye_level", primaryMotion: "handheld_follow", secondaryMotion: "none", amplitude: "small", speed: "slow", transition: "cut", composition: "thirds" }],
+      },
+    });
+    assert.equal(result.status, 200);
+    const generation = calls.find((body) => typeof body.prompt === "string" && body.prompt.includes("User-selected Ref2VA camera plan"));
+    assert.ok(generation);
+    assert.match(generation.prompt, /casual smartphone footage/);
+    assert.match(generation.prompt, /handheld follow shot/);
+    assert.match(generation.prompt, /Do not output detached camera tags/);
+    assert.match(result.body.negativePrompt, /unmotivated random zooms/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Ollama img2img prompt generation returns structured positive and negative fields", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

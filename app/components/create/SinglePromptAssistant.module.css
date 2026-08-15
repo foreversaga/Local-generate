@@ -229,6 +229,99 @@
   stroke-width: 1.8;
 }
 
+.cameraPlanner {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-soft) 54%, var(--bg));
+}
+
+.cameraPlanner > summary {
+  display: flex;
+  min-height: 58px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 13px;
+  list-style: none;
+}
+
+.cameraPlanner > summary::-webkit-details-marker { display: none; }
+.cameraPlanner > summary span:first-child { display: grid; gap: 3px; }
+.cameraPlanner > summary strong { color: var(--text); font-size: 13px; }
+.cameraPlanner > summary small { color: var(--muted-2); font-size: 11px; line-height: 1.4; }
+
+.cameraCount {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--lime) 12%, transparent);
+  color: var(--lime);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.cameraContent { display: grid; gap: 14px; border-top: 1px solid var(--line-soft); padding: 13px; }
+.cameraGroup { display: grid; gap: 12px; }
+.cameraGroup h4 { margin: 0; color: var(--text); font-size: 12px; }
+.cameraGroupHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cameraGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cameraField { display: grid; min-width: 0; gap: 6px; }
+.cameraField > span, .checkGroup legend, .referenceChoices legend { color: var(--muted); font-size: 11px; font-weight: 700; }
+.cameraField select, .cameraField input, .cameraField textarea {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+}
+.cameraField textarea { min-height: 66px; padding: 9px 10px; resize: vertical; line-height: 1.45; }
+.cameraField input:disabled { color: var(--muted-2); opacity: .7; }
+.checkGroup, .referenceChoices { min-width: 0; margin: 0; border: 0; padding: 0; }
+.checkGroup > div, .referenceChoices { display: flex; flex-wrap: wrap; gap: 7px; }
+.checkGroup legend, .referenceChoices legend { width: 100%; margin-bottom: 7px; }
+.checkGroup label, .referenceChoices label {
+  display: inline-flex;
+  min-height: 40px;
+  cursor: pointer;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 11px;
+}
+.checkGroup input, .referenceChoices input { width: 16px; height: 16px; accent-color: var(--lime); }
+.referenceChoices small { color: var(--muted-2); font-size: 11px; }
+.cameraAction, .shotActions button {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.cameraAction:hover, .shotActions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--lime) 45%, var(--line)); color: var(--lime); }
+.cameraAction:disabled, .shotActions button:disabled { cursor: not-allowed; opacity: .35; }
+.shotList { display: grid; gap: 11px; }
+.shotCard { display: grid; gap: 12px; border: 1px solid var(--line-soft); border-radius: 11px; background: color-mix(in srgb, var(--bg-elevated) 74%, transparent); padding: 12px; }
+.shotHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.shotHeader strong { color: var(--lime); font-size: 12px; }
+.shotActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.shotActions button { min-width: 40px; }
+
 @media (max-width: 620px) {
   .providerRow {
     align-items: stretch;
@@ -247,6 +340,15 @@
   .providerFields {
     grid-template-columns: 1fr;
   }
+
+  .cameraGrid { grid-template-columns: 1fr; }
+  .cameraContent { padding: 11px; }
+  .shotCard { padding: 10px; }
+  .shotHeader { align-items: flex-start; flex-direction: column; }
+  .shotActions { width: 100%; justify-content: stretch; }
+  .shotActions button { min-height: 44px; flex: 1 1 auto; }
+  .cameraAction { min-height: 44px; }
+  .checkGroup label, .referenceChoices label { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -19,6 +19,7 @@ const MAX_REF2V_IMAGES = 9;
  *   lastFrameName?: string;
  *   sourceVideoName?: string;
  *   images?: PromptImage[];
+ *   cameraPlan?: object;
  * }} SinglePromptRequestInput
  */
 
@@ -52,6 +53,7 @@ export function buildSinglePromptRequest(input) {
 
   if (input.mode === "ref2v") {
     payload.referenceImageNames = referenceImageNames;
+    if (input.cameraPlan && typeof input.cameraPlan === "object") payload.cameraPlan = input.cameraPlan;
   }
 
   return payload;

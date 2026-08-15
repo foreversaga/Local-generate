@@ -11,6 +11,8 @@ import {
   reconcileStudioSettings,
 } from "../../lib/studio-settings.mjs";
 import styles from "./SinglePromptAssistant.module.css";
+import { createDefaultRef2VCameraPlan, normalizeRef2VCameraPlan } from "../../lib/ref2v-camera-plan.mjs";
+import { Ref2VCameraPlanner, type CameraPlan } from "./Ref2VCameraPlanner";
 
 const BRIDGE_URL = "/app";
 const MAX_REF2V_IMAGES = 9;
@@ -137,6 +139,7 @@ export function SinglePromptAssistant({
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [cameraPlan, setCameraPlan] = useState<CameraPlan>(() => createDefaultRef2VCameraPlan() as CameraPlan);
 
   useEffect(() => {
     void refreshHealth();
@@ -298,6 +301,11 @@ export function SinglePromptAssistant({
           lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           images,
+          cameraPlan: mode === "ref2v" ? normalizeRef2VCameraPlan(cameraPlan, {
+            duration,
+            referenceCount: referenceImages.length,
+            hasVideo: Boolean(sourceVideo),
+          }) : undefined,
         })),
       });
       const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload & {
@@ -363,6 +371,15 @@ export function SinglePromptAssistant({
         <span id="single-prompt-brief-helper" className={styles.helper}>可用中文描述；產出後仍可直接編輯下方 H3 提示詞。</span>
         {briefError && <p id="single-prompt-brief-error" className={styles.error} role="alert"><Icon name="close" />{briefError}</p>}
       </label>
+
+      {mode === "ref2v" && <Ref2VCameraPlanner
+        locale={locale}
+        duration={duration}
+        referenceCount={referenceImages.length}
+        hasVideo={Boolean(sourceVideo)}
+        value={cameraPlan}
+        onChange={setCameraPlan}
+      />}
 
       <div className={styles.providerRow}>
         <div className={styles.providerSwitch} role="group" aria-label="提示詞生成來源">
