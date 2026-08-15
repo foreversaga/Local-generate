@@ -233,7 +233,11 @@ export function AssetPickerButton({
     }
 
     function confirm() {
-        const chosen = scopedAssets.filter((asset) => selected.has(assetKey(asset))).slice(0, selectionLimit);
+        const assetsByKey = new Map(scopedAssets.map((asset) => [assetKey(asset), asset]));
+        const chosen = [...selected]
+            .map((key) => assetsByKey.get(key))
+            .filter((asset): asset is StudioAsset => Boolean(asset))
+            .slice(0, selectionLimit);
         onSelect(chosen);
         closeDialog();
     }

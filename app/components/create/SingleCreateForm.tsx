@@ -1195,9 +1195,9 @@ function SourceFields({
           </div>
           {referenceImages.length > 0 && (
             <div className={styles.referenceChips} aria-label="已選 Ref2V 參考圖片">
-              {referenceImages.map((asset) => (
+              {referenceImages.map((asset, index) => (
                 <span key={assetKey(asset)} className={styles.referenceChip}>
-                  <span title={asset.name}>{asset.name}</span>
+                  <span title={asset.name}>Picture {index + 1} · {asset.name}</span>
                   <button type="button" onClick={() => onRemoveReference(asset)} aria-label={`移除 ${asset.name}`}><Icon name="close" /></button>
                 </span>
               ))}
