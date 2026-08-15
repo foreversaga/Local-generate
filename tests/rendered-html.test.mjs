@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render(pathname = "/") {
+async function render(pathname = "/", headers = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
     new Request(`http://localhost${pathname}`, {
-      headers: { accept: "text/html" },
+      headers: { accept: "text/html", ...headers },
     }),
     {
       ASSETS: {
@@ -38,6 +38,16 @@ test("renders the Create landing at the public root", async () => {
   assert.doesNotMatch(html, /id="prompt"/);
   assert.doesNotMatch(html, /LOCAL RENDER CONSOLE|LOCAL VIDEO LAB|8787|local bridge/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
+});
+
+test("renders the persisted locale on the first server frame", async () => {
+  const response = await render("/", { cookie: "h3-studio.locale=en" });
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /<html[^>]*lang="en"/);
+  assert.match(html, /Choose a generation workflow/);
+  assert.match(html, /Primary navigation/);
 });
 
 test("uses the same-origin API and current web route wiring", async () => {

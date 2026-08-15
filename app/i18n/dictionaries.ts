@@ -3,6 +3,7 @@ export type Locale = (typeof SUPPORTED_LOCALES)[number];
 
 export const DEFAULT_LOCALE: Locale = "zh-TW";
 export const LOCALE_STORAGE_KEY = "h3-studio.locale";
+export const LOCALE_COOKIE_KEY = "h3-studio.locale";
 
 const zhTW = {
   "language.label": "語言",

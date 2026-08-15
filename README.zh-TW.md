@@ -2,7 +2,7 @@
 
 ## 語言
 
-Studio 介面支援繁體中文（`zh-TW`，預設）與英文（`en`）。可使用頂端列的語言選擇器切換；選擇會以 `h3-studio.locale` 儲存在瀏覽器 `localStorage`，下次開啟時自動還原，並同步更新文件的 `lang` 屬性。語言只影響顯示文字，不會改變 API 路由、工作狀態值、來源識別碼或 bridge payload。
+Studio 介面支援繁體中文（`zh-TW`，預設）與英文（`en`）。可使用頂端列的語言選擇器切換；選擇會以 `h3-studio.locale` 同時儲存在瀏覽器 `localStorage` 與同站 Cookie，讓伺服器在後續造訪的第一幀就輸出已選語系，並同步更新文件的 `lang` 屬性。語言只影響顯示文字，不會改變 API 路由、工作狀態值、來源識別碼或 bridge payload。
 
 介面翻譯集中在 [`app/i18n/dictionaries.ts`](app/i18n/dictionaries.ts)。新增 shell 或工作流程顯示文字時，需同時補上兩種語言的相同 key，client component 透過 `useI18n()` 取得翻譯。共用的後端狀態／來源標籤則由 [`app/lib/ui-copy.mjs`](app/lib/ui-copy.mjs) 接收選用的 locale。
 

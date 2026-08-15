@@ -9,7 +9,7 @@ The public `/app` entry opens the Create landing. Single, Long, Jobs, Library, T
 
 ## Languages
 
-The Studio interface supports Traditional Chinese (`zh-TW`, the default) and English (`en`). Use the language selector in the top bar to switch languages. The choice is saved in browser `localStorage` under `h3-studio.locale`, restored on later visits, and applied to the document `lang` attribute. Locale changes affect presentation only: API routes, persisted job states, source identifiers, and bridge payloads remain unchanged.
+The Studio interface supports Traditional Chinese (`zh-TW`, the default) and English (`en`). Use the language selector in the top bar to switch languages. The choice is saved in browser `localStorage` and a same-site cookie under `h3-studio.locale`, so the server can render the selected language on the first frame of later visits, and is applied to the document `lang` attribute. Locale changes affect presentation only: API routes, persisted job states, source identifiers, and bridge payloads remain unchanged.
 
 UI translations live in [`app/i18n/dictionaries.ts`](app/i18n/dictionaries.ts). Add the same key to both dictionaries when introducing user-facing shell or workflow copy, and use `useI18n()` in client components. Shared backend status/source labels accept an optional locale through [`app/lib/ui-copy.mjs`](app/lib/ui-copy.mjs).
 
