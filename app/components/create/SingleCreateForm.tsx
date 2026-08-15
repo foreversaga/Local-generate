@@ -778,7 +778,7 @@ export function SingleCreateForm() {
                     </select>
                     <span className={styles.helper}>固定權重：{H3_REALISM_PEOPLE_LORA_NAME}；trigger 由 Bridge 注入一次。</span>
                   </label>
-                  <label className={`${styles.field} ${visibleFieldError("h3LoraStrength") ? styles.fieldInvalid : ""}`}>
+                  {h3LoraEnabled && <label className={`${styles.field} ${visibleFieldError("h3LoraStrength") ? styles.fieldInvalid : ""}`}>
                     <span className={styles.rangeHeader}>
                       <span className={styles.fieldLabel}>H3 LoRA 強度</span>
                       <span className={styles.rangeValue}>{h3LoraStrength === "" ? "—" : Number(h3LoraStrength).toFixed(2)}</span>
@@ -791,7 +791,6 @@ export function SingleCreateForm() {
                       max={2}
                       step={0.05}
                       value={h3LoraStrength}
-                      disabled={!h3LoraEnabled}
                       aria-invalid={Boolean(visibleFieldError("h3LoraStrength"))}
                       aria-describedby="single-h3-lora-strength-helper"
                       onBlur={() => markTouched("h3LoraStrength")}
@@ -799,7 +798,7 @@ export function SingleCreateForm() {
                     />
                     <span id="single-h3-lora-strength-helper" className={styles.helper}>建議先用 0.6–0.8；預設 {H3_REALISM_PEOPLE_DEFAULT_STRENGTH.toFixed(2)}。</span>
                     <FieldError id="single-h3-lora-strength-error" message={visibleFieldError("h3LoraStrength")} />
-                  </label>
+                  </label>}
                 </>
               )}
 
@@ -824,7 +823,7 @@ export function SingleCreateForm() {
                     <FieldError id="single-character-lora-error" message={visibleFieldError("characterLoraName")} />
                   </label>
 
-                  <label className={`${styles.field} ${visibleFieldError("characterLoraStrength") ? styles.fieldInvalid : ""}`}>
+                  {characterLoraName.trim() && <label className={`${styles.field} ${visibleFieldError("characterLoraStrength") ? styles.fieldInvalid : ""}`}>
                     <span className={styles.rangeHeader}>
                       <span className={styles.fieldLabel}>LoRA 強度</span>
                       <span className={styles.rangeValue}>{characterLoraStrength === "" ? "—" : Number(characterLoraStrength).toFixed(2)}</span>
@@ -844,7 +843,7 @@ export function SingleCreateForm() {
                     />
                     <span id="single-character-lora-strength-helper" className={styles.helper}>範圍 0–2，預設 0.75；留白 LoRA 名稱時不會送出。</span>
                     <FieldError id="single-character-lora-strength-error" message={visibleFieldError("characterLoraStrength")} />
-                  </label>
+                  </label>}
                 </>
               )}
 

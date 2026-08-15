@@ -428,6 +428,15 @@ export function ImageToImageWorkspace() {
         return () => window.clearTimeout(timer);
     }, [trackedJobId, trackedJobStatus, historyQuery, refreshHistory]);
 
+    const outputVerificationKey = [
+        ...(job?.output ? [job.output] : []),
+        ...((job?.items || []).map((item) => item.output).filter((output): output is StudioAsset => Boolean(output))),
+        ...history.flatMap((record) => [
+            ...(record.output ? [record.output] : []),
+            ...((record.items || []).map((item) => item.output).filter((output): output is StudioAsset => Boolean(output))),
+        ]),
+    ].map(assetKey).sort().join("\n");
+
     useEffect(() => {
         const outputs = [
             ...(job?.output ? [job.output] : []),
@@ -459,10 +468,10 @@ export function ImageToImageWorkspace() {
         return () => {
             active = false;
         };
-        // Output verification is keyed by the current job/history snapshots;
-        // polling an active job does not render output cards yet.
+        // Recheck only when the set of output asset keys changes. Active batch
+        // items render optimistically as soon as the job API publishes them.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [history, job?.id, job?.status]);
+    }, [outputVerificationKey]);
 
     const selectedKey = useMemo(() => (source ? [assetKey(source)] : []), [source]);
     const poseSelectedKey = useMemo(() => (poseReference ? [assetKey(poseReference)] : []), [poseReference]);
@@ -994,7 +1003,7 @@ export function ImageToImageWorkspace() {
                         {characterLoraDiscoveryError && <small id="img2img-character-lora-discovery-error" className={styles.error} role="status">{characterLoraDiscoveryError} 可先不使用角色 LoRA，或稍後重試。</small>}
                         {characterLoraNameIssue && <small id="img2img-character-lora-error" className={styles.error} role="alert">{characterLoraNameIssue}</small>}
                     </label>
-                    <label className={styles.field}>
+                    {characterLoraName.trim() && <label className={styles.field}>
                         <span>{FIELD_LABELS.loraStrength} <strong>{characterLoraStrength.trim() ? Number(characterLoraStrength).toFixed(2) : "—"}</strong></span>
                         <input
                             id="img2img-character-lora-strength"
@@ -1003,7 +1012,7 @@ export function ImageToImageWorkspace() {
                             max="2"
                             step="0.05"
                             value={characterLoraStrength}
-                            disabled={active || !characterLoraName.trim()}
+                            disabled={active}
                             aria-describedby={`img2img-character-lora-strength-help${characterLoraStrengthIssue ? " img2img-character-lora-strength-error" : ""}`}
                             aria-invalid={Boolean(characterLoraStrengthIssue)}
                             onChange={(event) => setCharacterLoraStrength(event.target.value)}
@@ -1012,7 +1021,7 @@ export function ImageToImageWorkspace() {
                             範圍 0–2，預設 0.75；移除 LoRA 名稱即可不使用此設定。
                         </small>
                         {characterLoraStrengthIssue && <small id="img2img-character-lora-strength-error" className={styles.error} role="alert">{characterLoraStrengthIssue}</small>}
-                    </label>
+                    </label>}
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.denoise} <strong>{denoise.toFixed(2)}</strong></span>
                         <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
@@ -1149,7 +1158,7 @@ export function ImageToImageWorkspace() {
                             const itemCfg = itemParameter(item, "cfg", Number(cfg));
                             const itemSeed = itemParameter(item, "seed", Number(seed));
                             const itemOutputKey = item.output ? assetKey(item.output) : "";
-                            const itemOutputAvailable = item.output ? availableOutputs[itemOutputKey] === true : false;
+                            const itemOutputAvailable = item.output ? active || availableOutputs[itemOutputKey] === true : false;
                             return (
                                 <article className={styles.itemCard} key={item.index}>
                                     <div className={styles.itemHeader}>
@@ -1174,7 +1183,7 @@ export function ImageToImageWorkspace() {
                                             </div>
                                         </>
                                     )}
-                                    {item.output && availableOutputs[itemOutputKey] === false && <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>}
+                                    {item.output && !active && availableOutputs[itemOutputKey] === false && <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>}
                                     {item.error && <p className={styles.error} role="alert">{item.error}</p>}
                                 </article>
                             );

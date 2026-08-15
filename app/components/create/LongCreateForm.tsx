@@ -726,9 +726,9 @@ export function LongCreateForm() {
             <Field label="Character LoRA" error={attempted ? issuesByField.get("characterLoraName") : ""}>
               <input id="long-character-lora" className={styles.input} value={h3LoraEnabled ? H3_REALISM_PEOPLE_PRESET : characterLoraName} readOnly={h3LoraEnabled} onChange={(event) => { setCharacterLoraName(event.target.value); markPlanDirty(); }} placeholder="停用（可保留舊版 LoRA 路徑）" />
             </Field>
-            <Field label="LoRA strength" error={attempted ? issuesByField.get("characterLoraStrength") : ""}>
+            {(h3LoraEnabled || characterLoraName.trim() || characterLoraId.trim()) && <Field label="LoRA strength" error={attempted ? issuesByField.get("characterLoraStrength") : ""}>
               <input id="long-character-lora-strength" className={styles.input} type="number" min={0} max={2} step={0.05} value={characterLoraStrength} onChange={(event) => { setCharacterLoraStrength(numberDraft(event.target.value)); markPlanDirty(); }} />
-            </Field>
+            </Field>}
           </div>
           <p className={styles.helper}>固定 H3 preset 支援 T2V/I2V/Ref2VA；舊版自訂 LoRA 仍限 T2V/I2V。strength 範圍 0–2，固定預設 0.8。</p>
           <div className={styles.twoColumns}><Field label="模型設定檔"><select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field><Field label="接縫處理"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">保留重複畫面</option><option value="drop_next_first_frame" disabled>移除下一段首幀（目前不支援）</option></select></Field></div>
