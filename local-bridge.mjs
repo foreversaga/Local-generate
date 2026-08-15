@@ -3693,6 +3693,7 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       runtimeContext.comfyUrl,
     ];
+    if (!runtimeContext.isRemote) args.push("--no-cpu-text-encoder");
     if (runtimeContext.isRemote) {
       args.push("--remote-comfy", "--sage-attention", "sageattn3");
     }
