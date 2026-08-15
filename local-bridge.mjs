@@ -42,6 +42,7 @@ import { createSingleVideoJobStore } from "./server/video-generation/single-job-
 import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
 import { AssetUploadError, createAssetUploadService, RAW_UPLOAD_CONTENT_TYPE } from "./server/media/asset-upload.mjs";
 import { createAssetLibraryCache } from "./server/media/asset-library-cache.mjs";
+import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "./app/lib/job-list-query.mjs";
 import {
   SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
   SINGLE_RENDER_DURATION_MAX_SECONDS,
@@ -157,7 +158,11 @@ const singleJobPersistence = new Map();
 const recoveredSingleVideoMonitors = new Map();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
-const singleVideoStoreReady = recoverSingleVideoJobsAtStartup().catch((error) => {
+const recoverPersistedSingleVideoJobs = !process.env.NODE_TEST_CONTEXT
+  || process.env.MINIMAX_H3_TEST_ENABLE_SINGLE_VIDEO_RECOVERY === "1";
+const singleVideoStoreReady = (recoverPersistedSingleVideoJobs
+  ? recoverSingleVideoJobsAtStartup()
+  : Promise.resolve({ requeued: [], interrupted: [] })).catch((error) => {
   console.error("[single-video] startup recovery failed", error?.message || error);
   return { error };
 });
@@ -1089,7 +1094,13 @@ async function releaseOllamaForComfy(ollamaPromptReceipt = null) {
   });
 }
 
-async function health() {
+let healthCache = null;
+let healthCacheExpiresAt = 0;
+let healthCacheMode = "";
+let healthRequest = null;
+let healthRequestMode = "";
+
+async function loadHealth() {
   const [ollama, comfy, codex, python] = await Promise.all([
     fetchJson(runtimeContext.ollamaUrl + "/api/tags").catch(() => null),
     fetchJson(runtimeContext.comfyUrl + "/system_stats").catch(() => null),
@@ -1125,6 +1136,28 @@ async function health() {
       output: OUTPUT_ROOT,
     },
   };
+}
+
+async function health() {
+  const requestedMode = runtimeContext.mode;
+  if (healthCache && healthCacheMode === requestedMode && healthCacheExpiresAt > Date.now()) return healthCache;
+  if (healthRequest && healthRequestMode === requestedMode) return healthRequest;
+  const request = loadHealth().then((snapshot) => {
+    if (runtimeContext.mode === requestedMode) {
+      healthCache = snapshot;
+      healthCacheMode = requestedMode;
+      healthCacheExpiresAt = Date.now() + 3000;
+    }
+    return snapshot;
+  }).finally(() => {
+    if (healthRequest === request) {
+      healthRequest = null;
+      healthRequestMode = "";
+    }
+  });
+  healthRequest = request;
+  healthRequestMode = requestedMode;
+  return request;
 }
 
 function cleanPromptText(value) {
@@ -2738,10 +2771,11 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
         status: requestUrl.searchParams.get("status") || undefined,
         family: requestUrl.searchParams.get("family") || undefined,
       });
-      const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 20));
+      const limit = jobListLimit(req.url, { fallback: 20, max: 100 });
       const offset = Math.max(0, Number(requestUrl.searchParams.get("cursor")) || 0);
+      const summarize = wantsJobSummary(req.url);
       sendJson(res, 200, {
-        jobs: listed.slice(offset, offset + limit).map((job) => publicLoraTrainingJob(job)),
+        jobs: listed.slice(offset, offset + limit).map((job) => publicLoraTrainingJob(job)).map((job) => summarize ? summarizeJobRecord(job) : job),
         nextCursor: offset + limit < listed.length ? String(offset + limit) : null,
       }); return true;
     }
@@ -4845,9 +4879,12 @@ async function route(req, res) {
   }
   if (req.method === "GET" && pathname === "/api/jobs") {
     await ensureSingleVideoStore();
+    const limit = jobListLimit(req.url, { fallback: 20, max: 100 });
+    const summarize = wantsJobSummary(req.url);
     const values = (await singleVideoJobStore.list())
-      .slice(0, 20)
-      .map(publicJob);
+      .slice(0, limit)
+      .map(publicJob)
+      .map((job) => summarize ? summarizeJobRecord(job) : job);
     sendJson(res, 200, { jobs: values });
     return;
   }

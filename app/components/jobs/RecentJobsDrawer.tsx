@@ -17,10 +17,23 @@ export function RecentJobsDrawer() {
 
   useEffect(() => {
     let active = true;
-    const refresh = async () => { const snapshot = await fetchUnifiedJobs(); if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); } };
+    let timer = 0;
+    const refresh = async () => {
+      let delay = 15_000;
+      try {
+        if (document.visibilityState !== "hidden") {
+          const snapshot = await fetchUnifiedJobs({ limitPerSource: 5, summary: true, includeOutputAvailability: false });
+          if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); }
+          if (activeJobCount(snapshot.jobs) > 0) delay = 5000;
+        }
+      } catch {
+        // Keep the last known badge state and retry on the next scheduled pass.
+      } finally {
+        if (active) timer = window.setTimeout(() => void refresh(), delay);
+      }
+    };
     void refresh();
-    const timer = window.setInterval(refresh, 5000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; window.clearTimeout(timer); };
   }, []);
 
   useEffect(() => {

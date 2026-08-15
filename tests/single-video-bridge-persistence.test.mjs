@@ -46,6 +46,7 @@ await writeFile(path.join(h3Root, "src", "generate.py"), "setTimeout(() => { pro
 
 const environmentKeys = [
   "MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT",
+  "MINIMAX_H3_TEST_ENABLE_SINGLE_VIDEO_RECOVERY",
   "MINIMAX_H3_SINGLE_VIDEO_AUTO_RESUME",
   "MINIMAX_H3_SINGLE_VIDEO_OWNER_ID",
   "MINIMAX_H3_ROOT",
@@ -56,6 +57,7 @@ const environmentKeys = [
 ];
 const previousEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
 process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT = dataRoot;
+process.env.MINIMAX_H3_TEST_ENABLE_SINGLE_VIDEO_RECOVERY = "1";
 process.env.MINIMAX_H3_SINGLE_VIDEO_AUTO_RESUME = "0";
 process.env.MINIMAX_H3_SINGLE_VIDEO_OWNER_ID = "bridge-test-owner";
 process.env.MINIMAX_H3_ROOT = h3Root;

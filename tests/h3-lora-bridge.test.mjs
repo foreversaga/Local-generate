@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test, { after } from "node:test";
+
+const isolatedSingleVideoRoot = await mkdtemp(path.join(os.tmpdir(), "h3-lora-bridge-jobs-"));
+process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT = isolatedSingleVideoRoot;
+after(async () => {
+  await rm(isolatedSingleVideoRoot, { recursive: true, force: true });
+});
 
 const {
   H3_REALISM_PEOPLE_LORA_NAME,

@@ -169,10 +169,10 @@ test("create/start captions multiple images, preflights, runs FIFO, and installs
 
     assert.deepEqual(executionOrder, JOB_IDS);
     assert.equal(ollamaRequests.length, 4);
-    assert.equal(ollamaUnloadRequests.length, 4, "coordinator API unload remains a request-level safety net");
-    assert.ok(ollamaRequests.every((request) => request.format === "json" && request.stream === false && request.keep_alive === 0));
+    assert.equal(ollamaUnloadRequests.length, 2, "each caption batch unloads its shared model session once");
+    assert.ok(ollamaRequests.every((request) => request.format === "json" && request.stream === false && request.keep_alive === -1));
     assert.ok(ollamaUnloadRequests.every((request) => request.keep_alive === 0 && request.stream === false));
-    assert.deepEqual(explicitStops.map(({ args }) => args), Array.from({ length: 4 }, () => ["stop", "gemma4"]));
+    assert.deepEqual(explicitStops.map(({ args }) => args), Array.from({ length: 2 }, () => ["stop", "gemma4"]));
     for (let index = 0; index < JOB_IDS.length; index += 1) {
       const details = await service.get(JOB_IDS[index]);
       assert.equal(details.job.status, "succeeded");

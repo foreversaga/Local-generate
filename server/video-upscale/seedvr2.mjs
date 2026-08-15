@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createSeedVR2JobStore } from "./seedvr2-store.mjs";
+import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib/job-list-query.mjs";
 
 /**
  * The two files below are deliberately constants.  The model combo returned by
@@ -1348,7 +1349,10 @@ export function createSeedVR2Controller({
     }
     if (req.method === "GET" && pathname === "/api/upscale/jobs") {
       try {
-        respond(res, 200, { jobs: await listJobs() });
+        const listed = await listJobs();
+        const limit = jobListLimit(req.url, { fallback: listed.length, max: 100 });
+        const summarize = wantsJobSummary(req.url);
+        respond(res, 200, { jobs: listed.slice(0, limit).map((job) => summarize ? summarizeJobRecord(job) : job) });
       } catch (error) {
         fail(res, 503, asErrorMessage(error, "Unable to load SeedVR2 job history."), error?.code || "SEEDVR2_PERSISTENCE_FAILED");
       }

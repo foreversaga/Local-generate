@@ -54,14 +54,22 @@ function timeoutError(spec) {
   });
 }
 
-async function fetchOneSource(spec, { fetchImpl, timeoutMs }) {
+function sourceUrl(spec, { limitPerSource, summary }) {
+  const params = new URLSearchParams();
+  if (Number.isInteger(limitPerSource) && limitPerSource > 0) params.set('limit', String(limitPerSource));
+  if (summary) params.set('summary', '1');
+  const query = params.toString();
+  return query ? `${spec.url}?${query}` : spec.url;
+}
+
+async function fetchOneSource(spec, { fetchImpl, timeoutMs, limitPerSource, summary }) {
   if (typeof fetchImpl !== 'function') {
     return { source: spec.source, jobs: [], error: sourceError(spec, { code: 'NETWORK_ERROR', message: `Unable to reach ${spec.source} jobs.` }) };
   }
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   let timedOut = false;
   let timer;
-  const request = Promise.resolve().then(() => fetchImpl(spec.url, {
+  const request = Promise.resolve().then(() => fetchImpl(sourceUrl(spec, { limitPerSource, summary }), {
     cache: 'no-store',
     ...(controller ? { signal: controller.signal } : {}),
   }));
@@ -135,10 +143,21 @@ async function fetchOneSource(spec, { fetchImpl, timeoutMs }) {
   return { source: spec.source, jobs };
 }
 
-export async function fetchUnifiedJobSnapshot({ fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+/**
+ * @param {{
+ *   fetchImpl?: typeof globalThis.fetch;
+ *   timeoutMs?: number;
+ *   limitPerSource?: number | null;
+ *   summary?: boolean;
+ * }} [options]
+ */
+export async function fetchUnifiedJobSnapshot(options = {}) {
+  const { fetchImpl = globalThis.fetch, timeoutMs = DEFAULT_TIMEOUT_MS, limitPerSource = null, summary = false } = options;
   const results = await Promise.all(JOB_SOURCE_SPECS.map((spec) => fetchOneSource(spec, {
     fetchImpl,
     timeoutMs: timeoutValue(timeoutMs),
+    limitPerSource,
+    summary,
   })));
   const collections = results.map(({ source, jobs }) => ({ source, jobs }));
   return {

@@ -8,23 +8,29 @@ import { createCaptionService } from "../server/lora-training/captioner.mjs";
 
 const JOB_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const IMAGE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const SECOND_IMAGE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-async function fixture({ requestFailure = false, stopExitCode = 0 } = {}) {
+async function fixture({ requestFailure = false, stopExitCode = 0, imageCount = 1 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-caption-lifecycle-"));
   const images = path.join(root, "images");
   const captions = path.join(root, "captions");
   await mkdir(images, { recursive: true });
   await mkdir(captions, { recursive: true });
   await writeFile(path.join(images, "subject.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (imageCount > 1) await writeFile(path.join(images, "subject-2.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 2]));
   const calls = [];
   const stops = [];
+  const manifestImages = [
+    { id: IMAGE_ID, fileName: "subject.png", relativePath: "subject.png" },
+    ...(imageCount > 1 ? [{ id: SECOND_IMAGE_ID, fileName: "subject-2.png", relativePath: "subject-2.png" }] : []),
+  ];
   const dataset = {
     getLocations: () => ({ dataset: images, captions }),
     readManifest: async () => ({
       schemaVersion: 1,
       jobId: JOB_ID,
       revision: 1,
-      images: [{ id: IMAGE_ID, fileName: "subject.png", relativePath: "subject.png" }],
+      images: manifestImages,
     }),
   };
   const fetchImpl = async (_url, init = {}) => {
@@ -104,6 +110,40 @@ test("LoRA caption explicit stop failure is surfaced and not retried as a new ca
     const manifest = JSON.parse(await readFile(path.join(value.captions, "manifest.json"), "utf8"));
     assert.equal(manifest.records[0].status, "failed");
     assert.equal(manifest.records[0].error.code, "OLLAMA_UNLOAD_FAILED");
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("LoRA caption batch keeps one model session and unloads only after all images", async () => {
+  const value = await fixture({ imageCount: 2 });
+  try {
+    const result = await value.service.generate(JOB_ID, ["subject"]);
+    assert.equal(result.failed, 0);
+    assert.equal(result.records.length, 2);
+    const captionCalls = value.calls.filter((body) => body.prompt !== "");
+    const unloadCalls = value.calls.filter((body) => body.prompt === "");
+    assert.equal(captionCalls.length, 2);
+    assert.equal(captionCalls.every((body) => body.keep_alive === -1), true, "every batch request keeps the shared model resident");
+    assert.equal(unloadCalls.length, 1, "the batch performs one final unload");
+    assert.deepEqual(unloadCalls[0], { model: "caption-model", prompt: "", stream: false, keep_alive: 0 });
+    assert.equal(value.stops.length, 1, "the batch explicitly stops the model once");
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test("LoRA caption batch retries without unloading between attempts", async () => {
+  const value = await fixture({ imageCount: 2, requestFailure: true });
+  try {
+    const result = await value.service.generate(JOB_ID, ["subject"]);
+    assert.equal(result.failed, 2);
+    const captionCalls = value.calls.filter((body) => body.prompt !== "");
+    const unloadCalls = value.calls.filter((body) => body.prompt === "");
+    assert.equal(captionCalls.length, 4, "two images each retain two request attempts");
+    assert.equal(captionCalls.every((body) => body.keep_alive === -1), true);
+    assert.equal(unloadCalls.length, 1, "failed attempts do not unload the shared model early");
+    assert.equal(value.stops.length, 1);
   } finally {
     await rm(value.root, { recursive: true, force: true });
   }

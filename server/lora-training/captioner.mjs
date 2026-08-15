@@ -135,7 +135,7 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     };
   }
 
-  async function generateOne(jobId, imageId, triggerWords, { attempts = maxAttempts } = {}) {
+  async function generateOne(jobId, imageId, triggerWords, { attempts = maxAttempts, session = null } = {}) {
     const id = normalizeUuid(jobId, 'jobId');
     const triggers = normalizeTriggerWords(triggerWords);
     const manifest = await dataset.readManifest(id);
@@ -145,22 +145,20 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const bytes = await readFile(resolveSafeChild(dataset.getLocations(id).dataset, image.relativePath));
-        const response = await coordinator.generate({
-          ollamaUrl,
-          comfyUrl,
-          remoteComfy,
-          model,
+        const request = {
           body: {
             model,
             prompt: `${prompt}\nRequired trigger words: ${triggers.join(', ')}`,
             images: [bytes.toString('base64')],
             format: 'json',
             stream: false,
-            keep_alive: 0,
           },
           timeoutMs: requestTimeoutMs,
           requestFetch: fetchImpl,
-        });
+        };
+        const response = session
+          ? await session.generate(request)
+          : await coordinator.generate({ ollamaUrl, comfyUrl, remoteComfy, model, ...request });
         const caption = preserveTriggers(parseModelResponse(coordinatorPayload(response)), triggers);
         const record = { imageId: image.id, imageFile: image.fileName, status: 'ready', caption, model, promptVersion, attempts: attempt, updatedAt: clock().toISOString() };
         await atomicWriteText(resolveSafeChild(dataset.getLocations(id).captions, `${image.id}.txt`), caption);
@@ -181,11 +179,36 @@ export function createCaptionService({ dataset = datasetService, fetchImpl = glo
     const images = selected ? manifest.images.filter((image) => selected.has(image.id)) : manifest.images;
     if (!images.length) throw invalid('no dataset images selected for captioning');
     const results = [];
-    for (let index = 0; index < images.length; index += 1) {
-      try { results.push(await generateOne(jobId, images[index].id, triggerWords)); }
-      catch (error) { results.push({ imageId: images[index].id, status: 'failed', error: { code: error.code ?? 'CAPTION_FAILED', message: error.message, retryable: error.retryable !== false } }); }
-      await onProgress({ completed: index + 1, total: images.length, failed: results.filter((item) => item.status === 'failed').length });
+    let session = null;
+    let primaryError = null;
+    try {
+      if (typeof coordinator.openModelSession === 'function') {
+        session = await coordinator.openModelSession({ ollamaUrl, comfyUrl, remoteComfy, model, requestFetch: fetchImpl });
+      }
+      for (let index = 0; index < images.length; index += 1) {
+        try { results.push(await generateOne(jobId, images[index].id, triggerWords, { session })); }
+        catch (error) { results.push({ imageId: images[index].id, status: 'failed', error: { code: error.code ?? 'CAPTION_FAILED', message: error.message, retryable: error.retryable !== false } }); }
+        await onProgress({ completed: index + 1, total: images.length, failed: results.filter((item) => item.status === 'failed').length });
+      }
+    } catch (error) {
+      primaryError = captionFailure(error);
     }
+    let cleanupError = null;
+    if (session) {
+      try { await session.close(); }
+      catch (error) { cleanupError = captionFailure(error); }
+    }
+    if (primaryError) {
+      if (cleanupError) {
+        primaryError.details = {
+          ...(primaryError.details && typeof primaryError.details === 'object' ? primaryError.details : {}),
+          unloadError: { code: cleanupError.code, message: cleanupError.message },
+        };
+        primaryError.cause = cleanupError;
+      }
+      throw primaryError;
+    }
+    if (cleanupError) throw cleanupError;
     return { records: results, failed: results.filter((item) => item.status === 'failed').length };
   }
 

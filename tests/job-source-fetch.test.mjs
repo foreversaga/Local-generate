@@ -8,7 +8,8 @@ function response(status, payload) {
 }
 
 function sourceForUrl(url) {
-  return JOB_SOURCE_SPECS.find((spec) => spec.url === url)?.source;
+  const pathname = String(url).split("?")[0];
+  return JOB_SOURCE_SPECS.find((spec) => spec.url === pathname)?.source;
 }
 
 function successJobs(source) {
@@ -27,6 +28,19 @@ test('successful source requests preserve the unified jobs behavior', async () =
   assert.deepEqual(snapshot.errors, []);
   assert.equal(snapshot.jobs.length, JOB_SOURCE_SPECS.length);
   assert.deepEqual(new Set(snapshot.jobs.map((job) => job.source)), new Set(JOB_SOURCE_SPECS.map((spec) => spec.source)));
+});
+
+test('summary job requests bound every source response at the URL', async () => {
+  const calls = [];
+  await fetchUnifiedJobSnapshot({
+    limitPerSource: 5,
+    summary: true,
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return response(200, successJobs(sourceForUrl(url)));
+    },
+  });
+  assert.deepEqual(calls.sort(), JOB_SOURCE_SPECS.map((spec) => `${spec.url}?limit=5&summary=1`).sort());
 });
 
 test('an HTTP source failure remains visible while other sources stay usable', async () => {

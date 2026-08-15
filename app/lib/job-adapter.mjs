@@ -146,7 +146,7 @@ function jobTitle(raw, source) {
 }
 
 function jobSubtitle(raw, source) {
-  if (source === "long") return `${raw?.segments?.length || 0} 個片段 · ${raw?.duration || 0} 秒`;
+  if (source === "long") return `${raw?.segmentCount ?? raw?.segments?.length ?? 0} 個片段 · ${raw?.duration || 0} 秒`;
   if (source === "upscale") return `${raw?.scale || 2}× 影片升頻`;
   if (source === "img2img") {
     const count = positiveInteger(raw?.batchCount);

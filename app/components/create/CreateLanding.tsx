@@ -18,7 +18,7 @@ export function CreateLanding() {
     const [jobs, setJobs] = useState<UnifiedJob[]>([]);
 
     useEffect(() => {
-        void fetchUnifiedJobs()
+        void fetchUnifiedJobs({ limitPerSource: 5, summary: true, includeOutputAvailability: false })
             .then((snapshot) => setJobs(snapshot.jobs.slice(0, 3)))
             .catch(() => setJobs([]));
     }, []);

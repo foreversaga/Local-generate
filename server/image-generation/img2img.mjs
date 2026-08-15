@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createImg2ImgStore } from "./img2img-store.mjs";
+import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib/job-list-query.mjs";
 
 export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "CheckpointLoaderSimple",
@@ -2219,11 +2220,12 @@ export function createImg2ImgController({
         const records = await jobStore.list();
         const merged = new Map(records.map((job) => [String(job.id), job]));
         for (const job of jobs.values()) merged.set(String(job.id), job);
-        respond(res, 200, {
-          jobs: [...merged.values()]
-            .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
-            .map(toPublicJob),
-        });
+        const listed = [...merged.values()]
+          .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+          .map(toPublicJob);
+        const limit = jobListLimit(req.url, { fallback: listed.length, max: 100 });
+        const summarize = wantsJobSummary(req.url);
+        respond(res, 200, { jobs: listed.slice(0, limit).map((job) => summarize ? summarizeJobRecord(job) : job) });
       } catch {
         fail(res, 503, "Unable to load image-to-image job history.", "IMG2IMG_PERSISTENCE_FAILED");
       }

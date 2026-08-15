@@ -321,6 +321,84 @@ export function createOllamaCoordinator({
     await operation;
   }
 
+  async function requestWithLease(lease, {
+    body = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    requestFetch = fetchImpl,
+    keepAlive = 0,
+  } = {}) {
+    lease.requestFetch = requestFetch;
+    const requestBody = {
+      ...body,
+      model: lease.snapshot.model,
+      stream: false,
+      keep_alive: keepAlive,
+    };
+    const response = await requestFetch(`${lease.snapshot.ollamaUrl}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response) throw requestFailure("Ollama request returned no response.", { model: lease.snapshot.model, ollamaUrl: lease.snapshot.ollamaUrl });
+    const bodyText = typeof response?.text === "function"
+      ? await response.text()
+      : JSON.stringify(await response?.json?.() ?? {});
+    if (responseFailed(response)) {
+      throw requestFailure(
+        `Ollama request failed (${response.status || "unknown"}).`,
+        { model: lease.snapshot.model, ollamaUrl: lease.snapshot.ollamaUrl, status: response.status, body: bodyText.slice(-2000) },
+      );
+    }
+    return { text: bodyText, payload: parseBody(bodyText) };
+  }
+
+  async function openModelSession({
+    ollamaUrl,
+    model,
+    comfyUrl = "",
+    remoteComfy = false,
+    before = null,
+    requestFetch = fetchImpl,
+  } = {}) {
+    const lease = await acquireModel({ ollamaUrl, model, comfyUrl, remoteComfy });
+    lease.requestFetch = requestFetch;
+    try {
+      const requestTarget = { ...lease.snapshot, requestFetch };
+      if (typeof before === "function") await before(requestTarget);
+      else if (typeof beforeRequest === "function") await beforeRequest(requestTarget);
+    } catch (error) {
+      let cleanupError = null;
+      try {
+        await releaseModel(lease);
+      } catch (cleanupFailure) {
+        cleanupError = asError(cleanupFailure, `Unable to unload Ollama model ${lease.snapshot.model}.`);
+      }
+      const primaryError = asError(error, "Ollama session setup failed.");
+      if (cleanupError) {
+        primaryError.details = {
+          ...(primaryError.details && typeof primaryError.details === "object" ? primaryError.details : {}),
+          unloadError: errorInfo(cleanupError),
+        };
+        primaryError.cause = cleanupError;
+      }
+      throw primaryError;
+    }
+
+    let closed = false;
+    return Object.freeze({
+      async generate({ body = {}, timeoutMs = DEFAULT_TIMEOUT_MS, requestFetch: sessionFetch = requestFetch } = {}) {
+        if (closed) throw new Error(`Ollama model session for ${lease.snapshot.model} is closed.`);
+        return requestWithLease(lease, { body, timeoutMs, requestFetch: sessionFetch, keepAlive: -1 });
+      },
+      async close() {
+        if (closed) return;
+        closed = true;
+        await releaseModel(lease);
+      },
+    });
+  }
+
   async function generate({
     ollamaUrl,
     model,
@@ -333,38 +411,16 @@ export function createOllamaCoordinator({
   } = {}) {
     const lease = await acquireModel({ ollamaUrl, model, comfyUrl, remoteComfy });
     lease.requestFetch = requestFetch;
-    const requestBody = {
-      ...body,
-      model: lease.snapshot.model,
-      stream: false,
-      keep_alive: 0,
-    };
     let result = null;
     let primaryError = null;
     try {
       const requestTarget = { ...lease.snapshot, requestFetch };
       if (typeof before === "function") await before(requestTarget);
       else if (typeof beforeRequest === "function") await beforeRequest(requestTarget);
-      const response = await requestFetch(`${lease.snapshot.ollamaUrl}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response) throw requestFailure("Ollama request returned no response.", { model: lease.snapshot.model, ollamaUrl: lease.snapshot.ollamaUrl });
-      const bodyText = typeof response?.text === "function"
-        ? await response.text()
-        : JSON.stringify(await response?.json?.() ?? {});
-      if (responseFailed(response)) {
-        throw requestFailure(
-          `Ollama request failed (${response.status || "unknown"}).`,
-          { model: lease.snapshot.model, ollamaUrl: lease.snapshot.ollamaUrl, status: response.status, body: bodyText.slice(-2000) },
-        );
-      }
       // Parse (best effort) before entering cleanup.  Callers still receive
       // the original text when Ollama returns malformed JSON so their
       // existing validation/repair diagnostics remain intact.
-      result = { text: bodyText, payload: parseBody(bodyText) };
+      result = await requestWithLease(lease, { body, timeoutMs, requestFetch, keepAlive: 0 });
     } catch (error) {
       primaryError = asError(error, "Ollama request failed.");
     }
@@ -450,6 +506,7 @@ export function createOllamaCoordinator({
 
   return {
     generate,
+    openModelSession,
     acquireGenerationBarrier,
     acquireConditionalGenerationBarrier,
     waitForIdle,

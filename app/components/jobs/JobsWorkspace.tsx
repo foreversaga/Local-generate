@@ -21,19 +21,23 @@ export function JobsWorkspace() {
 
   useEffect(() => {
     let active = true;
+    let timer = 0;
     const refresh = async () => {
+      let delay = 15_000;
       try {
-        const snapshot = await fetchUnifiedJobs();
+        if (document.visibilityState === "hidden") return;
+        const snapshot = await fetchUnifiedJobs({ summary: true, includeOutputAvailability: false });
         if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); setError(""); }
+        if (snapshot.jobs.some((job) => job.status === "queued" || job.status === "running")) delay = 3000;
       } catch (reason) {
         if (active) setError(reason instanceof Error ? reason.message : t("jobs.loadError"));
       } finally {
         if (active) setLoading(false);
+        if (active) timer = window.setTimeout(() => void refresh(), delay);
       }
     };
     void refresh();
-    const timer = window.setInterval(refresh, 3000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; window.clearTimeout(timer); };
   }, [t]);
 
   const visible = useMemo(() => {

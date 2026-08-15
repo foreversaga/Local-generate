@@ -2,11 +2,10 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
 import { calculateAspectRatioDimensions, normalizeResolutionDimension } from "../../lib/single-image-resolution.mjs";
 import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { fetchUnifiedJobs, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
+import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import styles from "./JobsWorkspace.module.css";
 
@@ -81,20 +80,31 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [retryDraft, setRetryDraft] = useState<RetryDraft | null>(null);
 
   const refresh = useCallback(async (targetId = jobId, targetSource = sourceHint) => {
-    const snapshot = await fetchUnifiedJobs();
-    const { job: next, sourceError: failedSource } = lookupUnifiedJob(snapshot, { jobId: targetId, sourceHint: targetSource });
+    const { job: next, sourceError: failedSource } = await fetchUnifiedJob(targetId, targetSource);
     setJob(next);
     setSourceUnavailable(failedSource);
     setError("");
     setLoading(false);
+    return next;
   }, [jobId, sourceHint]);
 
   useEffect(() => {
     let active = true;
-    const poll = async () => { if (!active) return; try { await refresh(); } catch (reason) { if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "無法載入工作。"); } } };
+    let timer = 0;
+    const poll = async () => {
+      if (!active) return;
+      let next: UnifiedJob | null = null;
+      try {
+        if (document.visibilityState !== "hidden") next = await refresh();
+      } catch (reason) {
+        if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "無法載入工作。"); }
+      }
+      if (active && (!next || next.status === "queued" || next.status === "running")) {
+        timer = window.setTimeout(() => void poll(), 2500);
+      }
+    };
     void poll();
-    const timer = window.setInterval(poll, 2500);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; window.clearTimeout(timer); };
   }, [refresh]);
 
   async function action(name: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
@@ -227,7 +237,10 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   }
   if (!job) return <div className={styles.error} role="alert">找不到工作。</div>;
   const outputHref = jobOutputHref(job);
-  const outputMissing = Boolean(job.output && job.outputAvailable === false);
+  // Active video jobs may publish their planned output reference before the
+  // renderer has created the file. Only treat that reference as stale after
+  // the job has actually completed.
+  const outputMissing = Boolean(job.status === "complete" && job.output && job.outputAvailable === false);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const hasNativeStep = job.source === "img2img"
     && job.nativeCurrent !== null

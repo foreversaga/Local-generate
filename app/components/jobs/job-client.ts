@@ -1,5 +1,5 @@
-import { fetchUnifiedJobSnapshot } from "../../lib/job-source-fetch.mjs";
-import { mergeJobCollections, outputAvailability } from "../../lib/job-adapter.mjs";
+import { fetchUnifiedJobSnapshot, JOB_SOURCE_SPECS, lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
+import { adaptJob, mergeJobCollections, outputAvailability } from "../../lib/job-adapter.mjs";
 
 export type UnifiedJob = ReturnType<typeof mergeJobCollections>[number];
 
@@ -33,6 +33,9 @@ export type UnifiedJobsSnapshot = {
 export type FetchUnifiedJobsOptions = {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  limitPerSource?: number;
+  summary?: boolean;
+  includeOutputAvailability?: boolean;
 };
 
 type OutputReference = {
@@ -64,11 +67,54 @@ function markOutputAvailability(job: UnifiedJob, availableKeys: Set<string> | nu
   return nextAvailability === job.outputAvailable ? job : { ...job, outputAvailable: nextAvailability };
 }
 
+const unifiedJobsRequests = new Map<string, { expiresAt: number; promise: Promise<UnifiedJobsSnapshot> }>();
+
 export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promise<UnifiedJobsSnapshot> {
-  const snapshot = await fetchUnifiedJobSnapshot(options) as UnifiedJobsSnapshot;
   const fetchImpl = options?.fetchImpl || globalThis.fetch;
-  const availableKeys = typeof fetchImpl === "function" ? await fetchOutputAssetKeys(fetchImpl) : null;
-  return { ...snapshot, jobs: snapshot.jobs.map((job) => markOutputAvailability(job, availableKeys)) };
+  const includeOutputAvailability = options?.includeOutputAvailability !== false;
+  const load = async () => {
+    const snapshot = await fetchUnifiedJobSnapshot({
+      fetchImpl,
+      timeoutMs: options?.timeoutMs,
+      limitPerSource: options?.limitPerSource,
+      summary: options?.summary,
+    }) as UnifiedJobsSnapshot;
+    if (!includeOutputAvailability) return snapshot;
+    const availableKeys = typeof fetchImpl === "function" ? await fetchOutputAssetKeys(fetchImpl) : null;
+    return { ...snapshot, jobs: snapshot.jobs.map((job) => markOutputAvailability(job, availableKeys)) };
+  };
+  if (options?.fetchImpl) return load();
+  const cacheKey = `${options?.limitPerSource || "all"}:${options?.summary ? "summary" : "full"}:${includeOutputAvailability ? "assets" : "no-assets"}`;
+  const cached = unifiedJobsRequests.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  const promise = load().finally(() => {
+    globalThis.setTimeout(() => {
+      if (unifiedJobsRequests.get(cacheKey)?.promise === promise) unifiedJobsRequests.delete(cacheKey);
+    }, 1000);
+  });
+  unifiedJobsRequests.set(cacheKey, { expiresAt: Date.now() + 1000, promise });
+  return promise;
+}
+
+export async function fetchUnifiedJob(jobId: string, sourceHint?: string): Promise<{ job: UnifiedJob | null; sourceError: JobSourceError | null }> {
+  const spec = JOB_SOURCE_SPECS.find((item) => item.source === sourceHint);
+  if (!spec) {
+    const snapshot = await fetchUnifiedJobs({ includeOutputAvailability: true });
+    return lookupUnifiedJob(snapshot, { jobId, sourceHint }) as { job: UnifiedJob | null; sourceError: JobSourceError | null };
+  }
+  const response = await fetch(`${spec.url}/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+  if (response.status === 404) return { job: null, sourceError: null };
+  const payload = await response.json().catch(() => ({})) as { job?: Record<string, unknown>; error?: string | { message?: string }; code?: string } & Record<string, unknown>;
+  if (!response.ok) {
+    const message = typeof payload.error === "string" ? payload.error : payload.error?.message || `Unable to load ${sourceHint} job.`;
+    return { job: null, sourceError: { source: sourceHint || "", status: response.status, code: payload.code || `HTTP_${response.status}`, message } };
+  }
+  const raw = payload.job && typeof payload.job === "object" ? payload.job : payload;
+  let job = adaptJob(raw, spec.source) as UnifiedJob;
+  if (job.status === "complete" && job.output) {
+    job = markOutputAvailability(job, await fetchOutputAssetKeys(globalThis.fetch));
+  }
+  return { job, sourceError: null };
 }
 
 export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {

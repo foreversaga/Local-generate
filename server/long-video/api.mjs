@@ -1,4 +1,5 @@
 import { planSequence as defaultPlan } from "./planner.mjs";
+import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib/job-list-query.mjs";
 import { allocateSequenceOutputPath, outputRoot, validateOutputFolderName } from "./paths.mjs";
 import { appendEvent, createJob, getJob, listJobs, readEvents, saveJob, writeSequenceManifest } from "./store.mjs";
 import { LongVideoError, assertLongLoraSupported, validateSequenceInput, validateTimeline } from "./schema.mjs";
@@ -157,7 +158,10 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       return json(res, 201, { job });
     }
     if (req.method === "GET" && pathname === "/api/sequences") {
-      const jobs = await listJobs();
+      const listed = await listJobs();
+      const limit = jobListLimit(req.url, { fallback: listed.length, max: 100 });
+      const summarize = wantsJobSummary(req.url);
+      const jobs = listed.slice(0, limit).map((job) => summarize ? summarizeJobRecord(job) : job);
       return json(res, 200, { jobs, sequences: jobs });
     }
     const single = pathname.match(/^\/api\/sequences\/([^/]+)$/);
