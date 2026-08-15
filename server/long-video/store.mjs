@@ -16,6 +16,8 @@ import {
 import { createSequenceRecord, LongVideoError, newId, sanitizeAssetRef } from "./schema.mjs";
 
 const writes = new Map();
+const RENAME_RETRY_DELAYS_MS = Object.freeze([25, 75, 200, 500]);
+const TRANSIENT_RENAME_ERRORS = new Set(["EPERM", "EBUSY", "ENOTEMPTY"]);
 
 function jsonText(value) {
   return JSON.stringify(value, null, 2) + "\n";
@@ -46,13 +48,43 @@ function redactEventValue(value, key = "") {
   return result;
 }
 
-export async function atomicWriteJson(filePath, value) {
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function renameWithRetry(tempPath, filePath, { renameImpl = fs.rename, sleep = delay } = {}) {
+  let attempts = 0;
+  while (true) {
+    attempts += 1;
+    try {
+      await renameImpl(tempPath, filePath);
+      return attempts;
+    } catch (error) {
+      const canRetry = TRANSIENT_RENAME_ERRORS.has(error?.code) && attempts <= RENAME_RETRY_DELAYS_MS.length;
+      if (!canRetry) {
+        // Preserve the native errno while exposing the bounded-attempt count
+        // to the caller's diagnostics.  Test doubles may provide frozen
+        // errors, so fall back to a wrapper when mutation is unavailable.
+        let failure;
+        try {
+          failure = Object.assign(error, { _atomicRenameAttempts: attempts });
+        } catch {
+          failure = new Error(error?.message || "rename failed", { cause: error });
+          failure.code = error?.code;
+          failure._atomicRenameAttempts = attempts;
+        }
+        throw failure;
+      }
+      await sleep(RENAME_RETRY_DELAYS_MS[attempts - 1]);
+    }
+  }
+}
+
+export async function atomicWriteJson(filePath, value, options = {}) {
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true });
   const temp = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`);
   await fs.writeFile(temp, jsonText(value), "utf8");
   try {
-    await fs.rename(temp, filePath);
+    await renameWithRetry(temp, filePath, options);
   } catch (error) {
     await fs.unlink(temp).catch(() => {});
     throw error;
@@ -66,6 +98,11 @@ async function serial(filePath, operation) {
     if (writes.get(filePath) === tracked) writes.delete(filePath);
   });
   writes.set(filePath, tracked);
+  // Callers intentionally observe `next` (for example to preserve a 409
+  // revision-conflict response).  The tracker created by finally() mirrors
+  // that rejection; consume it so Vinext's unhandled-rejection backstop does
+  // not terminate the process after the caller handles the original error.
+  void tracked.catch(() => {});
   return next;
 }
 

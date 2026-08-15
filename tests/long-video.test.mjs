@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,7 +7,7 @@ import { allocateSequenceOutputPath, sequenceAttemptFile, validateOutputFolderNa
 import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
 import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
-import { appendEvent, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
+import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailFrame } from "../server/long-video/media.mjs";
 import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
@@ -554,6 +554,63 @@ test("store increments revision atomically and records events", async () => {
   assert.doesNotMatch(events, /secret|blob/);
   const tmpFiles = (await readdir(path.join(root, "data", "jobs", job.id))).filter((item) => item.endsWith(".tmp"));
   assert.equal(tmpFiles.length, 0);
+});
+
+test("long-video atomic JSON replace retries transient rename errors", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-long-video-atomic-"));
+  try {
+    const target = path.join(root, "job.json");
+    let calls = 0;
+    const waits = [];
+    await atomicWriteJson(target, { revision: 3 }, {
+      renameImpl: async (from, to) => {
+        calls += 1;
+        if (calls < 3) throw Object.assign(new Error("file is temporarily locked"), { code: "EPERM" });
+        return rename(from, to);
+      },
+      sleep: async (milliseconds) => waits.push(milliseconds),
+    });
+    assert.equal(calls, 3);
+    assert.deepEqual(waits, [25, 75]);
+    assert.deepEqual(JSON.parse(await readFile(target, "utf8")), { revision: 3 });
+    assert.deepEqual(await readdir(root), ["job.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("long-video revision conflicts preserve 409 and do not leak tracker rejection", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-long-video-conflict-"));
+  const previousDataRoot = process.env.H3_SEQUENCE_DATA_ROOT;
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  try {
+    process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+    process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+    const job = await createJob({ title: "conflict", inputType: "text", inputText: "brief", outputFolder: "conflict-job", duration: 10, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] });
+    const changed = await updateJob(job.id, { title: "changed" });
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const response = apiResponse();
+      await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${job.id}`, { revision: job.revision, title: "stale" }), response, {});
+      assert.equal(response.status, 409);
+      assert.equal(response.body.error.code, "REVISION_CONFLICT");
+      assert.equal(response.body.error.details.expectedRevision, job.revision);
+      assert.equal(response.body.error.details.actualRevision, changed.revision);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    assert.deepEqual(unhandled, []);
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.H3_SEQUENCE_DATA_ROOT;
+    else process.env.H3_SEQUENCE_DATA_ROOT = previousDataRoot;
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runner strictly sequences fake generation and uses prior tail", async () => {
