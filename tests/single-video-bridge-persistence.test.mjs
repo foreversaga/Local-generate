@@ -43,6 +43,7 @@ await mkdir(path.join(comfyRoot, "input"), { recursive: true });
 await mkdir(path.join(comfyRoot, "output"), { recursive: true });
 await mkdir(logsRoot, { recursive: true });
 await writeFile(path.join(h3Root, "src", "generate.py"), "setTimeout(() => { process.exitCode = 1; }, 250);\n", "utf8");
+await writeFile(path.join(comfyRoot, "input", "legacy-reference.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
 
 const environmentKeys = [
   "MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT",
@@ -91,6 +92,8 @@ await store.create({ ...request, id: "sv-queued-api", status: "queued", stage: "
 await store.create({ ...request, id: "sv-running-api", status: "running", stage: "sampling", progress: 42, execution: { ownerId: "old-owner", pid: 123 } });
 await store.create({
   ...request,
+  mode: "i2v",
+  inputImageName: "legacy-reference.png",
   id: "sv-failed-api",
   status: "failed",
   stage: "failed",
@@ -98,7 +101,18 @@ await store.create({
   error: "generator failed",
   exitCode: 1,
   attempt: 1,
-  provenance: { request, attempt: 1 },
+  provenance: {
+    request: {
+      ...request,
+      mode: "i2v",
+      inputImageName: "legacy-reference.png",
+      referenceImageName: "legacy-reference.png",
+      referenceImageNames: ["legacy-reference.png"],
+      referenceImageRoots: ["input"],
+      inputRefs: { referenceImage: "legacy-reference.png", referenceImages: ["legacy-reference.png"] },
+    },
+    attempt: 1,
+  },
 });
 await store.create({
   ...request,
@@ -221,6 +235,11 @@ test("retry creates a new attempt with edited prompt and render parameters", asy
   assert.equal(retried.provenance.request.duration, edited.duration);
   assert.equal(retried.provenance.request.steps, edited.steps);
   assert.equal(retried.provenance.request.timeoutSeconds, edited.timeoutSeconds);
+  assert.equal(retried.provenance.request.inputImageName, "legacy-reference.png");
+  assert.equal(Object.hasOwn(retried.provenance.request, "referenceImageNames"), false);
+  assert.equal(Object.hasOwn(retried.provenance.request, "referenceImageName"), false);
+  assert.equal(retried.provenance.request.inputRefs.inputImage, "legacy-reference.png");
+  assert.deepEqual(retried.provenance.request.inputRefs.referenceImages, []);
   assert.equal(retried.outputName, edited.outputName);
 
   const cancelled = await invoke(postRequest(`/api/jobs/${encodeURIComponent(retried.id)}/cancel`));

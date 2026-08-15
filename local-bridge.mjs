@@ -3499,11 +3499,11 @@ async function startGeneration(payload, internal = {}) {
     steps,
     seed,
     timeoutSeconds,
-    inputImageName: inputRefs.inputImage,
-    lastImageName: inputRefs.lastFrame,
-    inputVideoName: inputRefs.inputVideo,
-    referenceImageName: inputRefs.referenceImage,
-    referenceImageNames: referenceImageNames.slice(),
+    ...(["i2v", "fl2v"].includes(mode) && inputRefs.inputImage ? { inputImageName: inputRefs.inputImage } : {}),
+    ...(["fl2v", "l2v"].includes(mode) && inputRefs.lastFrame ? { lastImageName: inputRefs.lastFrame } : {}),
+    ...(["replace", "ref2v"].includes(mode) && inputRefs.inputVideo ? { inputVideoName: inputRefs.inputVideo } : {}),
+    ...(["replace", "ref2v"].includes(mode) && inputRefs.referenceImage ? { referenceImageName: inputRefs.referenceImage } : {}),
+    ...(mode === "ref2v" ? { referenceImageNames: referenceImageNames.slice() } : {}),
     characterLoraName,
     characterLoraStrength,
     ...(h3Selection.selected ? {
@@ -4034,32 +4034,58 @@ async function guardSingleVideoRetryAgainstComfy(source) {
 }
 
 function requestFromPersistedSingleJob(job) {
-  const request = job?.provenance?.request && typeof job.provenance.request === "object"
+  const persisted = job?.provenance?.request && typeof job.provenance.request === "object"
     ? structuredClone(job.provenance.request)
     : {};
-  return {
-    ...request,
-    mode: request.mode || job.mode,
-    prompt: request.prompt || job.prompt,
-    negativePrompt: request.negativePrompt || job.negativePrompt || "",
-    modelProfile: request.modelProfile || request.model || job.modelProfile,
-    width: request.width ?? job.width,
-    height: request.height ?? job.height,
-    duration: request.duration ?? job.duration,
-    steps: request.steps ?? job.steps,
-    seed: request.seed ?? job.seed,
-    timeoutSeconds: request.timeoutSeconds ?? job.timeoutSeconds ?? 3600,
-    characterLoraName: request.characterLoraName ?? job.characterLoraName,
-    characterLoraStrength: request.characterLoraStrength ?? job.characterLoraStrength,
-    ...(request.h3LoraPreset || job.h3LoraPreset ? {
-      h3LoraPreset: request.h3LoraPreset || job.h3LoraPreset,
-      characterLoraTrigger: request.characterLoraTrigger || job.characterLoraTrigger || H3_REALISM_PEOPLE_TRIGGER,
+  const mode = persisted.mode || job.mode;
+  const request = {
+    ...persisted,
+    mode,
+    prompt: persisted.prompt || job.prompt,
+    negativePrompt: persisted.negativePrompt || job.negativePrompt || "",
+    modelProfile: persisted.modelProfile || persisted.model || job.modelProfile,
+    width: persisted.width ?? job.width,
+    height: persisted.height ?? job.height,
+    duration: persisted.duration ?? job.duration,
+    steps: persisted.steps ?? job.steps,
+    seed: persisted.seed ?? job.seed,
+    timeoutSeconds: persisted.timeoutSeconds ?? job.timeoutSeconds ?? 3600,
+    characterLoraName: persisted.characterLoraName ?? job.characterLoraName,
+    characterLoraStrength: persisted.characterLoraStrength ?? job.characterLoraStrength,
+    ...(persisted.h3LoraPreset || job.h3LoraPreset ? {
+      h3LoraPreset: persisted.h3LoraPreset || job.h3LoraPreset,
+      characterLoraTrigger: persisted.characterLoraTrigger || job.characterLoraTrigger || H3_REALISM_PEOPLE_TRIGGER,
     } : {}),
-    outputName: request.outputName || job.outputName || job.output?.name || "h3-render",
-    batchId: request.batchId || job.batchId || "",
-    batchIndex: request.batchIndex ?? job.batchIndex ?? 1,
-    batchTotal: request.batchTotal ?? job.batchTotal ?? 1,
+    outputName: persisted.outputName || job.outputName || job.output?.name || "h3-render",
+    batchId: persisted.batchId || job.batchId || "",
+    batchIndex: persisted.batchIndex ?? job.batchIndex ?? 1,
+    batchTotal: persisted.batchTotal ?? job.batchTotal ?? 1,
   };
+
+  // Legacy jobs persisted every possible media field. Replaying those fields
+  // makes mode validation reject retries before a new job can be created.
+  if (mode !== "ref2v") {
+    delete request.referenceImageNames;
+    delete request.referenceImageRoots;
+  }
+  if (!["replace", "ref2v"].includes(mode)) {
+    delete request.referenceImageName;
+    delete request.referenceImageRoot;
+  }
+  if (!["i2v", "fl2v"].includes(mode)) {
+    delete request.inputImageName;
+    delete request.inputImageRoot;
+  }
+  if (!["fl2v", "l2v"].includes(mode)) {
+    delete request.lastImageName;
+    delete request.lastImageRoot;
+  }
+  if (!["replace", "ref2v"].includes(mode)) {
+    delete request.inputVideoName;
+    delete request.inputVideoRoot;
+  }
+  delete request.inputRefs;
+  return request;
 }
 
 async function resumeSingleVideoJob(job) {

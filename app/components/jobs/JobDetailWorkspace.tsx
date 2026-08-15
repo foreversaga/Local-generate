@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { calculateAspectRatioDimensions, normalizeResolutionDimension } from "../../lib/single-image-resolution.mjs";
 import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
@@ -76,6 +76,8 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const actionErrorRef = useRef<HTMLDivElement>(null);
+  const retryEditorRef = useRef<HTMLElement>(null);
   const [sourceUnavailable, setSourceUnavailable] = useState<JobSourceError | null>(null);
   const [retryDraft, setRetryDraft] = useState<RetryDraft | null>(null);
 
@@ -107,6 +109,15 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     return () => { active = false; window.clearTimeout(timer); };
   }, [refresh]);
 
+  useEffect(() => {
+    if (!error) return;
+    const frame = window.requestAnimationFrame(() => {
+      actionErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      actionErrorRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [error]);
+
   async function action(name: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
     if (!job || busy) return;
     setBusy(name); setError("");
@@ -133,6 +144,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     }
     setError("");
     setRetryDraft(retryDraftFromJob(job));
+    window.requestAnimationFrame(() => retryEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function updateRetryDraft(field: keyof RetryDraft, value: string) {
@@ -288,9 +300,9 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         )}
         {job.artifact && <p className={styles.helper}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}{job.artifact.registryId ? ` · 註冊編號 ${job.artifact.registryId}` : ""}</p>}
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
-        {error && <div className={styles.error} role="alert">{error}</div>}
+        {error && <div ref={actionErrorRef} className={styles.error} role="alert" tabIndex={-1}>{error}</div>}
         {job.source === "video" && retryDraft && (
-          <section className={styles.retryEditor} aria-labelledby="retry-editor-title">
+          <section ref={retryEditorRef} className={styles.retryEditor} aria-labelledby="retry-editor-title">
             <div className={styles.retryEditorHeader}>
               <div>
                 <h3 id="retry-editor-title">Edit parameters and retry</h3>
