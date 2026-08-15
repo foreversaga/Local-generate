@@ -82,7 +82,7 @@
 
 ### Upscale
 
-路徑：`/app/tools/upscale`。選擇或上傳影片，先通過 SeedVR2/ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、重試、預覽、開啟或下載輸出。現行工具固定使用 SeedVR2 3B Int8 **2×**，沒有自訂倍率，且沒有取消按鈕/API。
+路徑：`/app/tools/upscale`。選擇或上傳影片，先通過 SeedVR2/ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、取消、重試、預覽、開啟或下載輸出。現行工具固定使用 SeedVR2 7B Sharp NVFP4 **2×**，搭配 native auto chunk、latent overlap 1 與 wavelet 色彩校正，沒有自訂倍率。
 
 ### Image-to-Image
 

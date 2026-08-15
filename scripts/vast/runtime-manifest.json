@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "schemaVersion": 1,
-  "manifestVersion": "2026.08.12",
+  "manifestVersion": "2026.08.15",
   "bootstrapVersion": "1.1.0",
   "comfyui": {
     "repository": "https://github.com/Comfy-Org/ComfyUI.git",
@@ -122,18 +122,18 @@
       "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
     },
     {
-      "id": "seedvr2_3b_int8",
+      "id": "seedvr2_7b_sharp_nvfp4",
       "repository": "Comfy-Org/SeedVR2",
-      "revision": "0ef637b0cfd0543a4843d5d49231da2ca35a306f",
-      "remotePath": "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
-      "targetPath": "/workspace/ComfyUI/models/diffusion_models/seedvr2_3b_int8_convrot.safetensors",
-      "size": 3458259704,
-      "sha256": "c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157"
+      "revision": "10f035adc869a5b3ffc466360b869641511c0610",
+      "remotePath": "diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
+      "targetPath": "/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
+      "size": 4759694792,
+      "sha256": "80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397"
     },
     {
       "id": "seedvr2_ema_vae",
       "repository": "Comfy-Org/SeedVR2",
-      "revision": "0ef637b0cfd0543a4843d5d49231da2ca35a306f",
+      "revision": "10f035adc869a5b3ffc466360b869641511c0610",
       "remotePath": "vae/seedvr2_ema_vae_fp16.safetensors",
       "targetPath": "/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors",
       "size": 501324814,

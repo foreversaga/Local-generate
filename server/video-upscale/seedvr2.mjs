@@ -9,10 +9,10 @@ import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib
  * ComfyUI is checked against these names before a job is accepted, so a
  * similarly named checkpoint cannot accidentally be used for an upscale.
  */
-export const SEEDVR2_UNET_NAME = "seedvr2_3b_int8_convrot.safetensors";
+export const SEEDVR2_UNET_NAME = "seedvr2_7b_sharp_nvfp4.safetensors";
 export const SEEDVR2_VAE_NAME = "seedvr2_ema_vae_fp16.safetensors";
-export const SEEDVR2_PROFILE = "seedvr2_3b_int8";
-export const SEEDVR2_PROFILE_LABEL = "SeedVR2 3B Int8";
+export const SEEDVR2_PROFILE = "seedvr2_7b_sharp_nvfp4";
+export const SEEDVR2_PROFILE_LABEL = "SeedVR2 7B Sharp NVFP4";
 
 export const SEEDVR2_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
@@ -405,7 +405,7 @@ export function buildSeedVR2Prompt({
     },
     "7": { class_type: "UNETLoader", inputs: { unet_name: unetName, weight_dtype: "default" } },
     "8": { class_type: "SeedVR2Conditioning", inputs: { model: link(7), vae_conditioning: link(9) } },
-    "9": { class_type: "SeedVR2TemporalChunk", inputs: { latent: link(6), temporal_overlap: 0, chunking_mode: "auto" } },
+    "9": { class_type: "SeedVR2TemporalChunk", inputs: { latent: link(6), temporal_overlap: 1, chunking_mode: "auto" } },
     "10": {
       class_type: "KSampler",
       inputs: {
@@ -433,7 +433,7 @@ export function buildSeedVR2Prompt({
         temporal_overlap: 4,
       },
     },
-    "13": { class_type: "SeedVR2PostProcessing", inputs: { images: link(12), original_resized_images: link(3), color_correction_method: "none" } },
+    "13": { class_type: "SeedVR2PostProcessing", inputs: { images: link(12), original_resized_images: link(3), color_correction_method: "wavelet" } },
     "14": { class_type: "CreateVideo", inputs: { images: link(13), fps: link(2, 2), audio: link(2, 1) } },
     "15": {
       class_type: "SaveVideo",

@@ -5,7 +5,7 @@ readonly COMFY_ROOT=/workspace/ComfyUI
 readonly MODEL_ROOT="$COMFY_ROOT/models"
 readonly STAGING_ROOT=/workspace/.seedvr2-model-staging
 readonly SEEDVR2_REPO=Comfy-Org/SeedVR2
-readonly SEEDVR2_REVISION=0ef637b0cfd0543a4843d5d49231da2ca35a306f
+readonly SEEDVR2_REVISION=10f035adc869a5b3ffc466360b869641511c0610
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -61,11 +61,11 @@ download_model() {
 }
 
 download_model \
-  seedvr2_3b_int8 \
-  diffusion_models/seedvr2_3b_int8_convrot.safetensors \
-  "$MODEL_ROOT/diffusion_models/seedvr2_3b_int8_convrot.safetensors" \
-  3458259704 \
-  c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157
+  seedvr2_7b_sharp_nvfp4 \
+  diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors \
+  "$MODEL_ROOT/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors" \
+  4759694792 \
+  80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397
 
 download_model \
   seedvr2_ema_vae \

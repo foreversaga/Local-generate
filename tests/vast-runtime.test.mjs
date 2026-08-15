@@ -25,6 +25,18 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
   assert.ok(manifest.nativeNodes.includes("MiniMaxH3ImageToVideo"));
   assert.ok(manifest.nativeNodes.includes("SaveVideo"));
   assert.equal(new Set(manifest.models.map((model) => model.id)).size, manifest.models.length);
+  assert.deepEqual(
+    manifest.models.find((model) => model.id === "seedvr2_7b_sharp_nvfp4"),
+    {
+      id: "seedvr2_7b_sharp_nvfp4",
+      repository: "Comfy-Org/SeedVR2",
+      revision: "10f035adc869a5b3ffc466360b869641511c0610",
+      remotePath: "diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
+      targetPath: "/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
+      size: 4759694792,
+      sha256: "80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397",
+    },
+  );
   assert.equal(new Set(manifest.customNodes.map((node) => node.name)).size, manifest.customNodes.length);
   for (const model of manifest.models) {
     assert.ok(model.repository);

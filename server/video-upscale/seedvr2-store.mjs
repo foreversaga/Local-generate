@@ -7,7 +7,7 @@ import { createSqliteJobRepository } from "../persistence/sqlite-job-repository.
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const PERSISTED_STATUSES = new Set(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
-const DEFAULT_PROFILE = "seedvr2_3b_int8";
+const DEFAULT_PROFILE = "seedvr2_7b_sharp_nvfp4";
 const LEGACY_JSON_MIGRATION = "seedvr2-json-v1";
 
 function defaultRoot() {

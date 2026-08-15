@@ -111,9 +111,9 @@ done
 | 組合 | bytes | 約略十進位 GB | 備註 |
 | --- | ---: | ---: | --- |
 | H3 五檔 | 46,557,479,455 | 46.56 | bootstrap 核心 |
-| SeedVR2 兩檔 | 3,959,584,518 | 3.96 | bootstrap 核心升頻 |
-| H3＋SeedVR2 | 50,517,063,973 | 50.52 | 尚未含 Ollama、media、cache、staging |
-| 再加選配 SDXL Turbo | 57,455,145,878 | 57.46 | 僅 remote img2img 需要 |
+| SeedVR2 兩檔 | 5,261,019,606 | 5.26 | bootstrap 核心升頻 |
+| H3＋SeedVR2 | 51,818,499,061 | 51.82 | 尚未含 Ollama、media、cache、staging |
+| 再加選配 SDXL Turbo | 58,756,580,966 | 58.76 | 僅 remote img2img 需要 |
 
 `150 GB+` 是包含 Ollama 模型、輸入／輸出影片、暫存下載與更新餘量的操作建議，不是模型檔的硬性需求；依實際保留 media 與 staging 的政策加大。
 
@@ -154,8 +154,8 @@ done
 | H3 Qwen text encoder | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors) | `/workspace/ComfyUI/models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | 15687142551 | `35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6` |
 | H3 video VAE | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`vae/minimax_h3_video_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/vae/minimax_h3_video_vae_fp16.safetensors) | `/workspace/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors` | 5207808496 | `7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522` |
 | H3 audio VAE | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`vae/minimax_h3_audio_vae_fp32.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/vae/minimax_h3_audio_vae_fp32.safetensors) | `/workspace/ComfyUI/models/vae/minimax_h3_audio_vae_fp32.safetensors` | 605254808 | `8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48` |
-| SeedVR2 3B Int8 diffusion | `Comfy-Org/SeedVR2` @ `0ef637b0cfd0543a4843d5d49231da2ca35a306f` | [`diffusion_models/seedvr2_3b_int8_convrot.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/0ef637b0cfd0543a4843d5d49231da2ca35a306f/diffusion_models/seedvr2_3b_int8_convrot.safetensors) | `/workspace/ComfyUI/models/diffusion_models/seedvr2_3b_int8_convrot.safetensors` | 3458259704 | `c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157` |
-| SeedVR2 EMA VAE | `Comfy-Org/SeedVR2` @ `0ef637b0cfd0543a4843d5d49231da2ca35a306f` | [`vae/seedvr2_ema_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/0ef637b0cfd0543a4843d5d49231da2ca35a306f/vae/seedvr2_ema_vae_fp16.safetensors) | `/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors` | 501324814 | `20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1` |
+| SeedVR2 7B Sharp NVFP4 diffusion | `Comfy-Org/SeedVR2` @ `10f035adc869a5b3ffc466360b869641511c0610` | [`diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/10f035adc869a5b3ffc466360b869641511c0610/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors) | `/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors` | 4759694792 | `80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397` |
+| SeedVR2 EMA VAE | `Comfy-Org/SeedVR2` @ `10f035adc869a5b3ffc466360b869641511c0610` | [`vae/seedvr2_ema_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/10f035adc869a5b3ffc466360b869641511c0610/vae/seedvr2_ema_vae_fp16.safetensors) | `/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors` | 501324814 | `20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1` |
 
 Ollama pull（**未 pin digest／size**，須先用 `ollama list`／`ollama show` 記錄舊容器結果）如下，模型檔放在 `/workspace/ollama-models`：
 
@@ -340,7 +340,7 @@ check_model 12528636800 c813c5eabd85e275daccbf45e6f8ac4d9d14a1827d425e5be5070c92
 check_model 15687142551 35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6 /workspace/ComfyUI/models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
 check_model 5207808496 7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522 /workspace/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors
 check_model 605254808 8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48 /workspace/ComfyUI/models/vae/minimax_h3_audio_vae_fp32.safetensors
-check_model 3458259704 c3dec8bcc5916843a8a858572970597462e1f2dc598d6dfd818f6cd40f53a157 /workspace/ComfyUI/models/diffusion_models/seedvr2_3b_int8_convrot.safetensors
+check_model 4759694792 80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397 /workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors
 check_model 501324814 20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1 /workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors
 
 # remote img2img 選配才執行：

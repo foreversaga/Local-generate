@@ -57,13 +57,13 @@ test("builds corrected 15-node SeedVR2 graph with dynamic inputs", () => {
   assert.equal(Object.keys(graph).length, 15);
   assert.equal(graph["1"].class_type, "LoadVideo");
   assert.equal(graph["1"].inputs.file, "clips/source.mp4");
-  assert.deepEqual(graph["9"].inputs, { latent: ["6", 0], temporal_overlap: 0, chunking_mode: "auto" });
+  assert.deepEqual(graph["9"].inputs, { latent: ["6", 0], temporal_overlap: 1, chunking_mode: "auto" });
   assert.deepEqual(graph["8"].inputs.vae_conditioning, ["9", 0]);
   assert.deepEqual(graph["10"].inputs.latent_image, ["9", 0]);
   assert.deepEqual(graph["11"].inputs, { latents: ["10", 0], temporal_overlap: ["9", 1] });
   assert.equal(graph["3"].inputs.resize_type, "scale by multiplier");
   assert.equal(graph["3"].inputs["resize_type.multiplier"], 2);
-  assert.equal(graph["13"].inputs.color_correction_method, "none");
+  assert.equal(graph["13"].inputs.color_correction_method, "wavelet");
   assert.deepEqual(graph["14"].inputs.fps, ["2", 2]);
   assert.deepEqual(graph["14"].inputs.audio, ["2", 1]);
   assert.equal("bit_depth" in graph["14"].inputs, false);

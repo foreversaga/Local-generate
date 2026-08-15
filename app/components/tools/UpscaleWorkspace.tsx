@@ -205,7 +205,7 @@ export function UpscaleWorkspace() {
                 <div>
                     <span className={styles.kicker}>影片升頻 / SEEDVR2</span>
                     <h2>影片升頻</h2>
-                    <p>使用原生 SeedVR2 3B Int8 流程，產生清晰的 2× 影片升頻結果。</p>
+                    <p>使用原生 SeedVR2 7B Sharp NVFP4、auto chunk、overlap 1 與 wavelet 色彩校正，產生清晰穩定的 2× 影片升頻結果。</p>
                 </div>
                 <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
             </section>
@@ -247,7 +247,7 @@ export function UpscaleWorkspace() {
                     <div className={styles.cardHeading}>
                         <div>
                             <span className={styles.kicker}>升頻設定檔</span>
-                            <h3>SeedVR2 3B Int8</h3>
+                            <h3>SeedVR2 7B Sharp NVFP4</h3>
                         </div>
                         <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
                     </div>
