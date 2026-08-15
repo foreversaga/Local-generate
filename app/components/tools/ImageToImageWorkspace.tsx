@@ -23,7 +23,8 @@ import {
     type Img2ImgRuntimeMode,
     type Img2ImgSubmitInput,
 } from "./img2img-client";
-import { ACTION_LABELS, FIELD_LABELS, jobStatusLabel, readinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
+import { jobStatusLabel, localizedCopy, readinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import styles from "./ImageToImageWorkspace.module.css";
 
 const IMG2IMG_MODELS = [
@@ -126,8 +127,8 @@ function itemParameter(item: Img2ImgItem, key: BaseValueKey, fallback: number) {
     return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
-function itemStatusLabel(status: string) {
-    return jobStatusLabel(status, "img2img");
+function itemStatusLabel(status: string, locale?: string) {
+    return jobStatusLabel(status, "img2img", locale);
 }
 
 function modelOption(value: string) {
@@ -210,13 +211,15 @@ function apiErrorMessage(payload: PromptApiPayload, fallback: string) {
     return code ? `${code}: ${message}` : message;
 }
 
-function localizedJobStatusLabel(job: Img2ImgJob | null) {
+function localizedJobStatusLabel(job: Img2ImgJob | null, locale?: string) {
     if (!job) return "尚未開始生成";
-    const label = jobStatusLabel(job.status, "img2img");
+    const label = jobStatusLabel(job.status, "img2img", locale);
     return job.stage ? `${label} · ${job.stage}` : label;
 }
 
 export function ImageToImageWorkspace() {
+    const { locale } = useI18n();
+    const { ACTION_LABELS, FIELD_LABELS } = localizedCopy(locale);
     // `source` is the required character/reference image.  `poseReference`
     // is deliberately independent and optional so legacy source-only jobs
     // keep the exact same request shape.
@@ -793,7 +796,7 @@ export function ImageToImageWorkspace() {
                             <img src={assetUrl(source)} alt={`以圖生圖來源：${source.name}`} />
                             <div className={styles.sourceMeta}>
                                 <strong title={source.name}>{source.name}</strong>
-                                <span>{sourceLabel(source.root)} · {source.mime || "圖片"}</span>
+                                <span>{sourceLabel(source.root, locale)} · {source.mime || (locale === "en" ? "Image" : "圖片")}</span>
                                 <button type="button" className={styles.secondaryButton} onClick={() => { setSource(null); setJob(null); setError(""); }}>移除來源</button>
                             </div>
                         </div>
@@ -845,7 +848,7 @@ export function ImageToImageWorkspace() {
                         <span className={styles.eyebrow}>ComfyUI 狀態</span>
                             <h2 id="img2img-readiness-title">執行環境</h2>
                         </div>
-                        <span className={`${styles.statusChip} ${styles[readinessState]}`}>{readinessLabel(readinessState === "blocked" ? "needs_attention" : readinessState)}</span>
+                        <span className={`${styles.statusChip} ${styles[readinessState]}`}>{readinessLabel(readinessState === "blocked" ? "needs_attention" : readinessState, locale)}</span>
                     </div>
                     <p className={styles.helper} aria-live="polite" aria-atomic="true">{readinessMessage || "ComfyUI、必要節點與所選模型設定檔均可用。"}</p>
                     {healthError && <p className={styles.error} role="alert">{healthError}</p>}
@@ -1084,7 +1087,7 @@ export function ImageToImageWorkspace() {
                     {job && <span className={styles.sectionCode}>{job.id}</span>}
                 </div>
                 <div className={styles.statusLine} aria-live="polite">
-                    <strong>{localizedJobStatusLabel(job)}</strong>
+                    <strong>{localizedJobStatusLabel(job, locale)}</strong>
                     {job && <span>{progress}%</span>}
                 </div>
                 {job?.characterLoraName && <p className={styles.helper}>LoRA: {job.characterLoraName} · {Number(job.characterLoraStrength ?? 0.75).toFixed(2)}</p>}
@@ -1195,7 +1198,7 @@ export function ImageToImageWorkspace() {
                             <article className={styles.historyCard} key={record.id}>
                                 <button type="button" className={styles.historyToggle} onClick={() => setExpandedHistory((previous) => ({ ...previous, [record.id]: !expanded }))} aria-expanded={expanded}>
                                     <span><strong>{record.id}</strong><small>{record.model || "圖片生成"} · {record.prompt?.slice(0, 80) || "沒有提示詞"}</small></span>
-                                    <span>{jobStatusLabel(record.status, "img2img")} · {recordCount} 張</span>
+                                    <span>{jobStatusLabel(record.status, "img2img", locale)} · {recordCount} 張</span>
                                 </button>
                                 {expanded && (
                                     <div className={styles.historyDetails}>
@@ -1205,7 +1208,7 @@ export function ImageToImageWorkspace() {
                                         {record.error && <p className={styles.error}>{record.error}</p>}
                                         {recordItems.map((item) => (
                                             <div className={styles.historyItem} key={item.index}>
-                                                <span>第 {item.index + 1} 張 · {itemStatusLabel(item.status)} · {FIELD_LABELS.seed} {item.parameters?.seed ?? record.seed}</span>
+                                                <span>第 {item.index + 1} 張 · {itemStatusLabel(item.status, locale)} · {FIELD_LABELS.seed} {item.parameters?.seed ?? record.seed}</span>
                                                 {item.output && <a href={assetUrl(item.output)} target="_blank" rel="noreferrer">開啟輸出</a>}
                                                 <dl className={styles.itemParameters}>
                                                     <div><dt>{FIELD_LABELS.denoise}</dt><dd>{itemParameter(item, "denoise", Number(record.denoise)).toFixed(2)}</dd></div>

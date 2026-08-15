@@ -7,6 +7,12 @@ H3 Studio is a local MiniMax H3 video control interface. The web service coordin
 
 The public `/app` entry opens the Create landing. Single, Long, Jobs, Library, Tools, and Settings are provided by the same Studio shell, and all flows share the existing `/app/api/...` bridge contract.
 
+## Languages
+
+The Studio interface supports Traditional Chinese (`zh-TW`, the default) and English (`en`). Use the language selector in the top bar to switch languages. The choice is saved in browser `localStorage` under `h3-studio.locale`, restored on later visits, and applied to the document `lang` attribute. Locale changes affect presentation only: API routes, persisted job states, source identifiers, and bridge payloads remain unchanged.
+
+UI translations live in [`app/i18n/dictionaries.ts`](app/i18n/dictionaries.ts). Add the same key to both dictionaries when introducing user-facing shell or workflow copy, and use `useI18n()` in client components. Shared backend status/source labels accept an optional locale through [`app/lib/ui-copy.mjs`](app/lib/ui-copy.mjs).
+
 ## Local configuration
 
 Run these commands from the project root:
@@ -141,6 +147,8 @@ The Web/API does not require Tailscale Serve and does not use an HMR WebSocket.
 - Generation progress, cancellation, and history
 
 Web resources use only ComfyUI's two native paths: uploaded and reference media use `<COMFYUI_ROOT>/input`, while generated videos and output resources use `<COMFYUI_ROOT>/output`. The generator writes directly to ComfyUI output and does not create a second output copy in this project or in `minimax-h3-local`.
+
+With the default adjacent Windows checkout, these resolve to `ComfyUI\input` and `ComfyUI\output`.
 
 ## CI and hosted configuration
 

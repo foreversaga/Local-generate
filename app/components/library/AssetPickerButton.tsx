@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ACTION_LABELS, SOURCE_LABELS } from "../../lib/ui-copy.mjs";
+import { localizedCopy } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import { assetKey, assetUrl, fetchAssetLibrary, type AssetSource, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, pathSegments, sortAssets } from "./asset-navigation";
 import styles from "./AssetPickerButton.module.css";
@@ -30,13 +31,6 @@ type Props = AssetPickerConstraints & {
 
 type PickerRoot = "all" | "input" | "output" | "training";
 
-const ROOT_OPTIONS: Array<{ value: PickerRoot; label: string }> = [
-    { value: "all", label: SOURCE_LABELS.all },
-    { value: "input", label: SOURCE_LABELS.input },
-    { value: "output", label: SOURCE_LABELS.output },
-    { value: "training", label: SOURCE_LABELS.training },
-];
-
 export function AssetPickerButton({
     kind,
     root,
@@ -48,10 +42,19 @@ export function AssetPickerButton({
     allowFolderSelection = multiple,
     max,
     selectedKeys = [],
-    label = ACTION_LABELS.browseLibrary,
+    label: providedLabel,
     triggerId,
     onSelect,
 }: Props) {
+    const { locale } = useI18n();
+    const { ACTION_LABELS, SOURCE_LABELS } = localizedCopy(locale);
+    const label = providedLabel || ACTION_LABELS.browseLibrary;
+    const rootOptions: Array<{ value: PickerRoot; label: string }> = [
+        { value: "all", label: SOURCE_LABELS.all },
+        { value: "input", label: SOURCE_LABELS.input },
+        { value: "output", label: SOURCE_LABELS.output },
+        { value: "training", label: SOURCE_LABELS.training },
+    ];
     const roots = useMemo<Array<"input" | "output" | "training">>(() => {
         if (allowedRoots?.length) return allowedRoots;
         if (root) return [root];
@@ -77,7 +80,7 @@ export function AssetPickerButton({
     const triggerRef = useRef<HTMLButtonElement>(null);
     const dialogRef = useRef<HTMLDivElement>(null);
     const selectedKeysSignature = JSON.stringify(selectedKeys);
-    const availableRootOptions = ROOT_OPTIONS.filter((option) => option.value === "all" ? roots.length > 1 : roots.includes(option.value));
+    const availableRootOptions = rootOptions.filter((option) => option.value === "all" ? roots.length > 1 : roots.includes(option.value));
     const sourceLabel = assetSource === "training" ? SOURCE_LABELS.training : "素材選擇器";
     const breadcrumbLabel = SOURCE_LABELS[activeRoot] || SOURCE_LABELS.all;
 

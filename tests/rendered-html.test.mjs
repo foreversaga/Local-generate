@@ -57,6 +57,7 @@ test("uses the same-origin API and current web route wiring", async () => {
   assert.match(vite, /const listenHost = "0\.0\.0\.0"/);
   assert.match(vite, /const webPort = 8787/);
   assert.match(vite, /parsed\.pathname\.startsWith\("\/components\/"\)/);
+  assert.match(vite, /parsed\.pathname\.startsWith\("\/i18n\/"\)/);
   assert.match(vite, /parsed\.pathname\.startsWith\("\/lib\/"\)/);
   assert.match(vite, /hmr:\s*false/);
   assert.match(vite, /ws:\s*false/);

@@ -3,7 +3,8 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AssetPickerButton } from "../../library/AssetPickerButton";
 import { assetKey, assetUrl, fetchAssetLibrary, type StudioAsset, type StudioAssetFolder, uploadAssets } from "../../library/asset-client";
-import { FIELD_LABELS, jobStatusLabel } from "../../../lib/ui-copy.mjs";
+import { jobStatusLabel, localizedCopy } from "../../../lib/ui-copy.mjs";
+import { useI18n } from "../../../i18n/I18nProvider";
 import { loraTrainingProgress } from "../../../lib/job-adapter.mjs";
 import {
   artifactDownloadUrl,
@@ -239,6 +240,8 @@ function healthCheckDetail(check: LoraTrainingHealthCheck) {
 }
 
 export function LoraTrainerWorkspace() {
+  const { locale } = useI18n();
+  const { FIELD_LABELS } = localizedCopy(locale);
   const locationSearch = useSyncExternalStore(subscribeToLocation, getLocationSearch, getServerLocationSearch);
   const requestedStage = useMemo(() => {
     const value = new URLSearchParams(locationSearch).get("step");
@@ -909,7 +912,7 @@ export function LoraTrainerWorkspace() {
             <div className={styles.captionList}>{captions.map((record) => {
               const fieldId = `caption-${record.imageId}`; const errorId = `${fieldId}-error`; const itemBusy = busy === `caption-${record.imageId}`;
               return <article key={record.imageId} className={styles.captionCard}>
-                <div className={styles.captionMeta}><strong>{record.imageFile}</strong><span data-status={record.status}>{jobStatusLabel(record.status, "lora")}</span><small>嘗試 {record.attempts} 次 · {record.model}</small></div>
+                <div className={styles.captionMeta}><strong>{record.imageFile}</strong><span data-status={record.status}>{jobStatusLabel(record.status, "lora", locale)}</span><small>嘗試 {record.attempts} 次 · {record.model}</small></div>
                 <label htmlFor={fieldId}>圖片描述</label><textarea id={fieldId} value={captionDrafts[record.imageId] ?? record.caption} aria-invalid={record.status === "failed"} aria-describedby={record.error ? errorId : undefined} onChange={(event) => setCaptionDrafts((items) => ({ ...items, [record.imageId]: event.target.value }))} />
                 {record.error && <p id={errorId} className={styles.inlineError}>{record.error.message}</p>}
                 <div className={styles.cardActions}><button type="button" className={styles.secondaryButton} onClick={() => void saveCaption(record)} disabled={itemBusy}>儲存</button><button type="button" className={styles.textButton} onClick={() => void retryOneCaption(record)} disabled={itemBusy}>重新產生</button></div>
@@ -945,7 +948,7 @@ export function LoraTrainerWorkspace() {
           </section>}
 
           {stage === "progress" && <section className={styles.panel} aria-labelledby="progress-title" aria-live="polite">
-            <header className={styles.sectionHeader}><div><span>04 / 訓練進度</span><h2 id="progress-title">{jobStatusLabel(job?.status, "lora")}</h2><p>關閉此頁不會中斷工作；使用目前網址可回到同一個工作。</p></div><span className={styles.statusChip} data-status={job?.status}>{jobStatusLabel(job?.status, "lora")}</span></header>
+            <header className={styles.sectionHeader}><div><span>04 / 訓練進度</span><h2 id="progress-title">{jobStatusLabel(job?.status, "lora", locale)}</h2><p>關閉此頁不會中斷工作；使用目前網址可回到同一個工作。</p></div><span className={styles.statusChip} data-status={job?.status}>{jobStatusLabel(job?.status, "lora", locale)}</span></header>
             <div className={styles.progressSummary}><div className={styles.progressNumber}>{hasMeasuredProgress || job?.status === "installing" || job?.status === "completed" ? <>{progress}<span>%</span></> : <span aria-label="訓練進度尚未開始">{progressStateLabel}</span>}</div><div className={styles.progressBody}><div className={styles.progressTrack} role="progressbar" aria-label="訓練完成度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><dl><div><dt>步數</dt><dd>{job?.training.step ?? "—"} / {job?.training.totalSteps ?? "—"}</dd></div><div><dt>訓練輪數</dt><dd>{job?.training.epoch ?? "—"}</dd></div><div><dt>損失</dt><dd>{job?.training.loss?.toFixed(4) ?? "—"}</dd></div><div><dt>預估剩餘</dt><dd>{formatEta(job?.training.etaSeconds)}</dd></div></dl></div></div>
             <div className={styles.jobError}>{job?.error && <><strong>{job.error.code}</strong><span>{job.error.message}</span>{job.error.field && <small>請檢查：{job.error.field}</small>}</>}</div>
             <div className={styles.actions}>{job && ["queued", "training", "cancelling"].includes(job.status) && <button className={styles.dangerButton} type="button" onClick={cancelJob} disabled={Boolean(busy) || job.status === "cancelling"}>取消訓練</button>}{job && ["failed", "cancelled", "interrupted"].includes(job.status) && <button className={styles.primaryButton} type="button" onClick={retryJob} disabled={Boolean(busy)}>{busy === "retry" ? "建立重試中…" : "重試訓練"}</button>}</div>
@@ -959,7 +962,7 @@ export function LoraTrainerWorkspace() {
           </section>}
         </main>
 
-        <aside className={styles.summary} aria-label="目前工作摘要"><span>目前工作</span><strong>{job ? jobStatusLabel(job.status, "lora") : "尚未建立"}</strong><dl><div><dt>工作編號</dt><dd title={job?.id}>{job?.id || "—"}</dd></div><div><dt>訓練資料</dt><dd>{job?.dataset.imageCount ?? assets.length} 張圖片</dd></div><div><dt>模式</dt><dd>{job?.captionReviewMode === "manual" ? "手動" : "自動"}</dd></div><div><dt>模型系列</dt><dd>{job?.training.family || config.family}</dd></div><div><dt>嘗試次數</dt><dd>{job?.training.attempt ?? "—"}</dd></div></dl>{job && canonicalStage !== stage && <button type="button" className={styles.textButton} onClick={() => setStage(canonicalStage)}>回到目前步驟</button>}</aside>
+        <aside className={styles.summary} aria-label="目前工作摘要"><span>目前工作</span><strong>{job ? jobStatusLabel(job.status, "lora", locale) : "尚未建立"}</strong><dl><div><dt>工作編號</dt><dd title={job?.id}>{job?.id || "—"}</dd></div><div><dt>訓練資料</dt><dd>{job?.dataset.imageCount ?? assets.length} 張圖片</dd></div><div><dt>模式</dt><dd>{job?.captionReviewMode === "manual" ? "手動" : "自動"}</dd></div><div><dt>模型系列</dt><dd>{job?.training.family || config.family}</dd></div><div><dt>嘗試次數</dt><dd>{job?.training.attempt ?? "—"}</dd></div></dl>{job && canonicalStage !== stage && <button type="button" className={styles.textButton} onClick={() => setStage(canonicalStage)}>回到目前步驟</button>}</aside>
       </div>
     </div>
   );

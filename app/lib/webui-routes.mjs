@@ -47,17 +47,20 @@ export function primaryRouteForPath(pathname) {
  * @param {string} pathname
  * @returns {string}
  */
-export function routeTitle(pathname) {
+export function routeTitle(pathname, locale = "zh-TW") {
   const normalizedPath = normalizePath(pathname);
+  const english = locale === "en";
 
-  if (normalizedPath === "/app/create/single") return "建立 / 單次影片";
-  if (normalizedPath === "/app/create/long") return "建立 / 長影片";
-  if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return "工作詳情";
-  if (normalizedPath === "/app/tools/upscale") return "工具 / 影片升頻";
-  if (normalizedPath === "/app/tools/image-to-image") return "工具 / 以圖生圖";
-  if (normalizedPath === "/app/tools/lora-trainer") return "工具 / LoRA 訓練";
+  if (normalizedPath === "/app/create/single") return english ? "Create / Single video" : "建立 / 單次影片";
+  if (normalizedPath === "/app/create/long") return english ? "Create / Long video" : "建立 / 長影片";
+  if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return english ? "Job details" : "工作詳情";
+  if (normalizedPath === "/app/tools/upscale") return english ? "Tools / Video upscale" : "工具 / 影片升頻";
+  if (normalizedPath === "/app/tools/image-to-image") return english ? "Tools / Image to Image" : "工具 / 以圖生圖";
+  if (normalizedPath === "/app/tools/lora-trainer") return english ? "Tools / LoRA training" : "工具 / LoRA 訓練";
 
-  return WEB_UI_ROUTES.find((route) => route.id === primaryRouteForPath(normalizedPath))?.label ?? NAV_LABELS.create;
+  const route = WEB_UI_ROUTES.find((item) => item.id === primaryRouteForPath(normalizedPath));
+  if (!english) return route?.label ?? NAV_LABELS.create;
+  return ({ create: "Create", jobs: "Jobs", library: "Library", tools: "Tools", settings: "Settings" })[route?.id || "create"];
 }
 
 /**

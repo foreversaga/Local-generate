@@ -4,6 +4,7 @@ import {
   ACTION_LABELS,
   FIELD_LABELS,
   NAV_LABELS,
+  localizedCopy,
   jobStatusLabel,
   readinessLabel,
   sourceLabel,
@@ -50,4 +51,15 @@ test("shared UI copy maps backend statuses and tool domains", () => {
   assert.equal(jobStatusLabel("running", "img2img"), "生成中");
   assert.equal(jobStatusLabel("running", "lora"), "訓練中");
   assert.equal(readinessLabel("needs_attention"), "需要處理");
+});
+
+test("shared UI copy presents English without changing backend values", () => {
+  const english = localizedCopy("en");
+  assert.equal(english.NAV_LABELS.create, "Create");
+  assert.equal(english.ACTION_LABELS.details, "View details");
+  assert.equal(english.FIELD_LABELS.prompt, "Prompt");
+  assert.equal(jobStatusLabel("running", "upscale", "en"), "Upscaling");
+  assert.equal(jobStatusLabel("needs_attention", undefined, "en"), "Needs attention");
+  assert.equal(sourceLabel("long", "en"), "Long video");
+  assert.equal(readinessLabel("ready", "en"), "Ready");
 });

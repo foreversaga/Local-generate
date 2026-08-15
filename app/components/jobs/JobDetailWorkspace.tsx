@@ -4,7 +4,8 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { lookupUnifiedJob } from "../../lib/job-source-fetch.mjs";
 import { calculateAspectRatioDimensions, normalizeResolutionDimension } from "../../lib/single-image-resolution.mjs";
-import { ACTION_LABELS, sourceLabel } from "../../lib/ui-copy.mjs";
+import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import { fetchUnifiedJobs, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import styles from "./JobsWorkspace.module.css";
@@ -69,6 +70,8 @@ function numericDraft(value: string, label: string) {
 }
 
 export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourceHint?: string }) {
+  const { locale } = useI18n();
+  const { ACTION_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [job, setJob] = useState<UnifiedJob | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,7 +220,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     return (
       <div className={styles.error} role="alert">
         <strong>工作來源無法使用。</strong>
-        <p>{sourceLabel(sourceUnavailable.source)}: {sourceUnavailable.message}</p>
+        <p>{sourceLabel(sourceUnavailable.source, locale)}: {sourceUnavailable.message}</p>
         <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
       </div>
     );
@@ -234,7 +237,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
-        <div className={styles.jobHeader}><StatusBadge status={job.status} source={job.source} /><span className={styles.source}>{sourceLabel(job.source)}</span></div>
+        <div className={styles.jobHeader}><StatusBadge status={job.status} source={job.source} /><span className={styles.source}>{sourceLabel(job.source, locale)}</span></div>
         <h2>{job.title}</h2>
         <p>{job.subtitle}</p>
         <dl className={styles.metaGrid}>

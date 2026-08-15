@@ -24,7 +24,8 @@ import {
   SINGLE_RENDER_DURATION_STEP_SECONDS,
   SINGLE_RENDER_DURATION_UI_MIN_SECONDS,
 } from "../../lib/single-duration.mjs";
-import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
+import { localizedCopy } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
@@ -88,6 +89,8 @@ const MODEL_OPTIONS: readonly ModelOption[] = [
 ] as const;
 
 export function SingleCreateForm() {
+  const { locale } = useI18n();
+  const { FIELD_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [assetsReady, setAssetsReady] = useState(false);

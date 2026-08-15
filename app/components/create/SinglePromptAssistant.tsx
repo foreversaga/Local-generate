@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
 import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
-import { FIELD_LABELS } from "../../lib/ui-copy.mjs";
+import { localizedCopy } from "../../lib/ui-copy.mjs";
+import { useI18n } from "../../i18n/I18nProvider";
 import {
   STUDIO_SETTINGS_DEFAULTS,
   loadStudioSettings,
@@ -123,6 +124,8 @@ export function SinglePromptAssistant({
   onPromptGenerated,
   onNegativePromptGenerated,
 }: Props) {
+  const { locale } = useI18n();
+  const { FIELD_LABELS } = localizedCopy(locale);
   const [health, setHealth] = useState<Health | null>(null);
   const [brief, setBrief] = useState("");
   const [provider, setProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);

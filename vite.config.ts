@@ -38,6 +38,7 @@ function normalizeWebRequestUrl(url = "/") {
   if (
     ["/globals.css", "/page.tsx", "/layout.tsx"].includes(parsed.pathname) ||
     parsed.pathname.startsWith("/components/") ||
+    parsed.pathname.startsWith("/i18n/") ||
     parsed.pathname.startsWith("/lib/")
   ) {
     parsed.pathname = webBasePath + parsed.pathname;
