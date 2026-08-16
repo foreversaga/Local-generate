@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createSingleCreateDraft,
+  createSingleCreateDraftFromJob,
   parseSingleCreateDraft,
   SINGLE_CREATE_DRAFT_STORAGE_KEY,
 } from "../app/lib/single-create-draft.mjs";
@@ -9,6 +10,7 @@ import {
 function draftInput(overrides = {}) {
   return {
     mode: "fl2v",
+    initialDescription: "一個人在月台等待，風吹動他的外套。",
     prompt: "A cinematic tracking shot.",
     negativePrompt: "flicker",
     modelProfile: "nvfp4_blackwell",
@@ -46,6 +48,29 @@ test("Single Create draft round-trips valid state", () => {
   assert.deepEqual(parseSingleCreateDraft(JSON.stringify(source)), source);
 });
 
+test("Single retry draft restores persisted job parameters and the initial description", () => {
+  const draft = createSingleCreateDraftFromJob({
+    mode: "ref2v",
+    initialDescription: "角色從雨夜街口走向鏡頭。",
+    prompt: "integrated_multimodal_description: cinematic rain",
+    negativePrompt: "flicker",
+    modelProfile: "ref2va_pruned_nvfp4",
+    width: 832,
+    height: 480,
+    duration: 6,
+    steps: 24,
+    seed: 77,
+    outputName: "rain.mp4",
+    inputRefs: { referenceImages: ["hero.png", "street.png"], inputVideo: "motion.mp4" },
+    provenance: { request: { referenceImageRoots: ["input", "output"], inputVideoRoot: "output" } },
+  });
+  assert.equal(draft.initialDescription, "角色從雨夜街口走向鏡頭。");
+  assert.equal(draft.prompt, "integrated_multimodal_description: cinematic rain");
+  assert.deepEqual(draft.referenceImageKeys, ["input:hero.png", "output:street.png"]);
+  assert.equal(draft.sourceVideoKey, "output:motion.mp4");
+  assert.equal(draft.renderCount, 1);
+});
+
 test("Single Create draft preserves an intentionally blank character LoRA strength", () => {
   const source = createSingleCreateDraft(draftInput({ characterLoraStrength: "" }));
   assert.equal(source.characterLoraStrength, "");
@@ -78,6 +103,7 @@ test("Single Create draft rejects unknown versions and sanitizes corrupted field
   assert.deepEqual(parsed, {
     version: 1,
     mode: "t2v",
+    initialDescription: "",
     prompt: "",
     negativePrompt: "",
     modelProfile: "nvfp4_blackwell",

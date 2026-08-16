@@ -7,6 +7,7 @@ const MODES = new Set(["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"]);
 const DEFAULT_DRAFT = Object.freeze({
   version: SINGLE_CREATE_DRAFT_VERSION,
   mode: "t2v",
+  initialDescription: "",
   prompt: "",
   negativePrompt: "",
   modelProfile: "nvfp4_blackwell",
@@ -36,6 +37,7 @@ export function createSingleCreateDraft(input) {
   return {
     version: SINGLE_CREATE_DRAFT_VERSION,
     mode: normalizeMode(input.mode),
+    initialDescription: normalizeString(input.initialDescription),
     prompt: normalizeString(input.prompt),
     negativePrompt: normalizeString(input.negativePrompt),
     modelProfile: normalizeNonEmptyString(input.modelProfile, DEFAULT_DRAFT.modelProfile),
@@ -57,6 +59,58 @@ export function createSingleCreateDraft(input) {
     lastFrameImageKey: normalizeNullableString(input.lastFrameImageKey),
     sourceVideoKey: normalizeNullableString(input.sourceVideoKey),
   };
+}
+
+/**
+ * Convert a persisted public Single-video job into the normal Create form
+ * draft. New jobs retain initialDescription; legacy jobs leave it blank.
+ *
+ * @param {Record<string, any>} job
+ */
+export function createSingleCreateDraftFromJob(job) {
+  const request = job?.provenance?.request && typeof job.provenance.request === "object"
+    ? job.provenance.request
+    : {};
+  const refs = job?.inputRefs && typeof job.inputRefs === "object" ? job.inputRefs : {};
+  const mode = normalizeMode(job?.mode ?? request.mode);
+  const inputImageName = normalizeString(request.inputImageName || refs.inputImage);
+  const lastFrameName = normalizeString(request.lastImageName || refs.lastFrame);
+  const sourceVideoName = normalizeString(request.inputVideoName || refs.inputVideo);
+  const referenceImageName = normalizeString(request.referenceImageName || refs.referenceImage);
+  const referenceImageNames = normalizeStringArray(request.referenceImageNames || refs.referenceImages);
+  const h3LoraEnabled = request.h3LoraEnabled === true
+    || job?.h3LoraPreset === "h3-realism-people-t2v-i2v-r2v.safetensors"
+    || request.h3LoraPreset === "h3-realism-people-t2v-i2v-r2v.safetensors";
+
+  return createSingleCreateDraft({
+    mode,
+    initialDescription: job?.initialDescription ?? request.initialDescription,
+    prompt: job?.prompt ?? request.prompt,
+    negativePrompt: job?.negativePrompt ?? request.negativePrompt,
+    modelProfile: job?.modelProfile ?? job?.model ?? request.modelProfile ?? request.model,
+    width: job?.width ?? request.width,
+    height: job?.height ?? request.height,
+    duration: job?.duration ?? request.duration,
+    steps: job?.steps ?? request.steps,
+    seed: job?.seed ?? request.seed,
+    renderCount: 1,
+    outputName: job?.outputName ?? request.outputName,
+    characterLoraName: job?.characterLoraName ?? request.characterLoraName,
+    characterLoraStrength: job?.characterLoraStrength ?? request.characterLoraStrength,
+    h3LoraEnabled,
+    h3LoraStrength: job?.characterLoraStrength ?? request.characterLoraStrength,
+    h3LoraPreset: h3LoraEnabled ? "h3-realism-people-t2v-i2v-r2v.safetensors" : null,
+    characterLoraTrigger: h3LoraEnabled ? "r34l1sm" : null,
+    referenceImageKey: assetDraftKey(
+      mode === "i2v" || mode === "fl2v" ? inputImageName : referenceImageName,
+      mode === "i2v" || mode === "fl2v" ? request.inputImageRoot : request.referenceImageRoot,
+    ),
+    referenceImageKeys: mode === "ref2v"
+      ? referenceImageNames.map((name, index) => assetDraftKey(name, request.referenceImageRoots?.[index])).filter(Boolean)
+      : [],
+    lastFrameImageKey: assetDraftKey(lastFrameName, request.lastImageRoot),
+    sourceVideoKey: assetDraftKey(sourceVideoName, request.inputVideoRoot),
+  });
 }
 
 /**
@@ -103,4 +157,9 @@ function normalizeNumberDraft(value, fallback) {
 
 function normalizeFiniteNumber(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
+}
+
+function assetDraftKey(name, root) {
+  if (!name) return null;
+  return `${root === "output" ? "output" : "input"}:${name}`;
 }

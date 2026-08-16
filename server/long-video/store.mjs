@@ -26,10 +26,10 @@ function jsonText(value) {
 function sanitizeForStorage(value, key = "") {
   if (Array.isArray(value)) return value.map((item) => sanitizeForStorage(item, key));
   if (!value || typeof value !== "object") return value;
-  if (key === "inputAsset" || key === "outputAsset" || key === "finalAsset" || key === "rawAsset" || key === "normalizedAsset" || key === "tailAsset") return sanitizeAssetRef(value);
+  if (key === "inputAsset" || key === "outputAsset" || key === "finalAsset" || key === "rawAsset" || key === "normalizedAsset" || key === "tailAsset" || key === "contextAsset") return sanitizeAssetRef(value);
   const result = {};
   for (const [childKey, childValue] of Object.entries(value)) {
-    if (["outputPath", "finalPath", "rawPath", "normalizedPath", "tailPath", "fullPath", "path", "url", "filename", "stack", "token", "base64"].includes(childKey)) continue;
+    if (["outputPath", "finalPath", "rawPath", "normalizedPath", "tailPath", "contextPath", "fullPath", "path", "url", "filename", "stack", "token", "base64"].includes(childKey)) continue;
     result[childKey] = sanitizeForStorage(childValue, childKey);
   }
   return result;

@@ -9,6 +9,7 @@ export const H3_LORA_SUPPORTED_MODES = Object.freeze(["t2v", "i2v", "fl2v", "l2v
 /**
  * @typedef {{
  *   mode: string;
+ *   initialDescription?: string;
  *   prompt: string;
  *   negativePrompt: string;
  *   referenceImageName?: string;
@@ -55,6 +56,7 @@ export function buildSingleRenderRequest(input) {
   const h3LoraEnabled = input.mode !== "replace" && H3_LORA_SUPPORTED_MODES.includes(input.mode) && input.h3LoraEnabled === true;
   const payload = {
     mode: input.mode,
+    initialDescription: String(input.initialDescription || ""),
     prompt: input.prompt,
     negativePrompt: input.negativePrompt,
     inputImageName: input.mode === "i2v" || input.mode === "fl2v" ? referenceImageName : "",

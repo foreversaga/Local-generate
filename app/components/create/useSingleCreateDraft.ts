@@ -8,6 +8,7 @@ import {
 
 export type SingleCreateDraftInput = {
   mode: string;
+  initialDescription: string;
   prompt: string;
   negativePrompt: string;
   modelProfile: string;

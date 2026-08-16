@@ -39,6 +39,8 @@ test("Long plan request preserves legacy planner payload semantics", () => {
   assert.equal(payload.duration, 12);
   assert.equal(payload.timelineText, undefined);
   assert.equal(payload.reasoningEffort, "medium");
+  assert.equal(payload.continuationMode, "motion_context");
+  assert.equal(payload.motionContextSeconds, 1.5);
 });
 
 test("Long save request keeps persisted shape and canonical timeline duration", () => {
@@ -72,6 +74,8 @@ test("Long save request keeps persisted shape and canonical timeline duration", 
   assert.equal(payload.segments[0].prompt, "P1");
   assert.equal(payload.segments[1].description, "Ending");
   assert.equal(payload.revision, 3);
+  assert.equal(payload.continuationMode, "motion_context");
+  assert.equal(payload.motionContextSeconds, 1.5);
 });
 
 test("Long validation covers story, images, timeline and render setup", () => {
@@ -94,6 +98,9 @@ test("Long validation covers story, images, timeline and render setup", () => {
   assert.match(validateLongCreate({ ...base, inputType: "image" })[0].message, /起始參考圖片/);
   assert.match(validateLongCreate({ ...base, timelineMode: "manual", timelineText: "one" })[0].message, /至少需要兩段/);
   assert.match(validateLongCreate({ ...base, width: 750 })[0].message, /32 的倍數/);
+  assert.deepEqual(validateLongCreate({ ...base, continuationMode: "motion_context", motionContextSeconds: 1.5, modelProfile: "nvfp4_blackwell" }), []);
+  assert.match(validateLongCreate({ ...base, continuationMode: "motion_context", motionContextSeconds: 2.5, modelProfile: "nvfp4_blackwell" })[0].message, /1–2/);
+  assert.match(validateLongCreate({ ...base, continuationMode: "motion_context", motionContextSeconds: 1.5, modelProfile: "int4_convrot_low_vram" })[0].message, /INT4/);
 });
 
 test("Long timeline draft parses range and duration forms", () => {

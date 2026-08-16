@@ -45,8 +45,8 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
-const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
+const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
 function removeServerOwnedSequenceFields(patch) {
   for (const field of SEQUENCE_SERVER_FIELDS) delete patch[field];
@@ -62,7 +62,7 @@ function assertSegmentPatchFields(patch) {
 }
 
 function semanticSegmentChanged(previous, next) {
-  return ["start", "end", "duration", "description", "prompt", "negativePrompt", "mode", "endingState"].some((field) => JSON.stringify(previous?.[field] ?? null) !== JSON.stringify(next?.[field] ?? null));
+  return ["start", "end", "duration", "description", "prompt", "negativePrompt", "mode", "endingState", "cameraPlan"].some((field) => JSON.stringify(previous?.[field] ?? null) !== JSON.stringify(next?.[field] ?? null));
 }
 
 function invalidateFromSegment(segments, changedIndex, targetStatus = "pending") {
@@ -206,9 +206,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       // and timeline invariants cannot be bypassed by partial updates.
       const normalized = validateSequenceInput(candidate, { requireTimeline: true });
       assertLongLoraSupported(normalized);
-      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
+      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
       }
@@ -219,6 +219,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       }
       let mergedSegments = patch.segments || patch.timeline || current.segments;
       if (normalized.referenceMode === "multi_reference") mergedSegments = mergedSegments.map((segment) => ({ ...segment, mode: "ref2v" }));
+      if (normalized.continuationMode === "motion_context") mergedSegments = mergedSegments.map((segment, index) => ({ ...segment, mode: index === 0 ? segment.mode : "ref2v" }));
       if (generationCriticalChanged) mergedSegments = invalidateFromSegment(mergedSegments, 0);
       patch.segments = mergedSegments;
       patch.timeline = mergedSegments;

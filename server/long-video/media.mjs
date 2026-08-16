@@ -157,6 +157,40 @@ export async function extractTailFrame({ inputPath, outputPath, tools = {}, run 
   return { outputPath, response };
 }
 
+/**
+ * Keep a short, normalized audiovisual motion reference for the next H3
+ * segment.  The video and its paired soundtrack stay in one MP4 so the
+ * native Ref2VA loader can expose them as <Video 1> and <Audio 1> without a
+ * second lossy audio extraction pass.
+ */
+export async function extractTailAvContext({ inputPath, outputPath, duration = 1.5, fps = 24, tools = {}, run = runCommand, logger = null }) {
+  if (!inputPath || !outputPath) throw new LongVideoError("MEDIA_INPUT_REQUIRED", "Input and output paths are required.");
+  const contextDuration = Math.min(2, Math.max(0.25, Number(duration) || 1.5));
+  const executables = tools.executables || mediaExecutables();
+  const args = [
+    "-y", "-sseof", `-${contextDuration.toFixed(3)}`, "-i", inputPath,
+    "-map", "0:v:0", "-map", "0:a:0?", "-t", contextDuration.toFixed(3),
+    "-r", String(fps), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", outputPath,
+  ];
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await logger?.({ event: "media.context.start", executable: executables.ffmpeg, args, inputPath, outputPath, duration: contextDuration });
+  let response;
+  try { response = await run(executables.ffmpeg, args); } catch (error) {
+    await logger?.({ level: "error", event: "media.context.failure", executable: executables.ffmpeg, args, errorMessage: error.message });
+    throw new LongVideoError("FFMPEG_UNAVAILABLE", `Unable to execute ffmpeg: ${error.message}`, 503, { executable: executables.ffmpeg, error: error.message });
+  }
+  if (response.exitCode !== 0) {
+    await logger?.({ level: "error", event: "media.context.failure", executable: executables.ffmpeg, args, exitCode: response.exitCode, stderrTail: tail(response.stderr) });
+    throw new LongVideoError("FFMPEG_CONTEXT_FAILED", "ffmpeg failed while extracting the audiovisual continuation context.", 502, { executable: executables.ffmpeg, exitCode: response.exitCode, stderrTail: tail(response.stderr) });
+  }
+  const outputStat = await fs.stat(outputPath).catch(() => null);
+  if (!outputStat?.isFile()) throw new LongVideoError("CONTEXT_OUTPUT_MISSING", "AV context extraction completed without an output file.", 502, { outputPath });
+  await logger?.({ event: "media.context.success", outputPath, exitCode: response.exitCode, duration: contextDuration });
+  return { outputPath, duration: contextDuration, response };
+}
+
 export { tail as stderrTail };
 export const normalizeSegment = normalizeVideo;
 export const extractNormalizedTail = extractTailFrame;
+export const extractNormalizedTailAvContext = extractTailAvContext;

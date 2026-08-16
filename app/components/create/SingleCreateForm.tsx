@@ -95,6 +95,7 @@ export function SingleCreateForm() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false });
   const [mode, setMode] = useState<Mode>("t2v");
+  const [initialDescription, setInitialDescription] = useState("");
   const [prompt, setPrompt] = useState("");
   const [ollamaPromptReceipt, setOllamaPromptReceipt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
@@ -108,6 +109,7 @@ export function SingleCreateForm() {
   const [resolutionFlipped, setResolutionFlipped] = useState(false);
   const [resolutionError, setResolutionError] = useState("");
   const resolutionRequestRef = useRef(0);
+  const hydratedResolutionRef = useRef<{ width: number; height: number } | null>(null);
   const [duration, setDuration] = useState(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
   const [steps, setSteps] = useState<NumberDraft>(20);
   const [seed, setSeed] = useState<NumberDraft>(12345);
@@ -149,13 +151,18 @@ export function SingleCreateForm() {
       };
     }
 
+    const hydratedResolution = hydratedResolutionRef.current;
+    hydratedResolutionRef.current = null;
+
     queueMicrotask(() => {
       if (resolutionRequestRef.current !== requestId) return;
       setResolutionScale(100);
       setAspectLocked(true);
       setResolutionFlipped(false);
-      setWidth("");
-      setHeight("");
+      if (!hydratedResolution) {
+        setWidth("");
+        setHeight("");
+      }
       setResolutionInfo(null);
       setResolutionError("");
       setResolutionStatus("loading");
@@ -165,6 +172,26 @@ export function SingleCreateForm() {
       .then((dimensions) => {
         if (resolutionRequestRef.current !== requestId) return;
         const normalized = normalizeImageResolution(dimensions.width, dimensions.height, mode) as ResolutionInfo;
+        if (hydratedResolution) {
+          const scalePercent = resolutionScaleForDimensions(
+            dimensions.width,
+            dimensions.height,
+            hydratedResolution.width,
+            hydratedResolution.height,
+          );
+          setWidth(hydratedResolution.width);
+          setHeight(hydratedResolution.height);
+          setResolutionScale(scalePercent);
+          setResolutionInfo({
+            ...normalized,
+            ...hydratedResolution,
+            scalePercent,
+            scaled: scalePercent !== 100,
+            adjusted: true,
+          });
+          setResolutionStatus("manual");
+          return;
+        }
         setWidth(normalized.width);
         setHeight(normalized.height);
         setResolutionInfo(normalized);
@@ -228,6 +255,7 @@ export function SingleCreateForm() {
   const canInteract = !submitting && !isUploading;
   const draftValue = useMemo(() => ({
     mode,
+    initialDescription,
     prompt,
     negativePrompt,
     modelProfile,
@@ -251,6 +279,7 @@ export function SingleCreateForm() {
   }), [
     duration,
     height,
+    initialDescription,
     lastFrameImage,
     mode,
     modelProfile,
@@ -345,8 +374,19 @@ export function SingleCreateForm() {
       const asset = key ? assetByKey.get(key) || assetReferenceFromKey(key, "video") : null;
       return asset?.kind === "video" ? asset : null;
     };
+    const draftHasResolutionAsset = draftMode === "ref2v"
+      ? draft.referenceImageKeys.length > 0
+      : draftMode === "l2v"
+        ? Boolean(draft.lastFrameImageKey)
+        : Boolean(draft.referenceImageKey);
+    hydratedResolutionRef.current = draftHasResolutionAsset
+      && Number.isFinite(Number(draft.width))
+      && Number.isFinite(Number(draft.height))
+      ? { width: Number(draft.width), height: Number(draft.height) }
+      : null;
 
     setMode(draftMode);
+    setInitialDescription(draft.initialDescription);
     setPrompt(draft.prompt);
     setNegativePrompt(draft.negativePrompt);
     setModelProfile(nextModelProfile);
@@ -593,6 +633,7 @@ export function SingleCreateForm() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildSingleRenderRequest({
             mode,
+            initialDescription,
             prompt,
             negativePrompt,
             referenceImageName: primaryReference?.kind === "image" ? primaryReference.name : "",
@@ -702,11 +743,13 @@ export function SingleCreateForm() {
             <SinglePromptAssistant
               mode={mode}
               duration={duration}
+              brief={initialDescription}
               negativePrompt={negativePrompt}
               referenceImage={referenceImage}
               referenceImages={referenceImages}
               lastFrameImage={lastFrameImage}
               sourceVideo={sourceVideo}
+              onBriefChange={setInitialDescription}
               onPromptGenerated={(value, receipt) => {
                 setPrompt(value);
                 setOllamaPromptReceipt(receipt || "");

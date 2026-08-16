@@ -26,6 +26,7 @@ const ASSET = { name: "asset.png" };
 function validSingleInput(overrides = {}) {
   return {
     mode: "t2v",
+    initialDescription: "A person waits on a windswept platform.",
     prompt: "A cinematic tracking shot.",
     promptMaxChars: 7000,
     enforcePromptMaxChars: true,
@@ -46,6 +47,7 @@ function validSingleInput(overrides = {}) {
 function validRequestInput(overrides = {}) {
   return {
     mode: "t2v",
+    initialDescription: "A person waits on a windswept platform.",
     prompt: "A cinematic tracking shot.",
     negativePrompt: "flicker, watermark",
     referenceImageName: "",
@@ -306,6 +308,7 @@ test("single render request keeps the legacy generate payload shape", () => {
     })),
     {
       mode: "fl2v",
+      initialDescription: "A person waits on a windswept platform.",
       prompt: "A cinematic tracking shot.",
       negativePrompt: "flicker, watermark",
       inputImageName: "first.png",
@@ -440,6 +443,11 @@ test("ref2v prompt request caps references and uses Picture 1 as primary referen
   assert.deepEqual(payload.referenceImageNames, referenceImageNames.slice(0, 9));
   assert.equal(payload.sourceVideoName, "motion.mp4");
   assert.deepEqual(payload.cameraPlan, { version: 1, shots: [{ id: "shot-1" }] });
+});
+
+test("Single render persists the user's initial description for Create-style retry", () => {
+  const payload = buildSingleRenderRequest(validRequestInput());
+  assert.equal(payload.initialDescription, "A person waits on a windswept platform.");
 });
 
 test("camera planning data is omitted from non-Ref2V prompt requests", () => {

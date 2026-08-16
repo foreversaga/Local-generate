@@ -19,6 +19,7 @@ const MAX_REF2V_IMAGES = 9;
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
+const QWEN38_BLACKFROST_OLLAMA_MODEL = "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M";
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type PromptProvider = "ollama" | "codex";
@@ -68,11 +69,13 @@ type ApiErrorPayload = {
 type Props = {
   mode: Mode;
   duration: number;
+  brief: string;
   negativePrompt: string;
   referenceImage: Asset | null;
   referenceImages: Asset[];
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
+  onBriefChange: (value: string) => void;
   onPromptGenerated: (value: string, ollamaPromptReceipt?: string) => void;
   onNegativePromptGenerated: (value: string) => void;
 };
@@ -80,6 +83,11 @@ type Props = {
 type IconName = "spark" | "refresh" | "check" | "close";
 
 const PROMPT_MODEL_CATALOG = [
+  {
+    value: QWEN38_BLACKFROST_OLLAMA_MODEL,
+    label: "Qwen3.8 27B Abliterated Q3_K_M",
+    note: "Local · prompt generation",
+  },
   {
     value: QWEN35_HAUHAUCS_OLLAMA_MODEL,
     label: "Qwen3.5 9B HauhauCS Aggressive Q6_K",
@@ -118,18 +126,19 @@ const REASONING_OPTIONS = [
 export function SinglePromptAssistant({
   mode,
   duration,
+  brief,
   negativePrompt,
   referenceImage,
   referenceImages,
   lastFrameImage,
   sourceVideo,
+  onBriefChange,
   onPromptGenerated,
   onNegativePromptGenerated,
 }: Props) {
   const { locale } = useI18n();
   const { FIELD_LABELS } = localizedCopy(locale);
   const [health, setHealth] = useState<Health | null>(null);
-  const [brief, setBrief] = useState("");
   const [provider, setProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
   const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
   const [codexModel, setCodexModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexModel);
@@ -364,7 +373,7 @@ export function SinglePromptAssistant({
           aria-describedby="single-prompt-brief-helper single-prompt-brief-error"
           placeholder="例如：一個人在月台等待，風吹動他的外套…"
           onChange={(event) => {
-            setBrief(event.target.value);
+            onBriefChange(event.target.value);
             if (attempted) setError("");
           }}
         />

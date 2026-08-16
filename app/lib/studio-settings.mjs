@@ -4,7 +4,7 @@ export const STUDIO_SETTINGS_VERSION = 1;
 export const STUDIO_SETTINGS_DEFAULTS = Object.freeze({
   version: STUDIO_SETTINGS_VERSION,
   promptProvider: "ollama",
-  ollamaModel: "qwen3.5-hauhaucs-aggressive:9b-q6_k",
+  ollamaModel: "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M",
   codexModel: "gpt-5.6-luna",
   codexReasoningEffort: "medium",
 });

@@ -124,7 +124,7 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   ownerId: `h3-studio-${process.pid}`,
   runtimeMode: () => runtimeContext.mode,
 });
-const QWEN_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
+const QWEN_OLLAMA_MODEL = "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
@@ -1661,7 +1661,7 @@ async function createCodexPrompt({ brief, context, mode, durationSeconds, model,
 }
 
 function codexLongPlanReferences(requestInput = {}) {
-  if (requestInput.referenceMode !== "multi_reference") return [];
+  if (requestInput.referenceMode !== "multi_reference" && requestInput.continuationMode !== "motion_context") return [];
   const references = [];
   const seen = new Set();
   for (const reference of [requestInput.inputAsset, ...(Array.isArray(requestInput.referenceAssets) ? requestInput.referenceAssets : [])]) {
@@ -1682,6 +1682,11 @@ function codexLongPlanModeInstruction(requestInput, references = []) {
     const tailLabel = `<Picture ${references.length + 1}>`;
     return `Use Ref2VA for every segment with ordered static references ${labels}. Keep every segment in the same Ref2VA mode and do not apply a first-frame lock. For continuation segments, append the previous normalized tail as ${tailLabel}, a normal continuity reference (not a frame-zero lock), after the static references.`;
   }
+  if (requestInput.continuationMode === "motion_context") {
+    const staticLabels = references.map((reference, index) => `<Picture ${index + 1}> (${reference.name})`).join(", ");
+    const tailLabel = `<Picture ${references.length + 1}>`;
+    return `Use ${requestInput.inputType === "image" ? "I2VA" : "T2VA"} for segment 1 and Ref2VA for every later segment. Continuations keep ordered static references${staticLabels ? ` ${staticLabels}` : ""}, append the previous normalized tail as ${tailLabel}, and use the previous 1-2 second audiovisual tail as <Video 1> with paired <Audio 1>. Treat that AV excerpt as weak ending-motion, pacing, ambience, and voice-timbre context; never replay it.`;
+  }
   return requestInput.inputType === "image"
     ? "The attached image is the actual first_frame reference. Use its visible content for the first I2VA segment and do not invent unseen details."
     : "The first segment must be T2VA; every later segment must continue from the previous segment's normalized tail as I2VA.";
@@ -1697,6 +1702,7 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
   }
 
   const guidePath = path.join(path.dirname(H3_PROMPT_SKILL_PATH), "references", "base-en.txt");
+  const refGuidePath = path.join(path.dirname(H3_PROMPT_SKILL_PATH), "references", "ref-en.txt");
   const reasoningEffort = codexReasoningEffort(requestInput.reasoningEffort || requestInput.codexReasoningEffort);
   await fs.mkdir(CODEX_PROMPT_TMP_ROOT, { recursive: true });
   const requestDir = await fs.mkdtemp(path.join(CODEX_PROMPT_TMP_ROOT, "long-plan-"));
@@ -1754,8 +1760,13 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
       "You are the structured long-video planning worker for H3 Studio.",
       `You MUST use the h3-prompt-writing skill. Read the complete skill file at: ${H3_PROMPT_SKILL_PATH}`,
       `Then read the base H3 reference guide at: ${guidePath}`,
+      requestInput.referenceMode === "multi_reference" || requestInput.continuationMode === "motion_context"
+        ? `Also read the Ref2VA H3 reference guide at: ${refGuidePath}`
+        : "",
       requestInput.referenceMode === "multi_reference"
         ? "Follow the Ref2VA skill exactly for every segment, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules."
+        : requestInput.continuationMode === "motion_context"
+        ? "Follow the base H3 skill for segment 1 and the exact six-field Ref2VA skill for every continuation segment, including ordered Picture/Video/Audio definitions and legal summary modes."
         : "Follow the skill and guide exactly for every segment: the first segment is T2VA and each continuation segment is I2VA, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules.",
       "Return one JSON object only. Do not return markdown, analysis, or commentary. The JSON must satisfy every schema and field requirement in the planner request below.",
       "Do not edit, create, or delete project files. Read-only inspection is allowed only to load the required skill and guide; do not run project commands or discuss your process.",
@@ -3024,6 +3035,7 @@ function publicJob(job) {
     model: job.model || job.modelProfile,
     progress: job.progress,
     stage: job.stage,
+    initialDescription: job.initialDescription || job.provenance?.request?.initialDescription || "",
     prompt: job.prompt,
     negativePrompt: job.negativePrompt || "",
     seed: job.seed,
@@ -3513,6 +3525,12 @@ async function startGeneration(payload, internal = {}) {
     throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${modelProfile}.`, 422, { modelProfile });
   }
   const negativePrompt = String(payload.negativePrompt || "").trim();
+  const initialDescription = String(
+    payload.initialDescription
+    || internal.existingJob?.initialDescription
+    || internal.existingJob?.provenance?.request?.initialDescription
+    || "",
+  ).trim();
   const batchId = String(payload.batchId || "");
   const batchIndex = Math.round(clampNumber(payload.batchIndex, 1, 1, 20));
   const batchTotal = Math.round(clampNumber(payload.batchTotal, 1, 1, 20));
@@ -3535,6 +3553,7 @@ async function startGeneration(payload, internal = {}) {
   };
   const requestProvenance = {
     mode,
+    initialDescription,
     prompt,
     negativePrompt,
     model: modelProfile,
@@ -3546,11 +3565,26 @@ async function startGeneration(payload, internal = {}) {
     steps,
     seed,
     timeoutSeconds,
-    ...(["i2v", "fl2v"].includes(mode) && inputRefs.inputImage ? { inputImageName: inputRefs.inputImage } : {}),
-    ...(["fl2v", "l2v"].includes(mode) && inputRefs.lastFrame ? { lastImageName: inputRefs.lastFrame } : {}),
-    ...(["replace", "ref2v"].includes(mode) && inputRefs.inputVideo ? { inputVideoName: inputRefs.inputVideo } : {}),
-    ...(["replace", "ref2v"].includes(mode) && inputRefs.referenceImage ? { referenceImageName: inputRefs.referenceImage } : {}),
-    ...(mode === "ref2v" ? { referenceImageNames: referenceImageNames.slice() } : {}),
+    ...(["i2v", "fl2v"].includes(mode) && inputRefs.inputImage ? {
+      inputImageName: inputRefs.inputImage,
+      inputImageRoot: payload.inputImageRoot === "output" ? "output" : "input",
+    } : {}),
+    ...(["fl2v", "l2v"].includes(mode) && inputRefs.lastFrame ? {
+      lastImageName: inputRefs.lastFrame,
+      lastImageRoot: payload.lastImageRoot === "output" ? "output" : "input",
+    } : {}),
+    ...(["replace", "ref2v"].includes(mode) && inputRefs.inputVideo ? {
+      inputVideoName: inputRefs.inputVideo,
+      inputVideoRoot: payload.inputVideoRoot === "output" ? "output" : "input",
+    } : {}),
+    ...(["replace", "ref2v"].includes(mode) && inputRefs.referenceImage ? {
+      referenceImageName: inputRefs.referenceImage,
+      referenceImageRoot: payload.referenceImageRoot === "output" ? "output" : "input",
+    } : {}),
+    ...(mode === "ref2v" ? {
+      referenceImageNames: referenceImageNames.slice(),
+      referenceImageRoots: referenceImageRoots.slice(),
+    } : {}),
     characterLoraName,
     characterLoraStrength,
     ...(h3Selection.selected ? {
@@ -3577,6 +3611,7 @@ async function startGeneration(payload, internal = {}) {
     progressSource: "estimated",
     estimatedProgress: 2,
     stage: "準備本機輸入…",
+    initialDescription,
     prompt,
     negativePrompt,
     seed,
@@ -4399,6 +4434,21 @@ async function stageSequenceInputImage(payload) {
   return { name: stagedName, path: stagedPath, source: relativeName };
 }
 
+async function stageSequenceInputVideo(payload) {
+  const rawPath = String(payload.inputVideoPath || payload.inputVideoName || "").trim();
+  if (!rawPath) return null;
+  const rootName = payload.inputVideoRoot === "input" ? "input" : "output";
+  const rootPath = rootName === "output" ? OUTPUT_ROOT : INPUT_ROOT;
+  const relativeName = sequenceMediaName(rawPath, rootPath);
+  const sourcePath = await resolveMediaPath(rootName, relativeName);
+  if (classifyFile(relativeName) !== "video") throw new Error("Long-video motion context must be a video file: " + relativeName);
+  await fs.mkdir(INPUT_ROOT, { recursive: true });
+  const stagedName = sequenceStageName(payload, path.extname(relativeName) || ".mp4");
+  const stagedPath = safePath(INPUT_ROOT, stagedName);
+  await fs.copyFile(sourcePath, stagedPath);
+  return { name: stagedName, path: stagedPath, source: relativeName };
+}
+
 function sequenceReferenceAssets(payload) {
   if (Array.isArray(payload.referenceAssets)) return payload.referenceAssets;
   if (Array.isArray(payload.referenceImageNames)) return payload.referenceImageNames.map((name) => ({ root: "input", name }));
@@ -4505,9 +4555,12 @@ async function startSequenceGeneration(payload) {
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
     : null;
+  const stagedVideo = payload.mode === "ref2v" && payload.inputVideoPath
+    ? await stageSequenceInputVideo(payload)
+    : null;
   let stagedReferences = [];
   try {
-    stagedReferences = payload.mode === "ref2v" && payload.referenceMode === "multi_reference"
+    stagedReferences = payload.mode === "ref2v"
       ? await stageSequenceInputImages(payload)
       : [];
     if (stagedInput) {
@@ -4526,6 +4579,14 @@ async function startSequenceGeneration(payload) {
         stagedName: stagedReference.name,
       });
     }
+    if (stagedVideo) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.stage",
+        stage: "reference-video",
+        source: stagedVideo.source,
+        stagedName: stagedVideo.name,
+      });
+    }
     const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
     const legacy = await startGeneration({
       mode: payload.mode,
@@ -4533,7 +4594,8 @@ async function startSequenceGeneration(payload) {
       negativePrompt: payload.negativePrompt,
       inputImageName: stagedInput?.name || "",
       ...sequenceGenerationReferenceFields(payload, stagedReferences),
-      inputVideoName: payload.inputVideoName || "",
+      inputVideoName: stagedVideo?.name || payload.inputVideoName || "",
+      inputVideoRoot: stagedVideo ? "input" : payload.inputVideoRoot,
       duration: payload.duration,
       width: payload.width,
       height: payload.height,
@@ -4575,7 +4637,15 @@ async function startSequenceGeneration(payload) {
         stagedName: stagedReference.name,
       });
     }
+    if (stagedVideo) {
+      await reportSequenceInputStage(payload, {
+        event: "generation.input.cleanup",
+        stage: "cleanup",
+        stagedName: stagedVideo.name,
+      });
+    }
     await removeStagedSequenceInput(stagedInput);
+    await removeStagedSequenceInput(stagedVideo);
     await Promise.all(stagedReferences.map((reference) => removeStagedSequenceInput(reference)));
   }
 }
@@ -4738,7 +4808,7 @@ async function activeAssetUse(rootName, relativeName) {
   let sequenceJobs;
   try { sequenceJobs = await listLongVideoJobs(); } catch { return { blocked: true, code: "ASSET_USE_UNKNOWN" }; }
   if (!Array.isArray(sequenceJobs)) return { blocked: true, code: "ASSET_USE_UNKNOWN" };
-  // The runner writes raw/normalized/tail/final output refs over the whole
+  // The runner writes raw/normalized/tail/context/final output refs over the whole
   // active lifecycle; block output deletion conservatively rather than risk a
   // stale artifact lookup.
   if (sequenceJobs.some((job) => ACTIVE_LONG_VIDEO_STATES.has(job?.status))) return { blocked: true, code: "ASSET_IN_USE" };

@@ -8,7 +8,7 @@ import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
 import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
-import { extractTailFrame } from "../server/long-video/media.mjs";
+import { extractTailAvContext, extractTailFrame } from "../server/long-video/media.mjs";
 import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
@@ -396,6 +396,19 @@ test("automatic planner recovers invalid Ollama storyboard arithmetic without bl
   assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
 });
 
+test("motion-context admission is explicit, bounded, and keeps older jobs on legacy tail mode", () => {
+  const timeline = [{ start: 0, end: 5, description: "opening" }, { start: 5, end: 10, description: "continuation" }];
+  const legacy = validateSequenceInput({ inputType: "text", timeline });
+  assert.equal(legacy.continuationMode, "legacy_tail");
+  assert.equal(legacy.timeline[1].mode, "t2v");
+  const motion = validateSequenceInput({ inputType: "text", continuationMode: "motion_context", motionContextSeconds: 1.5, timeline });
+  assert.equal(motion.continuationMode, "motion_context");
+  assert.equal(motion.motionContextSeconds, 1.5);
+  assert.equal(motion.timeline[0].mode, "t2v");
+  assert.equal(motion.timeline[1].mode, "ref2v");
+  assert.throws(() => validateSequenceInput({ inputType: "text", continuationMode: "motion_context", motionContextSeconds: 2.1, timeline }), { code: "MOTION_CONTEXT_DURATION_INVALID" });
+});
+
 test("automatic planner repairs one invalid Ollama timeline response", async () => {
   const requests = [];
   const plan = await planSequence({ inputType: "text", inputText: "brief", timelineMode: "auto", duration: 10 }, {
@@ -584,6 +597,31 @@ test("store increments revision atomically and records events", async () => {
   assert.equal(tmpFiles.length, 0);
 });
 
+test("sequence PATCH persists motion context and per-segment camera plans", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-motion-patch-"));
+  process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const payload = { title: "motion", inputType: "text", inputText: "brief", outputFolder: "motion-patch", duration: 10, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] };
+  const created = apiResponse();
+  await handleLongVideoRoute(apiRequest("POST", "/api/sequences", payload), created, {});
+  const segments = created.body.job.segments.map((segment, index) => ({
+    ...segment,
+    cameraPlan: { version: 1, global: { style: "documentary" }, shots: [{ id: `shot-${index + 1}`, startMs: 0, primaryMotion: "tracking" }] },
+  }));
+  const patched = apiResponse();
+  await handleLongVideoRoute(apiRequest("PATCH", `/api/sequences/${created.body.job.id}`, {
+    revision: created.body.job.revision,
+    continuationMode: "motion_context",
+    motionContextSeconds: 2,
+    segments,
+  }), patched, {});
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.job.continuationMode, "motion_context");
+  assert.equal(patched.body.job.motionContextSeconds, 2);
+  assert.equal(patched.body.job.segments[1].mode, "ref2v");
+  assert.equal(patched.body.job.segments[0].cameraPlan.global.style, "documentary");
+});
+
 test("long-video atomic JSON replace retries transient rename errors", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-long-video-atomic-"));
   try {
@@ -677,6 +715,94 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
   assert.equal(calls[0].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint`);
   assert.equal(calls[1].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint, hand distortion`);
   assert.ok(calls[1].tailImagePath);
+});
+
+test("motion-context runner sends the normalized tail frame and paired short AV clip to Ref2VA", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-motion-context-"));
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "motion-context");
+  const calls = [];
+  const contexts = [];
+  const job = {
+    id: "motion-context-job",
+    inputType: "image",
+    inputAsset: { root: "input", name: "identity.png", kind: "image" },
+    referenceMode: "continuity",
+    continuationMode: "motion_context",
+    motionContextSeconds: 1.5,
+    outputPath: output,
+    outputFolder: "motion-context",
+    status: "ready",
+    revision: 1,
+    width: 736,
+    height: 416,
+    steps: 2,
+    seed: 10,
+    continuityBible: { sound: "room ambience", nonDiegeticMusic: "N/A" },
+    segments: [
+      { id: "s1", start: 0, end: 5, duration: 5, description: "opening" },
+      {
+        id: "s2", start: 5, end: 10, duration: 5, description: "continue the motion",
+        cameraPlan: { version: 1, global: { avoidances: ["camera_jitter"] }, shots: [{ id: "shot-1", startMs: 0, primaryMotion: "tracking", videoReference: true }] },
+      },
+    ],
+  };
+  try {
+    const result = await runSequence(job, {
+      generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath, id: `g-${payload.segmentIndex}` }; },
+      normalize: async ({ outputPath }) => ({ outputPath }),
+      extractContext: async (payload) => { contexts.push(payload); return { outputPath: payload.outputPath }; },
+      extractTail: async ({ outputPath }) => ({ outputPath }),
+      assemble: async () => ({ outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }),
+      updateJob: async (target, patch) => Object.assign(target, patch),
+      updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+      writeManifest: async () => {},
+      log: async () => {},
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(calls[0].mode, "i2v");
+    assert.equal(calls[1].mode, "ref2v");
+    assert.equal(calls[1].referenceMode, "motion_context");
+    assert.deepEqual(calls[1].referenceAssets.map(({ name }) => name), ["identity.png", "motion-context/segment-001-attempt-001-tail.png"]);
+    assert.match(calls[1].inputVideoPath, /segment-001-attempt-001-context\.mp4$/);
+    assert.match(calls[1].prompt, /<Video 1>/);
+    assert.match(calls[1].prompt, /<Audio 1>/);
+    assert.match(calls[1].prompt, /Camera plan:/);
+    assert.match(calls[1].negativePrompt, /digital camera jitter/i);
+    assert.equal(contexts.length, 1);
+    assert.equal(contexts[0].duration, 1.625);
+    assert.match(job.segments[0].contextAsset.name, /segment-001-attempt-001-context\.mp4$/);
+  } finally {
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AV context extraction keeps a bounded H.264/AAC tail in one MP4", async () => {
+  const calls = [];
+  const outputPath = path.join(os.tmpdir(), `h3-context-${Date.now()}.mp4`);
+  try {
+    await extractTailAvContext({
+      inputPath: "normalized.mp4",
+      outputPath,
+      duration: 1.5,
+      tools: { executables: { ffmpeg: "ffmpeg-test" } },
+      run: async (executable, args) => {
+        calls.push({ executable, args });
+        await writeFile(outputPath, "fixture");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert.equal(calls[0].executable, "ffmpeg-test");
+    assert.deepEqual(calls[0].args.slice(0, 5), ["-y", "-sseof", "-1.500", "-i", "normalized.mp4"]);
+    assert.ok(calls[0].args.includes("libx264"));
+    assert.ok(calls[0].args.includes("aac"));
+    assert.ok(calls[0].args.includes("0:a:0?"));
+  } finally {
+    await rm(outputPath, { force: true });
+  }
 });
 
 test("start media preflight fails before allocating output", async () => {

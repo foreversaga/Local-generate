@@ -7,7 +7,7 @@ import { loadH3PromptSkillPack, resolveH3OllamaContextLength } from "../h3-promp
 import { DEFAULT_NEGATIVE_PROMPT, mergeLongVideoNegativePrompt } from "./quality-defaults.mjs";
 
 export { DEFAULT_NEGATIVE_PROMPT } from "./quality-defaults.mjs";
-export const DEFAULT_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
+export const DEFAULT_OLLAMA_MODEL = "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M";
 
 async function releasePlannerComfy(target = {}) {
   if (!target.remoteComfy || !target.comfyUrl) return;
@@ -101,7 +101,7 @@ function mergeNegativePrompt(userValue, modelValue) {
 }
 
 function effectiveReferenceAssets(input) {
-  if (input?.referenceMode !== "multi_reference") return [];
+  if (input?.referenceMode !== "multi_reference" && input?.continuationMode !== "motion_context") return [];
   const references = [];
   const seen = new Set();
   for (const reference of [input.inputAsset, ...(Array.isArray(input.referenceAssets) ? input.referenceAssets : [])]) {
@@ -124,6 +124,7 @@ function plannerPrompt(input, canonicalTimeline = null) {
     : 2;
   const idea = clean(input.inputText || input.brief);
   const multiReference = input.referenceMode === "multi_reference";
+  const motionContext = input.continuationMode === "motion_context";
   const referenceAssets = effectiveReferenceAssets(input);
   const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
   const visualInspection = plannerImages.length
@@ -133,6 +134,10 @@ function plannerPrompt(input, canonicalTimeline = null) {
     idea ? `User's complete story direction: ${idea}` : "",
     multiReference
       ? `This sequence uses multi-reference Ref2VA. Treat the supplied image assets as ordered static references (${referenceAssets.map((reference, index) => `Picture ${index + 1}=${reference.name}`).join(", ") || "Picture 1"}), not as a first-frame lock. Every segment must use Ref2VA; continuation segments may append the previous normalized tail as the final reference while preserving the static reference order.`
+      : motionContext && input.inputType === "image"
+      ? `The supplied image is the first-frame input for segment 1 and a fixed identity reference for later segments. Segment 1 is I2VA. Every later segment is Ref2VA with that fixed image first, the previous normalized tail frame as the final <Picture N>, and the previous 1-2 second audiovisual tail as <Video 1> with its paired <Audio 1>.`
+      : motionContext
+      ? "Segment 1 is T2VA. Every later segment is Ref2VA using the previous normalized tail frame as <Picture 1> plus the previous 1-2 second audiovisual tail as <Video 1> with its paired <Audio 1>."
       : input.inputType === "image"
       ? `The supplied image asset is the first frame reference (${input.inputAsset?.name || input.inputAsset || "provided asset"}). Do not invent unseen image details; write the first segment as I2VA and preserve the referenced frame.`
       : "The first segment is T2VA. Every later segment is I2VA and starts from the actual normalized tail frame of the previous segment.",
@@ -156,6 +161,8 @@ function plannerPrompt(input, canonicalTimeline = null) {
     "Required top-level JSON keys: negativePrompt, continuityBible, segments.",
     input.referenceMode === "multi_reference"
       ? `Use Ref2VA for every segment. Ordered static image references are: ${referenceAssets.map((reference, index) => `Picture ${index + 1} (${reference.name || "asset"})`).join(", ") || "provided references"}. Do not write a first-frame lock or I2VA continuation instruction.`
+      : motionContext
+      ? "Use T2VA/I2VA only for segment 1 according to its input type. Use Ref2VA for every later segment. In each continuation, preserve the ordered static pictures, append the actual tail frame as the final picture, and treat <Video 1> plus its paired <Audio 1> as weak motion, pacing, ambience, and voice-timbre context—not content to replay."
       : "",
     "continuityBible keys: visualStyle, characters, environment, lighting, camera, motionDirection, keyObjects, sound, nonDiegeticMusic, mustPreserve, mustAvoid.",
     "Each character uses id, faceIdentity, hair, silhouette, palette, distinctiveMarks, appearance, clothing, and optional voice. Define these identity anchors once and reuse the same values for every segment where that character is visible.",
@@ -165,8 +172,10 @@ function plannerPrompt(input, canonicalTimeline = null) {
     "start and end are global seconds. description is a concise editable storyboard summary. endingState is a concise description of the exact final visual state that the next segment must continue.",
     "integratedMultimodalDescription is English H3 content for this segment only. It must begin with [Shot 1], cover composition, subjects, environment, action, camera, dialogue and diegetic sound, and use timestamps relative to this segment starting at 0 only for later cuts.",
     "overallSoundscape is 1-4 English sentences. nonDiegeticMusic is 1-3 English sentences or N/A. Preserve dialogue, lyrics, and visible text in their original language.",
-    "For continuation segments, describe forward motion from Picture 1 without writing the Picture 1 instruction line; the server adds the exact I2VA wrapper.",
-    input.referenceMode === "multi_reference"
+    motionContext
+      ? "For continuation segments, use a Ref2VA summary mode that includes video continuation and audio reuse where relevant. Define every <Picture N>, <Video 1>, and <Audio 1>; preserve identity from static pictures and inherit only the ending motion/audio state from the short AV context."
+      : "For continuation segments, describe forward motion from Picture 1 without writing the Picture 1 instruction line; the server adds the exact I2VA wrapper.",
+    input.referenceMode === "multi_reference" || motionContext
       ? "For every Ref2VA segment, provide concrete subjectDefinitions, summary, retentionAnalysis, and detailedDescription. Define each visible subject with the continuityBible identity anchors; do not use a generic principal-subject fallback when a character identity is available."
       : "",
     `The server always adds this global quality baseline to negativePrompt: ${DEFAULT_NEGATIVE_PROMPT}. Add only useful story-specific global exclusions instead of repeating that baseline. A segment negativePrompt may add only segment-specific exclusions and may otherwise be an empty string.`,
@@ -442,7 +451,7 @@ export async function planSequence(input, options = {}) {
   const skillPack = provider === "ollama"
     ? await loadSkillPack({
         purpose: "planning",
-        mode: normalizedInput.referenceMode === "multi_reference" ? "ref2v" : "t2v",
+        mode: normalizedInput.referenceMode === "multi_reference" || normalizedInput.continuationMode === "motion_context" ? "ref2v" : "t2v",
         referenceMode: normalizedInput.referenceMode,
         hasVisualReference: plannerImages.length > 0,
         skillPath: options.skillPath,
@@ -568,20 +577,23 @@ export async function planSequence(input, options = {}) {
     duration: canonical.duration,
     description: clean(semanticSegments[index]?.description || semanticSegments[index]?.scene) || canonical.description,
   }));
-  // Continuity mode keeps the legacy T2VA/I2VA split. Multi-reference mode
-  // deliberately uses Ref2VA for every segment; the runner appends a previous
-  // tail reference without turning it into a frame-zero lock.
+  // Motion-context continuations switch to Ref2VA after the first segment so
+  // the runner can supply the paired short video/audio tail.  Missing mode on
+  // older jobs retains the historical T2VA/I2VA path.
   const drafts = segments.map((segment, index) => {
     const mode = normalizedInput.referenceMode === "multi_reference"
       ? "ref2v"
-      : normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
+      : normalizedInput.continuationMode === "motion_context" && index > 0
+        ? "ref2v"
+        : normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
+    const ref2vAssets = mode === "ref2v" ? normalizedReferenceAssets : [];
     const generated = promptDraft(
-      normalizedInput.referenceMode === "multi_reference" ? withReferenceLabels(segment, normalizedReferenceAssets) : segment,
+      mode === "ref2v" ? withReferenceLabels(segment, ref2vAssets) : segment,
       bible,
       mode,
       provider,
       {
-        ...(normalizedInput.referenceMode === "multi_reference" ? { references: { assets: normalizedReferenceAssets } } : {}),
+        ...(mode === "ref2v" ? { references: { assets: ref2vAssets } } : {}),
         onFallback: (reason) => promptFallbacks.push({ segmentIndex: index, ...reason }),
       },
     );
@@ -598,6 +610,8 @@ export async function planSequence(input, options = {}) {
     title: normalizedInput.title,
     inputType: normalizedInput.inputType,
     referenceMode: normalizedInput.referenceMode,
+    continuationMode: normalizedInput.continuationMode,
+    motionContextSeconds: normalizedInput.motionContextSeconds,
     referenceAssets: normalizedInput.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(normalizedInput.imagePurpose ? { imagePurpose: normalizedInput.imagePurpose } : {}),
     ...(normalizedInput.inputText ? { inputText: normalizedInput.inputText } : {}),

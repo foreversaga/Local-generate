@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createSingleCreateDraftFromJob, SINGLE_CREATE_DRAFT_STORAGE_KEY } from "../../lib/single-create-draft.mjs";
 import {
   calculateAspectRatioDimensions,
   clampResolutionScale,
@@ -159,6 +160,20 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
 
   function openRetryEditor() {
     if (!job) return;
+    if (job.source === "video") {
+      try {
+        const draft = createSingleCreateDraftFromJob(job.raw);
+        window.localStorage.setItem(SINGLE_CREATE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+        router.push("/app/create/single");
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Unable to restore the original video settings.");
+      }
+      return;
+    }
+    if (job.source === "long") {
+      router.push(`/app/create/long?retry=${encodeURIComponent(job.id)}`);
+      return;
+    }
     if (job.source !== "video") {
       void action("retry");
       return;

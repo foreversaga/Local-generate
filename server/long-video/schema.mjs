@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { normalizeRef2VCameraPlan } from "../../app/lib/ref2v-camera-plan.mjs";
 
 export const SEQUENCE_STATES = [
   "draft",
@@ -21,6 +22,7 @@ export const SEGMENT_STATES = [
   "queued",
   "rendering",
   "normalizing",
+  "extracting_context",
   "extracting_tail",
   "completed",
   "failed",
@@ -28,6 +30,8 @@ export const SEGMENT_STATES = [
 ];
 
 export const REFERENCE_MODES = ["continuity", "multi_reference"];
+export const CONTINUATION_MODES = ["legacy_tail", "motion_context"];
+export const DEFAULT_MOTION_CONTEXT_SECONDS = 1.5;
 export const MAX_REFERENCE_ASSETS = 8;
 export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
 export const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
@@ -213,6 +217,9 @@ export function validateSegment(value, index = 0) {
   const nonDiegeticMusic = text(value.nonDiegeticMusic || value.non_diegetic_music);
   const continuityNote = text(value.continuityNote || value.continuity_note);
   const endingState = text(value.endingState || value.ending_state);
+  const cameraPlan = value.cameraPlan && typeof value.cameraPlan === "object"
+    ? normalizeRef2VCameraPlan(value.cameraPlan, { duration, referenceCount: 9, hasVideo: index > 0 })
+    : null;
   return {
     id: text(value.id, `segment-${String(index + 1).padStart(3, "0")}`),
     index,
@@ -227,6 +234,7 @@ export function validateSegment(value, index = 0) {
     ...(nonDiegeticMusic ? { nonDiegeticMusic } : {}),
     ...(continuityNote ? { continuityNote } : {}),
     ...(endingState ? { endingState } : {}),
+    ...(cameraPlan ? { cameraPlan } : {}),
     ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "codex" || value.promptSource === "codex_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
     mode: value.mode === "i2v" ? "i2v" : value.mode === "ref2v" ? "ref2v" : "t2v",
     status: SEGMENT_STATES.includes(value.status) ? value.status : "pending",
@@ -263,6 +271,14 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   const inputType = value.inputType === "image" ? "image" : "text";
   const referenceMode = value.referenceMode === undefined ? "continuity" : value.referenceMode;
   if (!REFERENCE_MODES.includes(referenceMode)) fail("REFERENCE_MODE_INVALID", "referenceMode must be continuity or multi_reference.");
+  // Missing means an older saved job.  Keep that job on the historical
+  // frame-only path; the current create form opts new jobs into motion_context.
+  const continuationMode = value.continuationMode === undefined ? "legacy_tail" : value.continuationMode;
+  if (!CONTINUATION_MODES.includes(continuationMode)) fail("CONTINUATION_MODE_INVALID", "continuationMode must be legacy_tail or motion_context.");
+  const motionContextSeconds = Number(value.motionContextSeconds ?? DEFAULT_MOTION_CONTEXT_SECONDS);
+  if (!Number.isFinite(motionContextSeconds) || motionContextSeconds < 1 || motionContextSeconds > 2) {
+    fail("MOTION_CONTEXT_DURATION_INVALID", "motionContextSeconds must be between 1 and 2 seconds.");
+  }
   const rawReferenceAssets = value.referenceAssets === undefined ? [] : value.referenceAssets;
   if (!Array.isArray(rawReferenceAssets)) fail("REFERENCE_ASSETS_INVALID", "referenceAssets must be an array of image assets.");
   let inputAsset;
@@ -318,6 +334,12 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   const timelineSource = value.timeline !== undefined ? value.timeline : value.segments;
   if (timelineSource !== undefined || requireTimeline) timeline = validateTimeline(timelineSource, duration);
   if (timeline && referenceMode === "multi_reference") timeline = timeline.map((segment) => ({ ...segment, mode: "ref2v" }));
+  if (timeline && continuationMode === "motion_context") {
+    timeline = timeline.map((segment, index) => ({
+      ...segment,
+      mode: index === 0 ? segment.mode : "ref2v",
+    }));
+  }
   const width = finite(value.width, 736);
   const height = finite(value.height, 416);
   if (!Number.isInteger(width) || width < 32 || width > 2048 || width % 32 !== 0) fail("WIDTH_INVALID", "Sequence width must be an integer multiple of 32 between 32 and 2048.");
@@ -328,6 +350,8 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
     title,
     inputType,
     referenceMode,
+    continuationMode,
+    motionContextSeconds: Number(motionContextSeconds.toFixed(3)),
     referenceAssets,
     ...(imagePurpose ? { imagePurpose } : {}),
     ...(value.inputText !== undefined ? { inputText: text(value.inputText) } : {}),
@@ -371,6 +395,8 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     updatedAt: now,
     inputType: payload.inputType,
     referenceMode: payload.referenceMode,
+    continuationMode: payload.continuationMode,
+    motionContextSeconds: payload.motionContextSeconds,
     referenceAssets: payload.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(payload.imagePurpose ? { imagePurpose: payload.imagePurpose } : {}),
     ...(payload.inputText ? { inputText: payload.inputText } : {}),

@@ -1,14 +1,15 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { assembleSegments as defaultAssemble } from "./assembler.mjs";
-import { extractTailFrame as defaultExtractTail, normalizeVideo as defaultNormalize } from "./media.mjs";
+import { extractTailAvContext as defaultExtractContext, extractTailFrame as defaultExtractTail, normalizeVideo as defaultNormalize } from "./media.mjs";
 import { outputRoot, sequenceAssemblyDir, sequenceOutputFile } from "./paths.mjs";
 import { appendEvent, getJob, updateJob, updateSegment, writeAttempt, writeAssemblyJson, writeSequenceManifest } from "./store.mjs";
 import { H3_REALISM_PEOPLE_PRESET, LongVideoError, assertLongLoraSupported } from "./schema.mjs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
-import { buildDeterministicContinuationPrompt } from "./continuation-finalizer.mjs";
+import { buildDeterministicContinuationPrompt, ensureRef2vaAvContextPrompt } from "./continuation-finalizer.mjs";
 import { mergeLongVideoNegativePrompt } from "./quality-defaults.mjs";
+import { buildRef2VCameraPlanContext, mergeNegativePromptTerms } from "../../app/lib/ref2v-camera-plan.mjs";
 
 async function logEvent(id, event, deps) {
   if (deps.log) return deps.log(event);
@@ -34,7 +35,7 @@ function referenceKey(reference) {
 }
 
 function staticReferenceAssets(job) {
-  if (job?.referenceMode !== "multi_reference") return [];
+  if (job?.referenceMode !== "multi_reference" && job?.continuationMode !== "motion_context") return [];
   const assets = [];
   const seen = new Set();
   for (const reference of [job.inputAsset, ...(Array.isArray(job.referenceAssets) ? job.referenceAssets : [])]) {
@@ -86,6 +87,19 @@ export function appendMultiReferenceTail(prompt, references = [], previousTail =
     return withDefinition.replace(detailedBoundary, `$1\n${instruction}$2`).trim();
   }
   return `${withDefinition}${withDefinition ? "\n\n" : ""}${instruction}`.trim();
+}
+
+function appendCameraPlan(prompt, mode, cameraContext) {
+  const rawContext = String(cameraContext || "").trim();
+  if (!rawContext) return String(prompt || "").trim();
+  // The first line is an instruction for prompt compilers.  Runtime already
+  // has a compiled H3 prompt, so inject only the concrete camera directives.
+  const camera = rawContext.split(/\r?\n/).slice(1).join(" ").trim();
+  if (!camera || String(prompt || "").includes(camera)) return String(prompt || "").trim();
+  const bodyField = mode === "ref2v" ? "detailed_description" : "integrated_multimodal_description";
+  const boundary = new RegExp(`(\\b${bodyField}\\s*:[\\s\\S]*?)(\\n\\n(?=overall_soundscape\\s*:))`, "i");
+  if (boundary.test(prompt)) return String(prompt).replace(boundary, `$1\nCamera plan: ${camera}$2`).trim();
+  return `${String(prompt || "").trim()}\n\nCamera plan: ${camera}`.trim();
 }
 
 function persistedAttemptPrompt(prompt, runtimePaths = []) {
@@ -171,6 +185,16 @@ export function sequenceProgressForSegment(segmentIndex, segmentCount, generatio
   return Math.min(85, Math.max(1, Math.round(((index + percent / 100) / count) * 85)));
 }
 
+export function h3MotionContextDuration(requestedSeconds = 1.5, segmentSeconds = Number.POSITIVE_INFINITY) {
+  // H3 reference videos are truncated to a 17k+5 frame grid.  Choose the
+  // nearest useful grid point within the requested 1-2 second range so a
+  // nominal 1.5s clip does not collapse to only 22 frames in the node.
+  const requested = Math.min(2, Math.max(1, Number(requestedSeconds) || 1.5));
+  const candidates = [22 / 24, 39 / 24];
+  const aligned = candidates.reduce((best, candidate) => Math.abs(candidate - requested) < Math.abs(best - requested) ? candidate : best, candidates[0]);
+  return Number(Math.min(aligned, Math.max(0.25, Number(segmentSeconds) || aligned)).toFixed(3));
+}
+
 async function defaultVerifyCompletedSegment(segment) {
   const normalizedPath = segment.normalizedPath || (segment.normalizedAsset?.name ? path.join(outputRoot(), segment.normalizedAsset.name) : null);
   const tailPath = segment.tailPath || (segment.tailAsset?.name ? path.join(outputRoot(), segment.tailAsset.name) : null);
@@ -204,11 +228,14 @@ export async function runSequence(sequenceOrId, deps = {}) {
       : {};
   const normalize = deps.normalize || deps.media?.normalize || defaultNormalize;
   const extractTail = deps.extractTail || deps.media?.extractTail || defaultExtractTail;
+  const extractContext = deps.extractContext || deps.media?.extractContext || defaultExtractContext;
   const assemble = deps.assemble || deps.media?.assemble || defaultAssemble;
   const verifyCompletedSegment = deps.verifyCompletedSegment || defaultVerifyCompletedSegment;
   const writeManifest = deps.writeManifest || writeSequenceManifest;
   const normalizedPaths = [];
+  const motionContext = job.continuationMode === "motion_context";
   let previousTail = null;
+  let previousContext = null;
   let activeSegmentIndex = -1;
   let activeAttemptRecord = null;
   await setJob(job, { status: "running", progress: 1, stage: "sequence.start", error: null }, deps);
@@ -227,6 +254,24 @@ export async function runSequence(sequenceOrId, deps = {}) {
           const tailPath = verified.tailPath || segment.tailPath || (segment.tailAsset?.name ? path.join(outputRoot(), segment.tailAsset.name) : null);
           normalizedPaths.push(normalizedPath);
           previousTail = tailPath;
+          if (motionContext && index < job.segments.length - 1) {
+            const persistedContextPath = segment.contextPath || (segment.contextAsset?.name ? path.join(outputRoot(), segment.contextAsset.name) : null);
+            const persistedContext = persistedContextPath ? await fs.stat(persistedContextPath).catch(() => null) : null;
+            if (persistedContext?.isFile()) {
+              previousContext = persistedContextPath;
+            } else {
+              previousContext = normalizedPath.replace(/\.mp4$/i, "-context.mp4");
+              await extractContext({
+                inputPath: normalizedPath,
+                outputPath: previousContext,
+                duration: h3MotionContextDuration(job.motionContextSeconds, segment.duration),
+                fps: 24,
+                tools: deps.tools,
+                run: deps.run,
+              });
+              await setSegment(job, index, { contextAsset: outputAssetRef(previousContext) }, deps);
+            }
+          }
           await logEvent(id, { event: "runner.resume.skip_completed", segmentIndex: index, segmentId: segment.id, stage: "completed", outputRelative: segment.outputRelative || segment.normalizedAsset?.name }, deps);
           await setJob(job, {
             progress: sequenceProgressForSegment(index, job.segments.length, 100),
@@ -245,8 +290,9 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const rawPath = fileFor(folder, `${prefix}-raw.mp4`);
       const normalizedPath = fileFor(folder, `${prefix}.mp4`);
       const tailPath = fileFor(folder, `${prefix}-tail.png`);
+      const contextPath = fileFor(folder, `${prefix}-context.mp4`);
       const multiReference = job.referenceMode === "multi_reference";
-      const mode = multiReference ? "ref2v" : index === 0 && job.inputType === "text" ? "t2v" : "i2v";
+      const mode = multiReference || motionContext && index > 0 ? "ref2v" : index === 0 && job.inputType === "text" ? "t2v" : "i2v";
       // The planner receipt gates the first H3 submission only. Later
       // segments either use their own continuation cleanup barrier or retain
       // the already-admitted prompt state without an unnecessary TTL wait.
@@ -255,7 +301,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
       if (hasCharacterLora && mode === "ref2v" && loraPayload.h3LoraEnabled !== true) {
         throw new LongVideoError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference long-video segments.", 422);
       }
-      const references = multiReference ? segmentReferenceAssets(job, index > 0 ? previousTail : null) : [];
+      const references = mode === "ref2v" ? segmentReferenceAssets(job, index > 0 ? previousTail : null) : [];
       const shouldFinalizeContinuation = index > 0 && Boolean(previousTail);
       const previousSegment = index > 0 ? job.segments[index - 1] : null;
       const previousEndingState = String(previousSegment?.endingState || previousSegment?.ending_state || "").trim();
@@ -343,10 +389,22 @@ export async function runSequence(sequenceOrId, deps = {}) {
           });
         }
       }
-      if (multiReference && index > 0 && previousTail) {
+      if (mode === "ref2v" && index > 0 && previousTail) {
         prompt = appendMultiReferenceTail(prompt, references, previousTail);
       }
-      const negativePrompt = combinedNegativePrompt(job.negativePrompt, segment.negativePrompt);
+      if (motionContext && index > 0) prompt = ensureRef2vaAvContextPrompt(prompt);
+      const camera = segment.cameraPlan && typeof segment.cameraPlan === "object"
+        ? buildRef2VCameraPlanContext(segment.cameraPlan, {
+            duration: segment.duration,
+            referenceCount: references.length || (mode === "i2v" ? 1 : 0),
+            hasVideo: motionContext && index > 0,
+          })
+        : null;
+      prompt = appendCameraPlan(prompt, mode, camera?.context);
+      const negativePrompt = mergeNegativePromptTerms(
+        combinedNegativePrompt(job.negativePrompt, segment.negativePrompt),
+        camera?.negativeTerms || [],
+      );
       const startedAt = new Date().toISOString();
       activeAttemptRecord = {
         attempt,
@@ -397,11 +455,12 @@ export async function runSequence(sequenceOrId, deps = {}) {
         duration: segment.duration,
         ...loraPayload,
         inputAsset: index === 0 ? job.inputAsset : null,
-        inputImagePath: multiReference ? null : index === 0 ? job.inputAsset?.path || job.inputAsset?.fullPath || job.inputAsset?.name || null : previousTail,
-        ...(multiReference ? {
-          referenceMode: "multi_reference",
+        inputImagePath: mode === "ref2v" ? null : index === 0 ? job.inputAsset?.path || job.inputAsset?.fullPath || job.inputAsset?.name || null : previousTail,
+        ...(mode === "ref2v" ? {
+          referenceMode: multiReference ? "multi_reference" : "motion_context",
           referenceImageNames: references.map((reference) => reference.name),
           referenceAssets: references,
+          ...(motionContext && index > 0 && previousContext ? { inputVideoPath: previousContext } : {}),
         } : {}),
         tailImagePath: previousTail,
         outputPath: rawPath,
@@ -476,6 +535,17 @@ export async function runSequence(sequenceOrId, deps = {}) {
       }, deps);
       await logEvent(id, { event: "media.normalize.start", segmentIndex: index, segmentId: segment.id, attempt, stage: "normalizing", duration: segment.duration }, deps);
       await normalize({ inputPath: producedRawPath, outputPath: normalizedPath, duration: segment.duration, fps: 24, width: job.width, height: job.height, seam: job.seam, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
+      if (motionContext && index < job.segments.length - 1) {
+        await setSegment(job, index, { status: "extracting_context", normalizedAsset: outputAssetRef(normalizedPath) }, deps);
+        await setJob(job, {
+          stage: "segment.extracting_context",
+          activeSegmentIndex: index,
+          segmentProgress: 100,
+          segmentStage: "擷取尾端 AV 延續脈絡",
+        }, deps);
+        await extractContext({ inputPath: normalizedPath, outputPath: contextPath, duration: h3MotionContextDuration(job.motionContextSeconds, segment.duration), fps: 24, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
+        previousContext = contextPath;
+      }
       await setSegment(job, index, { status: "extracting_tail", normalizedAsset: outputAssetRef(normalizedPath) }, deps);
       await setJob(job, {
         stage: "segment.extracting_tail",
@@ -486,8 +556,8 @@ export async function runSequence(sequenceOrId, deps = {}) {
       await extractTail({ inputPath: normalizedPath, outputPath: tailPath, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
       previousTail = tailPath;
       normalizedPaths.push(normalizedPath);
-      await setSegment(job, index, { status: "completed", normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), outputRelative: path.relative(outputRoot(), normalizedPath).replaceAll("\\", "/") }, deps);
-      if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, producedRawPath, normalizedPath, tailPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), generationJobId, finishedAt: new Date().toISOString() }).catch(() => {});
+      await setSegment(job, index, { status: "completed", normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), normalizedPath).replaceAll("\\", "/") }, deps);
+      if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, previousContext, producedRawPath, normalizedPath, tailPath, contextPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(normalizedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), generationJobId, finishedAt: new Date().toISOString() }).catch(() => {});
       activeAttemptRecord = null;
       await setJob(job, {
         progress: sequenceProgressForSegment(index, job.segments.length, 100),

@@ -54,7 +54,7 @@ function provenance({ provider, model, fallback, reason, error, skill }) {
 function continuationInstruction(previousEndingState, { mode = "i2v", references = [] } = {}) {
   const ending = text(previousEndingState);
   const referenceInstruction = mode === "ref2v"
-    ? `Use the supplied actual normalized previous-segment tail as <Picture ${Math.max(1, references.length)}> after the ordered static references. It is an ordinary continuity reference, not a frame-zero lock.`
+    ? `Use the supplied actual normalized previous-segment tail as <Picture ${Math.max(1, references.length)}> after the ordered static references. It is an ordinary continuity reference, not a frame-zero lock. Use <Video 1> and its paired <Audio 1> as the previous segment's short audiovisual continuation context: inherit ending motion, pacing, ambience, and voice timbre without replaying the source clip.`
     : "Begin directly from the supplied actual normalized previous-segment tail frame as Picture 1 at 0.00 seconds.";
   return [
     `Continuation: ${referenceInstruction}`,
@@ -69,6 +69,21 @@ function appendToPromptBody(prompt, mode, instruction) {
   const boundary = new RegExp(`(\\b${bodyField}\\s*:[\\s\\S]*?)(\\n\\n(?=${nextField}\\s*:))`, "i");
   if (boundary.test(prompt)) return prompt.replace(boundary, `$1\n${instruction}$2`).trim();
   return `${prompt}${prompt ? "\n\n" : ""}${instruction}`.trim();
+}
+
+export function ensureRef2vaAvContextPrompt(prompt) {
+  let next = String(prompt || "");
+  const definitions = [
+    "<Video 1> is the final short audiovisual excerpt of the previous segment, used only for ending motion and pacing continuity.",
+    "<Audio 1> is the soundtrack paired with <Video 1>, used only for ambience, rhythm, and voice-timbre continuity.",
+  ];
+  const definitionBoundary = /(subject_definitions\s*:[\s\S]*?)(\n\n(?=summary\s*:))/i;
+  if (definitionBoundary.test(next)) {
+    const missing = definitions.filter((line) => !next.toLocaleLowerCase().includes(line.split(" is ")[0].toLocaleLowerCase()));
+    if (missing.length) next = next.replace(definitionBoundary, `$1\n${missing.join("\n")}$2`);
+  }
+  next = next.replace(/(summary\s*:\s*)\[(?:reference generation|video continuation|audio reuse|audio reference)(?:\s*\+\s*(?:reference generation|video continuation|audio reuse|audio reference))*\]/i, "$1[video continuation + audio reuse]");
+  return next;
 }
 
 function orderedReferenceDescription(references = []) {
@@ -114,9 +129,10 @@ export function buildDeterministicContinuationPrompt({
         shotId: "Shot 1",
         references,
       });
+  const contractedBase = mode === "ref2v" ? ensureRef2vaAvContextPrompt(base) : base;
   const instruction = continuationInstruction(previousEndingState, { mode, references });
-  if (base.toLocaleLowerCase().includes(instruction.toLocaleLowerCase())) return base;
-  return appendToPromptBody(base, mode, instruction);
+  if (contractedBase.toLocaleLowerCase().includes(instruction.toLocaleLowerCase())) return contractedBase;
+  return appendToPromptBody(contractedBase, mode, instruction);
 }
 
 function resolveTailPath(tailPath, tailRoot) {
@@ -173,7 +189,7 @@ function finalizerRequestPrompt({ mode, segment, references, continuityBible, pr
   return [
     `Use the attached image as the actual normalized tail frame from the previous segment and treat it as ${tailLabel}.`,
     mode === "ref2v"
-      ? "Keep all earlier ordered static references in their original slots. The tail is the final ordinary continuity reference and must not become a frame-zero lock."
+      ? "Keep all earlier ordered static references in their original slots. The tail is the final ordinary continuity reference and must not become a frame-zero lock. The runtime also supplies the previous 1-2 second tail as <Video 1> with paired <Audio 1>; use it only for ending motion, pacing, ambience, and voice-timbre continuity, never as footage to replay."
       : "The tail is the actual first frame at 0.00 seconds for this I2VA continuation.",
     "Finalize only continuity for the next segment.",
     `NEXT SEGMENT METADATA:\n${compactValue(segment)}`,
