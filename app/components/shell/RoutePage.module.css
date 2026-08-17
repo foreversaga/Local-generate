@@ -3,8 +3,16 @@
   gap: 30px;
 }
 
+.pageCompact {
+  gap: 16px;
+}
+
 .intro {
   max-width: 760px;
+}
+
+.introCompact {
+  max-width: none;
 }
 
 .eyebrow {
@@ -23,6 +31,11 @@
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.05;
+}
+
+.introCompact .title {
+  font-size: clamp(22px, 3vw, 30px);
+  letter-spacing: -0.025em;
 }
 
 .description {
@@ -93,6 +106,10 @@
 @media (max-width: 700px) {
   .page {
     gap: 24px;
+  }
+
+  .pageCompact {
+    gap: 14px;
   }
 
   .grid {
