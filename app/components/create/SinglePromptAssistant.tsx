@@ -148,6 +148,7 @@ export function SinglePromptAssistant({
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [cameraSettingsEnabled, setCameraSettingsEnabled] = useState(false);
   const [cameraPlan, setCameraPlan] = useState<CameraPlan>(() => createDefaultRef2VCameraPlan() as CameraPlan);
 
   useEffect(() => {
@@ -310,7 +311,7 @@ export function SinglePromptAssistant({
           lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           images,
-          cameraPlan: mode === "ref2v" ? normalizeRef2VCameraPlan(cameraPlan, {
+          cameraPlan: mode === "ref2v" && cameraSettingsEnabled ? normalizeRef2VCameraPlan(cameraPlan, {
             duration,
             referenceCount: referenceImages.length,
             hasVideo: Boolean(sourceVideo),
@@ -381,14 +382,35 @@ export function SinglePromptAssistant({
         {briefError && <p id="single-prompt-brief-error" className={styles.error} role="alert"><Icon name="close" />{briefError}</p>}
       </label>
 
-      {mode === "ref2v" && <Ref2VCameraPlanner
-        locale={locale}
-        duration={duration}
-        referenceCount={referenceImages.length}
-        hasVideo={Boolean(sourceVideo)}
-        value={cameraPlan}
-        onChange={setCameraPlan}
-      />}
+      {mode === "ref2v" && <>
+        <div className={styles.cameraToggleRow}>
+          <span className={styles.cameraToggleCopy}>
+            <strong>{locale === "en" ? "Camera settings" : "鏡頭設定"}</strong>
+            <small>{locale === "en" ? "Only send camera planning instructions when enabled." : "開啟後才會送出鏡頭規劃指令。"}</small>
+          </span>
+          <label className={styles.cameraToggle}>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={cameraSettingsEnabled}
+              aria-label={locale === "en" ? "Enable camera settings" : "啟用鏡頭設定"}
+              aria-controls="ref2v-camera-settings-panel"
+              onChange={(event) => setCameraSettingsEnabled(event.target.checked)}
+            />
+            <span aria-hidden="true" />
+          </label>
+        </div>
+        {cameraSettingsEnabled && <div id="ref2v-camera-settings-panel">
+          <Ref2VCameraPlanner
+            locale={locale}
+            duration={duration}
+            referenceCount={referenceImages.length}
+            hasVideo={Boolean(sourceVideo)}
+            value={cameraPlan}
+            onChange={setCameraPlan}
+          />
+        </div>}
+      </>}
 
       <div className={styles.providerRow}>
         <div className={styles.providerSwitch} role="group" aria-label="提示詞生成來源">

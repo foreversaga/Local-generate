@@ -229,6 +229,65 @@
   stroke-width: 1.8;
 }
 
+.cameraToggleRow {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-soft) 54%, var(--bg));
+  padding: 11px 13px;
+}
+
+.cameraToggleCopy { display: grid; gap: 4px; }
+.cameraToggleCopy strong { color: var(--text); font-size: 13px; }
+.cameraToggleCopy small { color: var(--muted-2); font-size: 11px; line-height: 1.4; }
+
+.cameraToggle {
+  position: relative;
+  display: inline-flex;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 46px;
+  cursor: pointer;
+}
+
+.cameraToggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.cameraToggle > span {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--bg);
+  transition: border-color .16s ease, background .16s ease;
+}
+
+.cameraToggle > span::after {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  content: "";
+  transition: transform .16s ease, background .16s ease;
+}
+
+.cameraToggle input:checked + span {
+  border-color: var(--lime);
+  background: color-mix(in srgb, var(--lime) 25%, var(--bg));
+}
+.cameraToggle input:checked + span::after { background: var(--lime); transform: translateX(20px); }
+.cameraToggle input:focus-visible + span { outline: 2px solid var(--lime); outline-offset: 3px; }
+
 .cameraPlanner {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -342,6 +401,7 @@
   }
 
   .cameraGrid { grid-template-columns: 1fr; }
+  .cameraToggleRow { min-height: 68px; }
   .cameraContent { padding: 11px; }
   .shotCard { padding: 10px; }
   .shotHeader { align-items: flex-start; flex-direction: column; }
@@ -355,7 +415,9 @@
   .brief,
   .select,
   .refreshButton,
-  .generateButton {
+  .generateButton,
+  .cameraToggle > span,
+  .cameraToggle > span::after {
     transition: none;
   }
 }

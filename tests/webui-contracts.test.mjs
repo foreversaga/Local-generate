@@ -445,6 +445,24 @@ test("ref2v prompt request caps references and uses Picture 1 as primary referen
   assert.deepEqual(payload.cameraPlan, { version: 1, shots: [{ id: "shot-1" }] });
 });
 
+test("ref2v prompt request omits camera planning when camera settings are disabled", () => {
+  const payload = buildSinglePromptRequest({
+    provider: "ollama",
+    model: "vision-model",
+    codexModel: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    brief: "Keep the same character identity.",
+    negativePrompt: "",
+    mode: "ref2v",
+    duration: 5,
+    referenceImageNames: ["ref-1.png"],
+    sourceVideoName: "",
+    images: [],
+  });
+
+  assert.equal(Object.hasOwn(payload, "cameraPlan"), false);
+});
+
 test("Single render persists the user's initial description for Create-style retry", () => {
   const payload = buildSingleRenderRequest(validRequestInput());
   assert.equal(payload.initialDescription, "A person waits on a windswept platform.");
