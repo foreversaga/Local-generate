@@ -38,14 +38,17 @@ test("script library rejects empty prompts and duplicate names", async () => {
   await assert.rejects(() => library.create({ name: "Chase", prompt: "Run again" }), (error) => error instanceof ScriptLibraryError && error.code === "SCRIPT_NAME_EXISTS");
 });
 
-test("Library exposes a dedicated script category with create, edit, and delete controls", async () => {
+test("Library exposes scripts as a dedicated top-level mode with Single and Long subtypes", async () => {
   const [libraryWorkspace, manager] = await Promise.all([
     readFile(new URL("../app/components/library/LibraryWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/library/ScriptLibraryManager.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(libraryWorkspace, /\["all", "input", "output", "scripts", "long-scripts"\]/);
-  assert.match(libraryWorkspace, /root === "scripts" \? <ScriptLibraryManager/);
+  assert.match(libraryWorkspace, /type LibraryMode = "media" \| "scripts"/);
+  assert.match(libraryWorkspace, /type ScriptMode = "single" \| "long"/);
+  assert.match(libraryWorkspace, /libraryMode === "scripts"/);
+  assert.match(libraryWorkspace, /scriptMode === "single" \? <ScriptLibraryManager \/> : <LongScriptLibraryManager \/>/);
   assert.match(manager, /method: draft\.id \? "PUT" : "POST"/);
   assert.match(manager, /method: "DELETE"/);
   assert.match(manager, /"儲存變更"/);
+  assert.match(manager, /negativePromptOpen/);
 });
