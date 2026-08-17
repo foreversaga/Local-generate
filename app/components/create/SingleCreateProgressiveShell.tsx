@@ -20,6 +20,8 @@ type DisclosureKey = keyof DisclosureState;
 
 type StoredDraft = {
   negativePrompt?: string;
+  width?: number | "";
+  height?: number | "";
   steps?: number | "";
   seed?: number | "";
   renderCount?: number | "";
@@ -228,11 +230,13 @@ function hasAdvancedGenerationValues(draft: StoredDraft) {
     draft.outputName?.trim()
     || draft.characterLoraName?.trim()
     || draft.h3LoraEnabled
-    || draft.renderCount !== undefined && draft.renderCount !== "" && Number(draft.renderCount) !== 1
-    || draft.steps !== undefined && draft.steps !== "" && Number(draft.steps) !== 20
-    || draft.seed !== undefined && draft.seed !== "" && Number(draft.seed) !== 12345
-    || draft.characterLoraStrength !== undefined && draft.characterLoraStrength !== "" && Number(draft.characterLoraStrength) !== 0.75
-    || draft.h3LoraStrength !== undefined && draft.h3LoraStrength !== "" && Number(draft.h3LoraStrength) !== 0.8
+    || (draft.width !== undefined && draft.width !== "" && Number(draft.width) !== 736)
+    || (draft.height !== undefined && draft.height !== "" && Number(draft.height) !== 416)
+    || (draft.renderCount !== undefined && draft.renderCount !== "" && Number(draft.renderCount) !== 1)
+    || (draft.steps !== undefined && draft.steps !== "" && Number(draft.steps) !== 20)
+    || (draft.seed !== undefined && draft.seed !== "" && Number(draft.seed) !== 12345)
+    || (draft.characterLoraStrength !== undefined && draft.characterLoraStrength !== "" && Number(draft.characterLoraStrength) !== 0.75)
+    || (draft.h3LoraStrength !== undefined && draft.h3LoraStrength !== "" && Number(draft.h3LoraStrength) !== 0.8)
   );
 }
 
