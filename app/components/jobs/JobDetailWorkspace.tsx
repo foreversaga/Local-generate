@@ -1,93 +1,14 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSingleCreateDraftFromJob, SINGLE_CREATE_DRAFT_STORAGE_KEY } from "../../lib/single-create-draft.mjs";
-import {
-  calculateAspectRatioDimensions,
-  clampResolutionScale,
-  normalizeResolutionDimension,
-  resolutionGridForMode,
-  resolutionScaleForDimensions,
-  scaleImageResolution,
-} from "../../lib/single-image-resolution.mjs";
 import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
+import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
 import { SaveJobAsScript } from "./SaveJobAsScript";
 import styles from "./JobsWorkspace.module.css";
-
-type RetryDraft = {
-  prompt: string;
-  negativePrompt: string;
-  modelProfile: string;
-  aspectRatio: string;
-  aspectLocked: boolean;
-  mode: string;
-  scaleBaseWidth: number;
-  scaleBaseHeight: number;
-  resolutionScale: number;
-  width: string;
-  height: string;
-  duration: string;
-  steps: string;
-  seed: string;
-  timeoutSeconds: string;
-  outputName: string;
-};
-
-const RETRY_PROFILES = [
-  "nvfp4_blackwell",
-  "official_pruned_int8_convrot",
-  "int4_convrot_low_vram",
-  "ref2va_pruned_nvfp4",
-  "ref2va_pruned_int8_convrot",
-];
-
-const ASPECT_RATIO_OPTIONS = [
-  { value: "custom", label: "Custom (free adjustment)" },
-  { value: "16:9", label: "16:9 (Landscape)" },
-  { value: "9:16", label: "9:16 (Portrait)" },
-  { value: "1:1", label: "1:1 (Square)" },
-  { value: "4:3", label: "4:3 (Landscape)" },
-  { value: "3:4", label: "3:4 (Portrait)" },
-];
-
-function draftNumber(value: number | null | undefined, fallback: number) {
-  return Number.isFinite(Number(value)) ? String(value) : String(fallback);
-}
-
-function retryDraftFromJob(job: UnifiedJob): RetryDraft {
-  const jobWidth = Number(job.width);
-  const jobHeight = Number(job.height);
-  const width = Number.isFinite(jobWidth) && jobWidth >= 32 ? jobWidth : 736;
-  const height = Number.isFinite(jobHeight) && jobHeight >= 32 ? jobHeight : 416;
-  return {
-    prompt: job.prompt || "",
-    negativePrompt: job.negativePrompt || "",
-    modelProfile: job.modelProfile || "nvfp4_blackwell",
-    aspectRatio: "custom",
-    aspectLocked: false,
-    mode: typeof job.raw?.mode === "string" ? job.raw.mode : "i2v",
-    scaleBaseWidth: width,
-    scaleBaseHeight: height,
-    resolutionScale: 100,
-    width: String(width),
-    height: String(height),
-    duration: draftNumber(job.duration, 5),
-    steps: draftNumber(job.steps, 20),
-    seed: draftNumber(job.seed, 12345),
-    timeoutSeconds: draftNumber(job.timeoutSeconds, 3600),
-    outputName: job.outputName || "h3-render.mp4",
-  };
-}
-
-function numericDraft(value: string, label: string) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`${label} must be a valid number.`);
-  return parsed;
-}
 
 export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourceHint?: string }) {
   const { locale, t } = useI18n();
@@ -97,12 +18,8 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const actionErrorRef = useRef<HTMLDivElement>(null);
-  const retryEditorRef = useRef<HTMLElement>(null);
-  const retryPromptDetailsRef = useRef<HTMLDetailsElement>(null);
-  const retryPromptRef = useRef<HTMLTextAreaElement>(null);
   const [sourceUnavailable, setSourceUnavailable] = useState<JobSourceError | null>(null);
-  const [retryDraft, setRetryDraft] = useState<RetryDraft | null>(null);
+  const actionErrorRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async (targetId = jobId, targetSource = sourceHint) => {
     const { job: next, sourceError: failedSource } = await fetchUnifiedJob(targetId, targetSource);
@@ -122,14 +39,20 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
       try {
         if (document.visibilityState !== "hidden") next = await refresh();
       } catch (reason) {
-        if (active) { setLoading(false); setError(reason instanceof Error ? reason.message : "無法載入工作。"); }
+        if (active) {
+          setLoading(false);
+          setError(reason instanceof Error ? reason.message : "無法載入工作。");
+        }
       }
       if (active && (!next || next.status === "queued" || next.status === "running")) {
         timer = window.setTimeout(() => void poll(), 2500);
       }
     };
     void poll();
-    return () => { active = false; window.clearTimeout(timer); };
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -141,33 +64,35 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     return () => window.cancelAnimationFrame(frame);
   }, [error]);
 
-  async function action(name: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
+  async function action(name: "cancel" | "pause" | "resume" | "retry") {
     if (!job || busy) return;
-    setBusy(name); setError("");
+    setBusy(name);
+    setError("");
     try {
-      const result = await performJobAction(job, name, retryOverrides) as { job?: { id?: string } };
+      const result = await performJobAction(job, name) as { job?: { id?: string } };
       const nextId = typeof result?.job?.id === "string" ? result.job.id : "";
-      if (name === "retry" && ["lora", "video", "upscale", "img2img"].includes(job.source) && nextId && nextId !== job.id) {
-        setRetryDraft(null);
+      if (name === "retry" && ["lora", "upscale", "img2img"].includes(job.source) && nextId && nextId !== job.id) {
         router.replace(`/app/jobs/${encodeURIComponent(nextId)}?source=${encodeURIComponent(job.source)}`);
         await refresh(nextId, job.source);
       } else {
         await refresh();
       }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "工作操作失敗。");
+    } finally {
+      setBusy("");
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "工作操作失敗。"); }
-    finally { setBusy(""); }
   }
 
-  function openRetryEditor() {
-    if (!job) return;
+  function retry() {
+    if (!job || busy) return;
     if (job.source === "video") {
       try {
         const draft = createSingleCreateDraftFromJob(job.raw);
         window.localStorage.setItem(SINGLE_CREATE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
         router.push("/app/create/single");
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "Unable to restore the original video settings.");
+        setError(reason instanceof Error ? reason.message : "無法還原原始單影片設定。");
       }
       return;
     }
@@ -175,146 +100,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
       router.push(`/app/create/long?retry=${encodeURIComponent(job.id)}`);
       return;
     }
-    if (job.source !== "video") {
-      void action("retry");
-      return;
-    }
-    setError("");
-    setRetryDraft(retryDraftFromJob(job));
-    window.requestAnimationFrame(() => retryEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  }
-
-  function updateRetryDraft(field: keyof RetryDraft, value: string) {
-    setRetryDraft((current) => current ? { ...current, [field]: value } : current);
-  }
-
-  function updateRetryAspectRatio(value: string) {
-    setRetryDraft((current) => {
-      if (!current) return current;
-      if (value === "custom") {
-        return { ...current, aspectRatio: value, aspectLocked: false };
-      }
-      const currentWidth = Number(current.width);
-      const dimensions = calculateAspectRatioDimensions(
-        value,
-        Number.isFinite(currentWidth) && currentWidth > 0 ? currentWidth : 736,
-        "width",
-        resolutionGridForMode(current.mode),
-      );
-      return {
-        ...current,
-        aspectRatio: value,
-        aspectLocked: true,
-        scaleBaseWidth: dimensions.width,
-        scaleBaseHeight: dimensions.height,
-        resolutionScale: 100,
-        width: String(dimensions.width),
-        height: String(dimensions.height),
-      };
-    });
-  }
-
-  function updateRetryAspectLock(locked: boolean) {
-    setRetryDraft((current) => {
-      if (!current || current.aspectRatio === "custom") return current;
-      if (!locked) return { ...current, aspectLocked: false };
-      const currentWidth = Number(current.width);
-      if (!Number.isFinite(currentWidth) || currentWidth <= 0) {
-        return { ...current, aspectLocked: true };
-      }
-      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, currentWidth, "width", resolutionGridForMode(current.mode));
-      return {
-        ...current,
-        aspectLocked: true,
-        scaleBaseWidth: dimensions.width,
-        scaleBaseHeight: dimensions.height,
-        resolutionScale: 100,
-        width: String(dimensions.width),
-        height: String(dimensions.height),
-      };
-    });
-  }
-
-  function updateRetryDimension(field: "width" | "height", value: string) {
-    setRetryDraft((current) => {
-      if (!current) return current;
-      const next = { ...current, [field]: value };
-      if (!current.aspectLocked || current.aspectRatio === "custom") {
-        const nextWidth = Number(next.width);
-        const nextHeight = Number(next.height);
-        if (![nextWidth, nextHeight].every((dimension) => Number.isFinite(dimension) && dimension >= 32 && dimension <= 2048)) return next;
-        return {
-          ...next,
-          scaleBaseWidth: normalizeResolutionDimension(nextWidth, current.mode),
-          scaleBaseHeight: normalizeResolutionDimension(nextHeight, current.mode),
-          resolutionScale: 100,
-        };
-      }
-      const anchorValue = Number(value);
-      if (!Number.isFinite(anchorValue) || anchorValue < 32 || anchorValue > 2048) return next;
-      const dimensions = calculateAspectRatioDimensions(current.aspectRatio, anchorValue, field, resolutionGridForMode(current.mode));
-      return {
-        ...next,
-        resolutionScale: resolutionScaleForDimensions(
-          current.scaleBaseWidth,
-          current.scaleBaseHeight,
-          dimensions.width,
-          dimensions.height,
-        ),
-        width: String(dimensions.width),
-        height: String(dimensions.height),
-      };
-    });
-  }
-
-  function applyRetryResolutionScale(value: number) {
-    setRetryDraft((current) => {
-      if (!current) return current;
-      const resolutionScale = clampResolutionScale(value);
-      const dimensions = scaleImageResolution(current.scaleBaseWidth, current.scaleBaseHeight, current.mode, resolutionScale);
-      return {
-        ...current,
-        resolutionScale,
-        width: String(dimensions.width),
-        height: String(dimensions.height),
-      };
-    });
-  }
-
-  async function submitRetry(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!job || !retryDraft || busy) return;
-    if (!retryDraft.prompt.trim()) {
-      setError("Prompt cannot be empty. Keep the original prompt or enter a new description.");
-      if (retryPromptDetailsRef.current) retryPromptDetailsRef.current.open = true;
-      window.requestAnimationFrame(() => retryPromptRef.current?.focus());
-      return;
-    }
-    try {
-      const width = numericDraft(retryDraft.width, "Width");
-      const height = numericDraft(retryDraft.height, "Height");
-      const dimensions = retryDraft.aspectLocked && retryDraft.aspectRatio !== "custom"
-        ? calculateAspectRatioDimensions(retryDraft.aspectRatio, width, "width", resolutionGridForMode(retryDraft.mode))
-        : {
-            width: normalizeResolutionDimension(width, retryDraft.mode),
-            height: normalizeResolutionDimension(height, retryDraft.mode),
-          };
-      const overrides: VideoRetryOverrides = {
-        prompt: retryDraft.prompt,
-        negativePrompt: retryDraft.negativePrompt,
-        modelProfile: retryDraft.modelProfile.trim(),
-        width: dimensions.width,
-        height: dimensions.height,
-        duration: numericDraft(retryDraft.duration, "Duration"),
-        steps: numericDraft(retryDraft.steps, "Steps"),
-        seed: numericDraft(retryDraft.seed, "Seed"),
-        timeoutSeconds: numericDraft(retryDraft.timeoutSeconds, "Timeout"),
-        outputName: retryDraft.outputName.trim(),
-      };
-      await action("retry", overrides);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Retry parameters are invalid.");
-    }
+    void action("retry");
   }
 
   if (loading) return <div className={styles.empty}>載入工作中…</div>;
@@ -328,222 +114,115 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     );
   }
   if (!job) return <div className={styles.error} role="alert">找不到工作。</div>;
+
   const outputHref = jobOutputHref(job);
-  // Active video jobs may publish their planned output reference before the
-  // renderer has created the file. Only treat that reference as stale after
-  // the job has actually completed.
   const outputMissing = Boolean(job.status === "complete" && job.output && job.outputAvailable === false);
-  const retryResolutionStep = retryDraft ? resolutionGridForMode(retryDraft.mode) : 32;
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
-  const hasNativeStep = job.source === "img2img"
-    && job.nativeCurrent !== null
-    && job.nativeMaximum !== null
-    && Number.isFinite(Number(job.nativeCurrent))
-    && Number.isFinite(Number(job.nativeMaximum))
-    && Number(job.nativeMaximum) > 0;
+  const active = job.status === "queued" || job.status === "running";
+  const complete = job.status === "complete" || job.status === "partial";
   const hasEta = Number.isFinite(job.etaMs);
-  const promptLabel = job.source === "long"
-    ? "查看完整故事提示詞"
-    : job.source === "img2img"
-      ? "查看完整圖像提示詞"
-      : "查看完整提示詞";
   const hasEtaRange = Number.isFinite(job.etaLowerMs)
     && Number.isFinite(job.etaUpperMs)
     && Number(job.etaUpperMs) - Number(job.etaLowerMs) >= 15_000;
-  const etaText = hasEtaRange
-    ? t("jobs.etaRange", {
-        lower: formatEtaDuration(Number(job.etaLowerMs), t),
-        upper: formatEtaDuration(Number(job.etaUpperMs), t),
-      })
-    : hasEta
-      ? t("jobs.eta", { duration: formatEtaDuration(Number(job.etaMs), t) })
-      : t("jobs.etaEstimating");
+  const etaText = active
+    ? hasEtaRange
+      ? t("jobs.etaRange", {
+          lower: formatEtaDuration(Number(job.etaLowerMs), t),
+          upper: formatEtaDuration(Number(job.etaUpperMs), t),
+        })
+      : hasEta
+        ? t("jobs.eta", { duration: formatEtaDuration(Number(job.etaMs), t) })
+        : t("jobs.etaEstimating")
+    : "";
+
   return (
     <div className={styles.detailLayout}>
       <section className={styles.detailCard}>
-        <div className={styles.jobHeader}><StatusBadge status={job.status} source={job.source} /><span className={styles.source}>{sourceLabel(job.source, locale)}</span></div>
+        <div className={styles.jobHeader}>
+          <StatusBadge status={job.status} source={job.source} />
+          <span className={styles.source}>{sourceLabel(job.source, locale)}</span>
+        </div>
         <h2>{job.title}</h2>
-        <p>{job.subtitle}</p>
-        <dl className={styles.metaGrid}>
-          <div><dt>ID</dt><dd>{job.id}</dd></div>
-          <div><dt>階段</dt><dd>{job.stage}</dd></div>
-          <div className={styles.progressMeta}>
-            <dt>進度</dt>
-            <dd>{progress}%</dd>
-            {(job.status === "queued" || job.status === "running") && <div className={styles.progressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}><span style={{ width: `${progress}%` }} /></div>}
-          </div>
-          {(job.status === "queued" || job.status === "running") && (
-            <div>
-              <dt>ETA</dt>
-              <dd title={job.etaSource ? `${job.etaSource} · ${job.etaConfidence || "unknown"}` : undefined}>{etaText}</dd>
+        {job.subtitle && <p>{job.subtitle}</p>}
+
+        <section className={`${styles.statusPanel} ${complete ? styles.statusPanelComplete : ""}`} aria-label="工作狀態">
+          {active ? (
+            <>
+              <div className={styles.statusProgressHeader}>
+                <strong>{progress}%</strong>
+                <span>{etaText}</span>
+              </div>
+              <div className={styles.statusProgressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}>
+                <span style={{ width: `${progress}%` }} />
+              </div>
+            </>
+          ) : complete ? (
+            <div className={styles.statusMessage}>
+              <strong>生成完成</strong>
+              <span>{job.updatedAt ? `更新於 ${formatDate(job.updatedAt, locale)}` : "工作已完成"}</span>
+            </div>
+          ) : (
+            <div className={styles.statusMessage}>
+              <strong>{job.status === "error" ? "生成失敗" : job.status === "cancelled" ? "工作已取消" : "工作狀態"}</strong>
+              <span>{job.updatedAt ? formatDate(job.updatedAt, locale) : job.stage || "—"}</span>
             </div>
           )}
-          <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
-        </dl>
-        {job.source === "img2img" && (job.comfyNode || hasNativeStep) && (
-          <p className={styles.helper}>
-            ComfyUI node: {job.comfyNode || "running"}
-            {job.comfyNodeTitle ? ` (${job.comfyNodeTitle})` : ""}
-            {hasNativeStep ? ` · sampler step ${job.nativeCurrent}/${job.nativeMaximum}` : ""}
-            {hasNativeStep ? " · overall bar is coarse" : job.progressSource === "estimated" ? " · overall progress is estimated" : ""}
-          </p>
-        )}
-        {job.prompt && (
-          <div className={styles.promptStack}>
-            <div className={styles.promptToolbar}>
-              <strong>工作提示詞</strong>
-              <SaveJobAsScript defaultName={job.title} prompt={job.prompt} negativePrompt={job.negativePrompt || ""} />
-            </div>
-            <details className={styles.promptDetails}>
-              <summary>{promptLabel}</summary>
-              <pre className={styles.promptPreview}>{job.prompt}</pre>
-            </details>
-            {job.negativePrompt && (
-              <details className={styles.promptDetails}>
-                <summary>查看完整 Negative Prompt</summary>
-                <pre className={styles.promptPreview}>{job.negativePrompt}</pre>
-              </details>
-            )}
-          </div>
-        )}
-        {job.artifact && <p className={styles.helper}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}{job.artifact.registryId ? ` · 註冊編號 ${job.artifact.registryId}` : ""}</p>}
+        </section>
+
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
         {error && <div ref={actionErrorRef} className={styles.error} role="alert" tabIndex={-1}>{error}</div>}
-        {job.source === "video" && retryDraft && (
-          <section ref={retryEditorRef} className={styles.retryEditor} aria-labelledby="retry-editor-title">
-            <div className={styles.retryEditorHeader}>
-              <div>
-                <h3 id="retry-editor-title">Edit parameters and retry</h3>
-                <p>The original job is preserved. Submitting creates a new retry job, and the prompts can be fully edited.</p>
+        {job.artifact && <p className={styles.artifactLine}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}</p>}
+
+        <div className={styles.detailDisclosures}>
+          {job.prompt && (
+            <details className={styles.detailDisclosure}>
+              <summary>提示詞</summary>
+              <div className={styles.detailDisclosureBody}>
+                {complete && <SaveJobAsScript defaultName={job.title} prompt={job.prompt} negativePrompt={job.negativePrompt || ""} />}
+                <strong>Prompt</strong>
+                <pre className={styles.promptPreview}>{job.prompt}</pre>
+                {job.negativePrompt && <><strong>Negative Prompt</strong><pre className={styles.promptPreview}>{job.negativePrompt}</pre></>}
               </div>
-              <span className={styles.retryAttempt}>Original job #{job.attempt || 1}</span>
-            </div>
-            <form className={styles.retryForm} onSubmit={(event) => void submitRetry(event)}>
-              <details ref={retryPromptDetailsRef} className={styles.retryPromptDetails}>
-                <summary>Edit prompt fields</summary>
-                <div className={styles.retryPromptFields}>
-                  <label className={styles.retryFieldWide}>
-                    <span>Prompt (full, editable)</span>
-                    <textarea
-                      ref={retryPromptRef}
-                      value={retryDraft.prompt}
-                      onChange={(event) => updateRetryDraft("prompt", event.target.value)}
-                      rows={16}
-                      maxLength={20000}
-                      spellCheck={false}
-                      required
-                    />
-                    <small>{retryDraft.prompt.length}/20000</small>
-                  </label>
-                  <label className={styles.retryFieldWide}>
-                    <span>Negative Prompt</span>
-                    <textarea
-                      value={retryDraft.negativePrompt}
-                      onChange={(event) => updateRetryDraft("negativePrompt", event.target.value)}
-                      rows={5}
-                      maxLength={20000}
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-              </details>
-              <label className={styles.retryField}>
-                <span>Model Profile</span>
-                <input
-                  list="retry-model-profiles"
-                  value={retryDraft.modelProfile}
-                  onChange={(event) => updateRetryDraft("modelProfile", event.target.value)}
-                  required
-                />
-                <datalist id="retry-model-profiles">
-                  {RETRY_PROFILES.map((profile) => <option key={profile} value={profile} />)}
-                </datalist>
-              </label>
-              <label className={styles.retryField}>
-                <span>Output filename</span>
-                <input value={retryDraft.outputName} onChange={(event) => updateRetryDraft("outputName", event.target.value)} required />
-              </label>
-              <label className={styles.retryField}>
-                <span>Aspect ratio</span>
-                <select value={retryDraft.aspectRatio} onChange={(event) => updateRetryAspectRatio(event.target.value)}>
-                  {ASPECT_RATIO_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-                <small>{retryDraft.aspectRatio === "custom" ? "Custom: width and height can be edited independently." : retryDraft.aspectLocked ? "Locked: changing either dimension keeps this ratio." : "Unlocked: width and height can be edited independently."}</small>
-              </label>
-              <label className={styles.retryField}>
-                <span>Aspect ratio lock</span>
-                <span className={styles.retryLockControl}>
-                  <input
-                    type="checkbox"
-                    checked={retryDraft.aspectLocked}
-                    disabled={retryDraft.aspectRatio === "custom"}
-                    onChange={(event) => updateRetryAspectLock(event.target.checked)}
-                  />
-                  Keep width and height linked
-                </span>
-              </label>
-              <label className={styles.retryField}>
-                <span>Width</span>
-                <input type="number" min={32} max={2048} step={retryResolutionStep} value={retryDraft.width} onChange={(event) => updateRetryDimension("width", event.target.value)} required />
-              </label>
-              <label className={styles.retryField}>
-                <span>Height</span>
-                <input type="number" min={32} max={2048} step={retryResolutionStep} value={retryDraft.height} onChange={(event) => updateRetryDimension("height", event.target.value)} required />
-              </label>
-              <div className={styles.retryScaleField}>
-                <div className={styles.retryScaleMeta}>
-                  <span>Resolution scale</span>
-                  <strong>{retryDraft.resolutionScale}%</strong>
-                </div>
-                <input
-                  className={styles.retryRange}
-                  type="range"
-                  min={10}
-                  max={100}
-                  step={1}
-                  value={retryDraft.resolutionScale}
-                  aria-label="Retry resolution scale"
-                  aria-valuetext={`${retryDraft.resolutionScale}%; ${retryDraft.width} by ${retryDraft.height} pixels`}
-                  onInput={(event) => applyRetryResolutionScale(Number(event.currentTarget.value))}
-                />
-                <div className={styles.retryScaleTicks} aria-hidden="true"><span>10%</span><span>50%</span><span>100%</span></div>
-                <small>Scales width and height together. 100% is {retryDraft.scaleBaseWidth} × {retryDraft.scaleBaseHeight}; output is {retryDraft.width} × {retryDraft.height}.</small>
-              </div>
-              <label className={styles.retryField}>
-                <span>Duration (seconds)</span>
-                <input type="number" min={0.1} max={120} step={0.1} value={retryDraft.duration} onChange={(event) => updateRetryDraft("duration", event.target.value)} required />
-              </label>
-              <label className={styles.retryField}>
-                <span>Steps</span>
-                <input type="number" min={1} max={80} step={1} value={retryDraft.steps} onChange={(event) => updateRetryDraft("steps", event.target.value)} required />
-              </label>
-              <label className={styles.retryField}>
-                <span>Seed</span>
-                <input type="number" min={0} max={2147483647} step={1} value={retryDraft.seed} onChange={(event) => updateRetryDraft("seed", event.target.value)} required />
-              </label>
-              <label className={styles.retryField}>
-                <span>Timeout (seconds)</span>
-                <input type="number" min={60} max={86400} step={60} value={retryDraft.timeoutSeconds} onChange={(event) => updateRetryDraft("timeoutSeconds", event.target.value)} required />
-                <small>Default 3600; long shots can use 7200.</small>
-              </label>
-              <div className={styles.retryActions}>
-                <button type="submit" className={styles.retryPrimary} disabled={Boolean(busy)}>{busy === "retry" ? "Creating retry…" : "Retry with edited parameters"}</button>
-                <button type="button" className={styles.retrySecondary} disabled={Boolean(busy)} onClick={() => setRetryDraft(null)}>Cancel</button>
-              </div>
-            </form>
-          </section>
-        )}
+            </details>
+          )}
+
+          <details className={styles.detailDisclosure}>
+            <summary>生成參數</summary>
+            <dl className={styles.detailInfoGrid}>
+              {job.modelProfile && <div><dt>Model</dt><dd>{job.modelProfile}</dd></div>}
+              {Number.isFinite(Number(job.width)) && Number.isFinite(Number(job.height)) && <div><dt>解析度</dt><dd>{job.width} × {job.height}</dd></div>}
+              {Number.isFinite(Number(job.duration)) && <div><dt>長度</dt><dd>{job.duration} 秒</dd></div>}
+              {Number.isFinite(Number(job.steps)) && <div><dt>Steps</dt><dd>{job.steps}</dd></div>}
+              {Number.isFinite(Number(job.seed)) && <div><dt>Seed</dt><dd>{job.seed}</dd></div>}
+              {job.outputName && <div><dt>輸出檔名</dt><dd>{job.outputName}</dd></div>}
+            </dl>
+          </details>
+
+          <details className={styles.detailDisclosure}>
+            <summary>技術資訊</summary>
+            <dl className={styles.detailInfoGrid}>
+              <div><dt>Job ID</dt><dd>{job.id}</dd></div>
+              <div><dt>Source</dt><dd>{sourceLabel(job.source, locale)}</dd></div>
+              <div><dt>Stage</dt><dd>{job.stage || "—"}</dd></div>
+              <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
+              {job.comfyNode && <div><dt>ComfyUI Node</dt><dd>{job.comfyNode}{job.comfyNodeTitle ? ` · ${job.comfyNodeTitle}` : ""}</dd></div>}
+              {job.nativeCurrent !== null && job.nativeMaximum !== null && <div><dt>Sampler Step</dt><dd>{job.nativeCurrent}/{job.nativeMaximum}</dd></div>}
+              {job.progressSource && <div><dt>Progress Source</dt><dd>{job.progressSource}</dd></div>}
+              {job.etaSource && <div><dt>ETA Source</dt><dd>{job.etaSource}{job.etaConfidence ? ` · ${job.etaConfidence}` : ""}</dd></div>}
+            </dl>
+          </details>
+        </div>
       </section>
+
       <aside className={styles.actionCard}>
         <div className={styles.actionTitle}>工作操作</div>
         {job.canCancel && <button type="button" className={styles.dangerButton} disabled={Boolean(busy)} onClick={() => void action("cancel")}>{busy === "cancel" ? "取消中…" : ACTION_LABELS.cancel}</button>}
         {job.canPause && <button type="button" disabled={Boolean(busy)} onClick={() => void action("pause")}>{ACTION_LABELS.pause}</button>}
         {job.canResume && <button type="button" disabled={Boolean(busy)} onClick={() => void action("resume")}>{ACTION_LABELS.resume}</button>}
-        {job.canRetry && !retryDraft && <button type="button" disabled={Boolean(busy)} onClick={openRetryEditor}>{job.source === "video" ? "Edit and retry" : (busy === "retry" ? "Retrying…" : ACTION_LABELS.retry)}</button>}
+        {job.canRetry && <button type="button" disabled={Boolean(busy)} onClick={retry}>{busy === "retry" ? "Retrying…" : ACTION_LABELS.retry}</button>}
         {outputHref && <a href={outputHref} className={styles.outputButton}>{job.source === "lora" ? ACTION_LABELS.downloadResult : ACTION_LABELS.openOutput}</a>}
         {outputMissing && <p className={styles.error} role="status">輸出檔案不存在或已失效。</p>}
         <a href="/app/jobs" className={styles.backLink}>← {ACTION_LABELS.viewAll}工作</a>
-        {(job.source === "upscale" || job.source === "img2img") && !job.canCancel && (job.status === "queued" || job.status === "running") && <p className={styles.helper}>目前工具服務未提供取消端點，因此此頁不會顯示虛假的取消結果。</p>}
       </aside>
     </div>
   );
@@ -557,4 +236,9 @@ function formatEtaDuration(
   return seconds < 60
     ? t("time.seconds", { seconds })
     : t("time.minutesSeconds", { minutes: Math.floor(seconds / 60), seconds: seconds % 60 });
+}
+
+function formatDate(value: string, locale: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale);
 }
