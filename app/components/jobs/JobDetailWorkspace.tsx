@@ -190,10 +190,10 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             <summary>生成參數</summary>
             <dl className={styles.detailInfoGrid}>
               {job.modelProfile && <div><dt>Model</dt><dd>{job.modelProfile}</dd></div>}
-              {Number.isFinite(Number(job.width)) && Number.isFinite(Number(job.height)) && <div><dt>解析度</dt><dd>{job.width} × {job.height}</dd></div>}
-              {Number.isFinite(Number(job.duration)) && <div><dt>長度</dt><dd>{job.duration} 秒</dd></div>}
-              {Number.isFinite(Number(job.steps)) && <div><dt>Steps</dt><dd>{job.steps}</dd></div>}
-              {Number.isFinite(Number(job.seed)) && <div><dt>Seed</dt><dd>{job.seed}</dd></div>}
+              {job.width !== null && job.height !== null && Number.isFinite(Number(job.width)) && Number.isFinite(Number(job.height)) && <div><dt>解析度</dt><dd>{job.width} × {job.height}</dd></div>}
+              {job.duration !== null && Number.isFinite(Number(job.duration)) && <div><dt>長度</dt><dd>{job.duration} 秒</dd></div>}
+              {job.steps !== null && Number.isFinite(Number(job.steps)) && <div><dt>Steps</dt><dd>{job.steps}</dd></div>}
+              {job.seed !== null && Number.isFinite(Number(job.seed)) && <div><dt>Seed</dt><dd>{job.seed}</dd></div>}
               {job.outputName && <div><dt>輸出檔名</dt><dd>{job.outputName}</dd></div>}
             </dl>
           </details>
@@ -206,7 +206,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               <div><dt>Stage</dt><dd>{job.stage || "—"}</dd></div>
               <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
               {job.comfyNode && <div><dt>ComfyUI Node</dt><dd>{job.comfyNode}{job.comfyNodeTitle ? ` · ${job.comfyNodeTitle}` : ""}</dd></div>}
-              {job.nativeCurrent !== null && job.nativeMaximum !== null && <div><dt>Sampler Step</dt><dd>{job.nativeCurrent}/{job.nativeMaximum}</dd></div>}
+              {job.nativeCurrent !== null && job.nativeMaximum !== null && Number.isFinite(Number(job.nativeCurrent)) && Number.isFinite(Number(job.nativeMaximum)) && <div><dt>Sampler Step</dt><dd>{job.nativeCurrent}/{job.nativeMaximum}</dd></div>}
               {job.progressSource && <div><dt>Progress Source</dt><dd>{job.progressSource}</dd></div>}
               {job.etaSource && <div><dt>ETA Source</dt><dd>{job.etaSource}{job.etaConfidence ? ` · ${job.etaConfidence}` : ""}</dd></div>}
             </dl>
