@@ -149,7 +149,7 @@ test("Ref2VA prompt keeps the six-field contract without first-frame wording", (
   assert.doesNotMatch(prompt, /first-frame/i);
 });
 
-test("Codex multi-reference planning keeps ordered image attachments and Ref2VA continuation instruction", () => {
+test("Codex multi-reference planning keeps ordered images and adds only the prior silent video reference", () => {
   const references = codexLongPlanReferences({
     referenceMode: "multi_reference",
     inputAsset: { root: "input", name: "hero.png" },
@@ -159,8 +159,10 @@ test("Codex multi-reference planning keeps ordered image attachments and Ref2VA 
   const instruction = codexLongPlanModeInstruction({ referenceMode: "multi_reference" }, references);
   assert.match(instruction, /Ref2VA for every segment/);
   assert.match(instruction, /<Picture 1> \(hero\.png\)/);
-  assert.match(instruction, /<Picture 3>/);
-  assert.match(instruction, /not a frame-zero lock/i);
+  assert.doesNotMatch(instruction, /<Picture 3>/);
+  assert.match(instruction, /<Video 1>/);
+  assert.match(instruction, /final two silent seconds/i);
+  assert.match(instruction, /do not define <Audio 1>/i);
   assert.doesNotMatch(instruction, /T2VA.*I2VA.*first-frame/i);
 });
 

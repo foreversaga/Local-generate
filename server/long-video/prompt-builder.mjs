@@ -234,11 +234,14 @@ function buildReferenceDefinitions(segment, references, usage) {
     const label = `<Picture ${index + 1}>`;
     if (!definitions.has(label)) definitions.set(label, `${label} is ordered reference picture ${index + 1}${asset?.name ? ` (${asset.name})` : ""}.`);
   });
+  if (referenceConfig.hasVideo === true && !definitions.has("<Video 1>")) {
+    definitions.set("<Video 1>", "<Video 1> is the final two-second silent visual excerpt of the previous storyboard shot, used only as a weak visual-consistency reference and not as footage to replay.");
+  }
   for (const [label, hint] of usage) {
     if (!definitions.has(label)) definitions.set(label, `${label} is ${hint}.`);
   }
   if (!definitions.has("<Subject 1>")) definitions.set("<Subject 1>", "<Subject 1> is the principal referenced subject.");
-  if (!definitions.has("<Picture 1>")) definitions.set("<Picture 1>", "<Picture 1> is the first ordered reference picture.");
+  if (assets.length && !definitions.has("<Picture 1>")) definitions.set("<Picture 1>", "<Picture 1> is the first ordered reference picture.");
   return [...definitions.values()].join("\n");
 }
 

@@ -9,12 +9,13 @@ import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/l
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailAvContext, extractTailFrame } from "../server/long-video/media.mjs";
-import { runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
+import { latentRenderedDuration, latentRenderedFrameCount, runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
 import { longJobIsActive } from "../app/lib/long-create-contract.mjs";
 import { createOllamaCoordinator } from "../server/ollama-coordinator.mjs";
+import { ensureRef2vaLatentContinuationPrompt, ensureRef2vaVisualContextPrompt } from "../server/long-video/continuation-finalizer.mjs";
 
 function apiRequest(method, url, value = {}) {
   return { method, url, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(value)); } };
@@ -70,6 +71,21 @@ test("sanitizes asset refs and normalizes image first-frame inputs", () => {
   assert.throws(() => validateSequenceInput({ inputType: "image", imagePurpose: "first_frame", timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }), { code: "INPUT_ASSET_REQUIRED" });
   assert.throws(() => validateSequenceInput({ inputType: "image", imagePurpose: "first_frame", inputAsset: { name: "clip.mp4", kind: "video" }, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }), { code: "INPUT_ASSET_KIND_INVALID" });
   assert.equal(createSequenceRecord({ outputFolder: "unallocated", outputAllocated: true, timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }).outputAllocated, undefined);
+});
+
+test("sequence script drafts preserve long-shot duration, prompt, and description", () => {
+  const normalized = validateSequenceInput({
+    scripts: [
+      { name: "Opening", duration: 3.5, content: "prompt one", description: "rainy street opening" },
+      { name: "Chase", duration: 6, prompt: "prompt two", description: "station chase" },
+    ],
+    timeline: [{ start: 0, end: 3.5, description: "rainy street opening" }, { start: 3.5, end: 9.5, description: "station chase" }],
+  });
+  assert.deepEqual(normalized.scripts.map(({ name, duration, content, description }) => ({ name, duration, content, description })), [
+    { name: "Opening", duration: 3.5, content: "prompt one", description: "rainy street opening" },
+    { name: "Chase", duration: 6, content: "prompt two", description: "station chase" },
+  ]);
+  assert.equal(validateSequenceInput({ scripts: [{ name: "Legacy", content: "legacy prompt" }], timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }] }).scripts[0].description, "legacy prompt");
 });
 
 test("parses timestamp and N-second timelines deterministically", () => {
@@ -396,16 +412,37 @@ test("automatic planner recovers invalid Ollama storyboard arithmetic without bl
   assert.deepEqual(plan.segments.map((segment) => [segment.start, segment.end]), [[0, 5], [5, 10]]);
 });
 
-test("motion-context admission is explicit, bounded, and keeps older jobs on legacy tail mode", () => {
+test("video-only storyboard reference does not invent a first-frame picture", () => {
+  const prompt = buildRef2VAPrompt(
+    { duration: 5, description: "A new independent close-up shot", detailedDescription: "[Shot 1] A close-up begins with its own composition." },
+    {},
+    { hasVideo: true },
+  );
+  assert.match(prompt, /<Video 1>/);
+  assert.doesNotMatch(prompt, /<Picture 1>/);
+  assert.match(prompt, /\[reference generation\]/);
+  validatePrompt(prompt, { mode: "ref2v" });
+});
+
+test("storyboard reference admission fixes visual context to two seconds and keeps older jobs on legacy tail mode", () => {
   const timeline = [{ start: 0, end: 5, description: "opening" }, { start: 5, end: 10, description: "continuation" }];
   const legacy = validateSequenceInput({ inputType: "text", timeline });
   assert.equal(legacy.continuationMode, "legacy_tail");
   assert.equal(legacy.timeline[1].mode, "t2v");
   const motion = validateSequenceInput({ inputType: "text", continuationMode: "motion_context", motionContextSeconds: 1.5, timeline });
   assert.equal(motion.continuationMode, "motion_context");
-  assert.equal(motion.motionContextSeconds, 1.5);
+  assert.equal(motion.motionContextSeconds, 2);
   assert.equal(motion.timeline[0].mode, "t2v");
   assert.equal(motion.timeline[1].mode, "ref2v");
+  const latent = validateSequenceInput({
+    inputType: "image",
+    imagePurpose: "first_frame",
+    inputAsset: { root: "input", name: "start.png", kind: "image" },
+    continuationMode: "latent_context",
+    timeline,
+  });
+  assert.equal(latent.timeline[1].mode, "ref2v");
+  assert.throws(() => validateSequenceInput({ inputType: "text", continuationMode: "latent_context", timeline }), { code: "LATENT_CONTEXT_IMAGE_REQUIRED" });
   assert.throws(() => validateSequenceInput({ inputType: "text", continuationMode: "motion_context", motionContextSeconds: 2.1, timeline }), { code: "MOTION_CONTEXT_DURATION_INVALID" });
 });
 
@@ -717,7 +754,7 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
   assert.ok(calls[1].tailImagePath);
 });
 
-test("motion-context runner sends the normalized tail frame and paired short AV clip to Ref2VA", async () => {
+test("storyboard runner sends only the previous silent visual excerpt to Ref2VA", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-motion-context-"));
   const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
   process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
@@ -730,7 +767,7 @@ test("motion-context runner sends the normalized tail frame and paired short AV 
     inputAsset: { root: "input", name: "identity.png", kind: "image" },
     referenceMode: "continuity",
     continuationMode: "motion_context",
-    motionContextSeconds: 1.5,
+    motionContextSeconds: 2,
     outputPath: output,
     outputFolder: "motion-context",
     status: "ready",
@@ -764,14 +801,17 @@ test("motion-context runner sends the normalized tail frame and paired short AV 
     assert.equal(calls[0].mode, "i2v");
     assert.equal(calls[1].mode, "ref2v");
     assert.equal(calls[1].referenceMode, "motion_context");
-    assert.deepEqual(calls[1].referenceAssets.map(({ name }) => name), ["identity.png", "motion-context/segment-001-attempt-001-tail.png"]);
+    assert.deepEqual(calls[1].referenceAssets.map(({ name }) => name), ["identity.png"]);
     assert.match(calls[1].inputVideoPath, /segment-001-attempt-001-context\.mp4$/);
     assert.match(calls[1].prompt, /<Video 1>/);
-    assert.match(calls[1].prompt, /<Audio 1>/);
+    assert.doesNotMatch(calls[1].prompt, /<Audio 1>/);
+    assert.match(calls[1].prompt, /\[reference generation\]/);
+    assert.match(calls[1].prompt, /independent storyboard shot/i);
     assert.match(calls[1].prompt, /Camera plan:/);
     assert.match(calls[1].negativePrompt, /digital camera jitter/i);
     assert.equal(contexts.length, 1);
     assert.equal(contexts[0].duration, 1.625);
+    assert.equal(contexts[0].includeAudio, false);
     assert.match(job.segments[0].contextAsset.name, /segment-001-attempt-001-context\.mp4$/);
   } finally {
     if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
@@ -780,14 +820,100 @@ test("motion-context runner sends the normalized tail frame and paired short AV 
   }
 });
 
-test("AV context extraction keeps a bounded H.264/AAC tail in one MP4", async () => {
+test("Ref2VA continuation normalizes heading-only sections before injecting context", () => {
+  const prompt = [
+    "subject_definitions", "A person.", "", "summary", "[reference generation]", "", "retention_analysis", "Keep identity.", "",
+    "detailed_description", "[Shot 1] The person turns.", "", "overall_soundscape", "Room tone.", "", "non_diegetic_music", "N/A",
+  ].join("\n");
+  const visual = ensureRef2vaVisualContextPrompt(prompt);
+  assert.match(visual, /subject_definitions:/);
+  assert.match(visual, /<Video 1>/);
+  assert.match(visual, /independent storyboard shot/i);
+  const latent = ensureRef2vaLatentContinuationPrompt(visual);
+  assert.match(latent, /summary:\s*\[video continuation \+ reference generation\]/i);
+  assert.match(latent, /exact ending of the previous storyboard shot/i);
+  assert.doesNotMatch(latent, /<Video\s+1>/i);
+});
+
+test("latent continuation sends checkpoint metadata and no MP4 context", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-latent-context-"));
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+  const output = path.join(root, "output", "latent-context");
+  const calls = [];
+  const normalizeDurations = [];
+  const job = {
+    id: "latent-context-job",
+    inputType: "image",
+    inputAsset: { root: "input", name: "identity.png", kind: "image" },
+    referenceMode: "continuity",
+    continuationMode: "latent_context",
+    outputPath: output,
+    outputFolder: "latent-context",
+    status: "ready",
+    revision: 1,
+    width: 736,
+    height: 416,
+    steps: 2,
+    seed: 10,
+    continuityBible: {},
+    segments: [
+      { id: "s1", start: 0, end: 5, duration: 5, description: "opening" },
+      { id: "s2", start: 5, end: 10, duration: 5, description: "continue the same movement" },
+    ],
+  };
+  try {
+    const result = await runSequence(job, {
+      generate: async (payload) => { calls.push(payload); return { rawPath: payload.outputPath, id: `g-${payload.segmentIndex}` }; },
+      normalize: async ({ outputPath, duration }) => { normalizeDurations.push(duration); return { outputPath }; },
+      extractTail: async ({ outputPath }) => ({ outputPath }),
+      extractContext: async () => { throw new Error("latent mode must not extract MP4 context"); },
+      assemble: async () => ({ outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }),
+      updateJob: async (target, patch) => Object.assign(target, patch),
+      updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+      writeManifest: async () => {},
+      log: async () => {},
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(calls[0].mode, "i2v");
+    assert.equal(calls[1].mode, "ref2v");
+    assert.equal(calls[0].latentClipIndex, 1);
+    assert.equal(calls[1].latentClipIndex, 2);
+    assert.equal(calls[1].latentPreviousClipIndex, 1);
+    assert.equal(calls[1].latentContextFrames, 39);
+    assert.equal(calls[1].latentCheckpointPrefix, "h3_sequence_checkpoints/latent-context-job/clip");
+    assert.equal(calls[1].inputVideoPath, undefined);
+    assert.deepEqual(normalizeDurations, [124 / 24, 119 / 24]);
+    assert.equal(job.segments[0].renderedDuration, 124 / 24);
+    assert.equal(job.segments[1].renderedDuration, 119 / 24);
+    assert.match(calls[1].prompt, /\[video continuation \+ reference generation\]/i);
+    assert.doesNotMatch(calls[1].prompt, /<Video\s+1>/i);
+  } finally {
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("latent rendered durations preserve native H3 phase at every seam", () => {
+  assert.equal(latentRenderedFrameCount(5, 0), 124);
+  assert.equal(latentRenderedFrameCount(5, 1), 119);
+  assert.equal(latentRenderedDuration(5, 0), 124 / 24);
+  assert.equal(latentRenderedDuration(5, 1), 119 / 24);
+  for (const duration of [0.5, 1, 3.25, 5, 8, 12.5, 60]) {
+    assert.equal(latentRenderedFrameCount(duration, 0) % 17, 5);
+    assert.equal((latentRenderedFrameCount(duration, 1) + 39) % 17, 5);
+  }
+});
+
+test("storyboard context extraction keeps a bounded silent H.264 tail", async () => {
   const calls = [];
   const outputPath = path.join(os.tmpdir(), `h3-context-${Date.now()}.mp4`);
   try {
     await extractTailAvContext({
       inputPath: "normalized.mp4",
       outputPath,
-      duration: 1.5,
+      duration: 2,
       tools: { executables: { ffmpeg: "ffmpeg-test" } },
       run: async (executable, args) => {
         calls.push({ executable, args });
@@ -796,10 +922,11 @@ test("AV context extraction keeps a bounded H.264/AAC tail in one MP4", async ()
       },
     });
     assert.equal(calls[0].executable, "ffmpeg-test");
-    assert.deepEqual(calls[0].args.slice(0, 5), ["-y", "-sseof", "-1.500", "-i", "normalized.mp4"]);
+    assert.deepEqual(calls[0].args.slice(0, 5), ["-y", "-sseof", "-2.000", "-i", "normalized.mp4"]);
     assert.ok(calls[0].args.includes("libx264"));
-    assert.ok(calls[0].args.includes("aac"));
-    assert.ok(calls[0].args.includes("0:a:0?"));
+    assert.ok(calls[0].args.includes("-an"));
+    assert.ok(!calls[0].args.includes("aac"));
+    assert.ok(!calls[0].args.includes("0:a:0?"));
   } finally {
     await rm(outputPath, { force: true });
   }

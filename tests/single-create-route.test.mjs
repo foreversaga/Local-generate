@@ -33,6 +33,7 @@ test("renders the routed Single Create UI after Vinext build", async () => {
   assert.match(html, /single-prompt/);
   assert.match(html, /文字生片/);
   assert.match(html, /多圖參考生片/);
+  assert.match(html, /角色動作參考/);
   assert.match(html, /開始生成影片|完成必要欄位後生成/);
   assert.doesNotMatch(html, /Single 表單遷移中|Migration/);
 });

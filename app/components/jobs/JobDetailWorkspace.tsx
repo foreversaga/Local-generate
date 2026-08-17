@@ -15,6 +15,7 @@ import { localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, type UnifiedJob, type VideoRetryOverrides } from "./job-client";
 import { StatusBadge } from "./JobsWorkspace";
+import { SaveJobAsScript } from "./SaveJobAsScript";
 import styles from "./JobsWorkspace.module.css";
 
 type RetryDraft = {
@@ -341,6 +342,11 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
     && Number.isFinite(Number(job.nativeMaximum))
     && Number(job.nativeMaximum) > 0;
   const hasEta = Number.isFinite(job.etaMs);
+  const promptLabel = job.source === "long"
+    ? "查看完整故事提示詞"
+    : job.source === "img2img"
+      ? "查看完整圖像提示詞"
+      : "查看完整提示詞";
   const hasEtaRange = Number.isFinite(job.etaLowerMs)
     && Number.isFinite(job.etaUpperMs)
     && Number(job.etaUpperMs) - Number(job.etaLowerMs) >= 15_000;
@@ -382,11 +388,15 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             {hasNativeStep ? " · overall bar is coarse" : job.progressSource === "estimated" ? " · overall progress is estimated" : ""}
           </p>
         )}
-        {job.source === "video" && (
+        {job.prompt && (
           <div className={styles.promptStack}>
+            <div className={styles.promptToolbar}>
+              <strong>工作提示詞</strong>
+              <SaveJobAsScript defaultName={job.title} prompt={job.prompt} negativePrompt={job.negativePrompt || ""} />
+            </div>
             <details className={styles.promptDetails}>
-              <summary>查看完整提示詞</summary>
-              <pre className={styles.promptPreview}>{job.prompt || "（沒有保存提示詞）"}</pre>
+              <summary>{promptLabel}</summary>
+              <pre className={styles.promptPreview}>{job.prompt}</pre>
             </details>
             {job.negativePrompt && (
               <details className={styles.promptDetails}>

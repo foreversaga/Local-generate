@@ -3,8 +3,9 @@
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
-  buildLongPlanRequest,
+  buildLongDirectPlan,
   buildLongSaveRequest,
+  composeLongScriptText,
   H3_REALISM_PEOPLE_PRESET,
   H3_REALISM_PEOPLE_DEFAULT_STRENGTH,
   longJobIsActive,
@@ -20,7 +21,6 @@ import {
 import { assetKey as libraryAssetKey, uploadAssets } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { FIELD_LABELS, jobStatusLabel } from "../../lib/ui-copy.mjs";
-import { createDefaultRef2VCameraPlan } from "../../lib/ref2v-camera-plan.mjs";
 import {
   clampResolutionScale,
   normalizeImageResolution,
@@ -30,7 +30,7 @@ import {
   scaleImageResolution,
 } from "../../lib/single-image-resolution.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { Ref2VCameraPlanner, type CameraPlan } from "./Ref2VCameraPlanner";
+import { createLongScript, LongScriptComposer, type LongScriptDraft } from "./LongScriptComposer";
 import styles from "./LongCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
@@ -40,7 +40,7 @@ type NumberDraft = number | "";
 type PromptProvider = "ollama" | "codex";
 type InputType = "text" | "image";
 type ReferenceMode = "continuity" | "multi_reference";
-type ContinuationMode = "legacy_tail" | "motion_context";
+type ContinuationMode = "legacy_tail" | "motion_context" | "latent_context";
 type TimelineMode = "auto" | "manual";
 type ResolutionStatus = "default" | "loading" | "auto" | "adjusted" | "manual" | "error";
 type ResolutionInfo = {
@@ -76,12 +76,12 @@ type LongSegment = {
   status?: string;
   progress?: number;
   error?: string | { code?: string; message?: string };
-  cameraPlan?: CameraPlan;
 };
 type LongPlan = {
   title?: string;
   inputType: InputType;
   inputText?: string;
+  scripts?: LongScriptDraft[];
   inputAsset?: Asset;
   referenceMode?: ReferenceMode;
   referenceAssets?: Asset[];
@@ -133,12 +133,6 @@ type Health = {
 type ApiError = { error?: string | { code?: string; message?: string } };
 type ValidationIssue = { field: string; message: string };
 
-const CODEX_FALLBACK = [
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
-  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
-  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
-] as const;
-const REASONING = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const RENDER_MODELS = [
   { value: "nvfp4_blackwell", label: "NVFP4 Blackwell" },
   { value: "int4_convrot_low_vram", label: "INT4 ConvRot" },
@@ -155,9 +149,9 @@ export function LongCreateForm() {
   const [inputType, setInputType] = useState<InputType>("text");
   const [referenceMode, setReferenceMode] = useState<ReferenceMode>("continuity");
   const [continuationMode, setContinuationMode] = useState<ContinuationMode>("motion_context");
-  const [motionContextSeconds, setMotionContextSeconds] = useState<NumberDraft>(1.5);
+  const [motionContextSeconds, setMotionContextSeconds] = useState<NumberDraft>(2);
   const [references, setReferences] = useState<Asset[]>([]);
-  const [brief, setBrief] = useState("");
+  const [scripts, setScripts] = useState<LongScriptDraft[]>([createLongScript(0), createLongScript(1)]);
   const [negativePrompt, setNegativePrompt] = useState("");
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("auto");
   const [duration, setDuration] = useState<NumberDraft>(10);
@@ -196,14 +190,12 @@ export function LongCreateForm() {
   const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [segmentPromptBusy, setSegmentPromptBusy] = useState<number | null>(null);
+  const [segmentScriptBusy, setSegmentScriptBusy] = useState<number | null>(null);
+  const [segmentScriptNames, setSegmentScriptNames] = useState<Record<string, string>>({});
+  const [segmentActionStatus, setSegmentActionStatus] = useState<Record<string, { kind: "success" | "error"; message: string }>>({});
 
   const visibleOllamaModels = health?.ollama?.models || [];
-  const effectiveOllamaModel = visibleOllamaModels.includes(ollamaModel) ? ollamaModel : visibleOllamaModels[0] || ollamaModel;
-  const codexModels = health?.codex?.models?.length ? health.codex.models : CODEX_FALLBACK;
-  const selectedCodex = codexModels.find((model) => model.value === codexModel) || codexModels[0];
-  const reasoningOptions: readonly string[] = selectedCodex?.reasoningEfforts?.length ? selectedCodex.reasoningEfforts : [...REASONING];
-  const effectiveReasoning = reasoningOptions.includes(reasoningEffort) ? reasoningEffort : reasoningOptions.includes("medium") ? "medium" : reasoningOptions[0] || "medium";
-  const effectiveCodexModel = selectedCodex?.value || codexModel;
   // `false` is an explicit clear marker for the fixed preset.  Keep it
   // undefined when hydrating an older arbitrary LoRA so re-saving that job
   // remains backward compatible.
@@ -212,9 +204,6 @@ export function LongCreateForm() {
     : characterLoraName.trim() || characterLoraId.trim()
       ? undefined
       : false;
-  const providerReady = promptProvider === "ollama"
-    ? Boolean(health?.ollama?.online && visibleOllamaModels.includes(effectiveOllamaModel))
-    : Boolean(health?.codex?.online && health?.codex?.skill);
   const resolutionAsset = inputType === "image" ? references[0] || null : null;
   const resolutionAssetKey = resolutionAsset ? assetKey(resolutionAsset) : "";
   const resolutionAssetUrl = resolutionAsset ? `${BRIDGE_URL}${resolutionAsset.url}` : "";
@@ -267,8 +256,10 @@ export function LongCreateForm() {
       if (resolutionRequestRef.current === requestId) resolutionRequestRef.current += 1;
     };
   }, [resolutionAssetKey, resolutionAssetName, resolutionAssetUrl]);
+  const combinedScriptText = useMemo(() => composeLongScriptText(scripts), [scripts]);
+  const totalScriptDuration = useMemo(() => scripts.reduce((total, script) => total + (Number(script.duration) || 0), 0), [scripts]);
   const baseIssues = useMemo(() => validateLongCreate({
-    inputText: brief,
+    scripts,
     inputType,
     referenceAssets: references,
     continuationMode,
@@ -288,9 +279,9 @@ export function LongCreateForm() {
     characterLoraId,
     characterLoraStrength,
     requireSavedPlan: false,
-  }) as ValidationIssue[], [brief, characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, seed, segmentDurationHint, steps, timeline, timelineMode, width]);
+  }) as ValidationIssue[], [characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, scripts, seed, segmentDurationHint, steps, timeline, timelineMode, width]);
   const submitIssues = useMemo(() => validateLongCreate({
-    inputText: brief,
+    scripts,
     inputType,
     referenceAssets: references,
     continuationMode,
@@ -313,10 +304,10 @@ export function LongCreateForm() {
     plan,
     planDirty,
     outputFolder,
-  }) as ValidationIssue[], [brief, characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
+  }) as ValidationIssue[], [characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, scripts, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
   const issuesByField = useMemo(() => new Map(submitIssues.map((issue) => [issue.field, issue.message])), [submitIssues]);
   const activeJob = Boolean(job && longJobIsActive(job.status));
-  const canPlan = baseIssues.length === 0 && providerReady && !planning && !saving && !uploading;
+  const canPlan = baseIssues.length === 0 && !planning && !saving && !uploading;
   const canInteract = !planning && !saving && !uploading && !activeJob;
   const canSave = Boolean(plan && !planDirty && outputFolder.trim() && submitIssues.length === 0 && !saving && !activeJob);
 
@@ -345,6 +336,7 @@ export function LongCreateForm() {
   }
 
   function hydrateFromJob(next: LongJob, assetList: Asset[]) {
+    if (!Array.isArray(next.scripts) || next.scripts.length < 2 || next.planMeta?.source !== "author" || next.planMeta?.promptSource !== "manual") return;
     const byKey = new Map(assetList.map((asset) => [assetKey(asset), asset]));
     const hydrateAsset = (candidate?: Asset) => {
       if (!candidate) return null;
@@ -362,10 +354,10 @@ export function LongCreateForm() {
     setSegmentDurationDrafts({});
     setTitle(next.title || "");
     setInputType(next.inputType || "text");
-    setBrief(next.inputText || "");
+    setScripts(next.scripts);
     setReferenceMode(next.referenceMode === "multi_reference" ? "multi_reference" : "continuity");
-    setContinuationMode(next.continuationMode === "motion_context" ? "motion_context" : "legacy_tail");
-    setMotionContextSeconds(next.motionContextSeconds || 1.5);
+    setContinuationMode(next.continuationMode === "latent_context" && next.inputType === "image" ? "latent_context" : next.continuationMode === "legacy_tail" ? "legacy_tail" : "motion_context");
+    setMotionContextSeconds(next.motionContextSeconds || 2);
     setReferences(nextRefs);
     setOutputFolder(next.outputFolder || "");
     setDuration(next.duration || 10);
@@ -388,7 +380,7 @@ export function LongCreateForm() {
     if (next.codexReasoningEffort) setReasoningEffort(next.codexReasoningEffort);
     if (next.ollamaModel && visibleOllamaModels.includes(next.ollamaModel)) setOllamaModel(next.ollamaModel);
     setNegativePrompt(next.negativePrompt || "");
-    if (next.seam) setSeam(next.seam);
+    setSeam("keep_duplicate_frame");
     setPlanDirty(false);
   }
 
@@ -527,56 +519,14 @@ export function LongCreateForm() {
     setError("");
     setNotice("");
     if (baseIssues.length) throw new Error(baseIssues[0].message);
-    if (!providerReady) throw new Error(promptProvider === "codex" ? "Codex CLI 或 h3-prompt-writing skill 尚未就緒。" : "Ollama 或所選模型尚未就緒。");
     setPlanning(true);
     try {
-      const plannerImages = inputType === "image"
-        ? await Promise.all(references.slice(0, referenceMode === "multi_reference" ? MAX_LONG_REFERENCE_IMAGES : 1).map(async (asset, index) => ({
-          role: referenceMode === "multi_reference" ? `picture_${index + 1}` : "first_frame",
-          data: await assetToPromptImage(asset),
-        })))
-        : [];
-      const response = await fetch(`${BRIDGE_URL}/api/sequences/plan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildLongPlanRequest({
-          title,
-          inputType,
-          inputText: brief,
-          referenceMode,
-          referenceAssets: references,
-          continuationMode,
-          motionContextSeconds: Number(motionContextSeconds),
-          timelineMode,
-          duration: Number(duration),
-          segmentDurationHint: Number(segmentDurationHint),
-          timelineText: timeline,
-          promptProvider,
-          ollamaModel: effectiveOllamaModel,
-          codexModel: effectiveCodexModel,
-          reasoningEffort: effectiveReasoning,
-          negativePrompt,
-          h3LoraEnabled: h3LoraSelection,
-          h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
-          characterLoraName,
-          characterLoraId: characterLoraId || undefined,
-          characterLoraStrength: characterLoraStrength === "" ? undefined : Number(characterLoraStrength),
-          plannerImages,
-        })),
-      });
-      const payload = (await response.json().catch(() => ({}))) as { plan?: LongPlan } & ApiError;
-      if (!response.ok || !payload.plan) throw new Error(apiError(payload, "長影片規劃失敗。"));
+      const directPlan = buildLongDirectPlan({ title, inputType, scripts, referenceMode, referenceAssets: references, negativePrompt }) as LongPlan;
       const nextPlan = {
-        ...payload.plan,
+        ...directPlan,
         continuationMode,
         motionContextSeconds: Number(motionContextSeconds),
-        segments: (payload.plan.segments || []).map((segment, index) => ({
-          ...segment,
-          cameraPlan: plan?.segments?.[index]?.cameraPlan || createDefaultRef2VCameraPlan({
-            referenceCount: cameraReferenceCount(index, inputType, referenceMode, references.length, continuationMode),
-            hasVideo: continuationMode === "motion_context" && index > 0,
-          }),
-        })),
+        segments: directPlan.segments,
         ...(h3LoraEnabled
           ? { h3LoraEnabled: true, h3LoraPreset: H3_REALISM_PEOPLE_PRESET, characterLoraName: H3_REALISM_PEOPLE_PRESET, characterLoraStrength: characterLoraStrength === "" ? H3_REALISM_PEOPLE_DEFAULT_STRENGTH : Number(characterLoraStrength) }
           : !characterLoraName.trim() && !characterLoraId
@@ -585,10 +535,12 @@ export function LongCreateForm() {
       } as LongPlan;
       setPlan(nextPlan);
       setSegmentDurationDrafts({});
+      setSegmentActionStatus({});
+      setSegmentScriptNames({});
       setPlanDirty(false);
       setTimeline((nextPlan.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
       if (nextPlan.duration) setDuration(nextPlan.duration);
-      setNotice(`已產生 ${nextPlan.segments.length} 段分鏡，可逐段檢查與編輯。`);
+      setNotice(`已直接套用 ${nextPlan.segments.length} 個劇本提示詞，未經 AI 改寫。`);
       return nextPlan;
     } finally {
       setPlanning(false);
@@ -599,7 +551,7 @@ export function LongCreateForm() {
     const selectedPlan = planOverride || plan;
     if (!selectedPlan) throw new Error("請先產生分鏡與 H3 提示詞。");
     const issues = validateLongCreate({
-      inputText: brief,
+      scripts,
       inputType,
       referenceAssets: references,
       continuationMode,
@@ -632,7 +584,8 @@ export function LongCreateForm() {
         plan: selectedPlan,
         title,
         inputType,
-        inputText: brief,
+        inputText: combinedScriptText,
+        scripts,
           referenceMode,
           referenceAssets: references,
           continuationMode,
@@ -644,10 +597,6 @@ export function LongCreateForm() {
         height: Number(height),
         steps: Number(steps),
         seed: Number(seed),
-        ollamaModel: effectiveOllamaModel,
-        promptProvider,
-        codexModel: effectiveCodexModel,
-        reasoningEffort: effectiveReasoning,
         negativePrompt,
         h3LoraEnabled: h3LoraSelection,
         h3LoraPreset: h3LoraSelection ? H3_REALISM_PEOPLE_PRESET : undefined,
@@ -690,11 +639,6 @@ export function LongCreateForm() {
     if (firstIssue) {
       setError(firstIssue.message);
       focusLongValidationField(firstIssue.field);
-      return;
-    }
-    if (!providerReady) {
-      setError("規劃工具尚未就緒；請先確認 Ollama 或 Codex CLI 是否可用。");
-      document.getElementById("long-provider-status")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
     setSaving(true);
@@ -756,10 +700,97 @@ export function LongCreateForm() {
     setSeed(values[0] ? values[0] % 2147483648 : Math.floor(Math.random() * 2147483648));
   }
 
+  function segmentKey(segment: LongSegment, index: number) {
+    return segment.id || String(index);
+  }
+
+  function setSegmentStatus(segment: LongSegment, index: number, kind: "success" | "error", message: string) {
+    const key = segmentKey(segment, index);
+    setSegmentActionStatus((current) => ({ ...current, [key]: { kind, message } }));
+  }
+
+  async function generateContinuationPrompt(index: number) {
+    const previous = plan?.segments[index - 1];
+    const segment = plan?.segments[index];
+    if (!previous || !segment || index < 1) return;
+    if (!health?.ollama?.online) {
+      setSegmentStatus(segment, index, "error", "Ollama 尚未連線。");
+      return;
+    }
+    const effectiveModel = visibleOllamaModels.includes(ollamaModel) ? ollamaModel : visibleOllamaModels[0];
+    if (!effectiveModel) {
+      setSegmentStatus(segment, index, "error", "找不到可用的 Ollama 模型。");
+      return;
+    }
+    setSegmentPromptBusy(index);
+    setSegmentStatus(segment, index, "success", "正在使用前一分鏡與本段描述整理提示詞…");
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          purpose: "long_video_segment_continuation",
+          provider: "ollama",
+          model: effectiveModel,
+          mode: "ref2v",
+          segmentIndex: index,
+          duration: Number(segment.duration || segment.end - segment.start),
+          previousPrompt: previous.prompt || previous.description,
+          description: segment.description,
+          negativePrompt: segment.negativePrompt || negativePrompt,
+          staticReferenceCount: inputType === "image" ? references.length : 0,
+          continuationMode,
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ApiError & { prompt?: string; negativePrompt?: string };
+      if (!response.ok || !payload.prompt || !payload.negativePrompt) throw new Error(apiError(payload, "Ollama 無法產生此分鏡提示詞。"));
+      updateSegment(index, { prompt: payload.prompt, negativePrompt: payload.negativePrompt, promptSource: "ollama" });
+      setSegmentStatus(segment, index, "success", "已回填 Ollama 產生的提示詞與負面提示詞。");
+    } catch (promptError) {
+      setSegmentStatus(segment, index, "error", promptError instanceof Error ? promptError.message : "Ollama 無法產生此分鏡提示詞。");
+    } finally {
+      setSegmentPromptBusy(null);
+    }
+  }
+
+  async function saveSegmentAsScript(index: number) {
+    const segment = plan?.segments[index];
+    if (!segment?.prompt?.trim()) return;
+    const key = segmentKey(segment, index);
+    const fallbackName = scripts[index]?.name || `分鏡 ${index + 1}`;
+    const name = String(segmentScriptNames[key] ?? fallbackName).trim();
+    if (!name) {
+      setSegmentStatus(segment, index, "error", "請先輸入劇本名稱。");
+      return;
+    }
+    setSegmentScriptBusy(index);
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/scripts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, prompt: segment.prompt, negativePrompt: segment.negativePrompt || "" }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ApiError & { script?: { id?: string; name?: string } };
+      if (!response.ok || !payload.script) throw new Error(apiError(payload, "無法儲存此分鏡劇本。"));
+      setSegmentStatus(segment, index, "success", `已將「${payload.script.name || name}」儲存至一般劇本庫。`);
+    } catch (scriptError) {
+      setSegmentStatus(segment, index, "error", scriptError instanceof Error ? scriptError.message : "無法儲存此分鏡劇本。");
+    } finally {
+      setSegmentScriptBusy(null);
+    }
+  }
+
   function updateInputType(value: InputType) {
     if (value === inputType) return;
     resetResolutionToDefault();
     setInputType(value);
+    if (value === "text" && continuationMode === "latent_context") setContinuationMode("motion_context");
+    markPlanDirty();
+  }
+
+  function updateContinuationMode(value: ContinuationMode) {
+    setContinuationMode(value);
+    if (value !== "legacy_tail" && modelProfile === "int4_convrot_low_vram") setModelProfile("nvfp4_blackwell");
     markPlanDirty();
   }
 
@@ -848,11 +879,11 @@ export function LongCreateForm() {
 
   function clearEditor() {
     if (activeJob || saving || planning) return;
-    setTitle(""); setOutputFolder(""); setInputType("text"); setReferenceMode("continuity"); setContinuationMode("motion_context"); setMotionContextSeconds(1.5); setReferences([]);
-    setBrief(""); setNegativePrompt(""); setTimelineMode("auto"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
+    setTitle(""); setOutputFolder(""); setInputType("text"); setReferenceMode("continuity"); setContinuationMode("motion_context"); setMotionContextSeconds(2); setReferences([]);
+    setScripts([createLongScript(0), createLongScript(1)]); setNegativePrompt(""); setTimelineMode("manual"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); resetResolutionToDefault(); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
     setH3LoraEnabled(false); setCharacterLoraName(""); setCharacterLoraId(""); setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
-    setPlan(null); setSegmentDurationDrafts({}); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
+    setPlan(null); setSegmentDurationDrafts({}); setSegmentActionStatus({}); setSegmentScriptNames({}); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
   }
 
   const visibleIssues = attempted ? submitIssues : [];
@@ -893,80 +924,54 @@ export function LongCreateForm() {
                 <UploadButton busy={uploading} multiple={referenceMode === "multi_reference"} onFiles={uploadReferences} />
               </div>
               {references.length > 0 && <div className={styles.referenceGrid}>{references.map((asset, index) => <div className={styles.referenceCard} key={assetKey(asset)}><AssetThumb asset={asset} /><span>{index + 1}</span><strong title={asset.name}>{asset.name}</strong><button type="button" onClick={() => removeReference(asset)} aria-label={`移除 ${asset.name}`}>×</button></div>)}</div>}
-              <p className={styles.helper}>{referenceMode === "continuity" ? "Picture 1 會鎖定第 0.00 秒 first frame。" : `最多 ${MAX_LONG_REFERENCE_IMAGES} 張；前段尾幀仍會作為下一段 continuation reference。`}</p>
+              <p className={styles.helper}>{referenceMode === "continuity" ? "Picture 1 只鎖定第一個分鏡的第 0.00 秒，後續分鏡沿用為一致性參考。" : `最多 ${MAX_LONG_REFERENCE_IMAGES} 張；所有分鏡都會沿用這些固定參考。`}</p>
               <InlineError message={attempted ? issuesByField.get("referenceAssets") : ""} />
             </div>
           )}
-          <Field label="整體提示詞／故事描述" error={attempted ? issuesByField.get("inputText") : ""}>
-            <textarea id="long-brief" className={styles.textarea} value={brief} onChange={(event) => { setBrief(event.target.value); markPlanDirty(); }} placeholder="描述角色、場景、情節、鏡頭、對話與聲音方向…" />
+          <Field label="分鏡銜接模式" error={attempted ? issuesByField.get("continuationMode") : ""}>
+            <select id="long-continuation-mode" className={styles.select} value={continuationMode} onChange={(event) => updateContinuationMode(event.target.value as ContinuationMode)}>
+              <option value="latent_context" disabled={inputType !== "image"}>連續鏡頭（Latent 影音上下文，推薦）</option>
+              <option value="motion_context">獨立分鏡一致性（Ref2VA 弱參考）</option>
+              <option value="legacy_tail">尾幀續接（舊版 I2VA）</option>
+            </select>
+            <span className={styles.helper}>{continuationMode === "latent_context" ? "第 2 段起保護前段最後 39 幀的原生影音 latent，生成後同步裁掉重複前綴；需從圖片開始。" : continuationMode === "motion_context" ? "保留現有流程：第 2 段起把前段末尾 MP4 當 Ref2VA 弱參考，各分鏡仍獨立構圖。" : "以尾幀作下一段起點；保留舊工作相容性。"}</span>
           </Field>
+          <LongScriptComposer value={scripts} disabled={!canInteract} error={attempted ? issuesByField.get("scripts") : ""} onChange={(next) => { setScripts(next); markPlanDirty(); }} />
           <Field label="負面提示詞／限制" helper="空白時 planner 可自行補齊。">
             <textarea className={`${styles.textarea} ${styles.compactTextarea}`} value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="角色漂移、服裝改變、閃爍、文字、浮水印…" />
           </Field>
         </LongSection>
 
-        <LongSection id="long-planner" code="02 / 規劃與時間軸" title="規劃與時間軸">
+        <LongSection id="long-planner" code="02 / 套用與時間軸" title="套用與時間軸">
           <div className={styles.flowPanel}>
             <div className={styles.flowHeader}>
-              <div><span className={styles.eyebrow}>CONTINUATION FLOW</span><strong>Ref2VA 動態延續</strong></div>
-              <span className={styles.flowBadge}>{continuationMode === "motion_context" ? "推薦" : "相容模式"}</span>
-            </div>
-            <div className={styles.twoColumns}>
-              <Field label="延續方式">
-                <select className={styles.select} value={continuationMode} onChange={(event) => { setContinuationMode(event.target.value as ContinuationMode); markPlanDirty(); }}>
-                  <option value="motion_context">尾幀＋短 AV 脈絡 → Ref2VA</option>
-                  <option value="legacy_tail">舊版：只用尾幀 → I2VA</option>
-                </select>
-              </Field>
-              <Field label="尾端 AV 長度">
-                <select id="long-motion-context-seconds" className={styles.select} value={motionContextSeconds} disabled={continuationMode !== "motion_context"} onChange={(event) => { setMotionContextSeconds(Number(event.target.value)); markPlanDirty(); }}>
-                  <option value={1}>1.0 秒（H3 對齊約 0.92 秒）</option><option value={1.5}>1.5 秒（H3 對齊約 1.63 秒）</option><option value={2}>2.0 秒（H3 對齊約 1.63 秒）</option>
-                </select>
-              </Field>
+              <div><span className={styles.eyebrow}>STORYBOARD FLOW</span><strong>一個分鏡，一支影片</strong></div>
+              <span className={styles.flowBadge}>直接</span>
             </div>
             <ol className={styles.flowSteps}>
-              <li>每段輸出先標準化，再依 H3 幀格擷取約 1–2 秒的尾端影片／音訊與尾幀。</li>
-              <li>下一段固定保留角色參考圖，尾幀排在最後一張 Picture。</li>
-              <li>短片與原音軌以 Video 1／Audio 1 傳給 Ref2VA，只繼承動作、節奏、環境聲與音色，不重播前段。</li>
+              <li>每張劇本卡的原文預設直接成為該分鏡的 H3 提示詞；第 2 段起可在片段卡中明確選用 Ollama 延續整理。</li>
+              <li>{continuationMode === "latent_context" ? "上一分鏡最後 39 幀的原生影音 latent 會成為下一段受保護的開頭，讓動作、構圖與聲音沿同一時間線延續。" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒會自動作為下一分鏡的弱視覺參考，只維持角色、場景、光線與狀態一致。" : "上一分鏡尾幀會作為下一分鏡首幀參考。"}</li>
+              <li>{continuationMode === "latent_context" ? "輸出前同步裁掉重複的 39 幀畫面與音訊，再依分鏡順序合併；每段 latent 會保存供失敗重試。" : "各段不共享原生影音 latent；最後依分鏡順序合併。"}</li>
             </ol>
           </div>
-          <div id="long-provider-status" className={styles.providerRow} tabIndex={-1}>
-            <div className={styles.segmented} role="group" aria-label="長影片規劃 provider">
-              <button type="button" className={promptProvider === "ollama" ? styles.active : ""} aria-pressed={promptProvider === "ollama"} onClick={() => { setPromptProvider("ollama"); markPlanDirty(); }}>Ollama</button>
-              <button type="button" className={promptProvider === "codex" ? styles.active : ""} aria-pressed={promptProvider === "codex"} onClick={() => { setPromptProvider("codex"); markPlanDirty(); }}>Codex CLI</button>
-            </div>
-            <span className={`${styles.providerStatus} ${providerReady ? styles.ready : ""}`}><i />{providerReady ? "已就緒" : "無法使用"}</span>
-          </div>
-          {promptProvider === "ollama" ? <Field label="Ollama 模型"><select className={styles.select} value={effectiveOllamaModel} disabled={!visibleOllamaModels.length} onChange={(event) => { setOllamaModel(event.target.value); markPlanDirty(); }}>{visibleOllamaModels.length ? visibleOllamaModels.map((model) => <option key={model} value={model}>{model}</option>) : <option value={ollamaModel}>沒有可用模型</option>}</select></Field> : <div className={styles.twoColumns}><Field label="Codex 模型"><select className={styles.select} value={effectiveCodexModel} onChange={(event) => { setCodexModel(event.target.value); markPlanDirty(); }}>{codexModels.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}</option>)}</select></Field><Field label="Reasoning"><select className={styles.select} value={effectiveReasoning} onChange={(event) => { setReasoningEffort(event.target.value); markPlanDirty(); }}>{reasoningOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field></div>}
-          <div className={styles.segmented} role="group" aria-label="時間軸模式"><button type="button" className={timelineMode === "auto" ? styles.active : ""} aria-pressed={timelineMode === "auto"} onClick={() => { setTimelineMode("auto"); markPlanDirty(); }}>自動</button><button type="button" className={timelineMode === "manual" ? styles.active : ""} aria-pressed={timelineMode === "manual"} onClick={() => { setTimelineMode("manual"); markPlanDirty(); }}>手動</button></div>
-          <div className={styles.twoColumns}>
-            {timelineMode === "auto" && <Field label="目標總長（秒）" error={attempted ? issuesByField.get("duration") : ""}><input id="long-duration" className={styles.input} type="number" min={1} max={3600} value={duration} onChange={(event) => { setDuration(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>}
-            <p className={styles.helper}>規劃完成後，可在下方每個分鏡卡片中獨立設定長度；後續分鏡會自動順延，時間軸保持連續。</p>
-          </div>
-          {timelineMode === "manual" && <Field label="手動時間軸" helper="例如：[0 - 5] Opening；[5 - 10] Ending" error={attempted ? issuesByField.get("timelineText") : ""}><textarea id="long-timeline" className={styles.textarea} value={timeline} onChange={(event) => { setTimeline(event.target.value); markPlanDirty(); }} /></Field>}
-          <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "規劃失敗。"))}>{planning ? "規劃中…" : `用 ${promptProvider === "codex" ? "Codex CLI" : "Ollama"} 產生分鏡與 H3 提示詞`}</button>
-          {planDirty && plan && <p className={styles.stale} role="status">規劃輸入已變更；保存或開始前會重新規劃。</p>}
+          <p className={styles.helper}>時間軸由上方劇本卡的影片長度自動累加，目前共 {totalScriptDuration.toFixed(1)} 秒、{scripts.length} 支影片。</p>
+          <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "套用失敗。"))}>{planning ? "套用中…" : "直接套用劇本提示詞"}</button>
+          {planDirty && plan && <p className={styles.stale} role="status">劇本已變更；保存或開始前會重新直接套用。</p>}
         </LongSection>
 
         <LongSection id="long-segments" code="03 / 片段檢查" title={`片段檢查 · ${plan?.segments.length || 0} 段`}>
-          {!plan && <div className={styles.empty}>尚無分段提示詞。先完成 Planner，再在此逐段檢查與編輯。</div>}
+          {!plan && <div className={styles.empty}>尚未套用劇本。套用後可在此確認每段使用的原始提示詞。</div>}
           {plan?.segments.map((segment, index) => <article className={styles.segmentCard} key={segment.id || index}>
-            <div className={styles.segmentHeading}><div><span>片段 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || (continuationMode === "motion_context" && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
+            <div className={styles.segmentHeading}><div><span>分鏡 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || ((continuationMode === "motion_context" || continuationMode === "latent_context") && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
             <Field label="分鏡長度（秒）"><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
             <div className={styles.twoColumns}><Field label="分鏡描述"><textarea className={styles.compactTextarea} value={segment.description} onChange={(event) => updateSegment(index, { description: event.target.value })} /></Field><Field label="段尾狀態"><textarea className={styles.compactTextarea} value={segment.endingState || ""} onChange={(event) => updateSegment(index, { endingState: event.target.value })} /></Field></div>
-            <Field label="H3 提示詞"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
+            <Field label="H3 提示詞（劇本原文）"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
             <Field label="此段負面提示詞" helper="空白則使用全片設定。"><textarea className={styles.compactTextarea} value={segment.negativePrompt || ""} onChange={(event) => updateSegment(index, { negativePrompt: event.target.value })} /></Field>
-            <Ref2VCameraPlanner
-              locale={locale}
-              duration={segment.end - segment.start}
-              referenceCount={cameraReferenceCount(index, inputType, referenceMode, references.length, continuationMode)}
-              hasVideo={continuationMode === "motion_context" && index > 0}
-              value={segment.cameraPlan || createDefaultRef2VCameraPlan({
-                referenceCount: cameraReferenceCount(index, inputType, referenceMode, references.length, continuationMode),
-                hasVideo: continuationMode === "motion_context" && index > 0,
-              }) as CameraPlan}
-              onChange={(cameraPlan) => updateSegment(index, { cameraPlan })}
-            />
+            {index > 0 && <div className={styles.segmentAssistant}>
+              <div className={styles.segmentAssistantHeader}><div><strong>Ollama 延續提示詞</strong><p>參考前一分鏡提示詞與本段描述，產生本段 {continuationMode === "latent_context" ? "latent 連續" : "Ref2VA"} 提示詞及負面提示詞。</p></div><button type="button" disabled={segmentPromptBusy !== null || !canInteract} onClick={() => void generateContinuationPrompt(index)}>{segmentPromptBusy === index ? "產生中…" : "用 Ollama 產生"}</button></div>
+              <div className={styles.segmentSaveRow}><label><span>另存劇本名稱</span><input value={segmentScriptNames[segmentKey(segment, index)] ?? scripts[index]?.name ?? `分鏡 ${index + 1}`} maxLength={80} onChange={(event) => setSegmentScriptNames((current) => ({ ...current, [segmentKey(segment, index)]: event.target.value }))} /></label><button type="button" disabled={segmentScriptBusy !== null || !segment.prompt?.trim()} onClick={() => void saveSegmentAsScript(index)}>{segmentScriptBusy === index ? "儲存中…" : "存成一般劇本"}</button></div>
+              {segmentActionStatus[segmentKey(segment, index)] && <p className={segmentActionStatus[segmentKey(segment, index)].kind === "error" ? styles.segmentActionError : styles.segmentActionSuccess} role="status" aria-live="polite">{segmentActionStatus[segmentKey(segment, index)].message}</p>}
+            </div>}
           </article>)}
         </LongSection>
 
@@ -987,7 +992,7 @@ export function LongCreateForm() {
             </Field>}
           </div>
           <p className={styles.helper}>固定 H3 preset 支援 T2V/I2V/Ref2VA；舊版自訂 LoRA 仍限 T2V/I2V。strength 範圍 0–2，固定預設 0.8。</p>
-          <div className={styles.twoColumns}><Field label="模型設定檔" error={attempted ? issuesByField.get("modelProfile") : ""}><select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value} disabled={continuationMode === "motion_context" && model.value === "int4_convrot_low_vram"}>{model.label}</option>)}</select></Field><Field label="接縫處理"><select className={styles.select} value={seam} onChange={(event) => setSeam(event.target.value as typeof seam)}><option value="keep_duplicate_frame">保留重複畫面</option><option value="drop_next_first_frame" disabled>移除下一段首幀（目前不支援）</option></select></Field></div>
+          <Field label="模型設定檔" error={attempted ? issuesByField.get("modelProfile") : ""}><select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value} disabled={continuationMode !== "legacy_tail" && model.value === "int4_convrot_low_vram"}>{model.label}</option>)}</select></Field>
           <div className={styles.resolutionField}>
             <span className={styles.label}>影片尺寸</span>
             <div className={styles.resolutionRow}>
@@ -1023,15 +1028,14 @@ export function LongCreateForm() {
       <aside id="long-review" className={styles.summary} aria-label="長影片生成摘要">
         <section className={styles.summaryCard}>
           <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
-          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="延續" value={continuationMode === "motion_context" ? `Ref2VA / ${motionContextSeconds}s AV` : "I2VA 尾幀"} /><Summary label="時間軸" value={timelineMode === "auto" ? `${duration || "—"} 秒 / 自動` : "手動"} /><Summary label="分段" value={`${plan?.segments.length || 0} 段`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="提示詞提供者" value={promptProvider === "codex" ? effectiveCodexModel : effectiveOllamaModel} /></div>
+          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="一致性參考" value={continuationMode === "latent_context" ? "前段尾端 39 幀（影音 latent）" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒（僅畫面）" : "上一分鏡尾幀"} /><Summary label="劇本總長" value={continuationMode === "latent_context" ? `${totalScriptDuration.toFixed(1)} 秒（各段依 H3 原生幀微調）` : `${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="劇本／影片" value={`${scripts.length} 個`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="提示詞來源" value="劇本原文／選用 Ollama" /></div>
           {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>
           <span className={styles.eyebrow}>檢查結果</span>
-          <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}><button type="button" className={styles.validationLink} onClick={() => focusLongValidationField(issue.field)}>× {issue.message}</button></li>) : <li className={styles.valid}>✓ 基本欄位可提交；若尚未規劃會先自動規劃。</li>}</ul>
-          <div className={styles.providerSummary}><span className={`${styles.statusDot} ${providerReady ? styles.online : ""}`} />{providerReady ? "規劃工具已就緒" : "規劃工具無法使用"}</div>
+          <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}><button type="button" className={styles.validationLink} onClick={() => focusLongValidationField(issue.field)}>× {issue.message}</button></li>) : <li className={styles.valid}>✓ 劇本提示詞將直接使用，不經 AI 規劃。</li>}</ul>
           {error && <p className={styles.errorBox} role="alert">{error}</p>}{notice && <p className={styles.notice} role="status">{notice}</p>}
-          <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "規劃並開始生成" : "開始長影片生成"}<span>→</span></button>
+          <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "套用劇本並開始生成" : "開始長影片生成"}<span>→</span></button>
           <div className={styles.secondaryActions}><button type="button" disabled={!canSave} onClick={() => void saveDraft()}>{saving ? "保存中…" : "保存草稿"}</button><button type="button" disabled={activeJob || saving || planning} onClick={clearEditor}>清除設定</button></div>
         </section>
       </aside>
@@ -1046,10 +1050,21 @@ function LongSection({ id, code, title, children }: { id: string; code: string; 
 }
 
 function focusLongValidationField(field: string) {
+  if (field === "scripts") {
+    document.getElementById("long-script-0-content")?.focus();
+    document.getElementById("long-script-0-content")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+  const scriptField = field.match(/^script-(\d+)-(name|content|duration)$/);
+  if (scriptField) {
+    const element = document.getElementById(`long-script-${scriptField[1]}-${scriptField[2]}`);
+    element?.focus();
+    element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   const ids: Record<string, string> = {
     outputFolder: "long-output-folder",
     referenceAssets: "long-reference-assets",
-    inputText: "long-brief",
     duration: "long-duration",
     segmentDurationHint: "long-segment-duration",
     timelineText: "long-timeline",
@@ -1060,7 +1075,6 @@ function focusLongValidationField(field: string) {
     h3LoraPreset: "long-character-lora",
     characterLoraName: "long-character-lora",
     characterLoraStrength: "long-character-lora-strength",
-    motionContextSeconds: "long-motion-context-seconds",
     modelProfile: "long-model-profile",
   };
   const element = document.getElementById(ids[field] || "");
@@ -1124,12 +1138,6 @@ function assetReference(asset: Asset): Asset {
 }
 function assetKey(asset: Pick<Asset, "root" | "name">) { return `${asset.root}:${asset.name}`; }
 function uniqueAssets(values: Asset[], limit: number) { const map = new Map<string, Asset>(); for (const asset of values) if (asset?.name) map.set(assetKey(asset), asset); return [...map.values()].slice(0, limit); }
-function cameraReferenceCount(index: number, inputType: InputType, referenceMode: ReferenceMode, referenceCount: number, continuationMode: ContinuationMode) {
-  const staticCount = inputType === "image" ? (referenceMode === "multi_reference" ? referenceCount : Math.min(1, referenceCount)) : 0;
-  if (referenceMode === "multi_reference") return Math.min(9, staticCount + (index > 0 ? 1 : 0));
-  if (index === 0) return inputType === "image" ? 1 : 0;
-  return continuationMode === "motion_context" ? Math.min(9, staticCount + 1) : 1;
-}
 function numberDraft(value: string): NumberDraft { return value === "" ? "" : Number(value); }
 function longResolutionStatusText(status: ResolutionStatus, info: ResolutionInfo | null) {
   if (status === "loading") return "正在讀取來源圖片尺寸…";
@@ -1140,18 +1148,3 @@ function longResolutionStatusText(status: ResolutionStatus, info: ResolutionInfo
   return "預設輸出解析度；選擇圖片後會計算最終尺寸。";
 }
 function apiError(payload: ApiError, fallback: string) { return typeof payload.error === "string" ? payload.error : [payload.error?.code, payload.error?.message].filter(Boolean).join(": ") || fallback; }
-
-async function assetToPromptImage(asset: Asset) {
-  const response = await fetch(`${BRIDGE_URL}${asset.url}`);
-  if (!response.ok) throw new Error("無法讀取參考素材。");
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const image = new Image(); image.src = objectUrl;
-    await new Promise<void>((resolve, reject) => { image.onload = () => resolve(); image.onerror = () => reject(new Error("無法解碼參考圖片。")); });
-    const canvas = document.createElement("canvas"); const scale = Math.min(1, 1024 / Math.max(image.naturalWidth, image.naturalHeight));
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.86); return dataUrl.slice(dataUrl.indexOf(",") + 1);
-  } finally { URL.revokeObjectURL(objectUrl); }
-}

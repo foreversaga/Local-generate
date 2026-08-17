@@ -45,7 +45,7 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -219,7 +219,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       }
       let mergedSegments = patch.segments || patch.timeline || current.segments;
       if (normalized.referenceMode === "multi_reference") mergedSegments = mergedSegments.map((segment) => ({ ...segment, mode: "ref2v" }));
-      if (normalized.continuationMode === "motion_context") mergedSegments = mergedSegments.map((segment, index) => ({ ...segment, mode: index === 0 ? segment.mode : "ref2v" }));
+      if (["motion_context", "latent_context"].includes(normalized.continuationMode)) mergedSegments = mergedSegments.map((segment, index) => ({ ...segment, mode: index === 0 ? segment.mode : "ref2v" }));
       if (generationCriticalChanged) mergedSegments = invalidateFromSegment(mergedSegments, 0);
       patch.segments = mergedSegments;
       patch.timeline = mergedSegments;

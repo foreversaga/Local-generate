@@ -35,18 +35,22 @@ function qualityPriorities() {
     "- Preserve the same facial identity, facial proportions, eye spacing, eye shape, brows, nose, mouth, skin tone, hairstyle silhouette, body silhouette, clothing design, colors, and distinctive marks across every shot and segment where visible.",
     "- When hands are visible, describe anatomically coherent hands, stable finger count, natural finger articulation, and physically correct hand-object contact, grip, occlusion, and release. Avoid vague hand activity when the interaction is story-critical.",
     "- Clothing must keep the same design and fit while following gravity, body motion, contact, inertia, and wind naturally. Prevent cloth/body intersection, fabric penetration, floating cloth, rigid cloth, implausible stretching, and independent garment motion.",
-    "- Prefer observable motion paths and stable ending states over abstract quality adjectives. Preserve motion direction, object placement, and camera direction at every continuation boundary.",
+    "- Prefer observable motion paths and stable ending states over abstract quality adjectives. Preserve identity, object state, and spatial logic across storyboard cuts while allowing each shot to define its own composition, motion, and camera direction.",
   ].join("\n");
 }
 
-function planningContract({ referenceMode }) {
+function planningContract({ referenceMode, continuationMode }) {
   return [
     "You are the structured long-video planning worker for H3 Studio.",
     "The user message defines the JSON planning envelope. Return that JSON object only; do not return Markdown or commentary.",
     "Use the trusted H3 skill material below to author the content inside every segment. The skill's final prompt field rules apply inside each segment, while the user message remains authoritative for the surrounding long-video JSON keys and global timing.",
     referenceMode === "multi_reference"
-      ? "This is a Ref2VA sequence. Apply the full-reference guide to every segment. Static picture labels keep the same order across the film; a later runtime step may append the previous normalized tail as the final ordinary continuity reference, never as a frame-zero lock."
-      : "This is a base-mode sequence. The first text-origin segment is T2VA; an image-origin first segment and all continuation segments are I2VA. Segment-internal shot times always restart at zero.",
+      ? "This is a Ref2VA storyboard sequence. Apply the full-reference guide to every independent shot. Static picture labels keep the same order; from shot 2 onward <Video 1> is only the preceding shot's final two silent seconds as a weak visual-consistency reference, never footage to replay or a frame-zero lock."
+      : continuationMode === "motion_context"
+        ? "This is a storyboard sequence. The first text-origin shot is T2VA and an image-origin first shot is I2VA. Every later independent shot is Ref2VA with <Video 1> used only as a silent weak visual-consistency reference and [reference generation]."
+        : continuationMode === "latent_context"
+          ? "This is one continuous audiovisual timeline. The first image-origin shot is I2VA. Every later shot uses Ref2VA static pictures plus an exact protected 39-frame AV latent prefix from the preceding shot, uses [video continuation + reference generation], and must not invent a <Video N> label."
+        : "This is a legacy base-mode sequence. The first text-origin segment is T2VA; an image-origin first segment and all continuation segments are I2VA. Segment-internal shot times always restart at zero.",
     qualityPriorities(),
   ].join("\n");
 }
@@ -83,6 +87,7 @@ function publicPolicy({ guide, contentHash, source, warning }) {
 export async function loadH3PromptSkillPack({
   mode = "t2v",
   referenceMode,
+  continuationMode,
   purpose = "prompt",
   duration,
   hasVisualReference = false,
@@ -92,7 +97,7 @@ export async function loadH3PromptSkillPack({
 } = {}) {
   const normalizedMode = mode === "ref2v" || referenceMode === "multi_reference" ? "ref2v" : mode;
   const guide = normalizedMode === "ref2v" ? "ref-en.txt" : "base-en.txt";
-  const options = { mode: normalizedMode, referenceMode, purpose, duration, hasVisualReference };
+  const options = { mode: normalizedMode, referenceMode, continuationMode, purpose, duration, hasVisualReference };
   const baseSystem = embeddedSystem(options);
   try {
     const resolvedSkillPath = path.resolve(skillPath);

@@ -10,7 +10,15 @@ import { spawn } from "node:child_process";
 import { handleLongVideoRoute } from "./server/long-video/api.mjs";
 import { planSequence as defaultPlanSequence } from "./server/long-video/planner.mjs";
 import { runSequence } from "./server/long-video/runner.mjs";
-import { createContinuationPromptFinalizer } from "./server/long-video/continuation-finalizer.mjs";
+import { createContinuationPromptFinalizer, ensureRef2vaLatentContinuationPrompt } from "./server/long-video/continuation-finalizer.mjs";
+import { mergeLongVideoNegativePrompt } from "./server/long-video/quality-defaults.mjs";
+import {
+  buildLongSegmentPromptRepairMessage,
+  buildLongSegmentPromptUserMessage,
+  LONG_SEGMENT_PROMPT_PURPOSE,
+  normalizeLongSegmentPromptInput,
+  parseLongSegmentPromptResponse,
+} from "./server/long-video/segment-prompt-assistant.mjs";
 import { checkMediaTools } from "./server/long-video/media.mjs";
 import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
@@ -55,6 +63,14 @@ import {
   SINGLE_RENDER_DURATION_RUNTIME_MIN_SECONDS,
 } from "./app/lib/single-duration.mjs";
 import { buildRef2VCameraPlanContext, mergeNegativePromptTerms } from "./app/lib/ref2v-camera-plan.mjs";
+import {
+  buildRef2VCharacterMotionContext,
+  normalizeRef2VReferencePlan,
+  REF2V_WORKFLOW,
+} from "./app/lib/ref2v-reference-plan.mjs";
+import { prepareReferenceVideoClip } from "./server/video-generation/reference-video-clip.mjs";
+import { createScriptLibrary, handleScriptLibraryRoute } from "./server/scripts/script-library.mjs";
+import { createLongScriptLibrary, handleLongScriptLibraryRoute } from "./server/long-scripts/long-script-library.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -71,6 +87,7 @@ const LOG_ROOT = path.resolve(
 );
 const TIMING_HISTORY_FILE = path.join(LOG_ROOT, "render-timing-history.json");
 const GENERATOR = path.join(H3_ROOT, "src", "generate.py");
+const LATENT_GENERATOR = path.join(PROJECT_ROOT, "scripts", "h3-latent-generate.py");
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
 const SINGLE_VIDEO_JOBS_ROOT = path.resolve(
   process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT || path.join(PROJECT_ROOT, "data", "jobs", "single-video"),
@@ -124,11 +141,10 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   ownerId: `h3-studio-${process.pid}`,
   runtimeMode: () => runtimeContext.mode,
 });
-const QWEN_OLLAMA_MODEL = "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M";
-const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
+const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
-  || "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
-const defaultOllamaModel = () => runtimeContext.isRemote ? GEMMA4_OLLAMA_MODEL : QWEN_OLLAMA_MODEL;
+  || GEMMA4_12B_OLLAMA_MODEL;
+const defaultOllamaModel = () => GEMMA4_12B_OLLAMA_MODEL;
 const CODEX_CLI = process.env.CODEX_CLI_PATH || (process.platform === "win32" ? "codex.cmd" : "codex");
 const CODEX_HOME = path.resolve(
   process.env.CODEX_HOME || path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), ".codex"),
@@ -196,6 +212,8 @@ const continuationPromptFinalizer = createContinuationPromptFinalizer({
   skillPath: H3_PROMPT_SKILL_PATH,
   contextLength: process.env.H3_OLLAMA_PROMPT_CONTEXT,
 });
+const scriptLibrary = createScriptLibrary({ filePath: path.join(PROJECT_ROOT, "data", "scripts", "scripts.json") });
+const longScriptLibrary = createLongScriptLibrary({ filePath: path.join(PROJECT_ROOT, "data", "scripts", "long-scripts.json") });
 const gpuContinuationPromptFinalizer = (context = {}) => withGpuResource(
   "ollama-vision",
   `continuation:${context.job?.id || "sequence"}:${context.segmentIndex ?? 0}`,
@@ -1438,7 +1456,53 @@ async function createImg2ImgPrompt(payload = {}) {
   return parseImg2ImgPromptResponse(response);
 }
 
+async function createLongSegmentContinuationPrompt(payload = {}) {
+  const input = normalizeLongSegmentPromptInput(payload);
+  const model = String(payload.model || defaultOllamaModel()).trim();
+  if (!model) throw new LongVideoError("LONG_SEGMENT_PROMPT_MODEL_REQUIRED", "請先選擇可用的 Ollama 模型。", 400);
+  const system = [
+    buildH3PromptSystem({ mode: "ref2v", duration: input.duration, hasVisualReference: false }),
+    input.continuationMode === "latent_context"
+      ? "The caller supplies reference roles as text because this step plans a future render; do not claim to have visually inspected <Picture N> or the protected audiovisual latent. Do not invent a <Video N> label."
+      : "The caller supplies reference roles as text because this step plans a future render; do not claim to have visually inspected <Picture N> or <Video 1>.",
+    "Do not invent any face, hair, clothing, anatomy, prop, environment, or other visual attribute absent from the supplied text. When identity details are unspecified, keep the subject generic instead of filling them in.",
+    "For this API response, return exactly one JSON object with exactly two string keys: prompt and negativePrompt. Put the complete six-section Ref2VA prompt inside prompt. Do not return Markdown or commentary.",
+  ].join("\n");
+  const userMessage = buildLongSegmentPromptUserMessage(input);
+  let response = await requestOllamaPrompt({ model, system, prompt: userMessage });
+  let parsed;
+  try {
+    parsed = parseLongSegmentPromptResponse(response, { staticReferenceCount: input.staticReferenceCount, continuationMode: input.continuationMode });
+  } catch (error) {
+    response = await requestOllamaPrompt({
+      model,
+      system,
+      prompt: buildLongSegmentPromptRepairMessage(userMessage, response, error),
+    });
+    parsed = parseLongSegmentPromptResponse(response, { staticReferenceCount: input.staticReferenceCount, continuationMode: input.continuationMode });
+  }
+  const validation = await validateOrRepairH3Prompt(parsed.prompt, {
+    mode: "ref2v",
+    duration: input.duration,
+    hasVisualReference: false,
+    repair: async (repairRequest) => requestOllamaPrompt({ model, system, prompt: repairRequest }),
+  });
+  return {
+    prompt: input.continuationMode === "latent_context" ? ensureRef2vaLatentContinuationPrompt(validation.prompt) : validation.prompt,
+    negativePrompt: mergeLongVideoNegativePrompt(
+      input.negativePrompt || DEFAULT_SHORT_NEGATIVE_PROMPT,
+      parsed.negativePrompt,
+    ),
+  };
+}
+
 async function createPrompt(payload) {
+  if (payload?.purpose === LONG_SEGMENT_PROMPT_PURPOSE) {
+    if (promptProvider(payload.provider) !== "ollama") {
+      throw new LongVideoError("LONG_SEGMENT_PROMPT_PROVIDER_UNSUPPORTED", "長影片分鏡延續提示詞目前僅支援 Ollama。", 400);
+    }
+    return await createLongSegmentContinuationPrompt(payload);
+  }
   const brief = String(payload.brief || "").trim();
   const provider = promptProvider(payload.provider);
   const requestedMode = String(payload.mode || "").trim().toLowerCase();
@@ -1456,6 +1520,23 @@ async function createPrompt(payload) {
   const firstFrameName = String(payload.firstFrameName || "").trim();
   const lastFrameName = String(payload.lastFrameName || "").trim();
   const sourceVideoName = String(payload.sourceVideoName || "").trim();
+  let ref2vReferencePlan = null;
+  if (mode === "ref2v") {
+    try {
+      ref2vReferencePlan = normalizeRef2VReferencePlan({
+        workflow: payload.ref2vWorkflow,
+        referenceImageNames,
+        referenceImageRoles: payload.referenceImageRoles,
+        clothingMode: payload.clothingMode,
+        clothingDescription: payload.clothingDescription,
+      });
+    } catch (error) {
+      throw new LongVideoError(error.code || "REFERENCE_PLAN_INVALID", error.message, 400);
+    }
+    if (ref2vReferencePlan.workflow === REF2V_WORKFLOW && !sourceVideoName) {
+      throw new LongVideoError("REFERENCE_VIDEO_REQUIRED", "Character-motion Ref2VA requires a reference video.", 400);
+    }
+  }
   const visualInputs = Array.isArray(payload.images)
     ? payload.images
       .filter((item) => item && typeof item.data === "string" && item.data.trim())
@@ -1473,9 +1554,16 @@ async function createPrompt(payload) {
       hasVideo: Boolean(sourceVideoName),
     })
     : null;
-  const negativePrompt = compiledCameraPlan
+  let negativePrompt = compiledCameraPlan
     ? mergeNegativePromptTerms(inputNegativePrompt || DEFAULT_SHORT_NEGATIVE_PROMPT, compiledCameraPlan.negativeTerms)
     : inputNegativePrompt;
+  if (ref2vReferencePlan?.workflow === REF2V_WORKFLOW) {
+    negativePrompt = mergeNegativePromptTerms(negativePrompt || DEFAULT_SHORT_NEGATIVE_PROMPT, [
+      "identity drift", "face drift", "body-proportion drift", "clothing drift", "changing clothing",
+      "original performer identity", "body morphing", "face morphing", "extra limbs", "distorted hands",
+      "distorted legs", "pose mismatch", "motion mismatch",
+    ]);
+  }
   if (!brief) throw new LongVideoError("PROMPT_INPUT_REQUIRED", "請先輸入一段畫面想法。", 400);
   if (provider === "ollama" && ["i2v", "fl2v", "l2v", "ref2v"].includes(mode) && !visualInputs.length) {
     throw new LongVideoError(
@@ -1499,11 +1587,17 @@ async function createPrompt(payload) {
     mode === "i2v"
       ? `A reference image is supplied and must be treated as <Picture 1> at the first frame${referenceImageName ? ` (asset: ${referenceImageName})` : ""}.`
       : "",
-    mode === "ref2v" && referenceImageName
+    mode === "ref2v" && referenceImageName && ref2vReferencePlan?.workflow !== REF2V_WORKFLOW
       ? referenceImageNames.map((name, index) => `<Picture ${index + 1}> is supplied reference image ${index + 1} (asset: ${name}); define its visual subjects and concrete reference role before reusing the label.`).join("\n")
       : "",
     mode === "ref2v" && sourceVideoName
       ? `<Video 1> is the supplied reference video (asset: ${sourceVideoName}); define its structural or visual reference role and do not invent an audio track unless one is actually supplied.`
+      : "",
+    mode === "ref2v" && ref2vReferencePlan?.workflow === REF2V_WORKFLOW
+      ? buildRef2VCharacterMotionContext(ref2vReferencePlan, { sourceVideoName })
+      : "",
+    mode === "ref2v" && ref2vReferencePlan?.workflow === REF2V_WORKFLOW
+      ? `Use only the selected source-video interval from ${Number(payload.referenceVideoStart || 0).toFixed(3)} to ${Number(payload.referenceVideoEnd || durationSeconds).toFixed(3)} seconds. The reference video is preprocessed to a maximum dimension of ${Number(payload.referenceVideoMaxDimension ?? 720) || "source"} pixels before H3 generation.`
       : "",
     mode === "replace" && referenceImageName
       ? `The replacement subject reference image is ${referenceImageName}; preserve its identity and visible attributes in the source video.`
@@ -1518,7 +1612,7 @@ async function createPrompt(payload) {
       ? `The source video asset is ${sourceVideoName}; preserve its motion and scene continuity.`
       : "",
     visualInputs.length
-      ? `Attached visual references in order: ${visualInputs.map((item, index) => `<Picture ${index + 1}> (${item.role})`).join(", ")}. Inspect every attached image and keep each visible identity and composition consistent.`
+      ? `Attached visual inputs: ${visualInputs.map((item) => item.role === "video_1_preview_frame" ? "<Video 1> selected-interval preview frame" : item.role.replace(/^picture_(\d+)$/, "<Picture $1>")).join(", ")}. Inspect each attachment only for its assigned role.`
       : "",
     compiledCameraPlan?.context || "",
     negativePrompt ? `User-provided negative constraints: ${negativePrompt}` : "",
@@ -1661,7 +1755,7 @@ async function createCodexPrompt({ brief, context, mode, durationSeconds, model,
 }
 
 function codexLongPlanReferences(requestInput = {}) {
-  if (requestInput.referenceMode !== "multi_reference" && requestInput.continuationMode !== "motion_context") return [];
+  if (requestInput.referenceMode !== "multi_reference" && !["motion_context", "latent_context"].includes(requestInput.continuationMode)) return [];
   const references = [];
   const seen = new Set();
   for (const reference of [requestInput.inputAsset, ...(Array.isArray(requestInput.referenceAssets) ? requestInput.referenceAssets : [])]) {
@@ -1679,13 +1773,15 @@ function codexLongPlanReferences(requestInput = {}) {
 function codexLongPlanModeInstruction(requestInput, references = []) {
   if (requestInput.referenceMode === "multi_reference") {
     const labels = references.map((reference, index) => `<Picture ${index + 1}> (${reference.name})`).join(", ") || "the supplied pictures";
-    const tailLabel = `<Picture ${references.length + 1}>`;
-    return `Use Ref2VA for every segment with ordered static references ${labels}. Keep every segment in the same Ref2VA mode and do not apply a first-frame lock. For continuation segments, append the previous normalized tail as ${tailLabel}, a normal continuity reference (not a frame-zero lock), after the static references.`;
+    return `Use Ref2VA for every segment with ordered static references ${labels}. Every segment is an independent storyboard video shot. Starting with segment 2, use the previous shot's final two silent seconds as <Video 1> only for weak visual consistency; do not define <Audio 1>, replay footage, or apply a first-frame lock.`;
   }
   if (requestInput.continuationMode === "motion_context") {
     const staticLabels = references.map((reference, index) => `<Picture ${index + 1}> (${reference.name})`).join(", ");
-    const tailLabel = `<Picture ${references.length + 1}>`;
-    return `Use ${requestInput.inputType === "image" ? "I2VA" : "T2VA"} for segment 1 and Ref2VA for every later segment. Continuations keep ordered static references${staticLabels ? ` ${staticLabels}` : ""}, append the previous normalized tail as ${tailLabel}, and use the previous 1-2 second audiovisual tail as <Video 1> with paired <Audio 1>. Treat that AV excerpt as weak ending-motion, pacing, ambience, and voice-timbre context; never replay it.`;
+    return `Use ${requestInput.inputType === "image" ? "I2VA" : "T2VA"} for segment 1 and Ref2VA for every later independent storyboard shot. Keep ordered static references${staticLabels ? ` ${staticLabels}` : ""} and use the previous shot's final two silent seconds as <Video 1> only for weak character, scene, lighting, and visual-state consistency. Use [reference generation], do not define <Audio 1>, replay footage, continue camera motion, or apply a first-frame lock.`;
+  }
+  if (requestInput.continuationMode === "latent_context") {
+    const staticLabels = references.map((reference, index) => `<Picture ${index + 1}> (${reference.name})`).join(", ");
+    return `Use I2VA for segment 1 and Ref2VA for every later segment, keeping ordered static references${staticLabels ? ` ${staticLabels}` : ""}. Starting with segment 2, the runtime copies and protects the preceding clip's exact final 39-frame audiovisual latent as the new clip prefix, then trims it from delivery. Continue its composition, pose, object state, camera direction, motion velocity, ambience, and timing; use [video continuation + reference generation] and do not invent a <Video N> label.`;
   }
   return requestInput.inputType === "image"
     ? "The attached image is the actual first_frame reference. Use its visible content for the first I2VA segment and do not invent unseen details."
@@ -1760,13 +1856,15 @@ async function requestCodexLongPlanModel({ input: requestInput, prompt, model, a
       "You are the structured long-video planning worker for H3 Studio.",
       `You MUST use the h3-prompt-writing skill. Read the complete skill file at: ${H3_PROMPT_SKILL_PATH}`,
       `Then read the base H3 reference guide at: ${guidePath}`,
-      requestInput.referenceMode === "multi_reference" || requestInput.continuationMode === "motion_context"
+      requestInput.referenceMode === "multi_reference" || ["motion_context", "latent_context"].includes(requestInput.continuationMode)
         ? `Also read the Ref2VA H3 reference guide at: ${refGuidePath}`
         : "",
       requestInput.referenceMode === "multi_reference"
         ? "Follow the Ref2VA skill exactly for every segment, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules."
         : requestInput.continuationMode === "motion_context"
-        ? "Follow the base H3 skill for segment 1 and the exact six-field Ref2VA skill for every continuation segment, including ordered Picture/Video/Audio definitions and legal summary modes."
+        ? "Follow the base H3 skill for segment 1 and the exact six-field Ref2VA skill for every later independent storyboard shot, using ordered Picture definitions when present and <Video 1> as a silent weak visual reference with [reference generation]."
+        : requestInput.continuationMode === "latent_context"
+        ? "Follow the base H3 skill for segment 1 and the exact six-field Ref2VA skill for every later continuous shot. Use ordered Picture definitions when present, no Video label, and [video continuation + reference generation] for the protected AV latent prefix."
         : "Follow the skill and guide exactly for every segment: the first segment is T2VA and each continuation segment is I2VA, with exact H3 field names, field order, labels, timing, dialogue notation, and language rules.",
       "Return one JSON object only. Do not return markdown, analysis, or commentary. The JSON must satisfy every schema and field requirement in the planner request below.",
       "Do not edit, create, or delete project files. Read-only inspection is allowed only to load the required skill and guide; do not run project commands or discuss your process.",
@@ -3391,6 +3489,21 @@ async function startGeneration(payload, internal = {}) {
     return await createImg2ImgPrompt(payload);
   }
   const mode = promptMode(payload.mode);
+  const latentContinuation = payload.latentContinuation === true || internal.latentContinuation === true;
+  if (latentContinuation && mode === "replace") {
+    throw makeRuntimeError("LATENT_CONTEXT_MODE_INVALID", "Latent continuation is only supported for H3 video generation.", 422);
+  }
+  if (latentContinuation) {
+    const checkpointPrefix = String(payload.latentCheckpointPrefix || internal.latentCheckpointPrefix || "");
+    const clipIndex = Number(payload.latentClipIndex || internal.latentClipIndex || 0);
+    const previousClipIndex = Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex || 0);
+    if (!/^h3_sequence_checkpoints\/[A-Za-z0-9][A-Za-z0-9_-]{2,120}\/clip$/.test(checkpointPrefix)) {
+      throw makeRuntimeError("LATENT_CHECKPOINT_PREFIX_INVALID", "Latent checkpoint prefix is invalid.", 400);
+    }
+    if (!Number.isInteger(clipIndex) || clipIndex < 1 || clipIndex > 9999 || clipIndex > 1 && previousClipIndex !== clipIndex - 1) {
+      throw makeRuntimeError("LATENT_CHECKPOINT_INDEX_INVALID", "Latent continuation must load the immediately preceding clip checkpoint.", 400);
+    }
+  }
   const modelProfile = resolveGenerationModelProfile(mode, payload.modelProfile);
   const h3Selection = resolveH3LoraSelection(payload, mode);
   const requestedCharacterLora = ["replace", "t2v", "i2v", "fl2v", "l2v", "ref2v"].includes(mode)
@@ -3429,6 +3542,20 @@ async function startGeneration(payload, internal = {}) {
   const referenceImageRoots = mode === "ref2v"
     ? normalizeReferenceImageRoots(payload, { mode, referenceCount: referenceImageNames.length })
     : [];
+  let ref2vReferencePlan = null;
+  if (mode === "ref2v") {
+    try {
+      ref2vReferencePlan = normalizeRef2VReferencePlan({
+        workflow: payload.ref2vWorkflow,
+        referenceImageNames,
+        referenceImageRoles: payload.referenceImageRoles,
+        clothingMode: payload.clothingMode,
+        clothingDescription: payload.clothingDescription,
+      });
+    } catch (error) {
+      throw makeRuntimeError(error.code || "REFERENCE_PLAN_INVALID", error.message, 400);
+    }
+  }
   const prompt = h3Selection.selected
     ? injectH3LoraTrigger(payload.prompt, h3Selection.trigger)
     : String(payload.prompt || "").trim();
@@ -3497,6 +3624,20 @@ async function startGeneration(payload, internal = {}) {
     inputImagePath = referenceImagePaths[0] || null;
     if (payload.inputVideoName) {
       inputVideoPath = await resolveInputMedia(payload.inputVideoName, "video", payload.inputVideoRoot);
+    }
+    if (ref2vReferencePlan?.workflow === REF2V_WORKFLOW) {
+      if (!inputVideoPath) throw makeRuntimeError("REFERENCE_VIDEO_REQUIRED", "Character-motion Ref2VA requires a reference video.", 400);
+      const prepared = await prepareReferenceVideoClip({
+        inputPath: inputVideoPath,
+        outputRoot: INPUT_ROOT,
+        start: payload.referenceVideoStart,
+        end: payload.referenceVideoEnd,
+        maxDimension: payload.referenceVideoMaxDimension,
+      });
+      if (Math.abs(prepared.plan.duration - duration) > 0.05) {
+        throw makeRuntimeError("REFERENCE_VIDEO_DURATION_MISMATCH", "Generation duration must match the selected reference-video interval.", 400, { generationDuration: duration, clipDuration: prepared.plan.duration });
+      }
+      inputVideoPath = prepared.outputPath;
     }
     if (!inputImagePath && !inputVideoPath) {
       throw new Error("Ref2VA 至少需要一個參考圖片或參考影片。");
@@ -3584,6 +3725,13 @@ async function startGeneration(payload, internal = {}) {
     ...(mode === "ref2v" ? {
       referenceImageNames: referenceImageNames.slice(),
       referenceImageRoots: referenceImageRoots.slice(),
+      referenceImageRoles: ref2vReferencePlan?.roles?.slice() || [],
+      ref2vWorkflow: ref2vReferencePlan?.workflow || "generic",
+      clothingMode: ref2vReferencePlan?.clothingMode || "character",
+      clothingDescription: ref2vReferencePlan?.clothingDescription || "",
+      referenceVideoStart: Number(payload.referenceVideoStart || 0),
+      referenceVideoEnd: Number(payload.referenceVideoEnd || duration),
+      referenceVideoMaxDimension: Number(payload.referenceVideoMaxDimension ?? 720),
     } : {}),
     characterLoraName,
     characterLoraStrength,
@@ -3598,6 +3746,15 @@ async function startGeneration(payload, internal = {}) {
     batchTotal,
     inputRefs,
     ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
+    ...(latentContinuation ? {
+      latentContinuation: true,
+      latentContextFrames: Number(payload.latentContextFrames || internal.latentContextFrames || 39),
+      latentCheckpointPrefix: String(payload.latentCheckpointPrefix || internal.latentCheckpointPrefix || ""),
+      latentClipIndex: Number(payload.latentClipIndex || internal.latentClipIndex || 1),
+      ...(Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) > 0
+        ? { latentPreviousClipIndex: Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) }
+        : {}),
+    } : {}),
   };
   const attempt = Math.max(1, Number(existingJob?.attempt || internal.attempt || 1));
   const createdAt = existingJob?.createdAt || now();
@@ -3716,7 +3873,15 @@ async function startGeneration(payload, internal = {}) {
     if (runtimeContext.isRemote) args.push("--remote-comfy");
   } else {
     args = [
-      GENERATOR,
+      latentContinuation ? LATENT_GENERATOR : GENERATOR,
+      ...(latentContinuation ? [
+        "--latent-checkpoint-prefix", String(payload.latentCheckpointPrefix || internal.latentCheckpointPrefix || ""),
+        "--latent-clip-index", String(payload.latentClipIndex || internal.latentClipIndex || 1),
+        "--latent-context-frames", String(payload.latentContextFrames || internal.latentContextFrames || 39),
+        ...(Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) > 0
+          ? ["--latent-previous-clip-index", String(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex)]
+          : []),
+      ] : []),
       "--prompt",
       prompt,
       "--negative-prompt",
@@ -4614,12 +4779,26 @@ async function startSequenceGeneration(payload) {
         ...(payload.characterLoraName || payload.characterLoraId ? { characterLoraStrength: payload.characterLoraStrength ?? CHARACTER_LORA_DEFAULT_STRENGTH } : {}),
       }),
       sequenceOutputPath,
+      ...(payload.latentContinuation ? {
+        latentContinuation: true,
+        latentContextFrames: payload.latentContextFrames,
+        latentCheckpointPrefix: payload.latentCheckpointPrefix,
+        latentClipIndex: payload.latentClipIndex,
+        latentPreviousClipIndex: payload.latentPreviousClipIndex,
+      } : {}),
     }, {
       inputImagePath: stagedInput?.path,
       referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
       workloadType: "long-video-segment",
       ollamaPromptReceipt: payload.ollamaPromptReceipt,
       ollamaPromptBarrier: payload.ollamaPromptBarrier,
+      ...(payload.latentContinuation ? {
+        latentContinuation: true,
+        latentContextFrames: payload.latentContextFrames,
+        latentCheckpointPrefix: payload.latentCheckpointPrefix,
+        latentClipIndex: payload.latentClipIndex,
+        latentPreviousClipIndex: payload.latentPreviousClipIndex,
+      } : {}),
     });
     return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
   } finally {
@@ -5043,6 +5222,16 @@ async function route(req, res) {
   }
   const requestUrl = new URL(req.url || "/", "http://localhost");
   const pathname = requestUrl.pathname;
+
+  if (pathname === "/api/long-scripts" || pathname.startsWith("/api/long-scripts/")) {
+    await handleLongScriptLibraryRoute(req, res, { pathname, readJson, sendJson, library: longScriptLibrary });
+    return;
+  }
+
+  if (pathname === "/api/scripts" || pathname.startsWith("/api/scripts/")) {
+    await handleScriptLibraryRoute(req, res, { pathname, readJson, sendJson, library: scriptLibrary });
+    return;
+  }
 
   if (pathname === "/api/runtime") {
     if (req.method === "GET") {

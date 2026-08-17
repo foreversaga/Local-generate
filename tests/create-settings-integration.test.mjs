@@ -42,3 +42,12 @@ test("job Retry returns video work to the corresponding Create editor", async ()
   assert.match(longForm, /new URLSearchParams\(window\.location\.search\)\.get\("retry"\)/);
   assert.match(longForm, /api\/sequences\/\$\{encodeURIComponent\(jobId\)\}/);
 });
+
+test("clearing a retry reference video preserves the restored prompt", async () => {
+  const singleForm = await readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8");
+  const clearVideoHandler = singleForm.match(/onClearVideo=\{\(\) => \{([\s\S]*?)\n\s*\}\}/)?.[1] || "";
+
+  assert.match(clearVideoHandler, /setSourceVideo\(null\)/);
+  assert.match(clearVideoHandler, /setOllamaPromptReceipt\(""\)/);
+  assert.doesNotMatch(clearVideoHandler, /setPrompt\(""\)/);
+});

@@ -113,26 +113,98 @@ export function resizeLongSegment(segments, index, duration) {
   });
 }
 
+export function normalizeLongScripts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 120).map((script, index) => ({
+    id: String(script?.id || `script-${index + 1}`),
+    name: String(script?.name || `劇本 ${index + 1}`).trim().slice(0, 80),
+    content: String(script?.content || script?.prompt || "").trim(),
+    // `description` is the shot-level scene description.  Keep old drafts
+    // usable by falling back to their prompt/content, never to the title.
+    description: String(script?.description || script?.scene || script?.content || script?.prompt || "").trim(),
+    negativePrompt: String(script?.negativePrompt || "").trim(),
+    duration: Number(script?.duration),
+  }));
+}
+
+export function longScriptsToTimeline(value) {
+  let cursor = 0;
+  return normalizeLongScripts(value).map((script, index) => {
+    const duration = Number(script.duration.toFixed(3));
+    const start = cursor;
+    const end = Number((start + duration).toFixed(3));
+    cursor = end;
+    return {
+      id: `segment-${String(index + 1).padStart(3, "0")}`,
+      start,
+      end,
+      duration,
+      description: script.description || script.content,
+      negativePrompt: script.negativePrompt,
+    };
+  });
+}
+
+export function composeLongScriptText(value) {
+  return normalizeLongScripts(value).map((script, index) => `【劇本 ${index + 1}：${script.name}】\n${script.content}`).join("\n\n");
+}
+
+export function buildLongDirectPlan(input) {
+  const scripts = normalizeLongScripts(input.scripts);
+  const timeline = longScriptsToTimeline(scripts);
+  const referenceMode = input.inputType === "image" ? input.referenceMode : "continuity";
+  const segments = timeline.map((segment, index) => ({
+    ...segment,
+    description: scripts[index].description || scripts[index].content,
+    prompt: scripts[index].content,
+    negativePrompt: scripts[index].negativePrompt,
+    promptSource: "manual",
+    mode: referenceMode === "multi_reference" || index > 0 ? "ref2v" : input.inputType === "image" ? "i2v" : "t2v",
+    status: "pending",
+  }));
+  const duration = segments.length ? segments[segments.length - 1].end : 0;
+  return {
+    title: input.title || "Untitled long video",
+    inputType: input.inputType,
+    inputText: composeLongScriptText(scripts),
+    scripts,
+    referenceMode,
+    continuationMode: input.continuationMode || "motion_context",
+    motionContextSeconds: 2,
+    referenceAssets: input.referenceAssets || [],
+    duration,
+    negativePrompt: String(input.negativePrompt || ""),
+    continuityBible: {},
+    segments,
+    timeline: segments,
+    planningSettings: { timelineMode: "manual", targetDuration: duration, segmentDurationHint: scripts.length ? duration / scripts.length : 5, segmentCount: scripts.length },
+    planMeta: { source: "author", timelineSource: "author", promptSource: "manual", generatedAt: new Date().toISOString() },
+  };
+}
+
 export function buildLongPlanRequest(input) {
   const refs = (input.referenceAssets || []).slice(0, MAX_LONG_REFERENCE_IMAGES);
   const characterLoraName = String(input.characterLoraName || "").trim().replaceAll("\\", "/");
   const characterLoraId = String(input.characterLoraId || "").trim();
   const h3LoraEnabled = input.h3LoraEnabled === true;
   const explicitH3Disabled = input.h3LoraEnabled === false && !characterLoraName && !characterLoraId;
+  const scripts = normalizeLongScripts(input.scripts);
+  const scriptedTimeline = scripts.length ? longScriptsToTimeline(scripts) : null;
   return {
     title: input.title || "Untitled long video",
     inputType: input.inputType,
-    inputText: input.inputText,
+    inputText: scriptedTimeline ? composeLongScriptText(scripts) : input.inputText,
+    ...(scriptedTimeline ? { scripts } : {}),
     inputAsset: input.inputType === "image" ? refs[0] : undefined,
     imagePurpose: input.inputType === "image" ? "first_frame" : undefined,
     referenceMode: input.inputType === "image" ? input.referenceMode : "continuity",
     continuationMode: input.continuationMode || "motion_context",
-    motionContextSeconds: Number(input.motionContextSeconds || 1.5),
+    motionContextSeconds: 2,
     referenceAssets: input.inputType === "image" && input.referenceMode === "multi_reference" ? refs.slice(1) : [],
-    timelineMode: input.timelineMode,
-    duration: input.timelineMode === "auto" ? input.duration : undefined,
+    timelineMode: scriptedTimeline ? "manual" : input.timelineMode,
+    duration: scriptedTimeline ? scriptedTimeline[scriptedTimeline.length - 1].end : input.timelineMode === "auto" ? input.duration : undefined,
     segmentDurationHint: input.segmentDurationHint,
-    timelineText: input.timelineMode === "manual" ? input.timelineText : undefined,
+    ...(scriptedTimeline ? { timeline: scriptedTimeline } : { timelineText: input.timelineMode === "manual" ? input.timelineText : undefined }),
     promptProvider: input.promptProvider,
     ollamaModel: input.ollamaModel,
     codexModel: input.codexModel,
@@ -156,7 +228,10 @@ export function buildLongSaveRequest(input) {
   const clearCharacterLora = input.clearCharacterLora === true;
   const h3LoraEnabled = input.h3LoraEnabled === true;
   const explicitH3Disabled = input.h3LoraEnabled === false && !characterLoraName && !characterLoraId;
-  const parsed = parseLongTimelineDraft(input.timelineText, input.plan.segments || []);
+  const scripts = normalizeLongScripts(input.scripts);
+  const parsed = scripts.length
+    ? longScriptsToTimeline(scripts).map((segment, index) => ({ ...segment, description: scripts[index].description || scripts[index].content }))
+    : parseLongTimelineDraft(input.timelineText, input.plan.segments || []);
   const segments = parsed.map((segment, index) => ({
     ...(input.plan.segments?.[index] || {}),
     ...segment,
@@ -164,17 +239,19 @@ export function buildLongSaveRequest(input) {
     end: segment.end,
     duration: segment.end - segment.start,
     description: segment.description || input.plan.segments?.[index]?.description || `Segment ${index + 1}`,
+    negativePrompt: segment.negativePrompt || input.plan.segments?.[index]?.negativePrompt || "",
   }));
   const duration = segments.length ? segments[segments.length - 1].end : input.plan.duration;
   return {
     title: input.title || input.plan.title || "Untitled long video",
     inputType: input.inputType,
-    inputText: input.inputText,
+    inputText: scripts.length ? composeLongScriptText(scripts) : input.inputText,
+    ...(scripts.length ? { scripts } : {}),
     inputAsset: input.inputType === "image" ? refs[0] : undefined,
     imagePurpose: input.inputType === "image" ? "first_frame" : undefined,
     referenceMode: input.inputType === "image" ? input.referenceMode : "continuity",
     continuationMode: input.continuationMode || "motion_context",
-    motionContextSeconds: Number(input.motionContextSeconds || 1.5),
+    motionContextSeconds: 2,
     referenceAssets: input.inputType === "image" && input.referenceMode === "multi_reference" ? refs.slice(1) : [],
     continuityBible: input.plan.continuityBible,
     planMeta: input.plan.planMeta,
@@ -208,19 +285,28 @@ export function validateLongCreate(input) {
   const issues = [];
   const loraIssue = characterLoraIssue(input);
   if (loraIssue) issues.push(loraIssue);
-  if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
-  if (input.continuationMode === "motion_context") {
-    issues.push(...numberIssue(input.motionContextSeconds, "motionContextSeconds", "尾端 AV 長度", 1, 2, false));
-    if (input.modelProfile === "int4_convrot_low_vram") issues.push({ field: "modelProfile", message: "Ref2VA 動態延續不支援 INT4 ConvRot；請使用 NVFP4 Blackwell 或 Official INT8。" });
-  }
+  const scripts = normalizeLongScripts(input.scripts);
+  if (input.scripts !== undefined) {
+    if (scripts.length < 2) issues.push({ field: "scripts", message: "長影片至少需要兩個劇本。" });
+    scripts.forEach((script, index) => {
+      if (!script.name) issues.push({ field: `script-${index}-name`, message: `請輸入劇本 ${index + 1} 的名稱。` });
+      if (!script.content) issues.push({ field: `script-${index}-content`, message: `請輸入劇本 ${index + 1} 的內容。` });
+      issues.push(...numberIssue(script.duration, `script-${index}-duration`, `劇本 ${index + 1} 長度`, 0.5, 60, false));
+      if (script.content.length > 7000) issues.push({ field: `script-${index}-content`, message: `劇本 ${index + 1} 的提示詞不可超過 7000 字元。` });
+    });
+  } else if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
+  if (input.continuationMode === "latent_context" && input.inputType !== "image") issues.push({ field: "continuationMode", message: "Latent 影音銜接目前需要選擇「從圖片開始」，讓後續 Ref2VA 保有固定視覺參考。" });
+  if (input.modelProfile === "int4_convrot_low_vram") issues.push({ field: "modelProfile", message: "分鏡視覺參考使用 Ref2VA，不支援 INT4 ConvRot；請使用 NVFP4 Blackwell 或 Official INT8。" });
   if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "從圖片開始時需要至少一張起始參考圖片。" });
-  if (input.timelineMode === "manual") {
+  if (input.scripts !== undefined) {
+    // Script cards are the authoritative timeline.
+  } else if (input.timelineMode === "manual") {
     if (!String(input.timelineText || "").trim()) issues.push({ field: "timelineText", message: "手動時間軸模式需要至少兩段分鏡。" });
     else if (parseLongTimelineDraft(input.timelineText, []).length < 2) issues.push({ field: "timelineText", message: "手動時間軸至少需要兩段有效時間範圍。" });
   } else {
     issues.push(...numberIssue(input.duration, "duration", "目標總長", 1, 3600, false));
   }
-  issues.push(...numberIssue(input.segmentDurationHint, "segmentDurationHint", "目標單段長度", 0.5, 60, false));
+  if (input.scripts === undefined) issues.push(...numberIssue(input.segmentDurationHint, "segmentDurationHint", "目標單段長度", 0.5, 60, false));
   issues.push(...dimensionIssue(input.width, "width", "長影片寬度"));
   issues.push(...dimensionIssue(input.height, "height", "長影片高度"));
   issues.push(...numberIssue(input.steps, "steps", "Steps", 1, 80, true));

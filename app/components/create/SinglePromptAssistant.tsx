@@ -13,15 +13,16 @@ import {
 import styles from "./SinglePromptAssistant.module.css";
 import { createDefaultRef2VCameraPlan, normalizeRef2VCameraPlan } from "../../lib/ref2v-camera-plan.mjs";
 import { Ref2VCameraPlanner, type CameraPlan } from "./Ref2VCameraPlanner";
+import { REF2V_WORKFLOW } from "../../lib/ref2v-reference-plan.mjs";
 
 const BRIDGE_URL = "/app";
 const MAX_REF2V_IMAGES = 9;
+const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
-const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
 
-type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
+type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "ref2v_motion" | "replace";
 type PromptProvider = "ollama" | "codex";
 type Asset = {
   name: string;
@@ -73,8 +74,14 @@ type Props = {
   negativePrompt: string;
   referenceImage: Asset | null;
   referenceImages: Asset[];
+  referenceImageRoles: string[];
+  clothingMode: "character" | "reference" | "description";
+  clothingDescription: string;
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
+  referenceVideoStart: number;
+  referenceVideoEnd: number;
+  referenceVideoMaxDimension: number;
   onBriefChange: (value: string) => void;
   onPromptGenerated: (value: string, ollamaPromptReceipt?: string) => void;
   onNegativePromptGenerated: (value: string) => void;
@@ -130,8 +137,14 @@ export function SinglePromptAssistant({
   negativePrompt,
   referenceImage,
   referenceImages,
+  referenceImageRoles,
+  clothingMode,
+  clothingDescription,
   lastFrameImage,
   sourceVideo,
+  referenceVideoStart,
+  referenceVideoEnd,
+  referenceVideoMaxDimension,
   onBriefChange,
   onPromptGenerated,
   onNegativePromptGenerated,
@@ -150,6 +163,26 @@ export function SinglePromptAssistant({
   const [notice, setNotice] = useState("");
   const [cameraSettingsEnabled, setCameraSettingsEnabled] = useState(false);
   const [cameraPlan, setCameraPlan] = useState<CameraPlan>(() => createDefaultRef2VCameraPlan() as CameraPlan);
+  const isRef2VMode = mode === "ref2v" || mode === "ref2v_motion";
+  const isCharacterMotion = mode === "ref2v_motion";
+  const requestMode = isRef2VMode ? "ref2v" : mode;
+
+  useEffect(() => {
+    if (!isRef2VMode) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setCameraPlan((current) => {
+        const normalized = normalizeRef2VCameraPlan(current, { duration, referenceCount: referenceImages.length, hasVideo: Boolean(sourceVideo) }) as CameraPlan;
+        return isCharacterMotion ? {
+          ...normalized,
+          videoPolicy: sourceVideo ? "preserve_camera_cuts" : "none",
+          shots: normalized.shots.map((shot) => ({ ...shot, videoReference: Boolean(sourceVideo) })),
+        } : normalized;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [duration, isCharacterMotion, isRef2VMode, referenceImages.length, sourceVideo]);
 
   useEffect(() => {
     void refreshHealth();
@@ -254,9 +287,18 @@ export function SinglePromptAssistant({
     if (!brief.trim()) return;
 
     const assetIssues = validateSingleRenderAssets({
-      mode,
+      mode: requestMode,
       referenceImage,
-      referenceImages,
+      referenceImages: isCharacterMotion ? referenceImages.filter((_, index) => referenceImageRoles[index] === "character") : referenceImages,
+      faceReferenceImages: referenceImages.filter((_, index) => referenceImageRoles[index] === "face"),
+      clothingReferenceImages: referenceImages.filter((_, index) => referenceImageRoles[index] === "clothing"),
+      ref2vWorkflow: isCharacterMotion ? REF2V_WORKFLOW : undefined,
+      clothingMode,
+      clothingDescription,
+      referenceVideoStart,
+      referenceVideoEnd,
+      referenceVideoMaxDimension,
+      duration,
       lastFrameImage,
       sourceVideo,
     }) as Array<{ field: string; message: string }>;
@@ -293,6 +335,7 @@ export function SinglePromptAssistant({
         referenceImages,
         lastFrameImage,
         sourceVideo,
+        referenceVideoStart,
       });
       const response = await fetch(`${BRIDGE_URL}/api/prompt`, {
         method: "POST",
@@ -304,14 +347,21 @@ export function SinglePromptAssistant({
           reasoningEffort: effectiveReasoning,
           brief: brief.trim(),
           negativePrompt,
-          mode,
+          mode: requestMode,
           duration,
           referenceImageName: referenceImage?.kind === "image" ? referenceImage.name : "",
           referenceImageNames: referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES),
+          referenceImageRoles: isCharacterMotion ? referenceImageRoles : [],
+          ref2vWorkflow: isCharacterMotion ? REF2V_WORKFLOW : "",
+          clothingMode: isCharacterMotion ? clothingMode : "character",
+          clothingDescription: isCharacterMotion ? clothingDescription : "",
+          referenceVideoStart: isCharacterMotion ? referenceVideoStart : 0,
+          referenceVideoEnd: isCharacterMotion ? referenceVideoEnd : duration,
+          referenceVideoMaxDimension: isCharacterMotion ? referenceVideoMaxDimension : 720,
           lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
           sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
           images,
-          cameraPlan: mode === "ref2v" && cameraSettingsEnabled ? normalizeRef2VCameraPlan(cameraPlan, {
+          cameraPlan: isRef2VMode && cameraSettingsEnabled ? normalizeRef2VCameraPlan(cameraPlan, {
             duration,
             referenceCount: referenceImages.length,
             hasVideo: Boolean(sourceVideo),
@@ -382,7 +432,7 @@ export function SinglePromptAssistant({
         {briefError && <p id="single-prompt-brief-error" className={styles.error} role="alert"><Icon name="close" />{briefError}</p>}
       </label>
 
-      {mode === "ref2v" && <>
+      {isRef2VMode && <>
         <div className={styles.cameraToggleRow}>
           <span className={styles.cameraToggleCopy}>
             <strong>{locale === "en" ? "Camera settings" : "鏡頭設定"}</strong>
@@ -471,18 +521,20 @@ async function buildPromptImages({
   referenceImages,
   lastFrameImage,
   sourceVideo,
+  referenceVideoStart,
 }: {
   mode: Mode;
   referenceImage: Asset | null;
   referenceImages: Asset[];
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
+  referenceVideoStart: number;
 }) {
   const images: Array<{ role: string; data: string }> = [];
   if ((mode === "i2v" || mode === "replace") && referenceImage?.kind === "image") {
     images.push({ role: "reference_image", data: await assetToPromptImage(referenceImage) });
   }
-  if (mode === "ref2v") {
+  if (mode === "ref2v" || mode === "ref2v_motion") {
     for (const [index, asset] of referenceImages.slice(0, MAX_REF2V_IMAGES).entries()) {
       images.push({ role: `picture_${index + 1}`, data: await assetToPromptImage(asset) });
     }
@@ -496,13 +548,13 @@ async function buildPromptImages({
   if (mode === "replace" && sourceVideo?.kind === "video") {
     images.push({ role: "source_video_first_frame", data: await assetToPromptImage(sourceVideo) });
   }
-  if (mode === "ref2v" && sourceVideo?.kind === "video") {
-    images.push({ role: "video_1_preview_frame", data: await assetToPromptImage(sourceVideo) });
+  if ((mode === "ref2v" || mode === "ref2v_motion") && sourceVideo?.kind === "video") {
+    images.push({ role: "video_1_preview_frame", data: await assetToPromptImage(sourceVideo, mode === "ref2v_motion" ? referenceVideoStart : 0) });
   }
   return images;
 }
 
-async function assetToPromptImage(asset: Asset) {
+async function assetToPromptImage(asset: Asset, videoTime = 0) {
   const response = await fetch(assetUrl(asset));
   if (!response.ok) throw new Error("無法讀取參考素材。");
   const blob = await response.blob();
@@ -531,6 +583,13 @@ async function assetToPromptImage(asset: Asset) {
         video.onloadeddata = () => resolve();
         video.onerror = () => reject(new Error("無法讀取來源影片首幀。"));
       });
+      if (videoTime > 0 && Number.isFinite(video.duration)) {
+        video.currentTime = Math.min(videoTime, Math.max(0, video.duration - 0.05));
+        await new Promise<void>((resolve, reject) => {
+          video.onseeked = () => resolve();
+          video.onerror = () => reject(new Error("無法讀取參考影片選定片段。"));
+        });
+      }
       const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
       canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
@@ -550,7 +609,7 @@ function promptFormatLabel(mode: Mode) {
   if (mode === "i2v") return "I2VA";
   if (mode === "fl2v") return "FL2VA";
   if (mode === "l2v") return "L2VA";
-  if (mode === "ref2v") return "Ref2VA";
+  if (mode === "ref2v" || mode === "ref2v_motion") return "Ref2VA";
   return "Wan Animate";
 }
 

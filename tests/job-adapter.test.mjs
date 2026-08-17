@@ -23,6 +23,15 @@ test("job adapter exposes only the actions backed by each source contract", () =
   assert.equal(adaptJob({ id: "done", status: "completed" }, "long").canRetry, false);
 });
 
+test("job adapter exposes reusable prompts for single, long, and image jobs regardless of status", () => {
+  const completed = adaptJob({ id: "done", status: "completed", prompt: "final prompt", negativePrompt: "watermark" }, "video");
+  const unfinished = adaptJob({ id: "draft", status: "ready", inputText: "story prompt", negativePrompt: "flicker" }, "long");
+  const failedImage = adaptJob({ id: "image", status: "failed", prompt: "image prompt", negativePrompt: "blur" }, "img2img");
+  assert.deepEqual([completed.prompt, completed.negativePrompt], ["final prompt", "watermark"]);
+  assert.deepEqual([unfinished.prompt, unfinished.negativePrompt], ["story prompt", "flicker"]);
+  assert.deepEqual([failedImage.prompt, failedImage.negativePrompt], ["image prompt", "blur"]);
+});
+
 test("job output references are marked unavailable when their media key is stale", () => {
   const available = new Set(["output:valid/render.mp4"]);
   assert.equal(outputAvailability({ root: "output", name: "valid/render.mp4" }, available), true);

@@ -45,6 +45,7 @@ dev.*.log
 /logs/
 /data/jobs/
 /data/img2img/
+/data/scripts/
 
 # Vast instance-specific connection details (copy the example before use)
 /scripts/vast/vast-runtime.config.json

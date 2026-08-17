@@ -169,6 +169,92 @@ test("Ollama prompt output accepts malformed H3 structure without repair", async
   }
 });
 
+test("Ollama creates a later long-video segment prompt from the previous prompt and current description", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const refPrompt = `subject_definitions:\n<Video 1> is the previous segment's final two silent seconds.\n<Subject 1> is the recurring traveler described by the previous prompt.\n\nsummary:\n[reference generation] <Subject 1> enters a station using <Video 1> as a weak visual reference.\n\nretention_analysis:\n<Video 1>: weak_reference - only identity and lighting continuity are retained.\n<Subject 1> ([Shot 1]): fully_preserved - the recurring identity remains consistent.\n\ndetailed_description:\n[Shot 1] <Subject 1> enters the station in a slow Tracking Shot while the previous camera motion is not continued.\n\noverall_soundscape:\nStation room tone and footsteps.\n\nnon_diegetic_music:\nN/A`;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return new Response(JSON.stringify({ response: JSON.stringify({ prompt: refPrompt, negativePrompt: "identity drift, camera-motion carryover" }) }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      purpose: "long_video_segment_continuation",
+      provider: "ollama",
+      model: "test-model",
+      mode: "ref2v",
+      segmentIndex: 1,
+      duration: 5,
+      previousPrompt: "integrated_multimodal_description: [Shot 1] A traveler leaves a platform.",
+      description: "The same traveler enters the station lobby.",
+      staticReferenceCount: 0,
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.prompt, refPrompt);
+    assert.match(result.body.negativePrompt, /identity drift/);
+    assert.match(result.body.negativePrompt, /camera-motion carryover/);
+    assert.match(calls[0].prompt, /Previous segment H3 prompt/);
+    assert.match(calls[0].prompt, /Current storyboard description/);
+    assert.match(calls[0].system, /subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long-video continuation prompt normalizes Ref2VA headings before returning them", async () => {
+  const originalFetch = globalThis.fetch;
+  const promptWithoutHeadingColons = `subject_definitions\n<Video 1> is the prior silent context.\n\nsummary\n[reference generation] Use <Video 1> weakly.\n\nretention_analysis\n<Video 1>: weak_reference - retain only broad continuity.\n\ndetailed_description\n[Shot 1] A generic traveler crosses the lobby.\n\noverall_soundscape\nQuiet room tone.\n\nnon_diegetic_music\nN/A`;
+  globalThis.fetch = async () => new Response(JSON.stringify({ response: JSON.stringify({ prompt: promptWithoutHeadingColons, negativePrompt: "identity drift" }) }), { status: 200 });
+  try {
+    const result = await invoke("/api/prompt", {
+      purpose: "long_video_segment_continuation",
+      provider: "ollama",
+      model: "test-model",
+      segmentIndex: 1,
+      duration: 5,
+      previousPrompt: "A generic traveler waits.",
+      description: "The traveler crosses the lobby.",
+    });
+    assert.equal(result.status, 200);
+    for (const field of ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"]) {
+      assert.match(result.body.prompt, new RegExp(`^${field}:`, "m"));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long-video continuation prompt repairs a response that omits the previous-video label", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const missingVideo = `subject_definitions:\n<Subject 1> is a generic traveler.\n\nsummary:\n[reference generation] A traveler crosses a lobby.\n\nretention_analysis:\n<Subject 1>: fully_preserved - generic identity remains stable.\n\ndetailed_description:\n[Shot 1] <Subject 1> crosses the lobby.\n\noverall_soundscape:\nRoom tone.\n\nnon_diegetic_music:\nN/A`;
+  const repaired = `subject_definitions:\n<Video 1> is the previous segment's final two silent seconds.\n<Subject 1> is a generic traveler represented in <Video 1>.\n\nsummary:\n[reference generation] A traveler crosses a lobby using <Video 1> weakly.\n\nretention_analysis:\n<Video 1>: weak_reference - only visual continuity is retained.\n<Subject 1>: fully_preserved - generic identity remains stable.\n\ndetailed_description:\n[Shot 1] <Subject 1> crosses the lobby while <Video 1> supplies weak continuity only.\n\noverall_soundscape:\nRoom tone.\n\nnon_diegetic_music:\nN/A`;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (!body.prompt) return new Response(JSON.stringify({ response: "" }), { status: 200 });
+    const prompt = calls.length ? repaired : missingVideo;
+    calls.push(prompt);
+    return new Response(JSON.stringify({ response: JSON.stringify({ prompt, negativePrompt: "identity drift" }) }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      purpose: "long_video_segment_continuation",
+      provider: "ollama",
+      model: "test-model",
+      segmentIndex: 1,
+      duration: 5,
+      previousPrompt: "A generic traveler waits.",
+      description: "The traveler crosses the lobby.",
+    });
+    assert.equal(result.status, 200);
+    assert.equal(calls.length, 2);
+    assert.match(result.body.prompt, /<Video 1>/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("single prompt duration accepts 60 seconds and rejects values above the maximum", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ response: VALID_T2V }), { status: 200 });

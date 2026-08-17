@@ -5,6 +5,8 @@ import { localizedCopy } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import { assetKey, assetUrl, deleteAsset, deleteAssetFolder, fetchAssetLibrary, uploadAssets, type StudioAsset, type StudioAssetFolder } from "./asset-client";
 import { buildAssetNavigation, sortAssets } from "./asset-navigation";
+import { ScriptLibraryManager } from "./ScriptLibraryManager";
+import { LongScriptLibraryManager } from "./LongScriptLibraryManager";
 import styles from "./LibraryWorkspace.module.css";
 
 const NEW_UPLOAD_FOLDER = "__new_upload_folder__";
@@ -14,7 +16,7 @@ export function LibraryWorkspace() {
     const { ACTION_LABELS, SOURCE_LABELS } = localizedCopy(locale);
     const [assets, setAssets] = useState<StudioAsset[]>([]);
     const [folderRecords, setFolderRecords] = useState<StudioAssetFolder[]>([]);
-    const [root, setRoot] = useState<"all" | "input" | "output">("all");
+    const [root, setRoot] = useState<"all" | "input" | "output" | "scripts" | "long-scripts">("all");
     const [query, setQuery] = useState("");
     const [currentPath, setCurrentPath] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -201,36 +203,39 @@ export function LibraryWorkspace() {
         <div className={styles.workspace}>
             <section className={styles.toolbar}>
                 <div className={styles.tabs} role="group" aria-label="素材分類">
-                    {(["all", "input", "output"] as const).map((item) => (
+                    {(["all", "input", "output", "scripts", "long-scripts"] as const).map((item) => (
                         <button key={item} type="button" className={root === item ? styles.active : ""} aria-pressed={root === item} onClick={() => { setRoot(item); setCurrentPath([]); setQuery(""); }}>
-                            {SOURCE_LABELS[item] || item}
+                            {item === "scripts" ? "劇本" : item === "long-scripts" ? "長影片劇本" : SOURCE_LABELS[item] || item}
                         </button>
                     ))}
                 </div>
-                <label className={styles.search}>
-                    <span className="sr-only">搜尋素材</span>
-                    <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋素材…" />
-                </label>
-                <label className={styles.upload}>
-                    上傳素材
-                    <input
-                        className={styles.fileInput}
-                        type="file"
-                        multiple
-                        accept="image/*,video/*"
-                        disabled={busy}
-                        onChange={(event) => {
-                            openUploadDialog(Array.from(event.target.files || []));
-                            event.target.value = "";
-                        }}
-                    />
-                </label>
-                <button type="button" className={styles.delete} disabled={(!selected.size && !selectedFolders.size) || busy} onClick={requestDeleteSelected}>
-                    刪除{selected.size + selectedFolders.size ? `（${selected.size + selectedFolders.size}）` : ""}
-                </button>
+                {root === "scripts" ? <p className={styles.scriptCategoryCopy}>管理 Single 與通用流程可套用的提示詞。</p> : root === "long-scripts" ? <p className={styles.scriptCategoryCopy}>管理只在長影片模式使用的多分鏡劇本。</p> : <>
+                    <label className={styles.search}>
+                        <span className="sr-only">搜尋素材</span>
+                        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋素材…" />
+                    </label>
+                    <label className={styles.upload}>
+                        上傳素材
+                        <input
+                            className={styles.fileInput}
+                            type="file"
+                            multiple
+                            accept="image/*,video/*"
+                            disabled={busy}
+                            onChange={(event) => {
+                                openUploadDialog(Array.from(event.target.files || []));
+                                event.target.value = "";
+                            }}
+                        />
+                    </label>
+                    <button type="button" className={styles.delete} disabled={(!selected.size && !selectedFolders.size) || busy} onClick={requestDeleteSelected}>
+                        刪除{selected.size + selectedFolders.size ? `（${selected.size + selectedFolders.size}）` : ""}
+                    </button>
+                </>}
             </section>
 
             {error && <div className={styles.error} role="alert">{error}</div>}
+            {root === "scripts" ? <ScriptLibraryManager /> : root === "long-scripts" ? <LongScriptLibraryManager /> : <>
             {pendingUploadFiles.length > 0 && (
                 <div className={styles.backdrop} role="presentation" onClick={(event) => event.target === event.currentTarget && closeUploadDialog()}>
                     <div className={`${styles.confirmDialog} ${styles.uploadDialog}`} role="dialog" aria-modal="true" aria-labelledby="upload-assets-title">
@@ -440,6 +445,7 @@ export function LibraryWorkspace() {
                     </div>
                 </div>
             )}
+            </>}
         </div>
     );
 }

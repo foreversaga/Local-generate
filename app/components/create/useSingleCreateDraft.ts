@@ -27,6 +27,13 @@ export type SingleCreateDraftInput = {
   characterLoraTrigger: string | null;
   referenceImageKey: string | null;
   referenceImageKeys: string[];
+  faceReferenceImageKeys: string[];
+  clothingReferenceImageKeys: string[];
+  clothingMode: "character" | "reference" | "description";
+  clothingDescription: string;
+  referenceVideoStart: number;
+  referenceVideoEnd: number;
+  referenceVideoMaxDimension: number;
   lastFrameImageKey: string | null;
   sourceVideoKey: string | null;
 };
@@ -48,6 +55,7 @@ export function useSingleCreateDraft({
   delayMs = 300,
 }: UseSingleCreateDraftOptions) {
   const hydrateRef = useRef(onHydrate);
+  const skipNextSaveRef = useRef(false);
   const [hydrated, setHydrated] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState<SingleCreateDraftStatus>("loading");
@@ -75,6 +83,12 @@ export function useSingleCreateDraft({
 
   useEffect(() => {
     if (!hydrated) return;
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      setDirty(false);
+      setStatus("idle");
+      return;
+    }
 
     const markSavingTimer = window.setTimeout(() => {
       setDirty(true);
@@ -111,12 +125,13 @@ export function useSingleCreateDraft({
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [dirty]);
 
-  function clearDraft() {
+  function clearDraft({ suppressNextSave = false }: { suppressNextSave?: boolean } = {}) {
     try {
       window.localStorage.removeItem(SINGLE_CREATE_DRAFT_STORAGE_KEY);
     } catch {
       // Navigation after a successful submit must not depend on storage access.
     }
+    skipNextSaveRef.current = suppressNextSave;
     setDirty(false);
     setStatus("idle");
   }

@@ -91,7 +91,7 @@ The remote instance is disposable by design. A persistent `/workspace` volume is
 
 Long-video drafts and jobs are persisted under `data/jobs/<sequence-id>/`. Each job has an atomic `job.json`, segment files, and an append-only `events.jsonl` with generation, ffprobe/ffmpeg, assembly, API start, and restart-recovery events. A daily summary is written to `logs/long-video-YYYYMMDD.jsonl`; logs include command exit codes and the last stderr bytes but never tokens, base64 media, or repeated full prompts. Set `FFMPEG_PATH` and `FFPROBE_PATH` when the executables are not on `PATH`. Sequence output folders are allocated exclusively below `ComfyUI/output`; an existing folder returns `OUTPUT_FOLDER_EXISTS`.
 
-Continuation prompt finalization has an injectable `finalizePrompt` seam in the runner. For segment 2 and later, the bridge sends the normalized previous tail image transiently to the selected vision-capable Ollama model; request, timeout, unsafe-tail, and validation failures use a deterministic continuity-preserving fallback and record provider/model/fallback provenance without persisting image bytes.
+Each long-video segment is one independent storyboard shot. Starting with shot 2, the runner supplies only the preceding shot's final two silent seconds as a weak Ref2VA visual-consistency reference; it does not lock the next first frame, replay footage, continue camera motion, or reuse reference audio. Final assembly remains an ordered hard cut of the normalized shots.
 
 ## Start the web service
 

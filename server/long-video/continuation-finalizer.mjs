@@ -86,6 +86,58 @@ export function ensureRef2vaAvContextPrompt(prompt) {
   return next;
 }
 
+export function ensureRef2vaVisualContextPrompt(prompt) {
+  let next = normalizeRef2vaSectionHeadings(String(prompt || ""))
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*<Audio\s+\d+>/i.test(line))
+    .join("\n");
+  const definition = "<Video 1> is the final two-second silent visual excerpt of the previous storyboard shot, used only as a weak reference for character, scene, lighting, and visual-state consistency; it is not footage to replay and does not define the new shot's opening frame or motion.";
+  const definitionBoundary = /(subject_definitions\s*:[\s\S]*?)(\n\n(?=summary\s*:))/i;
+  if (definitionBoundary.test(next) && !/subject_definitions\s*:[\s\S]*?<Video\s+1>/i.test(next)) {
+    next = next.replace(definitionBoundary, `$1\n${definition}$2`);
+  }
+  next = next.replace(
+    /(summary\s*:\s*)\[(?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference)(?:\s*\+\s*(?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference))*\]/i,
+    "$1[reference generation]",
+  );
+  const bodyBoundary = /(detailed_description\s*:[\s\S]*?)(\n\n(?=overall_soundscape\s*:))/i;
+  const instruction = "Use <Video 1> only to keep appearance, environment, lighting, and the preceding visual state consistent. Start a new independent storyboard shot according to this shot's own composition, action, and camera plan; do not replay or continue the reference video's footage or motion.";
+  if (bodyBoundary.test(next) && !next.includes(instruction)) next = next.replace(bodyBoundary, `$1\n${instruction}$2`);
+  return next;
+}
+
+export function normalizeRef2vaSectionHeadings(prompt) {
+  const fields = [
+    "subject_definitions",
+    "summary",
+    "retention_analysis",
+    "detailed_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+  ];
+  let next = String(prompt || "");
+  for (const field of fields) {
+    next = next.replace(new RegExp(`^[ \\t]*${field}[ \\t]*:?[ \\t]*$`, "gim"), `${field}:`);
+  }
+  return next;
+}
+
+export function ensureRef2vaLatentContinuationPrompt(prompt) {
+  let next = normalizeRef2vaSectionHeadings(prompt)
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*<Video\s+\d+>/i.test(line))
+    .join("\n")
+    .replace(/<Video\s+\d+>/gi, "the protected audiovisual context");
+  next = next.replace(
+    /(summary\s*:\s*)\[(?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference)(?:\s*\+\s*(?:keyframe completion|reference generation|video editing|video continuation|audio reuse|audio reference))*\]/i,
+    "$1[video continuation + reference generation]",
+  );
+  const instruction = "The opening protected audiovisual context is the exact ending of the previous storyboard shot. Preserve its final composition, pose, object state, camera direction, motion velocity, ambience, and timing through the continuation boundary; introduce this shot's new action only after that inherited state is established, without replaying or redescribing the protected context as a separate reference clip.";
+  const bodyBoundary = /(detailed_description\s*:[\s\S]*?)(\n\n(?=overall_soundscape\s*:))/i;
+  if (bodyBoundary.test(next) && !next.includes(instruction)) next = next.replace(bodyBoundary, `$1\n${instruction}$2`);
+  return next;
+}
+
 function orderedReferenceDescription(references = []) {
   if (!Array.isArray(references) || !references.length) return "";
   return `Ordered reference pictures: ${references.map((reference, index) => `<Picture ${index + 1}> (${reference?.name || "reference"})`).join(", ")}.`;

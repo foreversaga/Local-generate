@@ -29,14 +29,16 @@ import { useI18n } from "../../i18n/I18nProvider";
 import { uploadAssets, type StudioAsset } from "../library/asset-client";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { SinglePromptAssistant } from "./SinglePromptAssistant";
+import { ScriptLibraryPanel } from "./ScriptLibraryPanel";
 import { useSingleCreateDraft, type SingleCreateDraft } from "./useSingleCreateDraft";
+import { buildRef2VOrderedReferences, REF2V_WORKFLOW } from "../../lib/ref2v-reference-plan.mjs";
 import styles from "./SingleCreateForm.module.css";
 
 const BRIDGE_URL = "/app";
 const H3_PROMPT_MAX_CHARS = 7000;
 const MAX_REF2V_IMAGES = 9;
 
-type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
+type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "ref2v_motion" | "replace";
 type NumberDraft = number | "";
 type AssetKind = "image" | "video";
 type ResolutionStatus = "default" | "loading" | "auto" | "adjusted" | "manual" | "error";
@@ -61,7 +63,9 @@ type Asset = {
 };
 type Job = { id: string };
 type ValidationIssue = { field: string; message: string };
-type UploadTarget = "referenceImage" | "referenceImages" | "lastFrameImage" | "sourceVideo";
+type MultiReferenceTarget = "referenceImages" | "faceReferenceImages" | "clothingReferenceImages";
+type UploadTarget = "referenceImage" | MultiReferenceTarget | "lastFrameImage" | "sourceVideo";
+type ClothingMode = "character" | "reference" | "description";
 type IconName = "spark" | "image" | "frames" | "layers" | "video" | "upload" | "close" | "shuffle" | "arrow" | "check" | "folder";
 type ApiErrorPayload = {
   error?: string | { code?: string; message?: string };
@@ -76,7 +80,8 @@ const MODE_OPTIONS: readonly ModeOption[] = [
   { value: "i2v", label: "參考圖生片", note: "Image → Video", icon: "image" },
   { value: "fl2v", label: "首尾幀生片", note: "First + Last Frame", icon: "frames" },
   { value: "l2v", label: "尾幀生片", note: "Last Frame → Video", icon: "image" },
-  { value: "ref2v", label: "多圖參考生片", note: "Ref2VA · 最多 9 張", icon: "layers" },
+  { value: "ref2v", label: "多圖參考生片", note: "Ref2VA · 圖片或影片參考", icon: "layers" },
+  { value: "ref2v_motion", label: "角色動作參考", note: "Ref2VA · 圖片身分＋影片動作", icon: "video" },
   { value: "replace", label: "影片替換", note: "Wan Animate", icon: "video" },
 ] as const;
 
@@ -122,8 +127,16 @@ export function SingleCreateForm() {
   const [h3LoraStrength, setH3LoraStrength] = useState<NumberDraft>(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
   const [referenceImage, setReferenceImage] = useState<Asset | null>(null);
   const [referenceImages, setReferenceImages] = useState<Asset[]>([]);
+  const [faceReferenceImages, setFaceReferenceImages] = useState<Asset[]>([]);
+  const [clothingReferenceImages, setClothingReferenceImages] = useState<Asset[]>([]);
+  const [clothingMode, setClothingMode] = useState<ClothingMode>("character");
+  const [clothingDescription, setClothingDescription] = useState("");
   const [lastFrameImage, setLastFrameImage] = useState<Asset | null>(null);
   const [sourceVideo, setSourceVideo] = useState<Asset | null>(null);
+  const [sourceVideoDuration, setSourceVideoDuration] = useState<number | null>(null);
+  const [referenceVideoStart, setReferenceVideoStart] = useState(0);
+  const [referenceVideoEnd, setReferenceVideoEnd] = useState(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
+  const [referenceVideoMaxDimension, setReferenceVideoMaxDimension] = useState(720);
   const [uploadingTarget, setUploadingTarget] = useState<UploadTarget | null>(null);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
@@ -133,6 +146,17 @@ export function SingleCreateForm() {
   const availableModels = useMemo(() => modelOptionsForMode(mode), [mode]);
   const modeOption = MODE_OPTIONS.find((option) => option.value === mode) || MODE_OPTIONS[0];
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
+  const isRef2VMode = mode === "ref2v" || mode === "ref2v_motion";
+  const isCharacterMotion = mode === "ref2v_motion";
+  const orderedRef2V = useMemo(() => mode === "ref2v_motion"
+    ? buildRef2VOrderedReferences({
+      characterImages: referenceImages,
+      faceImages: faceReferenceImages,
+      clothingMode,
+      clothingImages: clothingReferenceImages,
+    })
+    : { references: referenceImages.slice(0, MAX_REF2V_IMAGES), roles: [] },
+  [clothingMode, clothingReferenceImages, faceReferenceImages, mode, referenceImages]);
   const resolutionAsset = useMemo(
     () => resolutionAssetForMode(mode, referenceImage, referenceImages, lastFrameImage),
     [lastFrameImage, mode, referenceImage, referenceImages],
@@ -212,8 +236,36 @@ export function SingleCreateForm() {
     };
   }, [mode, resolutionAssetKey, resolutionAssetName, resolutionAssetUrl]);
 
+  useEffect(() => {
+    if (mode !== "ref2v_motion" || !sourceVideo) return;
+    let cancelled = false;
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.src = assetUrl(sourceVideo);
+    video.onloadedmetadata = () => {
+      if (cancelled || !Number.isFinite(video.duration)) return;
+      const available = Number(video.duration.toFixed(3));
+      setSourceVideoDuration(available);
+      const start = Math.min(referenceVideoStart, Math.max(0, available - 0.5));
+      const nextEnd = referenceVideoEnd > start && referenceVideoEnd <= available
+        ? referenceVideoEnd
+        : Math.min(available, start + duration);
+      setReferenceVideoStart(Number(start.toFixed(3)));
+      setReferenceVideoEnd(Number(nextEnd.toFixed(3)));
+      if (nextEnd > start) setDuration(Number((nextEnd - start).toFixed(3)));
+    };
+    video.onerror = () => { if (!cancelled) setSourceVideoDuration(null); };
+    return () => {
+      cancelled = true;
+      video.removeAttribute("src");
+      video.load();
+    };
+  // Reset metadata only when the selected asset changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, sourceVideo?.name, sourceVideo?.root]);
+
   const validationIssues = useMemo(() => validateSingleRender({
-    mode,
+    mode: isRef2VMode ? "ref2v" : mode,
     prompt,
     promptMaxChars: H3_PROMPT_MAX_CHARS,
     enforcePromptMaxChars: true,
@@ -229,6 +281,14 @@ export function SingleCreateForm() {
     h3LoraStrength,
     referenceImage,
     referenceImages,
+    faceReferenceImages,
+    clothingReferenceImages,
+    ref2vWorkflow: isCharacterMotion ? REF2V_WORKFLOW : undefined,
+    clothingMode,
+    clothingDescription,
+    referenceVideoStart,
+    referenceVideoEnd,
+    referenceVideoMaxDimension,
     lastFrameImage,
     sourceVideo,
   }) as ValidationIssue[], [
@@ -238,6 +298,13 @@ export function SingleCreateForm() {
     prompt,
     referenceImage,
     referenceImages,
+    faceReferenceImages,
+    clothingReferenceImages,
+    clothingMode,
+    clothingDescription,
+    referenceVideoStart,
+    referenceVideoEnd,
+    referenceVideoMaxDimension,
     renderCount,
     characterLoraName,
     characterLoraStrength,
@@ -248,6 +315,8 @@ export function SingleCreateForm() {
     sourceVideo,
     steps,
     width,
+    isCharacterMotion,
+    isRef2VMode,
   ]);
   const issuesByField = useMemo(() => new Map(validationIssues.map((issue) => [issue.field, issue.message])), [validationIssues]);
   const previewAsset = referenceImage || referenceImages[0] || lastFrameImage || sourceVideo;
@@ -274,6 +343,13 @@ export function SingleCreateForm() {
     characterLoraTrigger: h3LoraEnabled ? "r34l1sm" : null,
     referenceImageKey: referenceImage ? assetKey(referenceImage) : null,
     referenceImageKeys: referenceImages.map(assetKey),
+    faceReferenceImageKeys: faceReferenceImages.map(assetKey),
+    clothingReferenceImageKeys: clothingReferenceImages.map(assetKey),
+    clothingMode,
+    clothingDescription,
+    referenceVideoStart,
+    referenceVideoEnd,
+    referenceVideoMaxDimension,
     lastFrameImageKey: lastFrameImage ? assetKey(lastFrameImage) : null,
     sourceVideoKey: sourceVideo ? assetKey(sourceVideo) : null,
   }), [
@@ -292,6 +368,13 @@ export function SingleCreateForm() {
     prompt,
     referenceImage,
     referenceImages,
+    faceReferenceImages,
+    clothingReferenceImages,
+    clothingMode,
+    clothingDescription,
+    referenceVideoStart,
+    referenceVideoEnd,
+    referenceVideoMaxDimension,
     renderCount,
     seed,
     sourceVideo,
@@ -374,7 +457,7 @@ export function SingleCreateForm() {
       const asset = key ? assetByKey.get(key) || assetReferenceFromKey(key, "video") : null;
       return asset?.kind === "video" ? asset : null;
     };
-    const draftHasResolutionAsset = draftMode === "ref2v"
+    const draftHasResolutionAsset = draftMode === "ref2v" || draftMode === "ref2v_motion"
       ? draft.referenceImageKeys.length > 0
       : draftMode === "l2v"
         ? Boolean(draft.lastFrameImageKey)
@@ -406,6 +489,19 @@ export function SingleCreateForm() {
       .map((key) => imageByKey(key))
       .filter((asset): asset is Asset => Boolean(asset))
       .slice(0, MAX_REF2V_IMAGES));
+    setFaceReferenceImages(draft.faceReferenceImageKeys
+      .map((key) => imageByKey(key))
+      .filter((asset): asset is Asset => Boolean(asset))
+      .slice(0, MAX_REF2V_IMAGES));
+    setClothingReferenceImages(draft.clothingReferenceImageKeys
+      .map((key) => imageByKey(key))
+      .filter((asset): asset is Asset => Boolean(asset))
+      .slice(0, MAX_REF2V_IMAGES));
+    setClothingMode(draft.clothingMode);
+    setClothingDescription(draft.clothingDescription);
+    setReferenceVideoStart(draft.referenceVideoStart);
+    setReferenceVideoEnd(draft.referenceVideoEnd);
+    setReferenceVideoMaxDimension(draft.referenceVideoMaxDimension);
     setLastFrameImage(imageByKey(draft.lastFrameImageKey));
     setSourceVideo(videoByKey(draft.sourceVideoKey));
     setSubmitAttempted(false);
@@ -440,7 +536,7 @@ export function SingleCreateForm() {
       setSteps(6);
       return;
     }
-    if (nextMode === "ref2v") {
+    if (nextMode === "ref2v" || nextMode === "ref2v_motion") {
       setModelProfile("ref2va_pruned_nvfp4");
       setWidth(736);
       setHeight(416);
@@ -491,6 +587,43 @@ export function SingleCreateForm() {
     setResolutionFlipped(false);
     setResolutionError("");
     setResolutionStatus("default");
+  }
+
+  function clearSingleCreateDraft() {
+    if (!window.confirm("確定清除目前 Single 草稿？提示詞、素材選擇與生成設定都會重設；已儲存劇本與工作不受影響。")) return;
+
+    clearDraft({ suppressNextSave: true });
+    setMode("t2v");
+    setInitialDescription("");
+    setPrompt("");
+    setOllamaPromptReceipt("");
+    setNegativePrompt("");
+    setModelProfile("nvfp4_blackwell");
+    resetResolutionToDefault("t2v");
+    setDuration(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
+    setSteps(20);
+    setSeed(12345);
+    setRenderCount(1);
+    setOutputName("");
+    setCharacterLoraName("");
+    setCharacterLoraStrength(0.75);
+    setH3LoraEnabled(false);
+    setH3LoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
+    setReferenceImage(null);
+    setReferenceImages([]);
+    setFaceReferenceImages([]);
+    setClothingReferenceImages([]);
+    setClothingMode("character");
+    setClothingDescription("");
+    setLastFrameImage(null);
+    setSourceVideo(null);
+    setSourceVideoDuration(null);
+    setReferenceVideoStart(0);
+    setReferenceVideoEnd(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
+    setReferenceVideoMaxDimension(720);
+    setSubmitAttempted(false);
+    setTouchedFields(new Set());
+    setSubmitError("");
   }
 
   function markManualResolution() {
@@ -558,30 +691,59 @@ export function SingleCreateForm() {
     } : current);
   }
 
-  function selectSingleAsset(target: Exclude<UploadTarget, "referenceImages">, nextAsset: Asset | null) {
+  function selectSingleAsset(target: Exclude<UploadTarget, MultiReferenceTarget>, nextAsset: Asset | null) {
     if (target === "referenceImage") setReferenceImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "lastFrameImage") setLastFrameImage(nextAsset?.kind === "image" ? nextAsset : null);
     if (target === "sourceVideo") setSourceVideo(nextAsset?.kind === "video" ? nextAsset : null);
     if ((target === "referenceImage" || target === "lastFrameImage") && !nextAsset) resetResolutionToDefault();
+    if (isRef2VMode && target === "sourceVideo") {
+      setPrompt("");
+      setOllamaPromptReceipt("");
+    }
     markTouched(target);
   }
 
-  function addReferenceImage(asset: Asset) {
-    const key = assetKey(asset);
-    if (asset.kind !== "image" || referenceImages.some((item) => assetKey(item) === key)) return;
-    setReferenceImages((current) => [...current, asset].slice(0, MAX_REF2V_IMAGES));
-    markTouched("referenceImages");
+  function updateReferenceVideoRange(axis: "start" | "end", value: NumberDraft) {
+    if (value === "") return;
+    const numeric = Math.max(0, Number(value));
+    const nextStart = axis === "start" ? numeric : referenceVideoStart;
+    const nextEnd = axis === "end" ? numeric : referenceVideoEnd;
+    if (sourceVideoDuration !== null && numeric > sourceVideoDuration) return;
+    if (axis === "start") setReferenceVideoStart(Number(numeric.toFixed(3)));
+    else setReferenceVideoEnd(Number(numeric.toFixed(3)));
+    if (nextEnd > nextStart) setDuration(Number((nextEnd - nextStart).toFixed(3)));
+    setPrompt("");
+    setOllamaPromptReceipt("");
   }
 
-  function removeReferenceImage(asset: Asset) {
-    setReferenceImages((current) => current.filter((item) => assetKey(item) !== assetKey(asset)));
-    if (referenceImages.length === 1) resetResolutionToDefault();
-    markTouched("referenceImages");
+  function updateReferenceList(target: MultiReferenceTarget, updater: (current: Asset[]) => Asset[]) {
+    if (target === "faceReferenceImages") setFaceReferenceImages(updater);
+    else if (target === "clothingReferenceImages") setClothingReferenceImages(updater);
+    else setReferenceImages(updater);
+  }
+
+  function addReferenceImage(asset: Asset, target: MultiReferenceTarget = "referenceImages") {
+    const key = assetKey(asset);
+    const allReferenceAssets = [...referenceImages, ...faceReferenceImages, ...clothingReferenceImages];
+    if (asset.kind !== "image" || allReferenceAssets.some((item) => assetKey(item) === key) || orderedRef2V.references.length >= MAX_REF2V_IMAGES) return;
+    updateReferenceList(target, (current) => [...current, asset]);
+    setPrompt("");
+    setOllamaPromptReceipt("");
+    markTouched(target);
+  }
+
+  function removeReferenceImage(asset: Asset, target: MultiReferenceTarget = "referenceImages") {
+    updateReferenceList(target, (current) => current.filter((item) => assetKey(item) !== assetKey(asset)));
+    setPrompt("");
+    setOllamaPromptReceipt("");
+    if (target === "referenceImages" && referenceImages.length === 1) resetResolutionToDefault();
+    markTouched(target);
   }
 
   async function uploadFiles(files: File[], target: UploadTarget) {
-    const candidates = target === "referenceImages"
-      ? files.filter((file) => file.type.startsWith("image/")).slice(0, Math.max(0, MAX_REF2V_IMAGES - referenceImages.length))
+    const isMultiReference = ["referenceImages", "faceReferenceImages", "clothingReferenceImages"].includes(target);
+    const candidates = isMultiReference
+      ? files.filter((file) => file.type.startsWith("image/")).slice(0, Math.max(0, MAX_REF2V_IMAGES - orderedRef2V.references.length))
       : files.slice(0, 1);
     if (!candidates.length) return;
 
@@ -594,8 +756,14 @@ export function SingleCreateForm() {
       if (target === "referenceImage") setReferenceImage(uploaded[0] || null);
       if (target === "lastFrameImage") setLastFrameImage(uploaded[0] || null);
       if (target === "sourceVideo") setSourceVideo(uploaded[0] || null);
-      if (target === "referenceImages") {
-        setReferenceImages((current) => mergeAssets(current, uploaded).slice(0, MAX_REF2V_IMAGES));
+      if (isMultiReference) {
+        const multiTarget = target as MultiReferenceTarget;
+        const otherKeys = new Set([...referenceImages, ...faceReferenceImages, ...clothingReferenceImages].map(assetKey));
+        updateReferenceList(multiTarget, (current) => mergeAssets(current, uploaded.filter((asset) => !otherKeys.has(assetKey(asset)))).slice(0, MAX_REF2V_IMAGES));
+      }
+      if (isRef2VMode && (isMultiReference || target === "sourceVideo")) {
+        setPrompt("");
+        setOllamaPromptReceipt("");
       }
       markTouched(target);
     } catch (error) {
@@ -621,9 +789,10 @@ export function SingleCreateForm() {
     const batchId = count > 1
       ? `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
       : "";
-    const referenceImageNames = referenceImages.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
-    const referenceImageRoots = referenceImages.map((asset) => asset.root).slice(0, MAX_REF2V_IMAGES);
-    const primaryReference = mode === "ref2v" ? referenceImages[0] || referenceImage : referenceImage;
+    const referenceImageNames = orderedRef2V.references.map((asset) => asset.name).slice(0, MAX_REF2V_IMAGES);
+    const referenceImageRoots = orderedRef2V.references.map((asset) => asset.root).slice(0, MAX_REF2V_IMAGES);
+    const requestMode = isRef2VMode ? "ref2v" : mode;
+    const primaryReference = isRef2VMode ? orderedRef2V.references[0] || referenceImage : referenceImage;
 
     setSubmitting(true);
     try {
@@ -632,7 +801,7 @@ export function SingleCreateForm() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildSingleRenderRequest({
-            mode,
+            mode: requestMode,
             initialDescription,
             prompt,
             negativePrompt,
@@ -640,6 +809,13 @@ export function SingleCreateForm() {
             referenceImageRoot: primaryReference?.kind === "image" ? primaryReference.root : undefined,
             referenceImageNames,
             referenceImageRoots,
+            referenceImageRoles: isCharacterMotion ? orderedRef2V.roles : [],
+            ref2vWorkflow: isCharacterMotion ? REF2V_WORKFLOW : "",
+            clothingMode: isCharacterMotion ? clothingMode : "character",
+            clothingDescription: isCharacterMotion ? clothingDescription : "",
+            referenceVideoStart: isCharacterMotion ? referenceVideoStart : 0,
+            referenceVideoEnd: isCharacterMotion ? referenceVideoEnd : duration,
+            referenceVideoMaxDimension: isCharacterMotion ? referenceVideoMaxDimension : 720,
             lastFrameName: lastFrameImage?.kind === "image" ? lastFrameImage.name : "",
             lastFrameRoot: lastFrameImage?.kind === "image" ? lastFrameImage.root : undefined,
             sourceVideoName: sourceVideo?.kind === "video" ? sourceVideo.name : "",
@@ -717,13 +893,37 @@ export function SingleCreateForm() {
               mode={mode}
               referenceImage={referenceImage}
               referenceImages={referenceImages}
+              faceReferenceImages={faceReferenceImages}
+              clothingReferenceImages={clothingReferenceImages}
+              clothingMode={clothingMode}
+              clothingDescription={clothingDescription}
               lastFrameImage={lastFrameImage}
               sourceVideo={sourceVideo}
+              sourceVideoDuration={sourceVideoDuration}
+              referenceVideoStart={referenceVideoStart}
+              referenceVideoEnd={referenceVideoEnd}
+              referenceVideoMaxDimension={referenceVideoMaxDimension}
               uploadingTarget={uploadingTarget}
               errorFor={visibleFieldError}
               onSelectSingle={selectSingleAsset}
-              onAddReferences={(chosen) => chosen.forEach(addReferenceImage)}
+              onAddReferences={(target, chosen) => chosen.forEach((asset) => addReferenceImage(asset, target))}
               onRemoveReference={removeReferenceImage}
+              onClothingModeChange={(value) => {
+                setClothingMode(value);
+                setPrompt("");
+                setOllamaPromptReceipt("");
+              }}
+              onClothingDescriptionChange={(value) => {
+                setClothingDescription(value);
+                setPrompt("");
+                setOllamaPromptReceipt("");
+              }}
+              onReferenceVideoRangeChange={updateReferenceVideoRange}
+              onReferenceVideoMaxDimensionChange={(value) => {
+                setReferenceVideoMaxDimension(value);
+                setPrompt("");
+                setOllamaPromptReceipt("");
+              }}
               onClearReference={() => {
                 setReferenceImage(null);
                 resetResolutionToDefault();
@@ -732,7 +932,13 @@ export function SingleCreateForm() {
                 setLastFrameImage(null);
                 resetResolutionToDefault();
               }}
-              onClearVideo={() => setSourceVideo(null)}
+              onClearVideo={() => {
+                setSourceVideo(null);
+                setSourceVideoDuration(null);
+                setReferenceVideoStart(0);
+                setReferenceVideoEnd(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
+                setOllamaPromptReceipt("");
+              }}
               onUpload={uploadFiles}
             />
           </div>
@@ -746,15 +952,36 @@ export function SingleCreateForm() {
               brief={initialDescription}
               negativePrompt={negativePrompt}
               referenceImage={referenceImage}
-              referenceImages={referenceImages}
+              referenceImages={orderedRef2V.references}
+              referenceImageRoles={orderedRef2V.roles}
+              clothingMode={clothingMode}
+              clothingDescription={clothingDescription}
               lastFrameImage={lastFrameImage}
               sourceVideo={sourceVideo}
-              onBriefChange={setInitialDescription}
+              referenceVideoStart={referenceVideoStart}
+              referenceVideoEnd={referenceVideoEnd}
+              referenceVideoMaxDimension={referenceVideoMaxDimension}
+              onBriefChange={(value) => {
+                setInitialDescription(value);
+                if (isRef2VMode) {
+                  setPrompt("");
+                  setOllamaPromptReceipt("");
+                }
+              }}
               onPromptGenerated={(value, receipt) => {
                 setPrompt(value);
                 setOllamaPromptReceipt(receipt || "");
               }}
               onNegativePromptGenerated={setNegativePrompt}
+            />
+            <ScriptLibraryPanel
+              prompt={prompt}
+              negativePrompt={negativePrompt}
+              onApply={(script) => {
+                setPrompt(script.prompt);
+                setNegativePrompt(script.negativePrompt);
+                setOllamaPromptReceipt("");
+              }}
             />
             <label className={`${styles.field} ${visibleFieldError("prompt") ? styles.fieldInvalid : ""}`}>
               <span className={styles.fieldLabel}>H3 提示詞</span>
@@ -1077,7 +1304,7 @@ export function SingleCreateForm() {
             <SummaryRow label="長度" value={`${duration.toFixed(1)} 秒`} />
             <SummaryRow label="採樣步數 / 隨機種子" value={`${steps || "—"} / ${seed === "" ? "—" : seed}`} />
             <SummaryRow label="數量" value={renderCount === "" ? "—" : String(renderCount)} />
-            <SummaryRow label="素材" value={assetSummary(mode, referenceImage, referenceImages, lastFrameImage, sourceVideo)} />
+            <SummaryRow label="素材" value={assetSummary(mode, referenceImage, orderedRef2V.references, lastFrameImage, sourceVideo)} />
             {mode === "replace" && characterLoraName.trim() && (
               <SummaryRow label="角色 LoRA" value={`${characterLoraName.trim()} · ${characterLoraStrength === "" ? "—" : Number(characterLoraStrength).toFixed(2)}`} />
             )}
@@ -1109,9 +1336,12 @@ export function SingleCreateForm() {
             <span className={`${styles.statusDot} ${serviceState.bridge && serviceState.comfy ? styles.statusDotOnline : ""}`} aria-hidden="true" />
             <span>{serviceState.bridge && serviceState.comfy ? "Bridge / ComfyUI 在線" : "Bridge 或 ComfyUI 尚未就緒；提交時仍由既有 API 回報錯誤。"}</span>
           </div>
-          <div className={`${styles.draftState} ${draftStatus === "error" ? styles.draftStateError : ""}`} role="status" aria-live="polite">
-            <Icon name={draftStatus === "error" ? "close" : "check"} />
-            <span>{draftStatusLabel(draftStatus)}</span>
+          <div className={styles.draftActions}>
+            <div className={`${styles.draftState} ${draftStatus === "error" ? styles.draftStateError : ""}`} role="status" aria-live="polite">
+              <Icon name={draftStatus === "error" ? "close" : "check"} />
+              <span>{draftStatusLabel(draftStatus)}</span>
+            </div>
+            <button type="button" className={styles.clearDraftButton} disabled={!canInteract} onClick={clearSingleCreateDraft}>清除草稿</button>
           </div>
           {submitError && <div className={styles.submitError} role="alert">{submitError}</div>}
           <div className={styles.desktopGenerate}>
@@ -1147,13 +1377,25 @@ function SourceFields({
   mode,
   referenceImage,
   referenceImages,
+  faceReferenceImages,
+  clothingReferenceImages,
+  clothingMode,
+  clothingDescription,
   lastFrameImage,
   sourceVideo,
+  sourceVideoDuration,
+  referenceVideoStart,
+  referenceVideoEnd,
+  referenceVideoMaxDimension,
   uploadingTarget,
   errorFor,
   onSelectSingle,
   onAddReferences,
   onRemoveReference,
+  onClothingModeChange,
+  onClothingDescriptionChange,
+  onReferenceVideoRangeChange,
+  onReferenceVideoMaxDimensionChange,
   onClearReference,
   onClearLastFrame,
   onClearVideo,
@@ -1162,18 +1404,32 @@ function SourceFields({
   mode: Mode;
   referenceImage: Asset | null;
   referenceImages: Asset[];
+  faceReferenceImages: Asset[];
+  clothingReferenceImages: Asset[];
+  clothingMode: ClothingMode;
+  clothingDescription: string;
   lastFrameImage: Asset | null;
   sourceVideo: Asset | null;
+  sourceVideoDuration: number | null;
+  referenceVideoStart: number;
+  referenceVideoEnd: number;
+  referenceVideoMaxDimension: number;
   uploadingTarget: UploadTarget | null;
   errorFor: (field: string) => string;
-  onSelectSingle: (target: Exclude<UploadTarget, "referenceImages">, asset: Asset | null) => void;
-  onAddReferences: (assets: Asset[]) => void;
-  onRemoveReference: (asset: Asset) => void;
+  onSelectSingle: (target: Exclude<UploadTarget, MultiReferenceTarget>, asset: Asset | null) => void;
+  onAddReferences: (target: MultiReferenceTarget, assets: Asset[]) => void;
+  onRemoveReference: (asset: Asset, target: MultiReferenceTarget) => void;
+  onClothingModeChange: (value: ClothingMode) => void;
+  onClothingDescriptionChange: (value: string) => void;
+  onReferenceVideoRangeChange: (axis: "start" | "end", value: NumberDraft) => void;
+  onReferenceVideoMaxDimensionChange: (value: number) => void;
   onClearReference: () => void;
   onClearLastFrame: () => void;
   onClearVideo: () => void;
   onUpload: (files: File[], target: UploadTarget) => Promise<void>;
 }) {
+  const activeClothingImages = clothingMode === "reference" ? clothingReferenceImages : [];
+  const totalRef2VImages = referenceImages.length + faceReferenceImages.length + activeClothingImages.length;
   if (mode === "t2v") {
     return <p className={styles.helper}>文字生片不需要來源素材。若要從圖片或影片開始，切換上方模式。</p>;
   }
@@ -1209,44 +1465,115 @@ function SourceFields({
       )}
 
       {mode === "ref2v" && (
-        <div className={styles.assetCard}>
-          <div className={styles.assetHeader}>
+        <div className={styles.referenceWorkflow}>
+          <div className={styles.workflowIntro}>
             <div>
-              <label htmlFor="single-reference-images" className={styles.fieldLabel}>參考圖片</label>
-              <div className={styles.assetMeta}>至少一張圖片或一段參考影片；最多 {MAX_REF2V_IMAGES} 張圖片。</div>
+              <strong>多圖參考生片</strong>
+              <span>可只使用圖片，也可以額外加入一段影片作為參考；圖片最多 {MAX_REF2V_IMAGES} 張。</span>
             </div>
-            <span className={styles.assetMeta}>{referenceImages.length} / {MAX_REF2V_IMAGES}</span>
+            <span className={styles.referenceTotal} aria-live="polite">{referenceImages.length} / {MAX_REF2V_IMAGES}</span>
           </div>
-          <div className={styles.assetControls}>
-            <AssetPickerButton
-              triggerId="single-reference-images"
-              allowedRoots={["input", "output"]}
-              allowedKinds={["image"]}
-              multiple
-              maxSelection={MAX_REF2V_IMAGES}
-              selectedKeys={referenceImages.map(assetKey)}
-              label="從素材庫加入圖片"
-              onSelect={(chosen) => onAddReferences(chosen.filter(isCreateAsset))}
-            />
-            <UploadButton
-              kind="image"
-              multiple
-              busy={uploadingTarget === "referenceImages"}
-              disabled={referenceImages.length >= MAX_REF2V_IMAGES}
-              onFiles={(files) => onUpload(files, "referenceImages")}
-            />
+          <MultiReferencePicker
+            id="single-reference-images"
+            label="參考圖片"
+            description="選填，可多張。依目前順序送入 H3 並標示為 Picture 1、Picture 2……。"
+            target="referenceImages"
+            assets={referenceImages}
+            pictureOffset={0}
+            remaining={MAX_REF2V_IMAGES - referenceImages.length}
+            uploadingTarget={uploadingTarget}
+            error={errorFor("referenceImages")}
+            onAdd={onAddReferences}
+            onRemove={onRemoveReference}
+            onUpload={onUpload}
+          />
+        </div>
+      )}
+
+      {mode === "ref2v_motion" && (
+        <div className={styles.referenceWorkflow}>
+          <div className={styles.workflowIntro}>
+            <div>
+              <strong>角色身分＋影片動作</strong>
+              <span>圖片依角色、臉部、服裝的順序送入 H3；三類合計最多 {MAX_REF2V_IMAGES} 張。</span>
+            </div>
+            <span className={styles.referenceTotal} aria-live="polite">{totalRef2VImages} / {MAX_REF2V_IMAGES}</span>
           </div>
-          {referenceImages.length > 0 && (
-            <div className={styles.referenceChips} aria-label="已選 Ref2V 參考圖片">
-              {referenceImages.map((asset, index) => (
-                <span key={assetKey(asset)} className={styles.referenceChip}>
-                  <span title={asset.name}>Picture {index + 1} · {asset.name}</span>
-                  <button type="button" onClick={() => onRemoveReference(asset)} aria-label={`移除 ${asset.name}`}><Icon name="close" /></button>
-                </span>
+
+          <MultiReferencePicker
+            id="single-reference-images"
+            label="角色參考圖片"
+            description="必填，可多張。Picture 1 是主要角色；其餘圖片補強同一角色的身分、髮型與身形比例。"
+            target="referenceImages"
+            assets={referenceImages}
+            pictureOffset={0}
+            remaining={MAX_REF2V_IMAGES - totalRef2VImages}
+            uploadingTarget={uploadingTarget}
+            error={errorFor("referenceImages")}
+            onAdd={onAddReferences}
+            onRemove={onRemoveReference}
+            onUpload={onUpload}
+          />
+
+          <MultiReferencePicker
+            id="single-face-reference-images"
+            label="臉部特徵參考圖片"
+            description="選填，可多張。只補強同一角色的臉部身分，不採用圖片中的服裝、身形或背景。"
+            target="faceReferenceImages"
+            assets={faceReferenceImages}
+            pictureOffset={referenceImages.length}
+            remaining={MAX_REF2V_IMAGES - totalRef2VImages}
+            uploadingTarget={uploadingTarget}
+            error={errorFor("faceReferenceImages")}
+            onAdd={onAddReferences}
+            onRemove={onRemoveReference}
+            onUpload={onUpload}
+          />
+
+          <fieldset className={styles.clothingCard}>
+            <legend className={styles.fieldLabel}>服裝來源</legend>
+            <div className={styles.radioCards}>
+              {([
+                ["character", "使用 Picture 1 服裝"],
+                ["reference", "額外服裝參考圖片"],
+                ["description", "自行描述服裝"],
+              ] as const).map(([value, label]) => (
+                <label key={value} className={clothingMode === value ? styles.radioCardSelected : styles.radioCard}>
+                  <input type="radio" name="single-clothing-mode" value={value} checked={clothingMode === value} onChange={() => onClothingModeChange(value)} />
+                  <span>{label}</span>
+                </label>
               ))}
             </div>
-          )}
-          <FieldError id="single-reference-images-error" message={errorFor("referenceImages")} />
+            {clothingMode === "reference" && <MultiReferencePicker
+              id="single-clothing-reference-images"
+              label="服裝參考圖片"
+              description="可多張；只轉移服裝、材質、配色、鞋類與配件。"
+              target="clothingReferenceImages"
+              assets={clothingReferenceImages}
+              pictureOffset={referenceImages.length + faceReferenceImages.length}
+              remaining={MAX_REF2V_IMAGES - totalRef2VImages}
+              uploadingTarget={uploadingTarget}
+              error={errorFor("clothingReferenceImages")}
+              onAdd={onAddReferences}
+              onRemove={onRemoveReference}
+              onUpload={onUpload}
+            />}
+            {clothingMode === "description" && <label className={`${styles.field} ${errorFor("clothingDescription") ? styles.fieldInvalid : ""}`}>
+              <span className={styles.fieldLabel}>服裝描述</span>
+              <textarea
+                id="single-clothing-description"
+                className={styles.textarea}
+                maxLength={2000}
+                value={clothingDescription}
+                aria-invalid={Boolean(errorFor("clothingDescription"))}
+                aria-describedby="single-clothing-description-helper single-clothing-description-error"
+                placeholder="例如：白色短版皮衣、黑色高腰短褲與及膝長靴；整段影片保持不變。"
+                onChange={(event) => onClothingDescriptionChange(event.target.value)}
+              />
+              <span id="single-clothing-description-helper" className={styles.helper}>會翻譯並整合進 Subject 定義、保留分析與每個適用鏡頭。</span>
+              <FieldError id="single-clothing-description-error" message={errorFor("clothingDescription")} />
+            </label>}
+          </fieldset>
         </div>
       )}
 
@@ -1264,10 +1591,10 @@ function SourceFields({
         />
       )}
 
-      {(mode === "replace" || mode === "ref2v") && (
+      {(mode === "replace" || mode === "ref2v" || mode === "ref2v_motion") && (
         <SingleAssetPicker
           id="single-source-video"
-          label={mode === "ref2v" ? "參考影片（Video 1）" : "來源動作影片"}
+          label={mode === "ref2v_motion" ? "動作參考影片（Video 1）" : mode === "ref2v" ? "參考影片（選填）" : "來源動作影片"}
           kind="video"
           selected={sourceVideo}
           error={errorFor("sourceVideo")}
@@ -1278,9 +1605,99 @@ function SourceFields({
         />
       )}
 
+      {mode === "ref2v_motion" && sourceVideo && (
+        <div className={styles.assetCard}>
+          <div className={styles.assetHeader}>
+            <div>
+              <span className={styles.fieldLabel}>參考影片片段與預處理</span>
+              <div className={styles.assetMeta}>只建立衍生片段，不修改原始影片；音訊不送入這個純動作參考工作流。</div>
+            </div>
+            {sourceVideoDuration !== null && <span className={styles.assetMeta}>來源 {sourceVideoDuration.toFixed(3)} 秒</span>}
+          </div>
+          <div className={styles.clipGrid}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>開始時間（秒）</span>
+              <input id="single-reference-video-start" className={styles.input} type="number" min={0} max={sourceVideoDuration ?? undefined} step={0.001} value={referenceVideoStart} onChange={(event) => onReferenceVideoRangeChange("start", numberDraft(event.target.value))} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>結束時間（秒）</span>
+              <input id="single-reference-video-end" className={styles.input} type="number" min={0.5} max={sourceVideoDuration ?? undefined} step={0.001} value={referenceVideoEnd} onChange={(event) => onReferenceVideoRangeChange("end", numberDraft(event.target.value))} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>參考影片解析度</span>
+              <select id="single-reference-video-resolution" className={styles.select} value={referenceVideoMaxDimension} onChange={(event) => onReferenceVideoMaxDimensionChange(Number(event.target.value))}>
+                <option value={480}>低負載 · 最長邊 480 px</option>
+                <option value={720}>建議 · 最長邊 720 px</option>
+                <option value={960}>高細節 · 最長邊 960 px</option>
+                <option value={0}>保留來源解析度（OOM 風險）</option>
+              </select>
+            </label>
+          </div>
+          <p className={styles.clipSummary}>實際參考長度：{Math.max(0, referenceVideoEnd - referenceVideoStart).toFixed(3)} 秒；輸出影片長度會同步此片段。</p>
+        </div>
+      )}
+
       <a className={styles.secondaryButton} href="/app/library"><Icon name="folder" />開啟完整資源庫</a>
     </div>
   );
+}
+
+function MultiReferencePicker({
+  id,
+  label,
+  description,
+  target,
+  assets,
+  pictureOffset,
+  remaining,
+  uploadingTarget,
+  error,
+  onAdd,
+  onRemove,
+  onUpload,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  target: MultiReferenceTarget;
+  assets: Asset[];
+  pictureOffset: number;
+  remaining: number;
+  uploadingTarget: UploadTarget | null;
+  error: string;
+  onAdd: (target: MultiReferenceTarget, assets: Asset[]) => void;
+  onRemove: (asset: Asset, target: MultiReferenceTarget) => void;
+  onUpload: (files: File[], target: UploadTarget) => Promise<void>;
+}) {
+  return <div className={styles.assetCard}>
+    <div className={styles.assetHeader}>
+      <div>
+        <label htmlFor={id} className={styles.fieldLabel}>{label}</label>
+        <div className={styles.assetMeta}>{description}</div>
+      </div>
+      <span className={styles.assetMeta}>{assets.length} 張</span>
+    </div>
+    {remaining > 0 ? <div className={styles.assetControls}>
+      <AssetPickerButton
+        triggerId={id}
+        allowedRoots={["input", "output"]}
+        allowedKinds={["image"]}
+        multiple
+        maxSelection={assets.length + Math.max(0, remaining)}
+        selectedKeys={assets.map(assetKey)}
+        label="從素材庫加入圖片"
+        onSelect={(chosen) => onAdd(target, chosen.filter(isCreateAsset))}
+      />
+      <UploadButton kind="image" multiple busy={uploadingTarget === target} disabled={remaining <= 0} onFiles={(files) => onUpload(files, target)} />
+    </div> : <p className={styles.assetMeta}>已達 9 張圖片上限；請先移除其他參考圖片。</p>}
+    {assets.length > 0 && <div className={styles.referenceChips} aria-label={`已選${label}`}>
+      {assets.map((asset, index) => <span key={assetKey(asset)} className={styles.referenceChip}>
+        <span title={asset.name}>Picture {pictureOffset + index + 1} · {asset.name}</span>
+        <button type="button" onClick={() => onRemove(asset, target)} aria-label={`移除 ${asset.name}`}><Icon name="close" /></button>
+      </span>)}
+    </div>}
+    <FieldError id={`${id}-error`} message={error} />
+  </div>;
 }
 
 function SingleAssetPicker({
@@ -1434,14 +1851,14 @@ function draftStatusLabel(status: "loading" | "idle" | "saving" | "saved" | "err
 function modelOptionsForMode(mode: Mode) {
   return MODEL_OPTIONS.filter((option) => {
     if (mode === "replace") return option.value === "wan22_animate_fp8";
-    if (mode === "ref2v") return option.value === "ref2va_pruned_nvfp4";
+    if (mode === "ref2v" || mode === "ref2v_motion") return option.value === "ref2va_pruned_nvfp4";
     return option.value !== "wan22_animate_fp8" && option.value !== "ref2va_pruned_nvfp4";
   });
 }
 
 function resolutionAssetForMode(mode: Mode, referenceImage: Asset | null, referenceImages: Asset[], lastFrameImage: Asset | null) {
   if (mode === "l2v") return lastFrameImage;
-  if (mode === "ref2v") return referenceImages[0] || null;
+  if (mode === "ref2v" || mode === "ref2v_motion") return referenceImages[0] || null;
   if (mode === "i2v" || mode === "fl2v" || mode === "replace") return referenceImage;
   return null;
 }
@@ -1512,6 +1929,12 @@ function focusValidationField(field: string) {
     prompt: "single-prompt",
     referenceImage: "single-reference-image",
     referenceImages: "single-reference-images",
+    faceReferenceImages: "single-face-reference-images",
+    clothingReferenceImages: "single-clothing-reference-images",
+    clothingDescription: "single-clothing-description",
+    referenceVideoStart: "single-reference-video-start",
+    referenceVideoEnd: "single-reference-video-end",
+    referenceVideoMaxDimension: "single-reference-video-resolution",
     lastFrameImage: "single-last-frame",
     sourceVideo: "single-source-video",
     width: "single-width",
@@ -1536,7 +1959,7 @@ function assetSummary(mode: Mode, referenceImage: Asset | null, referenceImages:
   if (mode === "i2v") return referenceImage ? "1 張圖片" : "未選";
   if (mode === "fl2v") return `${referenceImage ? 1 : 0} 首幀 + ${lastFrameImage ? 1 : 0} 尾幀`;
   if (mode === "l2v") return lastFrameImage ? "1 張尾幀" : "未選";
-  if (mode === "ref2v") return `${referenceImages.length} 張圖片${sourceVideo ? " + 1 影片" : ""}`;
+  if (mode === "ref2v" || mode === "ref2v_motion") return `${referenceImages.length} 張圖片${sourceVideo ? " + 1 影片" : ""}`;
   return `${referenceImage ? 1 : 0} 張圖片 + ${sourceVideo ? 1 : 0} 影片`;
 }
 

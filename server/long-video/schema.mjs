@@ -30,8 +30,8 @@ export const SEGMENT_STATES = [
 ];
 
 export const REFERENCE_MODES = ["continuity", "multi_reference"];
-export const CONTINUATION_MODES = ["legacy_tail", "motion_context"];
-export const DEFAULT_MOTION_CONTEXT_SECONDS = 1.5;
+export const CONTINUATION_MODES = ["legacy_tail", "motion_context", "latent_context"];
+export const DEFAULT_MOTION_CONTEXT_SECONDS = 2;
 export const MAX_REFERENCE_ASSETS = 8;
 export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
 export const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
@@ -174,6 +174,18 @@ function finite(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function normalizeScriptDraft(value, index) {
+  const content = text(value?.content || value?.prompt);
+  return {
+    id: text(value?.id, `script-${index + 1}`),
+    name: text(value?.name, `劇本 ${index + 1}`),
+    content,
+    description: text(value?.description || value?.scene || content),
+    negativePrompt: text(value?.negativePrompt),
+    duration: finite(value?.duration, 5),
+  };
+}
+
 export function validateContinuityBible(value) {
   const source = value && typeof value === "object" ? value : {};
   const characters = Array.isArray(source.characters) ? source.characters : [];
@@ -274,11 +286,15 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   // Missing means an older saved job.  Keep that job on the historical
   // frame-only path; the current create form opts new jobs into motion_context.
   const continuationMode = value.continuationMode === undefined ? "legacy_tail" : value.continuationMode;
-  if (!CONTINUATION_MODES.includes(continuationMode)) fail("CONTINUATION_MODE_INVALID", "continuationMode must be legacy_tail or motion_context.");
-  const motionContextSeconds = Number(value.motionContextSeconds ?? DEFAULT_MOTION_CONTEXT_SECONDS);
-  if (!Number.isFinite(motionContextSeconds) || motionContextSeconds < 1 || motionContextSeconds > 2) {
+  if (!CONTINUATION_MODES.includes(continuationMode)) fail("CONTINUATION_MODE_INVALID", "continuationMode must be legacy_tail, motion_context, or latent_context.");
+  if (continuationMode === "latent_context" && inputType !== "image") {
+    fail("LATENT_CONTEXT_IMAGE_REQUIRED", "latent_context currently requires an image-origin sequence so later Ref2VA segments retain a fixed visual reference.", 400);
+  }
+  const requestedMotionContextSeconds = Number(value.motionContextSeconds ?? DEFAULT_MOTION_CONTEXT_SECONDS);
+  if (!Number.isFinite(requestedMotionContextSeconds) || requestedMotionContextSeconds < 1 || requestedMotionContextSeconds > 2) {
     fail("MOTION_CONTEXT_DURATION_INVALID", "motionContextSeconds must be between 1 and 2 seconds.");
   }
+  const motionContextSeconds = continuationMode === "motion_context" ? 2 : requestedMotionContextSeconds;
   const rawReferenceAssets = value.referenceAssets === undefined ? [] : value.referenceAssets;
   if (!Array.isArray(rawReferenceAssets)) fail("REFERENCE_ASSETS_INVALID", "referenceAssets must be an array of image assets.");
   let inputAsset;
@@ -334,7 +350,7 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   const timelineSource = value.timeline !== undefined ? value.timeline : value.segments;
   if (timelineSource !== undefined || requireTimeline) timeline = validateTimeline(timelineSource, duration);
   if (timeline && referenceMode === "multi_reference") timeline = timeline.map((segment) => ({ ...segment, mode: "ref2v" }));
-  if (timeline && continuationMode === "motion_context") {
+  if (timeline && ["motion_context", "latent_context"].includes(continuationMode)) {
     timeline = timeline.map((segment, index) => ({
       ...segment,
       mode: index === 0 ? segment.mode : "ref2v",
@@ -355,6 +371,7 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
     referenceAssets,
     ...(imagePurpose ? { imagePurpose } : {}),
     ...(value.inputText !== undefined ? { inputText: text(value.inputText) } : {}),
+    ...(Array.isArray(value.scripts) ? { scripts: value.scripts.slice(0, 120).map(normalizeScriptDraft) } : {}),
     ...(inputAsset !== undefined ? { inputAsset } : {}),
     ...(duration !== undefined ? { duration } : {}),
     ...(timeline ? { timeline } : {}),
@@ -400,6 +417,7 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     referenceAssets: payload.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(payload.imagePurpose ? { imagePurpose: payload.imagePurpose } : {}),
     ...(payload.inputText ? { inputText: payload.inputText } : {}),
+    ...(payload.scripts ? { scripts: payload.scripts } : {}),
     ...(payload.inputAsset ? { inputAsset: sanitizeAssetRef(payload.inputAsset) } : {}),
     continuityBible: validateContinuityBible(payload.continuityBible),
     duration,

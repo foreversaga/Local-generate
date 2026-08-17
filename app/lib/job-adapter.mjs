@@ -56,7 +56,11 @@ export function adaptJob(raw, source = "video") {
     rawStatus: String(raw?.status || "queued"),
     title: jobTitle(raw, source),
     subtitle: jobSubtitle(raw, source),
-    prompt: typeof raw?.prompt === "string" ? raw.prompt : "",
+    prompt: typeof raw?.prompt === "string"
+      ? raw.prompt
+      : source === "long" && typeof raw?.inputText === "string"
+        ? raw.inputText
+        : "",
     negativePrompt: typeof raw?.negativePrompt === "string" ? raw.negativePrompt : "",
     modelProfile: typeof raw?.modelProfile === "string" ? raw.modelProfile : typeof raw?.model === "string" ? raw.model : "",
     width: numericOrNull(raw?.width),

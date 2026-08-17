@@ -101,7 +101,7 @@ function mergeNegativePrompt(userValue, modelValue) {
 }
 
 function effectiveReferenceAssets(input) {
-  if (input?.referenceMode !== "multi_reference" && input?.continuationMode !== "motion_context") return [];
+  if (input?.referenceMode !== "multi_reference" && !["motion_context", "latent_context"].includes(input?.continuationMode)) return [];
   const references = [];
   const seen = new Set();
   for (const reference of [input.inputAsset, ...(Array.isArray(input.referenceAssets) ? input.referenceAssets : [])]) {
@@ -125,19 +125,25 @@ function plannerPrompt(input, canonicalTimeline = null) {
   const idea = clean(input.inputText || input.brief);
   const multiReference = input.referenceMode === "multi_reference";
   const motionContext = input.continuationMode === "motion_context";
+  const latentContext = input.continuationMode === "latent_context";
   const referenceAssets = effectiveReferenceAssets(input);
   const plannerImages = normalizePlannerImages(input.plannerImages || input.images);
   const visualInspection = plannerImages.length
     ? "Actual reference image bytes are attached to this planning request. You may inspect those attached images and describe only visible details."
     : "No actual reference image bytes are attached to this planning request. Do not claim to have inspected an image; use only the supplied asset names and text direction.";
   const source = [
+    Array.isArray(input.scripts) ? "The author supplied a script list. Each script is exactly one storyboard and exactly one independently generated video. Never split, merge, omit, or reorder scripts." : "",
     idea ? `User's complete story direction: ${idea}` : "",
-    multiReference
-      ? `This sequence uses multi-reference Ref2VA. Treat the supplied image assets as ordered static references (${referenceAssets.map((reference, index) => `Picture ${index + 1}=${reference.name}`).join(", ") || "Picture 1"}), not as a first-frame lock. Every segment must use Ref2VA; continuation segments may append the previous normalized tail as the final reference while preserving the static reference order.`
+    multiReference && latentContext
+      ? `This sequence uses latent-masked Ref2VA continuation. Treat the supplied image assets as ordered static references (${referenceAssets.map((reference, index) => `Picture ${index + 1}=${reference.name}`).join(", ") || "Picture 1"}). Starting with segment 2, the preceding shot's final 39-frame audiovisual latent is copied into and protected at the beginning of the next target latent. Continue its exact pose, object state, camera direction, motion velocity, ambience, and timing before introducing the next storyboard action.`
+      : multiReference
+      ? `This sequence uses multi-reference Ref2VA. Treat the supplied image assets as ordered static references (${referenceAssets.map((reference, index) => `Picture ${index + 1}=${reference.name}`).join(", ") || "Picture 1"}), not as a first-frame lock. Every storyboard segment is an independent video shot. Starting with segment 2, the previous shot's final two silent seconds are supplied only as <Video 1>, a weak visual-consistency reference.`
+      : latentContext
+      ? "Starting with segment 2, continue from the preceding shot's exact protected 39-frame audiovisual latent prefix. Preserve the ending composition, character and object state, camera direction, motion velocity, ambience, and timing at the boundary. Introduce the new storyboard action only after the inherited state is established."
       : motionContext && input.inputType === "image"
-      ? `The supplied image is the first-frame input for segment 1 and a fixed identity reference for later segments. Segment 1 is I2VA. Every later segment is Ref2VA with that fixed image first, the previous normalized tail frame as the final <Picture N>, and the previous 1-2 second audiovisual tail as <Video 1> with its paired <Audio 1>.`
+      ? `The supplied image is the first-frame input for segment 1 and a fixed identity reference for later segments. Segment 1 is I2VA. Every later segment is an independent Ref2VA storyboard shot using the fixed image plus the previous shot's final two silent seconds as <Video 1>, only for weak visual consistency.`
       : motionContext
-      ? "Segment 1 is T2VA. Every later segment is Ref2VA using the previous normalized tail frame as <Picture 1> plus the previous 1-2 second audiovisual tail as <Video 1> with its paired <Audio 1>."
+      ? "Segment 1 is T2VA. Every later segment is an independent Ref2VA storyboard shot using the previous shot's final two silent seconds as <Video 1>, only for weak character, scene, lighting, and visual-state consistency."
       : input.inputType === "image"
       ? `The supplied image asset is the first frame reference (${input.inputAsset?.name || input.inputAsset || "provided asset"}). Do not invent unseen image details; write the first segment as I2VA and preserve the referenced frame.`
       : "The first segment is T2VA. Every later segment is I2VA and starts from the actual normalized tail frame of the previous segment.",
@@ -159,21 +165,27 @@ function plannerPrompt(input, canonicalTimeline = null) {
     "Plan a coherent MiniMax H3 long-video sequence from the user's direction.",
     timing,
     "Required top-level JSON keys: negativePrompt, continuityBible, segments.",
-    input.referenceMode === "multi_reference"
+    input.referenceMode === "multi_reference" && latentContext
+      ? `Use Ref2VA with the ordered static references for every segment. From segment 2 onward, write [video continuation + reference generation] and treat the protected latent prefix as the exact preceding timeline state, not as a separately labelled <Video N> reference.`
+      : input.referenceMode === "multi_reference"
       ? `Use Ref2VA for every segment. Ordered static image references are: ${referenceAssets.map((reference, index) => `Picture ${index + 1} (${reference.name || "asset"})`).join(", ") || "provided references"}. Do not write a first-frame lock or I2VA continuation instruction.`
+      : latentContext
+      ? "Use T2VA/I2VA for segment 1 according to its input type. Every later segment continues from an exact protected audiovisual latent prefix. Preserve the inherited boundary state and motion first; do not define a synthetic <Video N> label when no reference video is supplied."
       : motionContext
-      ? "Use T2VA/I2VA only for segment 1 according to its input type. Use Ref2VA for every later segment. In each continuation, preserve the ordered static pictures, append the actual tail frame as the final picture, and treat <Video 1> plus its paired <Audio 1> as weak motion, pacing, ambience, and voice-timbre context—not content to replay."
+      ? "Use T2VA/I2VA only for segment 1 according to its input type. Use Ref2VA for every later independent storyboard shot. Preserve ordered static pictures and use <Video 1> only as a weak visual-consistency reference; do not define <Audio 1>, lock a previous frame at time zero, replay footage, or continue the previous camera motion."
       : "",
     "continuityBible keys: visualStyle, characters, environment, lighting, camera, motionDirection, keyObjects, sound, nonDiegeticMusic, mustPreserve, mustAvoid.",
     "Each character uses id, faceIdentity, hair, silhouette, palette, distinctiveMarks, appearance, clothing, and optional voice. Define these identity anchors once and reuse the same values for every segment where that character is visible.",
     "When a face is visible, every segment's endingState must preserve the same faceIdentity, hair, silhouette, palette, and distinctiveMarks for the next segment.",
     "For visible hands, describe stable anatomy and finger count, natural articulation, and physically correct contact, grip, occlusion, and release. For clothing, preserve design and fit while making fabric follow gravity, body motion, contact, inertia, and wind without clipping, penetration, floating, rigidity, implausible stretching, or independent motion.",
     "Each segment must use these keys: start, end, description, integratedMultimodalDescription, overallSoundscape, nonDiegeticMusic, continuityNote, endingState, negativePrompt.",
-    "start and end are global seconds. description is a concise editable storyboard summary. endingState is a concise description of the exact final visual state that the next segment must continue.",
+    latentContext
+      ? "start and end are global seconds. description is a concise editable storyboard summary. Each segment continues the protected ending state of the preceding segment before advancing its own action. endingState records the exact final visual and motion state inherited by the next shot."
+      : "start and end are global seconds. description is a concise editable storyboard summary. Each segment is one independently composed video shot. endingState records its final visual state only as continuity context for the next shot.",
     "integratedMultimodalDescription is English H3 content for this segment only. It must begin with [Shot 1], cover composition, subjects, environment, action, camera, dialogue and diegetic sound, and use timestamps relative to this segment starting at 0 only for later cuts.",
     "overallSoundscape is 1-4 English sentences. nonDiegeticMusic is 1-3 English sentences or N/A. Preserve dialogue, lyrics, and visible text in their original language.",
     motionContext
-      ? "For continuation segments, use a Ref2VA summary mode that includes video continuation and audio reuse where relevant. Define every <Picture N>, <Video 1>, and <Audio 1>; preserve identity from static pictures and inherit only the ending motion/audio state from the short AV context."
+      ? "For segments after the first, use Ref2VA summary mode [reference generation]. Define <Video 1> as the previous shot's final two silent seconds and use it weakly for appearance, environment, lighting, and visual-state consistency only. Never define <Audio 1>, replay the reference, or make it a frame-zero lock."
       : "For continuation segments, describe forward motion from Picture 1 without writing the Picture 1 instruction line; the server adds the exact I2VA wrapper.",
     input.referenceMode === "multi_reference" || motionContext
       ? "For every Ref2VA segment, provide concrete subjectDefinitions, summary, retentionAnalysis, and detailedDescription. Define each visible subject with the continuityBible identity anchors; do not use a generic principal-subject fallback when a character identity is available."
@@ -451,8 +463,9 @@ export async function planSequence(input, options = {}) {
   const skillPack = provider === "ollama"
     ? await loadSkillPack({
         purpose: "planning",
-        mode: normalizedInput.referenceMode === "multi_reference" || normalizedInput.continuationMode === "motion_context" ? "ref2v" : "t2v",
+        mode: normalizedInput.referenceMode === "multi_reference" || ["motion_context", "latent_context"].includes(normalizedInput.continuationMode) ? "ref2v" : "t2v",
         referenceMode: normalizedInput.referenceMode,
+        continuationMode: normalizedInput.continuationMode,
         hasVisualReference: plannerImages.length > 0,
         skillPath: options.skillPath,
       })
@@ -575,15 +588,16 @@ export async function planSequence(input, options = {}) {
     start: canonical.start,
     end: canonical.end,
     duration: canonical.duration,
-    description: clean(semanticSegments[index]?.description || semanticSegments[index]?.scene) || canonical.description,
+    description: Array.isArray(normalizedInput.scripts) ? canonical.description : clean(semanticSegments[index]?.description || semanticSegments[index]?.scene) || canonical.description,
   }));
-  // Motion-context continuations switch to Ref2VA after the first segment so
-  // the runner can supply the paired short video/audio tail.  Missing mode on
+  // Storyboard shots switch to Ref2VA after the first segment so the runner
+  // can supply the preceding shot's final two silent seconds as a weak visual
+  // reference. Missing mode on
   // older jobs retains the historical T2VA/I2VA path.
   const drafts = segments.map((segment, index) => {
     const mode = normalizedInput.referenceMode === "multi_reference"
       ? "ref2v"
-      : normalizedInput.continuationMode === "motion_context" && index > 0
+      : ["motion_context", "latent_context"].includes(normalizedInput.continuationMode) && index > 0
         ? "ref2v"
         : normalizedInput.inputType === "image" || index > 0 ? "i2v" : "t2v";
     const ref2vAssets = mode === "ref2v" ? normalizedReferenceAssets : [];
@@ -593,7 +607,7 @@ export async function planSequence(input, options = {}) {
       mode,
       provider,
       {
-        ...(mode === "ref2v" ? { references: { assets: ref2vAssets } } : {}),
+        ...(mode === "ref2v" ? { references: { assets: ref2vAssets, hasVideo: normalizedInput.continuationMode === "motion_context" && index > 0 } } : {}),
         onFallback: (reason) => promptFallbacks.push({ segmentIndex: index, ...reason }),
       },
     );
@@ -615,6 +629,7 @@ export async function planSequence(input, options = {}) {
     referenceAssets: normalizedInput.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(normalizedInput.imagePurpose ? { imagePurpose: normalizedInput.imagePurpose } : {}),
     ...(normalizedInput.inputText ? { inputText: normalizedInput.inputText } : {}),
+    ...(normalizedInput.scripts ? { scripts: normalizedInput.scripts } : {}),
     ...(normalizedInput.inputAsset ? { inputAsset: sanitizeAssetRef(normalizedInput.inputAsset) } : {}),
     duration: normalizedInput.duration ?? drafts[drafts.length - 1].end,
     negativePrompt,

@@ -395,6 +395,105 @@
   gap: 12px;
 }
 
+.referenceWorkflow {
+  display: grid;
+  gap: 12px;
+}
+
+.workflowIntro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--lime) 32%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--lime) 6%, var(--panel));
+  padding: 13px;
+}
+
+.workflowIntro strong,
+.workflowIntro span {
+  display: block;
+}
+
+.workflowIntro strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.workflowIntro div > span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.referenceTotal {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--bg);
+  padding: 5px 9px;
+  color: var(--lime);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.clothingCard {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  padding: 13px;
+}
+
+.radioCards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.radioCard,
+.radioCardSelected {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 9px 11px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.radioCardSelected {
+  border-color: color-mix(in srgb, var(--lime) 70%, var(--line));
+  background: color-mix(in srgb, var(--lime) 8%, var(--bg));
+  color: var(--text);
+}
+
+.radioCard input,
+.radioCardSelected input {
+  accent-color: var(--lime);
+}
+
+.clipGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.clipSummary {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .assetCard {
   border: 1px solid var(--line-soft);
   border-radius: 12px;
@@ -610,6 +709,22 @@
   line-height: 1.45;
 }
 
+@media (max-width: 760px) {
+  .radioCards,
+  .clipGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .workflowIntro {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .referenceTotal {
+    align-self: flex-start;
+  }
+}
+
 .validationLink {
   border: 0;
   background: transparent;
@@ -658,18 +773,48 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--lime) 9%, transparent);
 }
 
+.draftActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .draftState {
   display: flex;
   min-height: 36px;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
   border-radius: 9px;
   background: color-mix(in srgb, var(--lime) 6%, transparent);
   padding: 7px 9px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.clearDraftButton {
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger) 5%, var(--bg-elevated));
+  padding: 7px 11px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease, opacity 180ms ease;
+}
+
+.clearDraftButton:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  background: color-mix(in srgb, var(--danger) 9%, var(--bg-elevated));
+  color: var(--danger);
+}
+
+.clearDraftButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .draftStateError {
@@ -808,6 +953,10 @@
 }
 
 @media (max-width: 420px) {
+  .draftActions {
+    grid-template-columns: 1fr;
+  }
+
   .modeGrid {
     grid-template-columns: 1fr;
   }
@@ -840,7 +989,8 @@
   .iconButton,
   .secondaryButton,
   .uploadButton,
-  .primaryButton {
+  .primaryButton,
+  .clearDraftButton {
     transition: none;
   }
 }

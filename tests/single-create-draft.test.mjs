@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import {
   createSingleCreateDraft,
   createSingleCreateDraftFromJob,
@@ -29,6 +30,13 @@ function draftInput(overrides = {}) {
     characterLoraTrigger: null,
     referenceImageKey: "input:first.png",
     referenceImageKeys: ["input:first.png", "input:second.png"],
+    faceReferenceImageKeys: [],
+    clothingReferenceImageKeys: [],
+    clothingMode: "character",
+    clothingDescription: "",
+    referenceVideoStart: 0,
+    referenceVideoEnd: 5,
+    referenceVideoMaxDimension: 720,
     lastFrameImageKey: "input:last.png",
     sourceVideoKey: "input:motion.mp4",
     ...overrides,
@@ -62,13 +70,42 @@ test("Single retry draft restores persisted job parameters and the initial descr
     seed: 77,
     outputName: "rain.mp4",
     inputRefs: { referenceImages: ["hero.png", "street.png"], inputVideo: "motion.mp4" },
-    provenance: { request: { referenceImageRoots: ["input", "output"], inputVideoRoot: "output" } },
+    provenance: { request: {
+      ref2vWorkflow: "character_motion",
+      referenceImageRoots: ["input", "output"],
+      referenceImageRoles: ["character", "face"],
+      clothingMode: "description",
+      clothingDescription: "a white leather jacket",
+      referenceVideoStart: 2,
+      referenceVideoEnd: 8,
+      referenceVideoMaxDimension: 480,
+      inputVideoRoot: "output",
+    } },
   });
   assert.equal(draft.initialDescription, "角色從雨夜街口走向鏡頭。");
+  assert.equal(draft.mode, "ref2v_motion");
   assert.equal(draft.prompt, "integrated_multimodal_description: cinematic rain");
-  assert.deepEqual(draft.referenceImageKeys, ["input:hero.png", "output:street.png"]);
+  assert.deepEqual(draft.referenceImageKeys, ["input:hero.png"]);
+  assert.deepEqual(draft.faceReferenceImageKeys, ["output:street.png"]);
+  assert.equal(draft.clothingMode, "description");
+  assert.equal(draft.clothingDescription, "a white leather jacket");
+  assert.equal(draft.referenceVideoStart, 2);
+  assert.equal(draft.referenceVideoEnd, 8);
+  assert.equal(draft.referenceVideoMaxDimension, 480);
   assert.equal(draft.sourceVideoKey, "output:motion.mp4");
   assert.equal(draft.renderCount, 1);
+});
+
+test("legacy generic Ref2V retry stays in the original optional-video mode", () => {
+  const draft = createSingleCreateDraftFromJob({
+    mode: "ref2v",
+    inputRefs: { referenceImages: ["one.png", "two.png"] },
+    provenance: { request: { referenceImageRoots: ["input", "output"] } },
+  });
+  assert.equal(draft.mode, "ref2v");
+  assert.deepEqual(draft.referenceImageKeys, ["input:one.png", "output:two.png"]);
+  assert.deepEqual(draft.faceReferenceImageKeys, []);
+  assert.equal(draft.sourceVideoKey, null);
 });
 
 test("Single Create draft preserves an intentionally blank character LoRA strength", () => {
@@ -122,7 +159,27 @@ test("Single Create draft rejects unknown versions and sanitizes corrupted field
     characterLoraTrigger: null,
     referenceImageKey: null,
     referenceImageKeys: ["input:a.png", "input:b.png"],
+    faceReferenceImageKeys: [],
+    clothingReferenceImageKeys: [],
+    clothingMode: "character",
+    clothingDescription: "",
+    referenceVideoStart: 0,
+    referenceVideoEnd: 5,
+    referenceVideoMaxDimension: 720,
     lastFrameImageKey: null,
     sourceVideoKey: "input:motion.mp4",
   });
+});
+
+test("Single Create exposes a confirmed manual draft clear action", async () => {
+  const [form, hook] = await Promise.all([
+    readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/create/useSingleCreateDraft.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(form, /function clearSingleCreateDraft\(\)/);
+  assert.match(form, /window\.confirm\("確定清除目前 Single 草稿/);
+  assert.match(form, /clearDraft\(\{ suppressNextSave: true \}\)/);
+  assert.match(form, />清除草稿<\/button>/);
+  assert.match(hook, /skipNextSaveRef\.current = suppressNextSave/);
 });
