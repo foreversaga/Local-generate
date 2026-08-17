@@ -107,12 +107,10 @@ export function LongScriptLibraryManager() {
     }
 
     function addShot() {
-        setDraft((current) => {
-            if (!current) return current;
-            const index = current.shots.length;
-            setExpandedShot(index);
-            return { ...current, shots: [...current.shots, emptyShot(index)] };
-        });
+        if (!draft) return;
+        const index = draft.shots.length;
+        setDraft({ ...draft, shots: [...draft.shots, emptyShot(index)] });
+        setExpandedShot(index);
     }
 
     function removeShot(index: number) {
