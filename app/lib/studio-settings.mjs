@@ -4,7 +4,7 @@ export const STUDIO_SETTINGS_VERSION = 1;
 export const STUDIO_SETTINGS_DEFAULTS = Object.freeze({
   version: STUDIO_SETTINGS_VERSION,
   promptProvider: "ollama",
-  ollamaModel: "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M",
+  ollamaModel: "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M",
   codexModel: "gpt-5.6-luna",
   codexReasoningEffort: "medium",
 });
@@ -70,7 +70,11 @@ export function reconcileStudioSettings(settings, health = {}) {
     : DEFAULT_REASONING;
   return createStudioSettings({
     ...current,
-    ollamaModel: ollamaModels.includes(current.ollamaModel) ? current.ollamaModel : ollamaModels[0] || current.ollamaModel,
+    ollamaModel: ollamaModels.includes(current.ollamaModel)
+      ? current.ollamaModel
+      : ollamaModels.includes(STUDIO_SETTINGS_DEFAULTS.ollamaModel)
+        ? STUDIO_SETTINGS_DEFAULTS.ollamaModel
+        : ollamaModels[0] || current.ollamaModel,
     codexModel: selectedCodex ? String(selectedCodex.value) : current.codexModel,
     codexReasoningEffort: reasoningOptions.includes(current.codexReasoningEffort)
       ? current.codexReasoningEffort

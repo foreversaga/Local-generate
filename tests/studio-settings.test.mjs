@@ -33,3 +33,11 @@ test("health model lists reconcile stored defaults without changing provider int
   assert.equal(reconciled.codexModel, "gpt-5.6-luna");
   assert.equal(reconciled.codexReasoningEffort, "medium");
 });
+
+test("missing stored Ollama model prefers the configured default when installed", () => {
+  const reconciled = reconcileStudioSettings(createStudioSettings({ ollamaModel: "removed-model" }), {
+    ollama: { models: ["another-model", STUDIO_SETTINGS_DEFAULTS.ollamaModel] },
+  });
+
+  assert.equal(reconciled.ollamaModel, STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+});

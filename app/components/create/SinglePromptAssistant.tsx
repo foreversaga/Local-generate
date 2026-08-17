@@ -19,7 +19,7 @@ const MAX_REF2V_IMAGES = 9;
 const GEMMA4_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M";
 const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
-const QWEN38_BLACKFROST_OLLAMA_MODEL = "hf.co/Blackfrost-AI/Qwen3.8-27B-ABLITERATED-GGUF:Q3_K_M";
+const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "replace";
 type PromptProvider = "ollama" | "codex";
@@ -84,8 +84,8 @@ type IconName = "spark" | "refresh" | "check" | "close";
 
 const PROMPT_MODEL_CATALOG = [
   {
-    value: QWEN38_BLACKFROST_OLLAMA_MODEL,
-    label: "Qwen3.8 27B Abliterated Q3_K_M",
+    value: GEMMA4_12B_OLLAMA_MODEL,
+    label: "Gemma 4 12B HauhauCS Balanced Q4_K_M",
     note: "Local · prompt generation",
   },
   {
