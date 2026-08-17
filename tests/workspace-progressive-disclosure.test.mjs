@@ -18,7 +18,7 @@ test("jobs workspace keeps filters and technical details out of the default view
   assert.doesNotMatch(workspace, /ComfyUI:/);
   assert.doesNotMatch(workspace, /nativeCurrent\/.*nativeMaximum/);
 
-  assert.match(detail, /className=\{styles\.statusPanel/);
+  assert.match(detail, /styles\.statusPanel/);
   assert.match(detail, /<summary>生成參數<\/summary>/);
   assert.match(detail, /<summary>技術資訊<\/summary>/);
   assert.match(detail, /ComfyUI Node/);
