@@ -69,21 +69,25 @@ export function SingleCreateProgressiveShell() {
   const [hasModeAdvanced, setHasModeAdvanced] = useState(false);
 
   useEffect(() => {
-    try {
-      const draft = parseSingleCreateDraft(
-        window.localStorage.getItem(SINGLE_CREATE_DRAFT_STORAGE_KEY),
-      ) as StoredDraft | null;
-      if (!draft) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const draft = parseSingleCreateDraft(
+          window.localStorage.getItem(SINGLE_CREATE_DRAFT_STORAGE_KEY),
+        ) as StoredDraft | null;
+        if (!draft) return;
 
-      setDisclosure((current) => ({
-        ...current,
-        negativePrompt: Boolean(draft.negativePrompt?.trim()),
-        advancedGeneration: hasAdvancedGenerationValues(draft),
-        modeAdvanced: hasModeAdvancedValues(draft),
-      }));
-    } catch {
-      // UI disclosure must never block the existing Create form from loading.
-    }
+        setDisclosure((current) => ({
+          ...current,
+          negativePrompt: Boolean(draft.negativePrompt?.trim()),
+          advancedGeneration: hasAdvancedGenerationValues(draft),
+          modeAdvanced: hasModeAdvancedValues(draft),
+        }));
+      } catch {
+        // UI disclosure must never block the existing Create form from loading.
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
