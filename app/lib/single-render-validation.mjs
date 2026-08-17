@@ -16,6 +16,15 @@ import {
  *   mode: string;
  *   referenceImage: SingleRenderAssetRef | null;
  *   referenceImages: SingleRenderAssetRef[];
+ *   faceReferenceImages?: SingleRenderAssetRef[];
+ *   clothingReferenceImages?: SingleRenderAssetRef[];
+ *   ref2vWorkflow?: string;
+ *   clothingMode?: string;
+ *   clothingDescription?: string;
+ *   referenceVideoStart?: NumberDraft;
+ *   referenceVideoEnd?: NumberDraft;
+ *   referenceVideoMaxDimension?: NumberDraft;
+ *   duration?: NumberDraft;
  *   lastFrameImage: SingleRenderAssetRef | null;
  *   sourceVideo: SingleRenderAssetRef | null;
  *   characterLoraName?: string;
@@ -122,6 +131,35 @@ export function validateSingleRender(input) {
  */
 export function validateSingleRenderAssets(input) {
   const issues = [];
+
+  if (input.mode === "ref2v" && input.ref2vWorkflow === "character_motion") {
+    const characterImages = Array.isArray(input.referenceImages) ? input.referenceImages : [];
+    const faceImages = Array.isArray(input.faceReferenceImages) ? input.faceReferenceImages : [];
+    const clothingImages = Array.isArray(input.clothingReferenceImages) ? input.clothingReferenceImages : [];
+    const total = characterImages.length + faceImages.length + (input.clothingMode === "reference" ? clothingImages.length : 0);
+    if (!characterImages.length) issues.push(issue("referenceImages", "角色動作參考需要至少一張角色參考圖片。"));
+    if (!input.sourceVideo) issues.push(issue("sourceVideo", "角色動作參考需要一段動作參考影片。"));
+    if (total > 9) issues.push(issue("referenceImages", "角色、臉部與服裝參考圖片合計最多 9 張。"));
+    if (input.clothingMode === "reference" && !clothingImages.length) {
+      issues.push(issue("clothingReferenceImages", "選擇服裝參考圖片時，請至少加入一張服裝圖片。"));
+    }
+    if (input.clothingMode === "description" && !String(input.clothingDescription || "").trim()) {
+      issues.push(issue("clothingDescription", "選擇自行描述服裝時，請填寫服裝描述。"));
+    }
+    const clipStart = Number(input.referenceVideoStart);
+    const clipEnd = Number(input.referenceVideoEnd);
+    if (!Number.isFinite(clipStart) || clipStart < 0) issues.push(issue("referenceVideoStart", "參考影片開始時間必須大於或等於 0。"));
+    if (!Number.isFinite(clipEnd) || clipEnd <= clipStart) issues.push(issue("referenceVideoEnd", "參考影片結束時間必須晚於開始時間。"));
+    const clipDuration = clipEnd - clipStart;
+    if (Number.isFinite(clipDuration) && (clipDuration < 0.5 || clipDuration > 60)) issues.push(issue("referenceVideoEnd", "參考影片片段長度必須介於 0.5–60 秒。"));
+    if (Number.isFinite(Number(input.duration)) && Number.isFinite(clipDuration) && Math.abs(Number(input.duration) - clipDuration) > 0.001) {
+      issues.push(issue("duration", "輸出影片長度必須與參考影片片段相同。"));
+    }
+    if (![0, 480, 720, 960].includes(Number(input.referenceVideoMaxDimension))) {
+      issues.push(issue("referenceVideoMaxDimension", "請選擇有效的參考影片解析度。"));
+    }
+    return issues;
+  }
 
   if (input.mode === "ref2v" && input.referenceImages.length === 0 && !input.sourceVideo) {
     issues.push(issue("referenceImages", "Ref2VA 至少需要一個參考圖片或參考影片。"));

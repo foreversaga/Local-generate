@@ -463,6 +463,51 @@ test("ref2v prompt request omits camera planning when camera settings are disabl
   assert.equal(Object.hasOwn(payload, "cameraPlan"), false);
 });
 
+test("character-motion Ref2VA validates role-specific pictures and selected video interval", () => {
+  const valid = validSingleInput({
+    mode: "ref2v",
+    ref2vWorkflow: "character_motion",
+    referenceImages: [ASSET, { name: "character-two.png" }],
+    faceReferenceImages: [{ name: "face.png" }],
+    clothingReferenceImages: [{ name: "outfit.png" }],
+    clothingMode: "reference",
+    clothingDescription: "",
+    sourceVideo: { name: "dance.mp4" },
+    referenceVideoStart: 2,
+    referenceVideoEnd: 8,
+    referenceVideoMaxDimension: 720,
+    duration: 6,
+  });
+  assert.deepEqual(validateSingleRender(valid), []);
+  assert.match(messages({ ...valid, referenceImages: [] })[0], /角色參考圖片/);
+  assert.match(messages({ ...valid, clothingReferenceImages: [] }).join(" "), /服裝圖片/);
+  assert.match(messages({ ...valid, referenceVideoEnd: 70, duration: 68 }).join(" "), /0.5–60/);
+});
+
+test("character-motion Ref2VA request keeps aligned roles, clothing, and clip settings", () => {
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "ref2v",
+    referenceImageName: "hero-a.png",
+    referenceImageNames: ["hero-a.png", "hero-b.png", "face.png", "coat.png"],
+    referenceImageRoots: ["input", "input", "output", "input"],
+    referenceImageRoles: ["character", "character", "face", "clothing"],
+    ref2vWorkflow: "character_motion",
+    clothingMode: "reference",
+    clothingDescription: "",
+    referenceVideoStart: 2,
+    referenceVideoEnd: 8,
+    referenceVideoMaxDimension: 480,
+    sourceVideoName: "dance.mp4",
+    duration: 6,
+  }));
+  assert.deepEqual(payload.referenceImageRoles, ["character", "character", "face", "clothing"]);
+  assert.equal(payload.ref2vWorkflow, "character_motion");
+  assert.equal(payload.clothingMode, "reference");
+  assert.equal(payload.referenceVideoStart, 2);
+  assert.equal(payload.referenceVideoEnd, 8);
+  assert.equal(payload.referenceVideoMaxDimension, 480);
+});
+
 test("Single render persists the user's initial description for Create-style retry", () => {
   const payload = buildSingleRenderRequest(validRequestInput());
   assert.equal(payload.initialDescription, "A person waits on a windswept platform.");

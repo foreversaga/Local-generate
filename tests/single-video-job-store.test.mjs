@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createSingleCreateDraftFromJob } from "../app/lib/single-create-draft.mjs";
 import { createSingleVideoJobStore } from "../server/video-generation/single-job-store.mjs";
 
 async function fixture() {
@@ -29,7 +30,8 @@ test("Single Video store writes durable safe records without transient process h
 
   const job = await value.store.create({
     id: "sv-durable-1",
-    mode: "t2v",
+    mode: "i2v",
+    initialDescription: "一個人穿過有晨光的房間。",
     prompt: "A subject crosses a room.",
     negativePrompt: "blur",
     modelProfile: "nvfp4_blackwell",
@@ -47,7 +49,21 @@ test("Single Video store writes durable safe records without transient process h
     promptId: "11111111-1111-4111-8111-111111111111",
     runtimeMode: "remote",
     attempt: 1,
-    provenance: { request: { mode: "t2v", prompt: "A subject crosses a room.", inputImageName: "reference/frame.png" }, attempt: 1 },
+    provenance: {
+      request: {
+        mode: "i2v",
+        initialDescription: "一個人穿過有晨光的房間。",
+        prompt: "A subject crosses a room.",
+        inputImageName: "reference/frame.png",
+        inputImageRoot: "output",
+        referenceImageNames: ["reference/frame.png"],
+        referenceImageRoots: ["output"],
+        h3LoraEnabled: true,
+        h3LoraPreset: "h3-realism-people-t2v-i2v-r2v.safetensors",
+        characterLoraTrigger: "r34l1sm",
+      },
+      attempt: 1,
+    },
     execution: { ownerId: "secret-owner", pid: 1234, child: { kill() {} } },
     outputPath: "C:\\private\\output\\single-result.mp4",
   });
@@ -60,6 +76,17 @@ test("Single Video store writes durable safe records without transient process h
   assert.equal(saved.promptId, "11111111-1111-4111-8111-111111111111");
   assert.equal(saved.runtimeMode, "remote");
   assert.equal(saved.inputRefs.inputImage, "reference/frame.png");
+  assert.equal(saved.initialDescription, "一個人穿過有晨光的房間。");
+  assert.equal(saved.provenance.request.initialDescription, "一個人穿過有晨光的房間。");
+  assert.equal(saved.provenance.request.inputImageRoot, "output");
+  assert.deepEqual(saved.provenance.request.referenceImageRoots, ["output"]);
+  assert.equal(saved.provenance.request.h3LoraEnabled, true);
+  assert.equal(saved.provenance.request.h3LoraPreset, "h3-realism-people-t2v-i2v-r2v.safetensors");
+  assert.equal(saved.provenance.request.characterLoraTrigger, "r34l1sm");
+  const retryDraft = createSingleCreateDraftFromJob(saved);
+  assert.equal(retryDraft.initialDescription, "一個人穿過有晨光的房間。");
+  assert.equal(retryDraft.referenceImageKey, "output:reference/frame.png");
+  assert.equal(retryDraft.h3LoraEnabled, true);
   assert.equal(Object.hasOwn(saved, "execution"), false);
   assert.equal(Object.hasOwn(saved, "outputPath"), false);
   assert.doesNotMatch(JSON.stringify(saved), /private|secret-owner|kill/);

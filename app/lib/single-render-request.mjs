@@ -16,6 +16,13 @@ export const H3_LORA_SUPPORTED_MODES = Object.freeze(["t2v", "i2v", "fl2v", "l2v
  *   referenceImageRoot?: "input" | "output";
  *   referenceImageNames?: string[];
  *   referenceImageRoots?: Array<"input" | "output">;
+ *   referenceImageRoles?: string[];
+ *   ref2vWorkflow?: string;
+ *   clothingMode?: string;
+ *   clothingDescription?: string;
+ *   referenceVideoStart?: number;
+ *   referenceVideoEnd?: number;
+ *   referenceVideoMaxDimension?: number;
  *   lastFrameName?: string;
  *   lastFrameRoot?: "input" | "output";
  *   sourceVideoName?: string;
@@ -83,6 +90,13 @@ export function buildSingleRenderRequest(input) {
   if (input.mode === "ref2v") {
     payload.referenceImageNames = (input.referenceImageNames || []).slice(0, MAX_REF2V_IMAGES);
     payload.referenceImageRoots = (input.referenceImageRoots || []).slice(0, MAX_REF2V_IMAGES);
+    payload.referenceImageRoles = (input.referenceImageRoles || []).slice(0, MAX_REF2V_IMAGES);
+    payload.ref2vWorkflow = input.ref2vWorkflow || "";
+    payload.clothingMode = input.clothingMode || "character";
+    payload.clothingDescription = input.clothingDescription || "";
+    payload.referenceVideoStart = input.referenceVideoStart ?? 0;
+    payload.referenceVideoEnd = input.referenceVideoEnd ?? input.duration;
+    payload.referenceVideoMaxDimension = input.referenceVideoMaxDimension ?? 720;
   }
 
   if (characterLoraId) {

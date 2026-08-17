@@ -133,10 +133,13 @@ function safeOutput(value) {
 function safeRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const allowed = [
-    "mode", "prompt", "negativePrompt", "model", "modelProfile", "width", "height", "dimensions",
+    "mode", "initialDescription", "prompt", "negativePrompt", "model", "modelProfile", "width", "height", "dimensions",
     "duration", "steps", "seed", "timeoutSeconds", "inputImageName", "lastImageName", "inputVideoName",
-    "referenceImageName", "referenceImageNames", "characterLoraName", "characterLoraId",
-    "characterLoraStrength", "outputName", "batchId", "batchIndex", "batchTotal", "inputRefs",
+    "inputImageRoot", "lastImageRoot", "inputVideoRoot", "referenceImageRoot",
+    "referenceImageName", "referenceImageNames", "referenceImageRoots", "referenceImageRoles", "ref2vWorkflow",
+    "clothingMode", "clothingDescription", "referenceVideoStart", "referenceVideoEnd", "referenceVideoMaxDimension", "characterLoraName", "characterLoraId",
+    "characterLoraStrength", "h3LoraEnabled", "h3LoraPreset", "characterLoraTrigger",
+    "outputName", "batchId", "batchIndex", "batchTotal", "inputRefs",
   ];
   const result = {};
   for (const key of allowed) {
@@ -148,18 +151,30 @@ function safeRequest(value) {
       result[key] = Array.isArray(child)
         ? child.map((item) => safeRelative(item, { allowEmpty: false })).filter(Boolean)
         : [];
+    } else if (key === "referenceImageRoots") {
+      result[key] = Array.isArray(child)
+        ? child.map((item) => item === "output" ? "output" : "input")
+        : [];
+    } else if (key === "referenceImageRoles") {
+      result[key] = Array.isArray(child) ? child.filter((item) => ["character", "face", "clothing"].includes(item)) : [];
+    } else if (["inputImageRoot", "lastImageRoot", "inputVideoRoot", "referenceImageRoot"].includes(key)) {
+      result[key] = child === "output" ? "output" : "input";
     } else if (["inputImageName", "lastImageName", "inputVideoName", "referenceImageName", "outputName", "characterLoraName"].includes(key)) {
       const text = safeRelative(child, { allowEmpty: false });
       if (text) result[key] = text;
-    } else if (key === "prompt" || key === "negativePrompt") {
+    } else if (key === "initialDescription" || key === "prompt" || key === "negativePrompt") {
       result[key] = safePrompt(child);
-    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "characterLoraId" || key === "batchId") {
+    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "characterLoraId" || key === "batchId" || key === "h3LoraPreset" || key === "characterLoraTrigger" || key === "ref2vWorkflow" || key === "clothingMode") {
       result[key] = safeText(child);
+    } else if (key === "clothingDescription") {
+      result[key] = safePrompt(child);
+    } else if (key === "h3LoraEnabled") {
+      result[key] = child === true;
     } else if (key === "dimensions" && child && typeof child === "object") {
       result[key] = { width: integerOrNull(child.width), height: integerOrNull(child.height) };
     } else if (key === "characterLoraStrength") {
       result[key] = numberOrNull(child);
-    } else if (["width", "height", "duration", "steps", "seed", "timeoutSeconds", "batchIndex", "batchTotal"].includes(key)) {
+    } else if (["width", "height", "duration", "steps", "seed", "timeoutSeconds", "batchIndex", "batchTotal", "referenceVideoStart", "referenceVideoEnd", "referenceVideoMaxDimension"].includes(key)) {
       result[key] = numberOrNull(child);
     }
   }
@@ -208,6 +223,7 @@ function canonicalJob(input = {}) {
   return {
     id,
     mode: safeText(input.mode || request.mode, "t2v"),
+    initialDescription: safePrompt(input.initialDescription ?? request.initialDescription),
     prompt: safePrompt(input.prompt || request.prompt),
     negativePrompt: safePrompt(input.negativePrompt || request.negativePrompt),
     model: safeText(input.model || input.modelProfile || request.model || request.modelProfile),

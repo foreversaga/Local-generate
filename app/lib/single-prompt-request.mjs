@@ -16,6 +16,13 @@ const MAX_REF2V_IMAGES = 9;
  *   duration: number;
  *   referenceImageName?: string;
  *   referenceImageNames?: string[];
+ *   referenceImageRoles?: string[];
+ *   ref2vWorkflow?: string;
+ *   clothingMode?: string;
+ *   clothingDescription?: string;
+ *   referenceVideoStart?: number;
+ *   referenceVideoEnd?: number;
+ *   referenceVideoMaxDimension?: number;
  *   lastFrameName?: string;
  *   sourceVideoName?: string;
  *   images?: PromptImage[];
@@ -53,6 +60,13 @@ export function buildSinglePromptRequest(input) {
 
   if (input.mode === "ref2v") {
     payload.referenceImageNames = referenceImageNames;
+    payload.referenceImageRoles = (input.referenceImageRoles || []).slice(0, MAX_REF2V_IMAGES);
+    payload.ref2vWorkflow = input.ref2vWorkflow || "";
+    payload.clothingMode = input.clothingMode || "character";
+    payload.clothingDescription = input.clothingDescription || "";
+    payload.referenceVideoStart = input.referenceVideoStart ?? 0;
+    payload.referenceVideoEnd = input.referenceVideoEnd ?? input.duration;
+    payload.referenceVideoMaxDimension = input.referenceVideoMaxDimension ?? 720;
     if (input.cameraPlan && typeof input.cameraPlan === "object") payload.cameraPlan = input.cameraPlan;
   }
 

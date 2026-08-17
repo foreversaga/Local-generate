@@ -3,7 +3,7 @@ import { SINGLE_RENDER_DURATION_DEFAULT_SECONDS } from "./single-duration.mjs";
 export const SINGLE_CREATE_DRAFT_STORAGE_KEY = "h3-studio.single-create.draft.v1";
 
 const SINGLE_CREATE_DRAFT_VERSION = 1;
-const MODES = new Set(["t2v", "i2v", "fl2v", "l2v", "ref2v", "replace"]);
+const MODES = new Set(["t2v", "i2v", "fl2v", "l2v", "ref2v", "ref2v_motion", "replace"]);
 const DEFAULT_DRAFT = Object.freeze({
   version: SINGLE_CREATE_DRAFT_VERSION,
   mode: "t2v",
@@ -26,6 +26,13 @@ const DEFAULT_DRAFT = Object.freeze({
   characterLoraTrigger: null,
   referenceImageKey: null,
   referenceImageKeys: [],
+  faceReferenceImageKeys: [],
+  clothingReferenceImageKeys: [],
+  clothingMode: "character",
+  clothingDescription: "",
+  referenceVideoStart: 0,
+  referenceVideoEnd: SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
+  referenceVideoMaxDimension: 720,
   lastFrameImageKey: null,
   sourceVideoKey: null,
 });
@@ -56,6 +63,13 @@ export function createSingleCreateDraft(input) {
     characterLoraTrigger: input.h3LoraEnabled === true ? "r34l1sm" : null,
     referenceImageKey: normalizeNullableString(input.referenceImageKey),
     referenceImageKeys: normalizeStringArray(input.referenceImageKeys),
+    faceReferenceImageKeys: normalizeStringArray(input.faceReferenceImageKeys),
+    clothingReferenceImageKeys: normalizeStringArray(input.clothingReferenceImageKeys),
+    clothingMode: normalizeClothingMode(input.clothingMode),
+    clothingDescription: normalizeString(input.clothingDescription).slice(0, 2000),
+    referenceVideoStart: normalizeFiniteNumber(input.referenceVideoStart, DEFAULT_DRAFT.referenceVideoStart),
+    referenceVideoEnd: normalizeFiniteNumber(input.referenceVideoEnd, DEFAULT_DRAFT.referenceVideoEnd),
+    referenceVideoMaxDimension: normalizeVideoMaxDimension(input.referenceVideoMaxDimension),
     lastFrameImageKey: normalizeNullableString(input.lastFrameImageKey),
     sourceVideoKey: normalizeNullableString(input.sourceVideoKey),
   };
@@ -72,12 +86,18 @@ export function createSingleCreateDraftFromJob(job) {
     ? job.provenance.request
     : {};
   const refs = job?.inputRefs && typeof job.inputRefs === "object" ? job.inputRefs : {};
-  const mode = normalizeMode(job?.mode ?? request.mode);
+  const storedMode = normalizeMode(job?.mode ?? request.mode);
+  const mode = storedMode === "ref2v" && request.ref2vWorkflow === "character_motion"
+    ? "ref2v_motion"
+    : storedMode;
   const inputImageName = normalizeString(request.inputImageName || refs.inputImage);
   const lastFrameName = normalizeString(request.lastImageName || refs.lastFrame);
   const sourceVideoName = normalizeString(request.inputVideoName || refs.inputVideo);
   const referenceImageName = normalizeString(request.referenceImageName || refs.referenceImage);
   const referenceImageNames = normalizeStringArray(request.referenceImageNames || refs.referenceImages);
+  const referenceImageRoles = Array.isArray(request.referenceImageRoles) && request.referenceImageRoles.length === referenceImageNames.length
+    ? request.referenceImageRoles
+    : referenceImageNames.map(() => "character");
   const h3LoraEnabled = request.h3LoraEnabled === true
     || job?.h3LoraPreset === "h3-realism-people-t2v-i2v-r2v.safetensors"
     || request.h3LoraPreset === "h3-realism-people-t2v-i2v-r2v.safetensors";
@@ -105,9 +125,20 @@ export function createSingleCreateDraftFromJob(job) {
       mode === "i2v" || mode === "fl2v" ? inputImageName : referenceImageName,
       mode === "i2v" || mode === "fl2v" ? request.inputImageRoot : request.referenceImageRoot,
     ),
-    referenceImageKeys: mode === "ref2v"
-      ? referenceImageNames.map((name, index) => assetDraftKey(name, request.referenceImageRoots?.[index])).filter(Boolean)
+    referenceImageKeys: mode === "ref2v" || mode === "ref2v_motion"
+      ? referenceImageNames.map((name, index) => referenceImageRoles[index] === "character" ? assetDraftKey(name, request.referenceImageRoots?.[index]) : null).filter(Boolean)
       : [],
+    faceReferenceImageKeys: mode === "ref2v_motion"
+      ? referenceImageNames.map((name, index) => referenceImageRoles[index] === "face" ? assetDraftKey(name, request.referenceImageRoots?.[index]) : null).filter(Boolean)
+      : [],
+    clothingReferenceImageKeys: mode === "ref2v_motion"
+      ? referenceImageNames.map((name, index) => referenceImageRoles[index] === "clothing" ? assetDraftKey(name, request.referenceImageRoots?.[index]) : null).filter(Boolean)
+      : [],
+    clothingMode: request.clothingMode,
+    clothingDescription: request.clothingDescription,
+    referenceVideoStart: request.referenceVideoStart,
+    referenceVideoEnd: request.referenceVideoEnd ?? request.duration,
+    referenceVideoMaxDimension: request.referenceVideoMaxDimension,
     lastFrameImageKey: assetDraftKey(lastFrameName, request.lastImageRoot),
     sourceVideoKey: assetDraftKey(sourceVideoName, request.inputVideoRoot),
   });
@@ -157,6 +188,14 @@ function normalizeNumberDraft(value, fallback) {
 
 function normalizeFiniteNumber(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeClothingMode(value) {
+  return ["character", "reference", "description"].includes(value) ? value : "character";
+}
+
+function normalizeVideoMaxDimension(value) {
+  return [0, 480, 720, 960].includes(value) ? value : 720;
 }
 
 function assetDraftKey(name, root) {
