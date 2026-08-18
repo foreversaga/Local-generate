@@ -1,4 +1,4 @@
-import { SingleCreateForm } from "../../../components/create/SingleCreateForm";
+import { SingleCreateProgressiveShell } from "../../../components/create/SingleCreateProgressiveShell";
 import { RoutePage } from "../../../components/shell/RoutePage";
 
 export default function SingleCreatePage() {
@@ -8,7 +8,7 @@ export default function SingleCreatePage() {
       title="page.single.title"
       description="page.single.description"
     >
-      <SingleCreateForm />
+      <SingleCreateProgressiveShell />
     </RoutePage>
   );
 }
