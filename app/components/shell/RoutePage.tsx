@@ -10,6 +10,7 @@ type RoutePageProps = {
   title: TranslationKey;
   description: TranslationKey;
   titleVariables?: Record<string, string | number>;
+  compact?: boolean;
   children?: ReactNode;
 };
 
@@ -21,14 +22,14 @@ type RouteCardProps = {
   actionLabel?: TranslationKey;
 };
 
-export function RoutePage({ eyebrow, title, description, titleVariables, children }: RoutePageProps) {
+export function RoutePage({ eyebrow, title, description, titleVariables, compact = false, children }: RoutePageProps) {
   const { t } = useI18n();
   return (
-    <section className={styles.page}>
-      <header className={styles.intro}>
-        <p className={styles.eyebrow}>{t(eyebrow)}</p>
+    <section className={`${styles.page} ${compact ? styles.pageCompact : ""}`}>
+      <header className={`${styles.intro} ${compact ? styles.introCompact : ""}`}>
+        {!compact && <p className={styles.eyebrow}>{t(eyebrow)}</p>}
         <h1 className={styles.title}>{t(title, titleVariables)}</h1>
-        <p className={styles.description}>{t(description)}</p>
+        {!compact && <p className={styles.description}>{t(description)}</p>}
       </header>
       {children}
     </section>

@@ -16,17 +16,19 @@ test("long create UI keeps long-script storage isolated while importing general 
   assert.match(composer, /method: selectedId \? "PUT" : "POST"/);
 });
 
-test("library exposes a separate long-video script manager without mixing Single scripts", async () => {
+test("library exposes a separate long-video script subtype without mixing Single scripts", async () => {
   const [workspace, manager, single] = await Promise.all([
     readFile(new URL("../app/components/library/LibraryWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/library/LongScriptLibraryManager.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url), "utf8"),
   ]);
-  assert.match(workspace, /"long-scripts"/);
-  assert.match(workspace, /root === "long-scripts" \? <LongScriptLibraryManager/);
+  assert.match(workspace, /type ScriptMode = "single" \| "long"/);
+  assert.match(workspace, /scriptMode === "single" \? <ScriptLibraryManager \/> : <LongScriptLibraryManager \/>/);
+  assert.match(workspace, /長影片劇本/);
   assert.match(manager, /\/api\/long-scripts/);
   assert.match(manager, /shots: draft\.shots\.map/);
   assert.match(manager, /分鏡描述/);
+  assert.match(manager, /expandedShot/);
   assert.doesNotMatch(single, /api\/long-scripts/);
 });
 

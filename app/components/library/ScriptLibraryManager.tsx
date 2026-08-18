@@ -36,6 +36,7 @@ export function ScriptLibraryManager() {
     const [scripts, setScripts] = useState<ScriptRecord[]>([]);
     const [query, setQuery] = useState("");
     const [draft, setDraft] = useState<Draft | null>(null);
+    const [negativePromptOpen, setNegativePromptOpen] = useState(false);
     const [pendingDelete, setPendingDelete] = useState<ScriptRecord | null>(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
@@ -52,7 +53,10 @@ export function ScriptLibraryManager() {
             setScripts(next);
             if (preferredId) {
                 const selected = next.find((script) => script.id === preferredId);
-                if (selected) setDraft(draftFromScript(selected));
+                if (selected) {
+                    setDraft(draftFromScript(selected));
+                    setNegativePromptOpen(Boolean(selected.negativePrompt.trim()));
+                }
             }
             setError("");
         } catch (reason) {
@@ -75,6 +79,7 @@ export function ScriptLibraryManager() {
 
     function startNew() {
         setDraft({ ...EMPTY_DRAFT });
+        setNegativePromptOpen(false);
         setError("");
         setMessage("");
         window.requestAnimationFrame(() => nameRef.current?.focus());
@@ -82,9 +87,15 @@ export function ScriptLibraryManager() {
 
     function edit(script: ScriptRecord) {
         setDraft(draftFromScript(script));
+        setNegativePromptOpen(Boolean(script.negativePrompt.trim()));
         setError("");
         setMessage("");
         window.requestAnimationFrame(() => nameRef.current?.focus());
+    }
+
+    function closeEditor() {
+        setDraft(null);
+        setNegativePromptOpen(false);
     }
 
     function update(field: keyof Omit<Draft, "id">, value: string) {
@@ -124,7 +135,7 @@ export function ScriptLibraryManager() {
             const response = await fetch(`${BRIDGE_URL}/api/scripts/${encodeURIComponent(pendingDelete.id)}`, { method: "DELETE" });
             const payload = await response.json();
             if (!response.ok) throw payload;
-            if (draft?.id === pendingDelete.id) setDraft(null);
+            if (draft?.id === pendingDelete.id) closeEditor();
             setPendingDelete(null);
             await refresh();
             setMessage("劇本已刪除。" );
@@ -141,7 +152,7 @@ export function ScriptLibraryManager() {
                 <div>
                     <span>劇本素材</span>
                     <h2 id="script-library-heading">劇本庫</h2>
-                    <p>集中管理影片建立時可套用的提示詞與負面提示詞。</p>
+                    <p>集中管理影片建立時可套用的提示詞。</p>
                 </div>
                 <button type="button" className={styles.newButton} onClick={startNew}>新增劇本</button>
             </div>
@@ -174,7 +185,7 @@ export function ScriptLibraryManager() {
                         <form className={styles.editor} onSubmit={(event) => void save(event)}>
                             <div className={styles.editorHeading}>
                                 <div><span>{draft.id ? "編輯劇本" : "新增劇本"}</span><strong>{draft.id ? draft.name || "未命名" : "建立可重複使用的提示詞"}</strong></div>
-                                <button type="button" onClick={() => setDraft(null)} disabled={busy}>關閉</button>
+                                <button type="button" onClick={closeEditor} disabled={busy}>關閉</button>
                             </div>
                             <label>
                                 <span>劇本名稱</span>
@@ -186,15 +197,28 @@ export function ScriptLibraryManager() {
                                 <textarea value={draft.prompt} maxLength={50000} rows={16} onChange={(event) => update("prompt", event.target.value)} required spellCheck={false} />
                                 <small>{draft.prompt.length} / 50000</small>
                             </label>
-                            <label>
+                            <button
+                                type="button"
+                                className={styles.optionalToggle}
+                                aria-expanded={negativePromptOpen}
+                                aria-controls="script-negative-prompt"
+                                onClick={() => setNegativePromptOpen((current) => !current)}
+                            >
                                 <span>負面提示詞</span>
-                                <textarea value={draft.negativePrompt} maxLength={20000} rows={7} onChange={(event) => update("negativePrompt", event.target.value)} spellCheck={false} />
-                                <small>{draft.negativePrompt.length} / 20000</small>
-                            </label>
+                                <small>{draft.negativePrompt.trim() ? "已設定" : "選填"}</small>
+                                <span aria-hidden="true">{negativePromptOpen ? "−" : "+"}</span>
+                            </button>
+                            {negativePromptOpen && (
+                                <label id="script-negative-prompt" className={styles.optionalPanel}>
+                                    <span>負面提示詞</span>
+                                    <textarea value={draft.negativePrompt} maxLength={20000} rows={7} onChange={(event) => update("negativePrompt", event.target.value)} spellCheck={false} />
+                                    <small>{draft.negativePrompt.length} / 20000</small>
+                                </label>
+                            )}
                             <button type="submit" className={styles.saveButton} disabled={busy || !draft.name.trim() || !draft.prompt.trim()}>{busy ? "儲存中…" : draft.id ? "儲存變更" : "新增劇本"}</button>
                         </form>
                     ) : (
-                        <div className={styles.editorEmpty}><strong>選擇一個劇本開始編輯</strong><p>也可以新增空白劇本，再填入提示詞與負面提示詞。</p><button type="button" onClick={startNew}>新增劇本</button></div>
+                        <div className={styles.editorEmpty}><strong>選擇一個劇本開始編輯</strong><p>也可以新增空白劇本，再填入提示詞。</p><button type="button" onClick={startNew}>新增劇本</button></div>
                     )}
                 </div>
             </div>
