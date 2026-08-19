@@ -7,13 +7,15 @@ export type Text2ImgHealth = {
   comfyUi: boolean;
   remote: boolean;
   modelId: string;
+  encoderId: string;
   reason?: string;
   nodes: Record<string, boolean>;
   models: {
-    diffusion: boolean;
-    textEncoder: boolean;
-    clipType: boolean;
-    vae: boolean;
+    diffusion?: boolean;
+    textEncoder?: boolean;
+    clipType?: boolean;
+    vae?: boolean;
+    checkpoint?: boolean;
   };
   profiles: Record<string, Text2ImgModelHealth>;
   promptAssistant?: {
@@ -30,15 +32,42 @@ export type Text2ImgModelHealth = {
   id: string;
   label: string;
   model: string;
-  textEncoder: string;
-  vae: string;
-  clipType: string;
+  textEncoder?: string;
+  vae?: string;
+  clipType?: string;
   precision: string;
   license: string;
   commercial: boolean;
   ready: boolean;
   reason?: string;
   models: Text2ImgHealth["models"];
+  encoders: Record<string, Text2ImgEncoderHealth>;
+  architecture: "flux2" | "sdxl";
+  defaultSteps: number;
+  maxSteps: number;
+  cfg: number;
+  sampler: string;
+  adultLora?: Text2ImgLoraHealth;
+};
+
+export type Text2ImgLoraHealth = {
+  id: string;
+  label: string;
+  file: string;
+  license: string;
+  available: boolean;
+  ready: boolean;
+};
+
+export type Text2ImgEncoderHealth = {
+  id: string;
+  label: string;
+  textEncoder: string;
+  precision: string;
+  thirdParty: boolean;
+  license: string;
+  available: boolean;
+  ready: boolean;
 };
 
 export type Text2ImgPromptResult = {
@@ -59,8 +88,15 @@ export type Text2ImgJob = {
   steps: number;
   seed: number;
   modelId: string;
+  encoderId: string;
   model: string;
   modelLabel: string;
+  encoder: string;
+  encoderLabel: string;
+  encoderPrecision: string;
+  thirdPartyEncoder: boolean;
+  adultMode: boolean;
+  adultLora?: Text2ImgLoraHealth | null;
   precision: string;
   license: string;
   commercial: boolean;
@@ -76,6 +112,8 @@ export type Text2ImgSubmitInput = {
   steps: number;
   seed: number;
   modelId: string;
+  encoderId: string;
+  adultMode: boolean;
 };
 
 type Text2ImgPayload = {
@@ -129,11 +167,11 @@ export async function submitText2Img(input: Text2ImgSubmitInput) {
   return payload.job;
 }
 
-export async function generateText2ImgPrompt(description: string) {
+export async function generateText2ImgPrompt(description: string, { adultMode = false, unloadPromptModel = false } = {}) {
   const response = await fetch(`${BRIDGE_URL}/api/text2img/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ description }),
+    body: JSON.stringify({ description, adultMode, unloadPromptModel }),
   });
   const payload = await readPayload(response);
   if (!response.ok || !payload.prompt || !payload.model || !payload.profile) {

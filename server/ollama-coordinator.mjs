@@ -154,6 +154,7 @@ export function createOllamaCoordinator({
         active: 0,
         unloading: null,
         cleanup: null,
+        retainRequested: false,
         failure: null,
       };
       states.set(key, state);
@@ -196,6 +197,7 @@ export function createOllamaCoordinator({
         let resolveCleanup;
         const promise = new Promise((resolve) => { resolveCleanup = resolve; });
         state.cleanup = { promise, resolve: resolveCleanup };
+        state.retainRequested = false;
       }
       state.active += 1;
       notify();
@@ -283,9 +285,10 @@ export function createOllamaCoordinator({
     if (explicitError) throw explicitError;
   }
 
-  async function releaseModel(lease) {
+  async function releaseModel(lease, { retain = false } = {}) {
     const { state } = lease;
     const cleanup = state.cleanup;
+    if (retain) state.retainRequested = true;
     state.active = Math.max(0, state.active - 1);
     if (state.active !== 0) {
       notify();
@@ -293,6 +296,14 @@ export function createOllamaCoordinator({
         const result = await cleanup.promise;
         if (result?.ok === false) throw result.error;
       }
+      return;
+    }
+    if (state.retainRequested) {
+      state.retainRequested = false;
+      state.failure = null;
+      cleanup?.resolve({ ok: true, scope: "model-retained" });
+      if (state.cleanup === cleanup) state.cleanup = null;
+      notify();
       return;
     }
     const operation = (async () => {
@@ -408,6 +419,7 @@ export function createOllamaCoordinator({
     timeoutMs = DEFAULT_TIMEOUT_MS,
     before = null,
     requestFetch = fetchImpl,
+    unloadAfter = true,
   } = {}) {
     const lease = await acquireModel({ ollamaUrl, model, comfyUrl, remoteComfy });
     lease.requestFetch = requestFetch;
@@ -420,14 +432,14 @@ export function createOllamaCoordinator({
       // Parse (best effort) before entering cleanup.  Callers still receive
       // the original text when Ollama returns malformed JSON so their
       // existing validation/repair diagnostics remain intact.
-      result = await requestWithLease(lease, { body, timeoutMs, requestFetch, keepAlive: 0 });
+      result = await requestWithLease(lease, { body, timeoutMs, requestFetch, keepAlive: unloadAfter ? 0 : -1 });
     } catch (error) {
       primaryError = asError(error, "Ollama request failed.");
     }
 
     let cleanupError = null;
     try {
-      await releaseModel(lease);
+      await releaseModel(lease, { retain: !unloadAfter });
     } catch (error) {
       cleanupError = asError(error, `Unable to unload Ollama model ${lease.snapshot.model}.`);
     }

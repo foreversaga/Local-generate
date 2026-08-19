@@ -8,8 +8,14 @@ export const FLUX2_VAE = "flux2-vae.safetensors";
 export const FLUX_KLEIN_CLIP_TYPE = "flux2";
 export const FLUX_KLEIN_9B_MODEL = "flux-2-klein-9b.safetensors";
 export const FLUX_KLEIN_9B_TEXT_ENCODER = "qwen_3_8b_fp8mixed.safetensors";
+export const FLUX_KLEIN_9B_UNCENSORED_TEXT_ENCODER = "flux2-klein-9b-uncensored/model.safetensors";
 export const FLUX_KLEIN_9B_VAE = "full_encoder_small_decoder.safetensors";
+export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
+export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
+export const JUGGERNAUT_XL_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
+export const SDXL_ADULT_LORA = "sexy.safetensors";
 export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-klein-4b";
+export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
 
 export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
   [DEFAULT_TEXT2IMG_MODEL_ID]: Object.freeze({
@@ -22,6 +28,11 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
     precision: "BF16",
     license: "Apache 2.0",
     commercial: true,
+    architecture: "flux2",
+    defaultSteps: 4,
+    maxSteps: 8,
+    cfg: 1,
+    sampler: "Euler",
   }),
   "flux2-klein-9b": Object.freeze({
     id: "flux2-klein-9b",
@@ -33,6 +44,48 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
     precision: "BF16 + FP8 encoder",
     license: "FLUX Non-Commercial License",
     commercial: false,
+    architecture: "flux2",
+    defaultSteps: 4,
+    maxSteps: 8,
+    cfg: 1,
+    sampler: "Euler",
+  }),
+  "flux2-dev": Object.freeze({
+    id: "flux2-dev",
+    label: "FLUX.2 Dev · FP8 Mixed",
+    model: FLUX2_DEV_MODEL,
+    textEncoder: FLUX2_DEV_TEXT_ENCODER,
+    vae: FLUX2_VAE,
+    clipType: FLUX_KLEIN_CLIP_TYPE,
+    precision: "FP8 Mixed + BF16 encoder",
+    license: "FLUX Non-Commercial License",
+    commercial: false,
+    architecture: "flux2",
+    defaultSteps: 20,
+    maxSteps: 50,
+    cfg: 4,
+    sampler: "Euler",
+  }),
+  "juggernaut-xl-v9": Object.freeze({
+    id: "juggernaut-xl-v9",
+    label: "Juggernaut XL v9 · SDXL",
+    model: JUGGERNAUT_XL_MODEL,
+    precision: "FP16",
+    license: "CreativeML Open RAIL-M",
+    commercial: false,
+    architecture: "sdxl",
+    defaultSteps: 35,
+    maxSteps: 50,
+    cfg: 5,
+    sampler: "DPM++ 2M Karras",
+    adultLora: Object.freeze({
+      id: "sexy-slider",
+      label: "SDXL Sexy Slider · MIT",
+      file: SDXL_ADULT_LORA,
+      strengthModel: 2,
+      strengthClip: 2,
+      license: "MIT",
+    }),
   }),
 });
 
@@ -43,6 +96,8 @@ export const TEXT2IMG_REQUIRED_NODES = Object.freeze([
   "CLIPTextEncode",
   "ConditioningZeroOut",
   "CFGGuider",
+  "BasicGuider",
+  "FluxGuidance",
   "RandomNoise",
   "KSamplerSelect",
   "Flux2Scheduler",
@@ -50,7 +105,21 @@ export const TEXT2IMG_REQUIRED_NODES = Object.freeze([
   "SamplerCustomAdvanced",
   "VAEDecode",
   "SaveImage",
+  "CheckpointLoaderSimple",
+  "LoraLoader",
+  "EmptyLatentImage",
+  "KSampler",
 ]);
+
+const FLUX_REQUIRED_NODES = Object.freeze([
+  "UNETLoader", "CLIPLoader", "VAELoader", "CLIPTextEncode", "ConditioningZeroOut", "CFGGuider",
+  "RandomNoise", "KSamplerSelect", "Flux2Scheduler", "EmptyFlux2LatentImage", "SamplerCustomAdvanced", "VAEDecode", "SaveImage",
+]);
+const FLUX_DEV_REQUIRED_NODES = Object.freeze([
+  "UNETLoader", "CLIPLoader", "VAELoader", "CLIPTextEncode", "FluxGuidance", "BasicGuider",
+  "RandomNoise", "KSamplerSelect", "Flux2Scheduler", "EmptyFlux2LatentImage", "SamplerCustomAdvanced", "VAEDecode", "SaveImage",
+]);
+const SDXL_REQUIRED_NODES = Object.freeze(["CheckpointLoaderSimple", "LoraLoader", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "VAEDecode", "SaveImage"]);
 
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
@@ -59,7 +128,7 @@ const TEXT2IMG_MAX_DESCRIPTION_LENGTH = 2_000;
 
 export const NATURE_CAMERA_PROFILE = "nature-camera-v1";
 export const NATURE_CAMERA_SYSTEM_PROMPT = [
-  "You turn a short user description into one production-ready photographic prompt for FLUX.2.",
+  "You turn a short user description into one production-ready photographic prompt for a local image-generation model.",
   "Preserve the requested subject, action, location, mood, medium, aspect-ratio intent, and any explicit camera or lens choice. Match the user's language and do not invent a narrower nationality, age, or appearance than supplied.",
   "When people appear, describe them as adults and make the frame feel captured by a real person at a particular moment. Default to an everyday handheld smartphone candid when the user gives no camera direction; use a coherent 35–50mm documentary view when the scene calls for a cleaner still-camera photograph. Use short telephoto only when the physical shooting distance makes sense, and polished editorial lighting only when explicitly requested.",
   "Build a physically coherent capture story with one plausible viewpoint, one lens behavior, and available window, street, overcast, or practical light. Prefer an in-between action, restrained expression or off-camera gaze, mildly imperfect crop or unequal negative space, and environmental context over a centered commercial pose.",
@@ -67,6 +136,7 @@ export const NATURE_CAMERA_SYSTEM_PROMPT = [
   "Use at most two subtle and compatible capture artifacts such as slight hand motion, modest sensor noise, gentle focus falloff, restrained phone sharpening, or minor resolution loss. Do not stack defects or mix contradictory optics, camera distances, or lighting setups.",
   "Return exactly one JSON object with one key named prompt. The prompt must be a single non-empty string, with no Markdown, headings, explanations, negative-prompt list, or extra keys.",
 ].join(" ");
+export const NATURE_CAMERA_ADULT_SYSTEM_PROMPT = `${NATURE_CAMERA_SYSTEM_PROMPT} Preserve consensual adult sensual or explicit intent when the user requests it, and include the literal trigger token sexy exactly once. Every depicted person must be clearly described as an adult; never introduce minors, coercion, incest, or non-consensual situations.`;
 
 function isoNow(now = new Date()) {
   return new Date(now).toISOString();
@@ -108,18 +178,59 @@ function resolveText2ImgModel(modelId = DEFAULT_TEXT2IMG_MODEL_ID) {
   return profile;
 }
 
+function encoderProfilesFor(profile) {
+  if (profile.architecture !== "flux2") return Object.freeze({});
+  const official = Object.freeze({
+    id: DEFAULT_TEXT2IMG_ENCODER_ID,
+    label: profile.id === "flux2-dev"
+      ? "Mistral 3 Small · BF16"
+      : profile.id === "flux2-klein-9b"
+        ? "Official Qwen 3 8B · FP8 Mixed"
+        : "Official Qwen 3 4B · BF16",
+    textEncoder: profile.textEncoder,
+    precision: profile.id === "flux2-klein-9b" ? "FP8 Mixed" : "BF16",
+    thirdParty: false,
+    license: profile.license,
+  });
+  if (profile.id !== "flux2-klein-9b") return Object.freeze({ [official.id]: official });
+  return Object.freeze({
+    [official.id]: official,
+    uncensored: Object.freeze({
+      id: "uncensored",
+      label: "Uncensored Qwen 3 8B · BF16",
+      textEncoder: FLUX_KLEIN_9B_UNCENSORED_TEXT_ENCODER,
+      precision: "BF16",
+      thirdParty: true,
+      license: "FLUX Non-Commercial License v2.1",
+    }),
+  });
+}
+
+function resolveText2ImgEncoder(profile, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID) {
+  const id = String(encoderId || DEFAULT_TEXT2IMG_ENCODER_ID).trim();
+  const encoder = encoderProfilesFor(profile)[id];
+  if (!encoder) throw makeError(`Unsupported text encoder ${id} for ${profile.id}.`, 400, "TEXT2IMG_ENCODER_INVALID");
+  return encoder;
+}
+
 export function normalizeText2ImgInput(input = {}) {
   const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
   if (!prompt) throw makeError("Prompt is required.", 400, "TEXT2IMG_PROMPT_REQUIRED");
   if (prompt.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
     throw makeError(`Prompt must not exceed ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
   }
+  const profile = resolveText2ImgModel(input.modelId);
+  const encoder = profile.architecture === "flux2" ? resolveText2ImgEncoder(profile, input.encoderId) : null;
+  const adultMode = input.adultMode === true;
+  if (adultMode && !profile.adultLora) throw makeError(`Adult LoRA is not supported by ${profile.id}.`, 400, "TEXT2IMG_ADULT_MODE_INVALID");
   return Object.freeze({
     prompt,
-    modelId: resolveText2ImgModel(input.modelId).id,
+    modelId: profile.id,
+    encoderId: encoder?.id || DEFAULT_TEXT2IMG_ENCODER_ID,
+    adultMode,
     width: boundedInteger(input.width, "width", 1024, 512, 1536, 16),
     height: boundedInteger(input.height, "height", 1024, 512, 1536, 16),
-    steps: boundedInteger(input.steps, "steps", 4, 1, 8),
+    steps: boundedInteger(input.steps, "steps", profile.defaultSteps, 1, profile.maxSteps),
     seed: boundedInteger(input.seed, "seed", 12345, 0, 2_147_483_647),
   });
 }
@@ -161,9 +272,27 @@ export function parseNatureCameraPromptResponse(value) {
 export function buildFluxKleinText2ImgPrompt(input = {}, { filenamePrefix = "text2img/flux_klein" } = {}) {
   const request = normalizeText2ImgInput(input);
   const profile = resolveText2ImgModel(request.modelId);
+  const encoder = resolveText2ImgEncoder(profile, request.encoderId);
+  if (profile.id === "flux2-dev") {
+    return {
+      "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
+      "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
+      "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: profile.cfg } },
+      "6": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(5) } },
+      "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
+      "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+      "9": { class_type: "Flux2Scheduler", inputs: { steps: request.steps, width: request.width, height: request.height } },
+      "10": { class_type: "EmptyFlux2LatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
+      "11": { class_type: "SamplerCustomAdvanced", inputs: { noise: link(7), guider: link(6), sampler: link(8), sigmas: link(9), latent_image: link(10) } },
+      "12": { class_type: "VAEDecode", inputs: { samples: link(11), vae: link(3) } },
+      "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/flux2_dev") } },
+    };
+  }
   return {
     "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
-    "2": { class_type: "CLIPLoader", inputs: { clip_name: profile.textEncoder, type: profile.clipType, device: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
     "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
     "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: link(4) } },
@@ -181,6 +310,31 @@ export function buildFluxKleinText2ImgPrompt(input = {}, { filenamePrefix = "tex
   };
 }
 
+export function buildJuggernautText2ImgPrompt(input = {}, { filenamePrefix = "text2img/juggernaut_xl" } = {}) {
+  const request = normalizeText2ImgInput({ ...input, modelId: "juggernaut-xl-v9" });
+  const profile = resolveText2ImgModel(request.modelId);
+  const modelLink = request.adultMode ? link(2) : link(1);
+  const clipLink = request.adultMode ? link(2, 1) : link(1, 1);
+  const graph = {
+    "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: profile.model } },
+    "3": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: clipLink } },
+    "4": { class_type: "CLIPTextEncode", inputs: { text: "low quality, blurry, deformed anatomy, malformed hands, extra fingers, plastic skin, CGI, illustration", clip: clipLink } },
+    "5": { class_type: "EmptyLatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
+    "6": { class_type: "KSampler", inputs: { model: modelLink, positive: link(3), negative: link(4), latent_image: link(5), seed: request.seed, control_after_generate: "fixed", steps: request.steps, cfg: profile.cfg, sampler_name: "dpmpp_2m", scheduler: "karras", denoise: 1 } },
+    "12": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
+    "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/juggernaut_xl") } },
+  };
+  if (request.adultMode) {
+    graph["2"] = { class_type: "LoraLoader", inputs: { model: link(1), clip: link(1, 1), lora_name: profile.adultLora.file, strength_model: profile.adultLora.strengthModel, strength_clip: profile.adultLora.strengthClip } };
+  }
+  return graph;
+}
+
+export function buildText2ImgPrompt(input = {}, options = {}) {
+  const profile = resolveText2ImgModel(input.modelId);
+  return profile.architecture === "sdxl" ? buildJuggernautText2ImgPrompt(input, options) : buildFluxKleinText2ImgPrompt(input, options);
+}
+
 function comboValues(nodeInfo, key) {
   const spec = nodeInfo?.input?.required?.[key];
   const choices = Array.isArray(spec) ? spec[0] : spec;
@@ -189,39 +343,67 @@ function comboValues(nodeInfo, key) {
   return [];
 }
 
-export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote = false, modelId = DEFAULT_TEXT2IMG_MODEL_ID } = {}) {
+export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote = false, modelId = DEFAULT_TEXT2IMG_MODEL_ID, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID } = {}) {
   const nodes = Object.fromEntries(TEXT2IMG_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
-  const nodesReady = Object.values(nodes).every(Boolean);
   const diffusionModels = comboValues(objectInfo?.UNETLoader, "unet_name");
   const textEncoders = comboValues(objectInfo?.CLIPLoader, "clip_name");
   const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
   const vaes = comboValues(objectInfo?.VAELoader, "vae_name");
+  const checkpoints = comboValues(objectInfo?.CheckpointLoaderSimple, "ckpt_name");
+  const loras = comboValues(objectInfo?.LoraLoader, "lora_name");
   const profiles = Object.fromEntries(Object.values(TEXT2IMG_MODEL_PROFILES).map((profile) => {
+    const requiredNodes = profile.architecture === "sdxl"
+      ? SDXL_REQUIRED_NODES
+      : profile.id === "flux2-dev"
+        ? FLUX_DEV_REQUIRED_NODES
+        : FLUX_REQUIRED_NODES;
+    const profileNodesReady = requiredNodes.every((name) => Boolean(objectInfo?.[name]));
+    if (profile.architecture === "sdxl") {
+      const checkpoint = checkpoints.includes(profile.model);
+      const adultLoraAvailable = loras.includes(profile.adultLora.file);
+      const ready = Boolean(comfyUi) && !remote && profileNodesReady && checkpoint;
+      let reason = "";
+      if (!comfyUi) reason = "COMFY_UNREACHABLE";
+      else if (remote) reason = "LOCAL_ONLY_MODEL";
+      else if (!profileNodesReady) reason = "REQUIRED_NODE_MISSING";
+      else if (!checkpoint) reason = "MODEL_OR_COMPANION_MISSING";
+      return [profile.id, { ...profile, ready, models: { checkpoint }, encoders: {}, adultLora: { ...profile.adultLora, available: adultLoraAvailable, ready: ready && adultLoraAvailable }, ...(reason ? { reason } : {}) }];
+    }
+    const encoders = Object.fromEntries(Object.values(encoderProfilesFor(profile)).map((encoder) => {
+      const available = textEncoders.includes(encoder.textEncoder);
+      const ready = Boolean(comfyUi) && !remote && profileNodesReady && diffusionModels.includes(profile.model) && available && clipTypes.includes(profile.clipType) && vaes.includes(profile.vae);
+      return [encoder.id, { ...encoder, available, ready }];
+    }));
     const models = {
       diffusion: diffusionModels.includes(profile.model),
-      textEncoder: textEncoders.includes(profile.textEncoder),
+      textEncoder: encoders[DEFAULT_TEXT2IMG_ENCODER_ID].available,
       clipType: clipTypes.includes(profile.clipType),
       vae: vaes.includes(profile.vae),
     };
-    const ready = Boolean(comfyUi) && !remote && nodesReady && Object.values(models).every(Boolean);
+    const ready = Boolean(comfyUi) && !remote && profileNodesReady && Object.values(models).every(Boolean);
     let reason = "";
     if (!comfyUi) reason = "COMFY_UNREACHABLE";
     else if (remote) reason = "LOCAL_ONLY_MODEL";
-    else if (!nodesReady) reason = "REQUIRED_NODE_MISSING";
+    else if (!profileNodesReady) reason = "REQUIRED_NODE_MISSING";
     else if (!Object.values(models).every(Boolean)) reason = "MODEL_OR_COMPANION_MISSING";
-    return [profile.id, { ...profile, ready, models, ...(reason ? { reason } : {}) }];
+    return [profile.id, { ...profile, ready, models, encoders, ...(reason ? { reason } : {}) }];
   }));
-  const selectedId = resolveText2ImgModel(modelId).id;
+  const selectedProfile = resolveText2ImgModel(modelId);
+  const selectedId = selectedProfile.id;
   const selected = profiles[selectedId];
+  const selectedEncoder = selectedProfile.architecture === "flux2" ? resolveText2ImgEncoder(selectedProfile, encoderId) : null;
+  const selectedModels = selectedEncoder ? { ...selected.models, textEncoder: selected.encoders[selectedEncoder.id].available } : selected.models;
+  const selectedReady = selectedEncoder ? selected.encoders[selectedEncoder.id].ready : selected.ready;
   return {
-    ready: selected.ready,
+    ready: selectedReady,
     comfyUi: Boolean(comfyUi),
     remote: Boolean(remote),
     modelId: selectedId,
+    encoderId: selectedEncoder?.id || DEFAULT_TEXT2IMG_ENCODER_ID,
     nodes,
-    models: selected.models,
+    models: selectedModels,
     profiles,
-    ...(selected.reason ? { reason: selected.reason } : {}),
+    ...(!selectedReady ? { reason: selected.reason || "MODEL_OR_COMPANION_MISSING" } : {}),
   };
 }
 
@@ -355,6 +537,8 @@ export function createText2ImgController({
 
   async function generatePhotographicPrompt(input = {}) {
     const description = normalizeText2ImgDescription(input);
+    const adultMode = input.adultMode === true;
+    const unloadPromptModel = input.unloadPromptModel === true;
     const assistant = await checkPromptAssistant();
     if (!assistant.ready) throw makeError("Ollama prompt model is not ready.", 503, assistant.reason || "OLLAMA_UNAVAILABLE");
     const requestedModel = String(input.model || "").trim();
@@ -378,28 +562,29 @@ export function createText2ImgController({
         remoteComfy: remote,
         model,
         body: {
-          system: NATURE_CAMERA_SYSTEM_PROMPT,
+          system: adultMode ? NATURE_CAMERA_ADULT_SYSTEM_PROMPT : NATURE_CAMERA_SYSTEM_PROMPT,
           prompt: `User image description:\n${description}`,
           think: false,
           options: { temperature: 0.25, top_p: 0.9, num_ctx: 8192 },
         },
         timeoutMs: 120_000,
         requestFetch: fetchImpl,
+        unloadAfter: unloadPromptModel,
       });
       const payload = response?.payload && typeof response.payload === "object" ? response.payload : {};
       const prompt = parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text);
-      return { description, prompt, model, profile: NATURE_CAMERA_PROFILE };
+      return { description, prompt, model, profile: NATURE_CAMERA_PROFILE, adultMode, unloadPromptModel };
     } finally {
       lease?.release?.();
     }
   }
 
-  async function checkReadiness(modelId = DEFAULT_TEXT2IMG_MODEL_ID) {
-    if (remote) return evaluateText2ImgReadiness({}, { comfyUi: true, remote: true, modelId });
+  async function checkReadiness(modelId = DEFAULT_TEXT2IMG_MODEL_ID, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID) {
+    if (remote) return evaluateText2ImgReadiness({}, { comfyUi: true, remote: true, modelId, encoderId });
     try {
-      return evaluateText2ImgReadiness(await requestJson("/object_info", {}, 10_000), { comfyUi: true, remote: false, modelId });
+      return evaluateText2ImgReadiness(await requestJson("/object_info", {}, 10_000), { comfyUi: true, remote: false, modelId, encoderId });
     } catch {
-      return evaluateText2ImgReadiness({}, { comfyUi: false, remote: false, modelId });
+      return evaluateText2ImgReadiness({}, { comfyUi: false, remote: false, modelId, encoderId });
     }
   }
 
@@ -443,13 +628,13 @@ export function createText2ImgController({
       lease = admission ? await admission.granted : null;
       job.status = "running";
       job.progress = 8;
-      job.stage = "Checking FLUX models";
+      job.stage = "Checking image models";
       job.startedAt = isoNow(now());
       job.updatedAt = job.startedAt;
       if (typeof beforeRun === "function") await beforeRun(job);
-      const readiness = await checkReadiness(job.modelId);
+      const readiness = await checkReadiness(job.modelId, job.encoderId);
       if (!readiness.ready) throw makeError(`${job.modelLabel} is not ready in ComfyUI.`, 503, readiness.reason || "TEXT2IMG_NOT_READY");
-      const graph = buildFluxKleinText2ImgPrompt(job, { filenamePrefix: `text2img/${job.modelId.replaceAll("-", "_")}_${job.id.slice(0, 8)}` });
+      const graph = buildText2ImgPrompt(job, { filenamePrefix: `text2img/${job.modelId.replaceAll("-", "_")}_${job.id.slice(0, 8)}` });
       job.progress = 20;
       job.stage = "Submitting ComfyUI workflow";
       job.updatedAt = isoNow(now());
@@ -461,7 +646,7 @@ export function createText2ImgController({
       job.promptId = String(submitted.prompt_id || submitted.promptId || "");
       if (!job.promptId) {
         const detail = submitted.node_errors ? ` ${JSON.stringify(submitted.node_errors).slice(0, 800)}` : "";
-        throw makeError(`ComfyUI rejected the FLUX workflow.${detail}`, 502, "COMFY_PROMPT_REJECTED");
+        throw makeError(`ComfyUI rejected the image workflow.${detail}`, 502, "COMFY_PROMPT_REJECTED");
       }
       job.progress = 30;
       job.stage = "Generating image";
@@ -489,9 +674,10 @@ export function createText2ImgController({
   }
 
   async function enqueue(input = {}) {
-    if (remote) throw makeError("FLUX.2 Klein models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
+    if (remote) throw makeError("Text-to-image models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
     const request = normalizeText2ImgInput(input);
     const profile = resolveText2ImgModel(request.modelId);
+    const encoder = profile.architecture === "flux2" ? resolveText2ImgEncoder(profile, request.encoderId) : null;
     const createdAt = isoNow(now());
     const job = {
       id: String(idFactory()),
@@ -501,6 +687,11 @@ export function createText2ImgController({
       ...request,
       model: profile.model,
       modelLabel: profile.label,
+      encoder: encoder?.textEncoder || "Built into checkpoint",
+      encoderLabel: encoder?.label || "SDXL dual CLIP",
+      encoderPrecision: encoder?.precision || profile.precision,
+      thirdPartyEncoder: encoder?.thirdParty || false,
+      adultLora: request.adultMode ? profile.adultLora : null,
       precision: profile.precision,
       license: profile.license,
       commercial: profile.commercial,
@@ -539,8 +730,12 @@ export function createText2ImgController({
       try {
         const input = await readJson(req);
         const modelId = resolveText2ImgModel(input?.modelId).id;
-        const readiness = await checkReadiness(modelId);
-        if (!readiness.ready) {
+        const profile = TEXT2IMG_MODEL_PROFILES[modelId];
+        const encoderId = profile.architecture === "flux2" ? resolveText2ImgEncoder(profile, input?.encoderId).id : DEFAULT_TEXT2IMG_ENCODER_ID;
+        const readiness = await checkReadiness(modelId, encoderId);
+        const adultMode = input?.adultMode === true;
+        const adultLoraReady = !adultMode || readiness.profiles?.[modelId]?.adultLora?.ready;
+        if (!readiness.ready || !adultLoraReady) {
           respond(res, 503, { error: `${TEXT2IMG_MODEL_PROFILES[modelId].label} is not ready.`, code: readiness.reason || "TEXT2IMG_NOT_READY", health: readiness });
           return true;
         }
