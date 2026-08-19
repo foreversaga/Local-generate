@@ -85,7 +85,7 @@ test("bridge domain router keeps runtime-switched controller lookup injectable",
     withAssetLifecycleLock: (operation) => operation(),
     withRuntimeOperation: (operation) => operation(),
   });
-  assert.deepEqual(router.names, ["upscale", "sequences", "lora-training", "text2img", "img2img"]);
+  assert.deepEqual(router.names, ["upscale", "sequences", "lora-training", "text2img", "pose-preview", "img2img"]);
   assert.equal(await router.dispatch({ pathname: "/api/text2img", req: { method: "GET" }, res: {}, readJson() {}, sendJson() {}, sendError() {} }), true);
   assert.equal(await router.dispatch({ pathname: "/api/img2img", req: { method: "GET" }, res: {}, readJson() {}, sendJson() {}, sendError() {} }), true);
 });
