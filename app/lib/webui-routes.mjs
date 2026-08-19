@@ -51,6 +51,7 @@ export function routeTitle(pathname, locale = "zh-TW") {
   const normalizedPath = normalizePath(pathname);
   const english = locale === "en";
 
+  if (normalizedPath.startsWith("/app/create/workspace/")) return english ? "Create / Project workspace" : "建立 / 專案工作區";
   if (normalizedPath === "/app/create/single") return english ? "Create / Single video" : "建立 / 單次影片";
   if (normalizedPath === "/app/create/long") return english ? "Create / Long video" : "建立 / 長影片";
   if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return english ? "Job details" : "工作詳情";
