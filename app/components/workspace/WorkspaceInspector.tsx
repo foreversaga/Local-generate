@@ -13,8 +13,11 @@ type WorkspaceInspectorProps = {
     node: WorkflowNode | null;
     brief: string;
     locale: string;
+    h3Running?: boolean;
+    h3RunError?: string;
     onBriefChange: (value: string) => void;
     onConfigChange: (patch: Record<string, unknown>) => void;
+    onRunH3?: (nodeId: string) => void;
 };
 
 const VIDEO_MODES = ["t2v", "i2v", "fl2v", "l2v", "ref2v", "ref2v_motion", "replace"] as const;
@@ -35,7 +38,16 @@ const MODEL_LABELS: Record<string, string> = {
     wan22_animate_fp8: "Wan2.2 Animate",
 };
 
-export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfigChange }: WorkspaceInspectorProps) {
+export function WorkspaceInspector({
+    node,
+    brief,
+    locale,
+    h3Running = false,
+    h3RunError = "",
+    onBriefChange,
+    onConfigChange,
+    onRunH3,
+}: WorkspaceInspectorProps) {
     const zh = locale.toLowerCase().startsWith("zh");
     const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -48,6 +60,7 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
     const modelProfiles = singleCreateModelProfilesForMode(mode);
     const width = numberDraftConfig(node, "width", modeDefaults.width);
     const height = numberDraftConfig(node, "height", modeDefaults.height);
+    const duration = numberDraftConfig(node, "duration", 5);
     const resolution = resolutionValue(width, height);
 
     return (
@@ -67,18 +80,21 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
             {node.type === WORKFLOW_NODE_TYPES.asset && (
                 <>
                     <Field label={zh ? "素材角色" : "Asset role"}>
-                        <select value={stringConfig(node, "role", "character")} onChange={(event) => onConfigChange({ role: event.target.value })}>
+                        <select value={stringConfig(node, "role", "reference")} onChange={(event) => onConfigChange({ role: event.target.value })}>
                             <option value="character">{zh ? "角色" : "Character"}</option>
                             <option value="face">{zh ? "臉部" : "Face"}</option>
                             <option value="clothing">{zh ? "服裝" : "Clothing"}</option>
+                            <option value="first-frame">{zh ? "首幀" : "First frame"}</option>
+                            <option value="last-frame">{zh ? "尾幀" : "Last frame"}</option>
+                            <option value="motion-video">{zh ? "動作影片" : "Motion video"}</option>
                             <option value="pose">{zh ? "姿勢" : "Pose"}</option>
                             <option value="scene">{zh ? "場景" : "Scene"}</option>
-                            <option value="video">{zh ? "影片" : "Video"}</option>
+                            <option value="video">{zh ? "一般影片" : "Video"}</option>
                             <option value="audio">{zh ? "音訊" : "Audio"}</option>
                             <option value="reference">{zh ? "一般參考" : "Reference"}</option>
                         </select>
                     </Field>
-                    <Field label={zh ? "素材名稱" : "Asset name"} helper={zh ? "素材實體仍由 Library 管理，這裡只保存引用。" : "The asset remains owned by Library; the project stores only its reference."}>
+                    <Field label={zh ? "素材名稱" : "Asset name"} helper={zh ? "素材實體仍由 Library 管理，Workspace 只保存引用與角色。" : "Library owns the file; Workspace stores only its reference and role."}>
                         <input value={stringConfig(node, "assetName")} readOnly placeholder={zh ? "尚未綁定素材" : "No asset bound"} />
                     </Field>
                 </>
@@ -105,6 +121,9 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
                     <Field label={zh ? "提示詞" : "Prompt"}>
                         <textarea value={stringConfig(node, "prompt")} onChange={(event) => onConfigChange({ prompt: event.target.value })} rows={9} placeholder={zh ? "由 Brief / Skill 產生，或直接輸入。" : "Generated from the Brief/Skill or entered directly."} />
                     </Field>
+                    <Field label={zh ? "負面提示詞" : "Negative prompt"}>
+                        <textarea value={stringConfig(node, "negativePrompt")} onChange={(event) => onConfigChange({ negativePrompt: event.target.value })} rows={5} placeholder={zh ? "選填" : "Optional"} />
+                    </Field>
                 </>
             )}
 
@@ -129,7 +148,7 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
                     </Field>
                     <div className={styles.twoColumns}>
                         <Field label={zh ? "時長" : "Duration"}>
-                            <NumberInput value={numberDraftConfig(node, "duration", 5)} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value })} />
+                            <NumberInput value={duration} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value, ...(mode === "ref2v_motion" ? { referenceVideoEnd: value } : {}) })} />
                         </Field>
                         <Field label={zh ? "尺寸" : "Resolution"}>
                             <select
@@ -153,6 +172,36 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
                             <Field label={zh ? "高度" : "Height"}><NumberInput value={height} min={32} max={2048} step={32} onChange={(value) => onConfigChange({ height: value })} /></Field>
                         </div>
                     )}
+
+                    {mode === "ref2v_motion" && (
+                        <div className={styles.advancedInline}>
+                            <div className={styles.twoColumns}>
+                                <Field label={zh ? "動作開始秒數" : "Motion start"}><NumberInput value={numberDraftConfig(node, "referenceVideoStart", 0)} min={0} max={60} step={0.5} onChange={(value) => onConfigChange({ referenceVideoStart: value })} /></Field>
+                                <Field label={zh ? "動作結束秒數" : "Motion end"}><NumberInput value={numberDraftConfig(node, "referenceVideoEnd", Number(duration) || 5)} min={0.5} max={60} step={0.5} onChange={(value) => onConfigChange({ referenceVideoEnd: value, ...(typeof value === "number" ? { duration: Math.max(0.5, value - Number(numberDraftConfig(node, "referenceVideoStart", 0))) } : {}) })} /></Field>
+                            </div>
+                            <Field label={zh ? "動作影片解析度上限" : "Motion video max dimension"}>
+                                <select value={String(numberDraftConfig(node, "referenceVideoMaxDimension", 720))} onChange={(event) => onConfigChange({ referenceVideoMaxDimension: Number(event.target.value) })}>
+                                    <option value="0">{zh ? "原始" : "Original"}</option>
+                                    <option value="480">480</option>
+                                    <option value="720">720</option>
+                                    <option value="960">960</option>
+                                </select>
+                            </Field>
+                            <Field label={zh ? "服裝來源" : "Clothing source"}>
+                                <select value={stringConfig(node, "clothingMode", "character")} onChange={(event) => onConfigChange({ clothingMode: event.target.value })}>
+                                    <option value="character">{zh ? "沿用角色" : "Character"}</option>
+                                    <option value="reference">{zh ? "服裝參考圖" : "Reference images"}</option>
+                                    <option value="description">{zh ? "文字描述" : "Description"}</option>
+                                </select>
+                            </Field>
+                            {stringConfig(node, "clothingMode", "character") === "description" && (
+                                <Field label={zh ? "服裝描述" : "Clothing description"}>
+                                    <textarea value={stringConfig(node, "clothingDescription")} onChange={(event) => onConfigChange({ clothingDescription: event.target.value })} rows={4} />
+                                </Field>
+                            )}
+                        </div>
+                    )}
+
                     <button type="button" className={styles.disclosure} aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((current) => !current)}>
                         <span>{zh ? "進階生成設定" : "Advanced generation"}</span><span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
                     </button>
@@ -160,11 +209,30 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
                         <div className={styles.advanced}>
                             <Field label="Steps"><NumberInput value={numberDraftConfig(node, "steps", modeDefaults.steps)} min={1} max={80} step={1} onChange={(value) => onConfigChange({ steps: value })} /></Field>
                             <Field label="Seed"><NumberInput value={numberDraftConfig(node, "seed", 12345)} min={0} max={2147483647} step={1} onChange={(value) => onConfigChange({ seed: value })} /></Field>
-                            <Field label="LoRA"><input value={stringConfig(node, "loraName")} onChange={(event) => onConfigChange({ loraName: event.target.value })} placeholder={zh ? "選填" : "Optional"} /></Field>
+                            <Field label={zh ? "輸出名稱" : "Output name"}><input value={stringConfig(node, "outputName")} onChange={(event) => onConfigChange({ outputName: event.target.value })} placeholder={zh ? "選填" : "Optional"} /></Field>
+                            {mode === "replace" ? (
+                                <>
+                                    <Field label="Character LoRA"><input value={stringConfig(node, "loraName")} onChange={(event) => onConfigChange({ loraName: event.target.value })} placeholder={zh ? "選填" : "Optional"} /></Field>
+                                    <Field label={zh ? "LoRA 強度" : "LoRA strength"}><NumberInput value={numberDraftConfig(node, "loraStrength", 0.75)} min={0} max={2} step={0.05} onChange={(value) => onConfigChange({ loraStrength: value })} /></Field>
+                                </>
+                            ) : (
+                                <>
+                                    <Field label="H3 Realism People">
+                                        <select value={booleanConfig(node, "h3LoraEnabled", false) ? "on" : "off"} onChange={(event) => onConfigChange({ h3LoraEnabled: event.target.value === "on" })}>
+                                            <option value="off">{zh ? "不套用" : "Off"}</option>
+                                            <option value="on">{zh ? "套用" : "On"}</option>
+                                        </select>
+                                    </Field>
+                                    {booleanConfig(node, "h3LoraEnabled", false) && <Field label={zh ? "H3 LoRA 強度" : "H3 LoRA strength"}><NumberInput value={numberDraftConfig(node, "h3LoraStrength", 0.8)} min={0} max={2} step={0.05} onChange={(value) => onConfigChange({ h3LoraStrength: value })} /></Field>}
+                                </>
+                            )}
                         </div>
                     )}
-                    <a className={styles.primaryLink} href="/app/create/single">{zh ? "使用現有 Single 執行" : "Run with existing Single flow"}</a>
-                    <p className={styles.helper}>{zh ? "H3 node 的 mode/default/request domain 已與 Single controller 共用；舊 SingleForm submit 尚待最後接線，因此目前執行仍回到既有頁面。" : "H3 mode/default/request behavior now shares the Single controller domain. The legacy SingleForm submit still needs the final wiring, so execution currently opens the existing flow."}</p>
+                    <button type="button" className={styles.primaryButton} disabled={h3Running || !onRunH3} onClick={() => onRunH3?.(node.id)}>
+                        {h3Running ? (zh ? "建立工作中…" : "Creating job…") : (zh ? "直接執行 H3" : "Run H3")}
+                    </button>
+                    {h3RunError && <p className={styles.runError} role="alert">{h3RunError}</p>}
+                    <p className={styles.helper}>{zh ? "會使用 Project 的 Prompt 與素材角色直接建立既有 Single Video Job；生成狀態會自動綁回這個節點。" : "Creates the existing Single Video job directly from the Project prompt and asset roles, then binds progress back to this node."}</p>
                 </>
             )}
 
@@ -190,7 +258,7 @@ export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfi
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.output && (
-                <p className={styles.helper}>{zh ? "完成的圖片或影片會在後續直接執行整合時自動連到這個節點並註冊進 Library。" : "Completed media will be linked here and registered in Library when direct execution wiring is enabled."}</p>
+                <p className={styles.helper}>{zh ? "生成結果會由既有 Job backend 註冊進 Library；在 Activity 可直接開啟結果。" : "The existing job backend registers completed media in Library; open the result from Activity."}</p>
             )}
         </aside>
     );
@@ -211,6 +279,11 @@ function NumberInput({ value, min, max, step, onChange }: { value: number | ""; 
 function stringConfig(node: WorkflowNode, key: string, fallback = "") {
     const value = node.config[key];
     return typeof value === "string" ? value : fallback;
+}
+
+function booleanConfig(node: WorkflowNode, key: string, fallback: boolean) {
+    const value = node.config[key];
+    return typeof value === "boolean" ? value : fallback;
 }
 
 function numberDraftConfig(node: WorkflowNode, key: string, fallback: number): number | "" {
