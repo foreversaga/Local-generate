@@ -27,6 +27,7 @@ import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs
 
 const CHECKPOINT_MODELS = IMG2IMG_MODELS.filter((model) => IMG2IMG_MODEL_PROFILES[model].workflow === "checkpoint");
 const WAI_MODEL = "waiIllustriousSDXL_v170.safetensors";
+const JUGGERNAUT_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
 const Z_IMAGE_MODEL = "z_image_turbo_bf16.safetensors";
 const Z_IMAGE_COMPANIONS = {
   clipName: "qwen_3_4b.safetensors",
@@ -86,6 +87,7 @@ const requiredObjectInfo = {
   KSampler: {},
   VAEDecode: {},
   SaveImage: {},
+  ImageScaleToTotalPixels: {},
 };
 
 const currentObjectInfo = {
@@ -166,6 +168,30 @@ test("adds an optional DWPose ControlNet branch without changing source conditio
   assert.deepEqual(graph["6"].inputs.positive, ["12", 0]);
   assert.deepEqual(graph["6"].inputs.negative, ["12", 1]);
   assert.deepEqual(graph["6"].inputs.latent_image, ["3", 0]);
+});
+
+test("builds the high-quality Juggernaut pose workflow with SDXL normalization and Xinsir conditioning", () => {
+  const graph = buildImg2ImgPrompt({
+    sourceName: "character.png",
+    poseName: "pose.png",
+    poseControlNetName: "xinsir_openpose_sdxl_1.0.safetensors",
+    prompt: "natural adult portrait",
+    model: JUGGERNAUT_MODEL,
+  });
+  assert.equal(graph["6"].inputs.steps, 35);
+  assert.equal(graph["6"].inputs.cfg, 5);
+  assert.equal(graph["6"].inputs.denoise, 1);
+  assert.equal(graph["6"].inputs.sampler_name, "dpmpp_2m");
+  assert.equal(graph["6"].inputs.scheduler, "karras");
+  assert.equal(graph["14"].class_type, "ImageScaleToTotalPixels");
+  assert.deepEqual(graph["14"].inputs, {
+    image: ["2", 0],
+    upscale_method: "lanczos",
+    megapixels: 1,
+    resolution_steps: 64,
+  });
+  assert.deepEqual(graph["3"].inputs.pixels, ["14", 0]);
+  assert.equal(graph["10"].inputs.scale_stick_for_xinsr_cn, "enable");
 });
 
 test("pose readiness requires configured ControlNet and DWPose nodes", () => {
@@ -604,6 +630,8 @@ test("remote controller stages the optional pose image and submits the ControlNe
     const queued = await controller.enqueue({
       sourceName: "character.png",
       poseName: "pose.png",
+      poseControlStrength: 1.3,
+      poseResolution: 768,
       prompt: "pose-controlled portrait",
       seed: 17,
     });
@@ -617,8 +645,12 @@ test("remote controller stages the optional pose image and submits the ControlNe
     assert.equal(submittedGraph["2"].inputs.image, "h3-studio-img2img/character-upload.png");
     assert.equal(submittedGraph["9"].inputs.image, "h3-studio-img2img/pose-upload.png");
     assert.equal(submittedGraph["10"].class_type, "DWPreprocessor");
+    assert.equal(submittedGraph["10"].inputs.resolution, 768);
     assert.equal(submittedGraph["11"].inputs.control_net_name, "openpose.safetensors");
+    assert.equal(submittedGraph["12"].inputs.strength, 1.3);
     assert.deepEqual(submittedGraph["6"].inputs.positive, ["12", 0]);
+    assert.equal(job.poseControlStrength, 1.3);
+    assert.equal(job.poseResolution, 768);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -12,11 +12,13 @@ import {
 } from "./img2img-client";
 import styles from "./PoseToImageWorkspace.module.css";
 
-const SDXL_MODEL = "sd_xl_turbo_1.0_fp16.safetensors";
+const SDXL_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
 const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, low resolution, bad anatomy, deformed body, extra limbs, missing limbs, malformed hands, malformed feet, extra fingers, fused fingers, distorted face, watermark, text, logo";
-const DEFAULT_STEPS = 4;
-const DEFAULT_CFG = 1;
+const DEFAULT_STEPS = 35;
+const DEFAULT_CFG = 5;
 const DEFAULT_DENOISE = 1;
+const DEFAULT_POSE_CONTROL_STRENGTH = 1.2;
+const DEFAULT_POSE_RESOLUTION = 768;
 
 type PoseAwareHealth = Img2ImgHealth & {
     pose?: {
@@ -58,6 +60,9 @@ export function PoseToImageWorkspace() {
     const [promptHealth, setPromptHealth] = useState<PromptHealth | null>(null);
     const [health, setHealth] = useState<PoseAwareHealth | null>(null);
     const [seed, setSeed] = useState(() => String(randomSeed()));
+    const [denoise, setDenoise] = useState(DEFAULT_DENOISE);
+    const [poseControlStrength, setPoseControlStrength] = useState(DEFAULT_POSE_CONTROL_STRENGTH);
+    const [poseResolution, setPoseResolution] = useState(DEFAULT_POSE_RESOLUTION);
     const [uploading, setUploading] = useState(false);
     const [extracting, setExtracting] = useState(false);
     const [promptBusy, setPromptBusy] = useState(false);
@@ -209,17 +214,19 @@ export function PoseToImageWorkspace() {
                 sourceRoot: source.root === "output" ? "output" : "input",
                 poseName: source.name,
                 poseRoot: source.root === "output" ? "output" : "input",
+                poseControlStrength,
+                poseResolution,
                 prompt: prompt.trim(),
                 negativePrompt: negativePrompt.trim(),
                 ...(promptReceipt ? { ollamaPromptReceipt: promptReceipt } : {}),
                 model: SDXL_MODEL,
-                denoise: DEFAULT_DENOISE,
+                denoise,
                 steps: DEFAULT_STEPS,
                 cfg: DEFAULT_CFG,
                 seed: normalizeSeed(seed),
                 batchCount: 1,
                 randomRanges: {
-                    denoise: { min: DEFAULT_DENOISE, max: DEFAULT_DENOISE },
+                    denoise: { min: denoise, max: denoise },
                     steps: { min: DEFAULT_STEPS, max: DEFAULT_STEPS },
                     cfg: { min: DEFAULT_CFG, max: DEFAULT_CFG },
                 },
@@ -312,7 +319,47 @@ export function PoseToImageWorkspace() {
                     <div>
                         <span className={styles.eyebrow}>04 / SDXL</span>
                         <h3>依骨架姿勢生成圖片</h3>
-                        <p className={styles.helper}>SDXL Turbo · DWPose + ControlNet · Denoise 1.0</p>
+                        <p className={styles.helper}>Juggernaut XL v9 · DPM++ 2M Karras · 35 steps · CFG 5</p>
+                    </div>
+                    <label className={styles.denoiseField} htmlFor="pose-to-image-denoise">
+                        <span>重繪強度 {denoise.toFixed(2)}</span>
+                        <input
+                            id="pose-to-image-denoise"
+                            type="range"
+                            min="0.55"
+                            max="1"
+                            step="0.05"
+                            value={denoise}
+                            onChange={(event) => setDenoise(Number(event.target.value))}
+                        />
+                        <small>0.55 保留較多原圖 · 1.0 只取骨架</small>
+                    </label>
+                    <div className={styles.poseSettings}>
+                        <label className={styles.denoiseField} htmlFor="pose-to-image-control-strength">
+                            <span>骨架控制強度 {poseControlStrength.toFixed(1)}</span>
+                            <input
+                                id="pose-to-image-control-strength"
+                                type="range"
+                                min="0.5"
+                                max="2"
+                                step="0.1"
+                                value={poseControlStrength}
+                                onChange={(event) => setPoseControlStrength(Number(event.target.value))}
+                            />
+                            <small>越高越貼近骨架；過高可能讓肢體僵硬</small>
+                        </label>
+                        <label className={styles.resolutionField} htmlFor="pose-to-image-pose-resolution">
+                            <span>DWPose 解析度</span>
+                            <select
+                                id="pose-to-image-pose-resolution"
+                                value={poseResolution}
+                                onChange={(event) => setPoseResolution(Number(event.target.value))}
+                            >
+                                <option value={512}>512 · 快速</option>
+                                <option value={768}>768 · 建議</option>
+                                <option value={1024}>1024 · 精細</option>
+                            </select>
+                        </label>
                     </div>
                     <div className={styles.seedField}>
                         <label htmlFor="pose-to-image-seed">Seed</label>

@@ -32,6 +32,12 @@ const IMG2IMG_COMMON_NODES = Object.freeze([
   "SaveImage",
 ]);
 
+const JUGGERNAUT_XL_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
+const JUGGERNAUT_XL_REQUIRED_NODES = Object.freeze([
+  ...IMG2IMG_REQUIRED_NODES,
+  "ImageScaleToTotalPixels",
+]);
+
 const Z_IMAGE_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
   "CLIPLoader",
@@ -49,6 +55,20 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     localOnly: false,
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 4, cfg: 1, denoise: 0.65 },
+  },
+  [JUGGERNAUT_XL_MODEL]: {
+    model: JUGGERNAUT_XL_MODEL,
+    workflow: "checkpoint",
+    loader: "CheckpointLoaderSimple",
+    loraLoader: "LoraLoader",
+    localOnly: false,
+    requiredNodes: JUGGERNAUT_XL_REQUIRED_NODES,
+    defaults: { steps: 35, cfg: 5, denoise: 1 },
+    sampling: {
+      samplerName: "dpmpp_2m",
+      scheduler: "karras",
+    },
+    normalizeMegapixels: 1,
   },
   "v1-5-pruned-emaonly-fp16.safetensors": {
     model: "v1-5-pruned-emaonly-fp16.safetensors",
@@ -781,6 +801,7 @@ export function buildImg2ImgPrompt({
   const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
 
   if (profile.workflow === "checkpoint") {
+    const sampling = profile.sampling || {};
     const graph = {
       "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: profile.model } },
       "2": { class_type: "LoadImage", inputs: { image } },
@@ -794,8 +815,8 @@ export function buildImg2ImgPrompt({
           seed: parameters.seed,
           steps: parameters.steps,
           cfg: parameters.cfg,
-          sampler_name: "euler_ancestral",
-          scheduler: "normal",
+          sampler_name: sampling.samplerName || "euler_ancestral",
+          scheduler: sampling.scheduler || "normal",
           positive: link(4),
           negative: link(5),
           latent_image: link(3),
@@ -805,6 +826,18 @@ export function buildImg2ImgPrompt({
       "7": { class_type: "VAEDecode", inputs: { samples: link(6), vae: link(1, 2) } },
       "8": { class_type: "SaveImage", inputs: { images: link(7), filename_prefix: cleanPrefix } },
     };
+    if (profile.normalizeMegapixels) {
+      graph["14"] = {
+        class_type: "ImageScaleToTotalPixels",
+        inputs: {
+          image: link(2),
+          upscale_method: "lanczos",
+          megapixels: profile.normalizeMegapixels,
+          resolution_steps: 64,
+        },
+      };
+      graph["3"].inputs.pixels = link(14);
+    }
     if (poseImage) {
       graph["9"] = { class_type: "LoadImage", inputs: { image: poseImage } };
       graph["10"] = {
@@ -817,7 +850,7 @@ export function buildImg2ImgPrompt({
           resolution: poseSize,
           bbox_detector: "yolox_l.onnx",
           pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
-          scale_stick_for_xinsr_cn: "disable",
+          scale_stick_for_xinsr_cn: /xinsir/i.test(poseControlModel) ? "enable" : "disable",
         },
       };
       graph["11"] = { class_type: "ControlNetLoader", inputs: { control_net_name: poseControlModel } };
@@ -1165,7 +1198,12 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "img2img") {
     ...publicComfyProgress(job),
     sourceName: job.sourceName,
     sourceRoot: job.sourceRoot,
-    ...(job.poseName ? { poseName: job.poseName, poseRoot: job.poseRoot || "input" } : {}),
+    ...(job.poseName ? {
+      poseName: job.poseName,
+      poseRoot: job.poseRoot || "input",
+      poseControlStrength: job.poseControlStrength,
+      poseResolution: job.poseResolution,
+    } : {}),
     prompt: job.prompt,
     negativePrompt: job.negativePrompt,
     model: job.model,
@@ -1679,8 +1717,8 @@ export function createImg2ImgController({
         sourceName: staged.loadName,
         poseName: stagedPose?.loadName,
         poseControlNetName: poseControlNetLoaderName,
-        poseControlStrength,
-        poseResolution,
+        poseControlStrength: job.poseControlStrength ?? poseControlStrength,
+        poseResolution: job.poseResolution ?? poseResolution,
         characterLoraLoaderName,
         filenamePrefix: itemFilenamePrefix(job, itemIndex),
       });
@@ -1929,6 +1967,12 @@ export function createImg2ImgController({
       ? normalizePoseImageName(typeof input.poseName === "string" ? input.poseName.trim() : input.poseName)
       : "";
     const poseRoot = poseName ? normalizePoseRoot(input.poseRoot) : "";
+    const jobPoseControlStrength = poseName
+      ? normalizePoseControlStrength(input.poseControlStrength, poseControlStrength)
+      : null;
+    const jobPoseResolution = poseName
+      ? normalizePoseResolution(input.poseResolution, poseResolution)
+      : null;
     if (poseName) await resolveAsset(poseRoot, poseName);
     if (poseName) {
       const readiness = await checkReadiness();
@@ -1955,7 +1999,12 @@ export function createImg2ImgController({
       stage: "Queued",
       sourceName,
       sourceRoot,
-      ...(poseName ? { poseName, poseRoot } : {}),
+      ...(poseName ? {
+        poseName,
+        poseRoot,
+        poseControlStrength: jobPoseControlStrength,
+        poseResolution: jobPoseResolution,
+      } : {}),
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
@@ -2024,7 +2073,12 @@ export function createImg2ImgController({
         request: {
           sourceName,
           sourceRoot,
-          ...(poseName ? { poseName, poseRoot } : {}),
+          ...(poseName ? {
+            poseName,
+            poseRoot,
+            poseControlStrength: jobPoseControlStrength,
+            poseResolution: jobPoseResolution,
+          } : {}),
           prompt,
           negativePrompt: String(input.negativePrompt || "").trim(),
           model,
@@ -2047,8 +2101,8 @@ export function createImg2ImgController({
     buildImg2ImgPrompt({
       ...job,
       poseControlNetName,
-      poseControlStrength,
-      poseResolution,
+      poseControlStrength: job.poseControlStrength ?? poseControlStrength,
+      poseResolution: job.poseResolution ?? poseResolution,
     });
     await persistJob(job, { required: true });
     jobs.set(job.id, job);

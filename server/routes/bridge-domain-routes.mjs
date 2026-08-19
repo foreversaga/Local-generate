@@ -55,7 +55,7 @@ export function buildPosePreviewGraph(imageName, resolution = 768) {
         resolution: size,
         bbox_detector: "yolox_l.onnx",
         pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
-        scale_stick_for_xinsr_cn: "disable",
+        scale_stick_for_xinsr_cn: "enable",
       },
     },
     "3": { class_type: "PreviewImage", inputs: { images: ["2", 0] } },

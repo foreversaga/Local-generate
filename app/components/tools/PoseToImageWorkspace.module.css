@@ -196,6 +196,41 @@
     min-width: 180px;
 }
 
+.denoiseField {
+    display: grid;
+    gap: 5px;
+    min-width: 210px;
+}
+
+.denoiseField input {
+    width: 100%;
+}
+
+.denoiseField small {
+    color: var(--muted, rgba(255, 255, 255, 0.62));
+}
+
+.poseSettings {
+    display: grid;
+    gap: 10px;
+    min-width: 230px;
+}
+
+.resolutionField {
+    display: grid;
+    gap: 5px;
+}
+
+.resolutionField select {
+    width: 100%;
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.18);
+    color: inherit;
+    padding: 8px 10px;
+    font: inherit;
+}
+
 .seedField > div {
     display: grid;
     grid-template-columns: 1fr auto;

@@ -88,6 +88,8 @@ export type Img2ImgJob = {
     /** Optional pose/control reference image. The source image remains the required character reference. */
     poseName?: string;
     poseRoot?: "input" | "output";
+    poseControlStrength?: number;
+    poseResolution?: number;
     prompt: string;
     negativePrompt: string;
     model: string;
@@ -122,6 +124,8 @@ export type Img2ImgSubmitInput = {
     /** Optional pose/control reference image. The source image remains required. */
     poseName?: string;
     poseRoot?: "input" | "output";
+    poseControlStrength?: number;
+    poseResolution?: number;
     prompt: string;
     negativePrompt: string;
     ollamaPromptReceipt?: string;

@@ -354,7 +354,9 @@ test("Ollama img2img prompt generation returns structured positive and negative 
     assert.equal(generationCalls[0].model, "qwen3-vl");
     assert.deepEqual(generationCalls[0].images, ["aGVsbG8="]);
     assert.match(generationCalls[0].system, /exactly these two keys: prompt and negativePrompt/);
-    assert.equal(calls.filter((body) => body.prompt === "").length, 1);
+    assert.match(generationCalls[0].system, /anatomically correct hands/);
+    assert.match(generationCalls[0].system, /plastic skin/);
+    assert.equal(calls.filter((body) => body.prompt === "").length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

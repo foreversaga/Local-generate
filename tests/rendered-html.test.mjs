@@ -90,7 +90,7 @@ test("uses the same-origin API and current web route wiring", async () => {
   assert.doesNotMatch(packageJson, /npm run bridge|local-bridge\.mjs/);
   assert.match(packageJson, /restart:web/);
   assert.match(packageJson, /restart:web:dev/);
-  assert.match(packageJson, /node server\/production-web\.mjs/);
+  assert.match(packageJson, /node --env-file-if-exists=\.env\.local server\/production-web\.mjs/);
   assert.match(restartScript, /healthUrl = "http:\/\/127\.0\.0\.1:8787\/app\/api\/health"/);
   assert.match(restartScript, /\$runScript = if \(\$Mode -eq "production"\) \{ "start" \} else \{ "dev" \}/);
   assert.match(restartScript, /Production build is missing/);

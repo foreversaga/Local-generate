@@ -19,6 +19,7 @@ test("pose preview graph uses the same DWPose contract as img2img pose control",
   assert.equal(graph["2"].inputs.resolution, 768);
   assert.equal(graph["2"].inputs.bbox_detector, "yolox_l.onnx");
   assert.equal(graph["2"].inputs.pose_estimator, "dw-ll_ucoco_384_bs5.torchscript.pt");
+  assert.equal(graph["2"].inputs.scale_stick_for_xinsr_cn, "enable");
   assert.equal(graph["3"].class_type, "PreviewImage");
   assert.deepEqual(graph["3"].inputs.images, ["2", 0]);
 });

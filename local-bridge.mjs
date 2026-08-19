@@ -24,7 +24,10 @@ import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
 import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
-import { createText2ImgController } from "./server/image-generation/text2img.mjs";
+import {
+  NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION,
+  createText2ImgController,
+} from "./server/image-generation/text2img.mjs";
 import {
   LoraTrainingError,
   captionService as loraCaptionService,
@@ -1392,7 +1395,7 @@ function promptSystem(mode, durationSeconds, hasVisualReference) {
   );
 }
 
-async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] }) {
+async function requestOllamaPrompt({ model, system, prompt, visualInputs = [], unloadAfter = true }) {
   const response = await ollamaCoordinator.generate({
     ollamaUrl: runtimeContext.ollamaUrl,
     comfyUrl: runtimeContext.comfyUrl,
@@ -1406,6 +1409,7 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [] })
       ...(visualInputs.length ? { images: visualInputs.map((item) => item.data) } : {}),
     },
     timeoutMs: 120000,
+    unloadAfter,
   });
   const result = response.payload && typeof response.payload === "object"
     ? response.payload
@@ -1457,6 +1461,7 @@ async function createImg2ImgPrompt(payload = {}) {
     model,
     system: [
       "You are an expert Stable Diffusion image-to-image prompt writer.",
+      NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION,
       "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
       "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
       "Both values must be non-empty English strings suitable for Stable Diffusion; negativePrompt should list unwanted artifacts and details to avoid.",
@@ -1464,6 +1469,7 @@ async function createImg2ImgPrompt(payload = {}) {
     ].join(" "),
     prompt: `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
     visualInputs,
+    unloadAfter: false,
   });
   return parseImg2ImgPromptResponse(response);
 }
