@@ -206,7 +206,7 @@ export function createPythonResolver(options = {}) {
  */
 export function toPublicPythonResolution(result) {
   const executable = result?.available && typeof result.executable === 'string'
-    ? path.basename(result.executable)
+    ? path.win32.basename(path.posix.basename(result.executable))
     : null;
   return {
     executable,

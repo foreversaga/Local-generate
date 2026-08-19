@@ -8,6 +8,7 @@ import { createDomainRouter } from "../runtime/domain-router.mjs";
 export function createBridgeDomainRouter({
   getSeedVR2Controller,
   getImg2ImgController,
+  getText2ImgController,
   handleLoraTrainingRoute,
   handleLongVideoRoute,
   planSequence,
@@ -24,6 +25,7 @@ export function createBridgeDomainRouter({
   const required = {
     getSeedVR2Controller,
     getImg2ImgController,
+    getText2ImgController,
     handleLoraTrainingRoute,
     handleLongVideoRoute,
     planSequence,
@@ -77,6 +79,14 @@ export function createBridgeDomainRouter({
       name: "lora-training",
       matches: ({ pathname }) => pathname === "/api/lora-training/assets" || pathname === "/api/lora-training/health" || pathname.startsWith("/api/lora-training/jobs"),
       handle: ({ req, res, requestUrl }) => handleLoraTrainingRoute(req, res, { pathname: requestUrl.pathname, requestUrl }),
+    },
+    {
+      name: "text2img",
+      matches: ({ pathname }) => pathname === "/api/text2img" || pathname.startsWith("/api/text2img/"),
+      handle: ({ req, res, pathname, readJson, sendJson, sendError }) => {
+        const dispatch = () => getText2ImgController().handleRoute(req, res, { pathname, readJson, sendJson, sendError });
+        return req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
+      },
     },
     {
       name: "img2img",

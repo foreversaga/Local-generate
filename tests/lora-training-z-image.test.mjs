@@ -298,6 +298,7 @@ test('routes Z-Image through the shared queue without DreamBooth materialization
       fetchImpl: async (url) => String(url).endsWith('/api/tags')
         ? { ok: true, json: async () => ({ models: [{ name: 'gemma4:latest' }] }) }
         : { ok: true, json: async () => ({ response: JSON.stringify({ caption: 'portrait' }) }) },
+      ollamaCommandRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
       checkTrainer: async () => ({ ok: true, message: 'test trainer ready' }),
       resolveBaseModel: async () => ({ path: fixture.model, format: 'diffusers' }),
       resolveCommand: async (request) => {

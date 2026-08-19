@@ -1,4 +1,4 @@
-import { createReadStream, watch as watchFileSystem } from "node:fs";
+import { createReadStream, existsSync, watch as watchFileSystem } from "node:fs";
 import { EventEmitter } from "node:events";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -24,6 +24,7 @@ import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
 import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
+import { createText2ImgController } from "./server/image-generation/text2img.mjs";
 import {
   LoraTrainingError,
   captionService as loraCaptionService,
@@ -200,8 +201,18 @@ let timingHistoryWrite = Promise.resolve();
 let generatorSupportsLastImage;
 const OLLAMA_PROMPT_RECEIPT_TTL_MS = 15 * 60 * 1000;
 const ollamaPromptReceipts = new Map();
+const adjacentOllamaExecutable = path.resolve(
+  PROJECT_ROOT,
+  "..",
+  "ollama-runtime",
+  "bin",
+  process.platform === "win32" ? "ollama.exe" : "ollama",
+);
+const ollamaExecutable = String(process.env.OLLAMA_CLI_PATH || "").trim()
+  || (existsSync(adjacentOllamaExecutable) ? adjacentOllamaExecutable : (process.platform === "win32" ? "ollama.exe" : "ollama"));
 const ollamaCoordinator = createOllamaCoordinator({
   beforeRequest: (target) => releaseComfyForOllama(target),
+  ollamaExecutable,
 });
 const continuationPromptFinalizer = createContinuationPromptFinalizer({
   ollamaCoordinator,
@@ -1091,6 +1102,7 @@ async function switchRuntimeMode(mode) {
       loraTrainingServicePromise = undefined;
       seedvr2Controller = createSeedVR2ControllerForRuntime();
       img2imgController = createImg2ImgControllerForRuntime();
+      text2imgController = createText2ImgControllerForRuntime();
     },
   });
 }
@@ -2710,9 +2722,6 @@ function publicLoraTrainingJob(details) {
     if (job?.provenance?.[key] !== undefined && typeof job.provenance[key] !== "object") provenance[key] = job.provenance[key];
   }
   const sourceAssets = publicLoraSourceAssets(job);
-  const manifestPath = typeof details?.dataset?.manifestPath === "string" && !path.isAbsolute(details.dataset.manifestPath)
-    ? details.dataset.manifestPath
-    : "";
   return {
     schemaVersion: 1,
     id: job.id,
@@ -2737,7 +2746,6 @@ function publicLoraTrainingJob(details) {
     updatedAt: job.updatedAt,
     dataset: {
       imageCount: details?.dataset?.images?.length ?? details?.dataset?.imageCount ?? job?.assetIds?.length ?? 0,
-      ...(manifestPath ? { manifestPath } : {}),
     },
     captionReviewMode: job.captionReviewMode,
     captions: details?.captions || { total: 0, confirmed: 0, failed: 0 },
@@ -5194,12 +5202,28 @@ function createImg2ImgControllerForRuntime() {
   });
 }
 
+function createText2ImgControllerForRuntime() {
+  return createText2ImgController({
+    comfyUrl: runtimeContext.comfyUrl,
+    ollamaUrl: runtimeContext.ollamaUrl,
+    remote: runtimeContext.isRemote,
+    outputRoot: OUTPUT_ROOT,
+    toAsset,
+    ollamaCoordinator,
+    preferredOllamaModel: defaultOllamaModel(),
+    gpuCoordinator: gpuResourceCoordinator,
+    gpuRuntime: runtimeContext.mode,
+  });
+}
+
 let seedvr2Controller = createSeedVR2ControllerForRuntime();
 let img2imgController = createImg2ImgControllerForRuntime();
+let text2imgController = createText2ImgControllerForRuntime();
 
 const domainRouter = createBridgeDomainRouter({
   getSeedVR2Controller: () => seedvr2Controller,
   getImg2ImgController: () => img2imgController,
+  getText2ImgController: () => text2imgController,
   handleLoraTrainingRoute,
   handleLongVideoRoute,
   planSequence: planSequenceWithPromptProvider,

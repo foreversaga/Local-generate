@@ -21,6 +21,8 @@ test("Create prompt consumers hydrate persisted prompt defaults and reconcile he
 
   assert.match(singleAssistant, /reconcileStudioSettings\(\{[\s\S]*promptProvider: provider[\s\S]*\}, health\)/);
   assert.match(singleAssistant, /new Map<string, \(typeof PROMPT_MODEL_CATALOG\)\[number\]>/);
+  assert.match(singleAssistant, /Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M/);
+  assert.match(singleAssistant, /Gemma 4 26B-A4B QAT Balanced MTP Q4_K_M/);
   assert.match(singleAssistant, /qwen3\.5-hauhaucs-aggressive:9b-q6_k/);
   assert.match(longForm, /reconcileStudioSettings\(\{[\s\S]*promptProvider,[\s\S]*\}, health\)/);
   assert.match(longForm, /id="long-resolution-scale"/);

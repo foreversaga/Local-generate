@@ -102,8 +102,8 @@ const PROMPT_MODEL_CATALOG = [
   },
   {
     value: GEMMA4_OLLAMA_MODEL,
-    label: "Gemma 4 26B-A4B Uncensored",
-    note: "Remote RTX 5090 · text + image",
+    label: "Gemma 4 26B-A4B QAT Balanced MTP Q4_K_M",
+    note: "Prompt generation · text + image",
   },
   {
     value: QWEN_OLLAMA_MODEL,

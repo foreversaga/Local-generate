@@ -92,6 +92,7 @@ test("route mapping keeps nested routes on the correct primary navigation item",
   assert.equal(primaryRouteForPath("/app/jobs/job-123"), "jobs");
   assert.equal(primaryRouteForPath("/app/library/"), "library");
   assert.equal(primaryRouteForPath("/app/tools"), "tools");
+  assert.equal(primaryRouteForPath("/app/tools/text-to-image"), "tools");
   assert.equal(primaryRouteForPath("/app/tools/image-to-image"), "tools");
   assert.equal(primaryRouteForPath("/app/settings#runtime"), "settings");
 });
@@ -103,6 +104,7 @@ test("route titles identify important child pages", () => {
   assert.equal(routeTitle("/app/jobs/job-123"), "工作詳情");
   assert.equal(routeTitle("/app/tools"), "工具");
   assert.equal(routeTitle("/app/tools/upscale"), "工具 / 影片升頻");
+  assert.equal(routeTitle("/app/tools/text-to-image"), "工具 / 文字生圖");
   assert.equal(routeTitle("/app/tools/image-to-image"), "工具 / 以圖生圖");
 });
 
@@ -110,6 +112,7 @@ test("route titles support English presentation without changing route paths", (
   assert.equal(routeTitle("/app/create", "en"), "Create");
   assert.equal(routeTitle("/app/create/single", "en"), "Create / Single video");
   assert.equal(routeTitle("/app/jobs/job-123", "en"), "Job details");
+  assert.equal(routeTitle("/app/tools/text-to-image", "en"), "Tools / Text to Image");
   assert.equal(routeTitle("/app/tools/image-to-image", "en"), "Tools / Image to Image");
 });
 

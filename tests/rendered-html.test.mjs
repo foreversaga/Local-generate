@@ -81,6 +81,7 @@ test("uses the same-origin API and current web route wiring", async () => {
   assert.match(bridge, /pathname === "\/api\/prompt"/);
   assert.match(bridge, /pathname === "\/api\/runtime"/);
   assert.match(bridgeRoutes, /pathname === "\/api\/img2img"/);
+  assert.match(bridgeRoutes, /pathname === "\/api\/text2img"/);
   assert.match(bridge, /pathname === "\/api\/assets"/);
   assert.doesNotMatch(bridge, /STUDIO_OUTPUT_ROOT/);
   assert.match(h3Instruction, /integrated_multimodal_description/);

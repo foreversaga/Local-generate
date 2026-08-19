@@ -16,14 +16,21 @@ export default function ToolsPage() {
           actionLabel="action.openTool"
         />
         <RouteCard
-          code="02 / IMAGE TO IMAGE"
+          code="02 / TEXT TO IMAGE"
+          title="tools.text2img.title"
+          description="tools.text2img.description"
+          href="/app/tools/text-to-image"
+          actionLabel="action.openTool"
+        />
+        <RouteCard
+          code="03 / IMAGE TO IMAGE"
           title="tools.img2img.title"
           description="tools.img2img.description"
           href="/app/tools/image-to-image"
           actionLabel="action.openTool"
         />
         <RouteCard
-          code="03 / LORA TRAINER"
+          code="04 / LORA TRAINER"
           title="tools.lora.title"
           description="tools.lora.description"
           href="/app/tools/lora-trainer"

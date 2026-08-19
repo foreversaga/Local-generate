@@ -55,6 +55,7 @@ export function routeTitle(pathname, locale = "zh-TW") {
   if (normalizedPath === "/app/create/long") return english ? "Create / Long video" : "建立 / 長影片";
   if (normalizedPath.startsWith("/app/jobs/") && normalizedPath !== "/app/jobs") return english ? "Job details" : "工作詳情";
   if (normalizedPath === "/app/tools/upscale") return english ? "Tools / Video upscale" : "工具 / 影片升頻";
+  if (normalizedPath === "/app/tools/text-to-image") return english ? "Tools / Text to Image" : "工具 / 文字生圖";
   if (normalizedPath === "/app/tools/image-to-image") return english ? "Tools / Image to Image" : "工具 / 以圖生圖";
   if (normalizedPath === "/app/tools/lora-trainer") return english ? "Tools / LoRA training" : "工具 / LoRA 訓練";
 
