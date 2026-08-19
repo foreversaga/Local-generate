@@ -13,10 +13,13 @@ type WorkspaceInspectorProps = {
     node: WorkflowNode | null;
     brief: string;
     locale: string;
+    promptRunning?: boolean;
+    promptRunError?: string;
     h3Running?: boolean;
     h3RunError?: string;
     onBriefChange: (value: string) => void;
     onConfigChange: (patch: Record<string, unknown>) => void;
+    onGeneratePrompt?: (nodeId: string) => void;
     onRunH3?: (nodeId: string) => void;
 };
 
@@ -42,10 +45,13 @@ export function WorkspaceInspector({
     node,
     brief,
     locale,
+    promptRunning = false,
+    promptRunError = "",
     h3Running = false,
     h3RunError = "",
     onBriefChange,
     onConfigChange,
+    onGeneratePrompt,
     onRunH3,
 }: WorkspaceInspectorProps) {
     const zh = locale.toLowerCase().startsWith("zh");
@@ -119,11 +125,16 @@ export function WorkspaceInspector({
                         </select>
                     </Field>
                     <Field label={zh ? "提示詞" : "Prompt"}>
-                        <textarea value={stringConfig(node, "prompt")} onChange={(event) => onConfigChange({ prompt: event.target.value })} rows={9} placeholder={zh ? "由 Brief / Skill 產生，或直接輸入。" : "Generated from the Brief/Skill or entered directly."} />
+                        <textarea value={stringConfig(node, "prompt")} onChange={(event) => onConfigChange({ prompt: event.target.value, ollamaPromptReceipt: "" })} rows={9} placeholder={zh ? "由 Brief / Skill 產生，或直接輸入。" : "Generated from the Brief/Skill or entered directly."} />
                     </Field>
                     <Field label={zh ? "負面提示詞" : "Negative prompt"}>
                         <textarea value={stringConfig(node, "negativePrompt")} onChange={(event) => onConfigChange({ negativePrompt: event.target.value })} rows={5} placeholder={zh ? "選填" : "Optional"} />
                     </Field>
+                    <button type="button" className={styles.primaryButton} disabled={promptRunning || !onGeneratePrompt} onClick={() => onGeneratePrompt?.(node.id)}>
+                        {promptRunning ? (zh ? "產生提示詞中…" : "Generating prompt…") : (zh ? "從 Brief 產生提示詞" : "Generate from Brief")}
+                    </button>
+                    {promptRunError && <p className={styles.runError} role="alert">{promptRunError}</p>}
+                    <p className={styles.helper}>{zh ? "Auto 會沿用 Settings 的提示詞提供者與模型；圖片/影片模式會把 Project 素材一併送到現有提示詞 API。" : "Auto uses the provider and model from Settings; visual modes send the Project assets through the existing prompt API."}</p>
                 </>
             )}
 
@@ -148,7 +159,7 @@ export function WorkspaceInspector({
                     </Field>
                     <div className={styles.twoColumns}>
                         <Field label={zh ? "時長" : "Duration"}>
-                            <NumberInput value={duration} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value, ...(mode === "ref2v_motion" ? { referenceVideoEnd: value } : {}) })} />
+                            <NumberInput value={duration} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value, ...(mode === "ref2v_motion" && typeof value === "number" ? { referenceVideoEnd: Number(numberDraftConfig(node, "referenceVideoStart", 0)) + value } : {}) })} />
                         </Field>
                         <Field label={zh ? "尺寸" : "Resolution"}>
                             <select
@@ -176,7 +187,7 @@ export function WorkspaceInspector({
                     {mode === "ref2v_motion" && (
                         <div className={styles.advancedInline}>
                             <div className={styles.twoColumns}>
-                                <Field label={zh ? "動作開始秒數" : "Motion start"}><NumberInput value={numberDraftConfig(node, "referenceVideoStart", 0)} min={0} max={60} step={0.5} onChange={(value) => onConfigChange({ referenceVideoStart: value })} /></Field>
+                                <Field label={zh ? "動作開始秒數" : "Motion start"}><NumberInput value={numberDraftConfig(node, "referenceVideoStart", 0)} min={0} max={60} step={0.5} onChange={(value) => onConfigChange({ referenceVideoStart: value, ...(typeof value === "number" && typeof duration === "number" ? { referenceVideoEnd: value + duration } : {}) })} /></Field>
                                 <Field label={zh ? "動作結束秒數" : "Motion end"}><NumberInput value={numberDraftConfig(node, "referenceVideoEnd", Number(duration) || 5)} min={0.5} max={60} step={0.5} onChange={(value) => onConfigChange({ referenceVideoEnd: value, ...(typeof value === "number" ? { duration: Math.max(0.5, value - Number(numberDraftConfig(node, "referenceVideoStart", 0))) } : {}) })} /></Field>
                             </div>
                             <Field label={zh ? "動作影片解析度上限" : "Motion video max dimension"}>

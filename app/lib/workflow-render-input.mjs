@@ -25,6 +25,7 @@ export function buildWorkflowH3RenderInput(project, nodeId) {
         || null;
     const prompt = text(node.config?.prompt) || text(promptNode?.config?.prompt);
     const negativePrompt = text(node.config?.negativePrompt) || text(promptNode?.config?.negativePrompt);
+    const ollamaPromptReceipt = text(node.config?.ollamaPromptReceipt) || text(promptNode?.config?.ollamaPromptReceipt);
     const assets = normalizeAssets(project.assets);
 
     const firstFrame = firstImageByRoles(assets, ["first-frame", "reference", "character", "face"]);
@@ -43,6 +44,7 @@ export function buildWorkflowH3RenderInput(project, nodeId) {
         initialDescription: text(project.brief),
         prompt,
         negativePrompt,
+        ollamaPromptReceipt,
         modelProfile,
         width: numberConfig(node, "width", defaults.width),
         height: numberConfig(node, "height", defaults.height),

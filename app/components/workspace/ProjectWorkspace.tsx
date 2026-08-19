@@ -22,6 +22,7 @@ import { updateWorkflowProjectBrief, WORKFLOW_NODE_TYPES } from "../../lib/workf
 import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-project-store.mjs";
 import { AssetDock } from "./AssetDock";
 import { executeWorkflowH3Node } from "./workspace-render-client";
+import { executeWorkflowPromptNode } from "./workspace-prompt-client";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkspaceActivity } from "./WorkspaceActivity";
 import { WorkspaceCheckpoints } from "./WorkspaceCheckpoints";
@@ -44,6 +45,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const [savedAt, setSavedAt] = useState("");
     const [historyPast, setHistoryPast] = useState<WorkflowProject[]>([]);
     const [historyFuture, setHistoryFuture] = useState<WorkflowProject[]>([]);
+    const [promptRunningNodeId, setPromptRunningNodeId] = useState("");
+    const [promptRunError, setPromptRunError] = useState("");
     const [h3RunningNodeId, setH3RunningNodeId] = useState("");
     const [h3RunError, setH3RunError] = useState("");
 
@@ -141,6 +144,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         if (selectedNode.type === WORKFLOW_NODE_TYPES.asset && assetKey && role) {
             nextProject = updateWorkflowAssetRole(nextProject, assetKey, role) as WorkflowProject;
         }
+        setPromptRunError("");
         setH3RunError("");
         applyProjectChange(nextProject, { recordHistory: true });
     }
@@ -162,6 +166,25 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     function unbindJob(nodeId: string) {
         const nextProject = unbindWorkflowNodeJob(project, nodeId) as WorkflowProject;
         applyProjectChange(nextProject, { recordHistory: true });
+    }
+
+    async function generatePrompt(nodeId: string) {
+        if (promptRunningNodeId) return;
+        setPromptRunningNodeId(nodeId);
+        setPromptRunError("");
+        try {
+            const result = await executeWorkflowPromptNode(project, nodeId);
+            const nextProject = updateWorkflowNodeConfig(project, nodeId, {
+                prompt: result.prompt,
+                negativePrompt: result.negativePrompt,
+                ollamaPromptReceipt: result.ollamaPromptReceipt,
+            }) as WorkflowProject;
+            applyProjectChange(nextProject, { recordHistory: true });
+        } catch (error) {
+            setPromptRunError(error instanceof Error ? error.message : copy.promptFailed);
+        } finally {
+            setPromptRunningNodeId("");
+        }
     }
 
     async function runH3Node(nodeId: string) {
@@ -229,6 +252,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     canRedo={historyFuture.length > 0}
                     onSelectNode={(nodeId) => {
                         setSelectedNodeId(nodeId);
+                        setPromptRunError("");
                         setH3RunError("");
                     }}
                     onProjectChange={applyProjectChange}
@@ -242,10 +266,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     node={selectedNode}
                     brief={project.brief}
                     locale={locale}
+                    promptRunning={Boolean(selectedNode && promptRunningNodeId === selectedNode.id)}
+                    promptRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.prompt ? promptRunError : ""}
                     h3Running={Boolean(selectedNode && h3RunningNodeId === selectedNode.id)}
                     h3RunError={selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video ? h3RunError : ""}
                     onBriefChange={updateBrief}
                     onConfigChange={updateSelectedNodeConfig}
+                    onGeneratePrompt={(nodeId) => void generatePrompt(nodeId)}
                     onRunH3={(nodeId) => void runH3Node(nodeId)}
                 />
             </div>
@@ -287,6 +314,7 @@ function workspaceCopy(locale: string) {
             projectName: "專案名稱",
             saved: "已儲存在本機",
             local: "本機專案",
+            promptFailed: "無法產生提示詞。",
             noJobCreated: "生成 API 沒有回傳工作。",
             runFailed: "無法建立生成工作。",
         }
@@ -297,6 +325,7 @@ function workspaceCopy(locale: string) {
             projectName: "Project name",
             saved: "Saved locally",
             local: "Local project",
+            promptFailed: "Unable to generate the prompt.",
             noJobCreated: "The generation API did not return a job.",
             runFailed: "Unable to create the generation job.",
         };
