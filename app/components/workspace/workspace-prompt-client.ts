@@ -1,6 +1,7 @@
 import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
 import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
 import { loadStudioSettings } from "../../lib/studio-settings.mjs";
+import { resolveWorkflowPromptConfiguration } from "../../lib/workflow-prompt-settings.mjs";
 import { buildWorkflowH3RenderInput } from "../../lib/workflow-render-input.mjs";
 import { WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import type { WorkflowProject } from "./workflow-types";
@@ -28,6 +29,15 @@ type WorkflowRenderInput = {
     referenceVideoMaxDimension: number;
     lastFrameImage: AssetRef | null;
     sourceVideo: AssetRef | null;
+};
+
+type PromptHealth = {
+    ollama?: { online?: boolean; models?: string[] };
+    codex?: {
+        online?: boolean;
+        skill?: boolean;
+        models?: Array<{ value?: string; reasoningEfforts?: string[] }>;
+    };
 };
 
 type PromptPayload = {
@@ -80,14 +90,12 @@ export async function executeWorkflowPromptNode(
     }) as Array<{ message: string }>;
     if (assetIssues.length) throw new Error(assetIssues[0].message);
 
-    const settings = loadStudioSettings();
-    const configuredProvider = text(promptNode.config?.provider);
-    const provider = configuredProvider === "ollama" || configuredProvider === "codex"
-        ? configuredProvider
-        : configuredProvider === "hermes"
-            ? "hermes"
-            : settings.promptProvider;
-    if (provider === "hermes") throw new Error("Hermes provider 尚未接入現有 /app/api/prompt contract，請先選 Auto、Ollama 或 Codex CLI。");
+    const health = await fetchPromptHealth(fetchImpl);
+    const configuration = resolveWorkflowPromptConfiguration(
+        loadStudioSettings(),
+        health,
+        text(promptNode.config?.provider) || "auto",
+    );
 
     const referenceImages = characterMotion
         ? [...input.referenceImages, ...input.faceReferenceImages, ...(input.clothingMode === "reference" ? input.clothingReferenceImages : [])]
@@ -100,15 +108,14 @@ export async function executeWorkflowPromptNode(
         ]
         : [];
     const images = await buildPromptImages(input, referenceImages, fetchImpl);
-    const model = provider === "codex" ? settings.codexModel : settings.ollamaModel;
     const response = await fetchImpl(`${BRIDGE_URL}/api/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildSinglePromptRequest({
-            provider,
-            model,
-            codexModel: settings.codexModel,
-            reasoningEffort: settings.codexReasoningEffort,
+            provider: configuration.provider,
+            model: configuration.model,
+            codexModel: configuration.codexModel,
+            reasoningEffort: configuration.reasoningEffort,
             brief: project.brief.trim(),
             negativePrompt: text(promptNode.config?.negativePrompt),
             mode: requestMode,
@@ -141,6 +148,12 @@ export async function executeWorkflowPromptNode(
         negativePrompt: payload.negativePrompt || text(promptNode.config?.negativePrompt),
         ollamaPromptReceipt: receipt,
     };
+}
+
+async function fetchPromptHealth(fetchImpl: typeof fetch): Promise<PromptHealth> {
+    const response = await fetchImpl(`${BRIDGE_URL}/api/health`, { cache: "no-store" });
+    if (!response.ok) throw new Error("無法取得提示詞提供者狀態。");
+    return response.json() as Promise<PromptHealth>;
 }
 
 async function buildPromptImages(input: WorkflowRenderInput, referenceImages: AssetRef[], fetchImpl: typeof fetch) {

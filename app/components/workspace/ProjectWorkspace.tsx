@@ -32,6 +32,7 @@ import styles from "./ProjectWorkspace.module.css";
 
 type ProjectChangeOptions = { recordHistory?: boolean };
 type CanvasPosition = { x: number; y: number };
+type ExecutionState = ReturnType<typeof workflowExecutionState>;
 
 const HISTORY_LIMIT = 30;
 
@@ -75,10 +76,15 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         () => project?.nodes.find((node) => node.id === selectedNodeId) || null,
         [project, selectedNodeId],
     );
-    const executionStates = useMemo(() => {
+    const executionStates = useMemo<Record<string, ExecutionState>>(() => {
         if (!project) return {};
         return Object.fromEntries(project.nodes.map((node) => [node.id, workflowExecutionState(node, jobs)]));
     }, [jobs, project]);
+    const selectedExecutionState = selectedNode ? executionStates[selectedNode.id] : null;
+    const selectedH3Busy = Boolean(
+        selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video
+        && (h3RunningNodeId === selectedNode.id || isActiveExecution(selectedExecutionState)),
+    );
 
     if (!loaded) return <div className={styles.state}>{copy.loading}</div>;
     if (!project) {
@@ -189,6 +195,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
     async function runH3Node(nodeId: string) {
         if (h3RunningNodeId) return;
+        const currentExecution = executionStates[nodeId];
+        if (isActiveExecution(currentExecution)) {
+            setH3RunError(copy.activeJobExists);
+            return;
+        }
         setH3RunningNodeId(nodeId);
         setH3RunError("");
         try {
@@ -268,7 +279,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     locale={locale}
                     promptRunning={Boolean(selectedNode && promptRunningNodeId === selectedNode.id)}
                     promptRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.prompt ? promptRunError : ""}
-                    h3Running={Boolean(selectedNode && h3RunningNodeId === selectedNode.id)}
+                    h3Running={selectedH3Busy}
                     h3RunError={selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video ? h3RunError : ""}
                     onBriefChange={updateBrief}
                     onConfigChange={updateSelectedNodeConfig}
@@ -297,6 +308,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     );
 }
 
+function isActiveExecution(state: ExecutionState) {
+    return state?.status === "queued" || state?.status === "running";
+}
+
 function defaultAssetPosition(index: number): CanvasPosition {
     return { x: 70 + (index % 3) * 42, y: 360 + Math.floor(index / 3) * 110 };
 }
@@ -315,6 +330,7 @@ function workspaceCopy(locale: string) {
             saved: "已儲存在本機",
             local: "本機專案",
             promptFailed: "無法產生提示詞。",
+            activeJobExists: "這個 H3 節點已有排隊中或執行中的工作，請先等待完成或取消工作。",
             noJobCreated: "生成 API 沒有回傳工作。",
             runFailed: "無法建立生成工作。",
         }
@@ -326,6 +342,7 @@ function workspaceCopy(locale: string) {
             saved: "Saved locally",
             local: "Local project",
             promptFailed: "Unable to generate the prompt.",
+            activeJobExists: "This H3 node already has a queued or running job. Finish or cancel it before starting another.",
             noJobCreated: "The generation API did not return a job.",
             runFailed: "Unable to create the generation job.",
         };
