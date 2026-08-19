@@ -13,6 +13,20 @@ export type WorkflowEdge = {
     target: string;
 };
 
+export type WorkflowProjectAsset = {
+    id: string;
+    key: string;
+    root: string;
+    name: string;
+    kind: "image" | "video";
+    mime: string;
+    size: number;
+    modified: string;
+    url: string;
+    role: string;
+    addedAt: string;
+};
+
 export type WorkflowProject = {
     version: number;
     id: string;
@@ -22,6 +36,6 @@ export type WorkflowProject = {
     updatedAt: string;
     nodes: WorkflowNode[];
     edges: WorkflowEdge[];
-    assets: unknown[];
+    assets: WorkflowProjectAsset[];
     checkpoints: unknown[];
 };

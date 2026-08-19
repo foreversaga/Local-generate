@@ -1,16 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { StudioAsset } from "../library/asset-client";
 import { useI18n } from "../../i18n/I18nProvider";
+import { attachWorkflowAssetNode, updateWorkflowAssetRole } from "../../lib/workflow-assets.mjs";
 import { updateWorkflowNodeConfig } from "../../lib/workflow-graph.mjs";
-import { updateWorkflowProjectBrief } from "../../lib/workflow-project.mjs";
+import { updateWorkflowProjectBrief, WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-project-store.mjs";
+import { AssetDock } from "./AssetDock";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkspaceInspector } from "./WorkspaceInspector";
 import type { WorkflowProject } from "./workflow-types";
 import styles from "./ProjectWorkspace.module.css";
 
 type ProjectChangeOptions = { recordHistory?: boolean };
+type CanvasPosition = { x: number; y: number };
 
 const HISTORY_LIMIT = 30;
 
@@ -108,8 +112,22 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
 
     function updateSelectedNodeConfig(patch: Record<string, unknown>) {
         if (!selectedNode) return;
-        const nextProject = updateWorkflowNodeConfig(project, selectedNode.id, patch) as WorkflowProject;
+        let nextProject = updateWorkflowNodeConfig(project, selectedNode.id, patch) as WorkflowProject;
+        const assetKey = typeof selectedNode.config.projectAssetKey === "string" ? selectedNode.config.projectAssetKey : "";
+        const role = typeof patch.role === "string" ? patch.role : "";
+        if (selectedNode.type === WORKFLOW_NODE_TYPES.asset && assetKey && role) {
+            nextProject = updateWorkflowAssetRole(nextProject, assetKey, role) as WorkflowProject;
+        }
         applyProjectChange(nextProject, { recordHistory: true });
+    }
+
+    function addAssetToCanvas(asset: StudioAsset, position?: CanvasPosition) {
+        const nextProject = attachWorkflowAssetNode(project, asset, {
+            position: position || defaultAssetPosition(project.assets.length),
+        }) as WorkflowProject;
+        const addedNode = nextProject.nodes.at(-1);
+        applyProjectChange(nextProject, { recordHistory: true });
+        if (addedNode) setSelectedNodeId(addedNode.id);
     }
 
     return (
@@ -130,6 +148,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             </header>
 
             <div className={styles.body}>
+                <AssetDock locale={locale} projectAssets={project.assets} onAddAsset={(asset) => addAssetToCanvas(asset)} />
                 <WorkflowCanvas
                     project={project}
                     locale={locale}
@@ -139,6 +158,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     onSelectNode={setSelectedNodeId}
                     onProjectChange={applyProjectChange}
                     onBeginContinuousEdit={recordHistorySnapshot}
+                    onDropAsset={addAssetToCanvas}
                     onUndo={undo}
                     onRedo={redo}
                 />
@@ -153,6 +173,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             </div>
         </div>
     );
+}
+
+function defaultAssetPosition(index: number): CanvasPosition {
+    return {
+        x: 70 + (index % 3) * 42,
+        y: 360 + Math.floor(index / 3) * 110,
+    };
 }
 
 function touchRestoredProject(project: WorkflowProject): WorkflowProject {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import type { StudioAsset } from "../library/asset-client";
 import {
     addWorkflowNode,
     connectWorkflowNodes,
@@ -11,10 +12,12 @@ import {
     WORKFLOW_CREATABLE_NODE_TYPES,
 } from "../../lib/workflow-graph.mjs";
 import { WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
+import { readWorkspaceAssetDrag, WORKSPACE_ASSET_DRAG_TYPE } from "./workspace-asset-dnd";
 import type { WorkflowNode, WorkflowProject } from "./workflow-types";
 import styles from "./WorkflowCanvas.module.css";
 
 type ProjectChangeOptions = { recordHistory?: boolean };
+type CanvasPosition = { x: number; y: number };
 
 type WorkflowCanvasProps = {
     project: WorkflowProject;
@@ -25,6 +28,7 @@ type WorkflowCanvasProps = {
     onSelectNode: (nodeId: string) => void;
     onProjectChange: (project: WorkflowProject, options?: ProjectChangeOptions) => void;
     onBeginContinuousEdit: () => void;
+    onDropAsset: (asset: StudioAsset, position: CanvasPosition) => void;
     onUndo: () => void;
     onRedo: () => void;
 };
@@ -41,6 +45,8 @@ type DragState = {
 
 const CANVAS_WIDTH = 1120;
 const CANVAS_HEIGHT = 680;
+const NODE_WIDTH = 174;
+const NODE_HEIGHT = 94;
 const MIN_ZOOM = 0.7;
 const MAX_ZOOM = 1.35;
 const ZOOM_STEP = 0.1;
@@ -54,6 +60,7 @@ export function WorkflowCanvas({
     onSelectNode,
     onProjectChange,
     onBeginContinuousEdit,
+    onDropAsset,
     onUndo,
     onRedo,
 }: WorkflowCanvasProps) {
@@ -61,6 +68,7 @@ export function WorkflowCanvas({
     const [connectionSourceId, setConnectionSourceId] = useState("");
     const [interactionError, setInteractionError] = useState("");
     const [zoom, setZoom] = useState(1);
+    const canvasRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<DragState | null>(null);
     const suppressClickRef = useRef(false);
     const selectedNode = useMemo(
@@ -172,6 +180,27 @@ export function WorkflowCanvas({
         }
     }
 
+    function handleAssetDragOver(event: ReactDragEvent<HTMLDivElement>) {
+        if (!event.dataTransfer.types.includes(WORKSPACE_ASSET_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+    }
+
+    function handleAssetDrop(event: ReactDragEvent<HTMLDivElement>) {
+        const asset = readWorkspaceAssetDrag(event.dataTransfer);
+        const canvas = canvasRef.current;
+        if (!asset || !canvas) return;
+        event.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const x = (event.clientX - rect.left) / zoom - NODE_WIDTH / 2;
+        const y = (event.clientY - rect.top) / zoom - NODE_HEIGHT / 2;
+        onDropAsset(asset, {
+            x: clampCoordinate(x, 0, CANVAS_WIDTH - NODE_WIDTH),
+            y: clampCoordinate(y, 0, CANVAS_HEIGHT - NODE_HEIGHT),
+        });
+        setInteractionError("");
+    }
+
     function changeZoom(delta: number) {
         setZoom((current) => clampZoom(current + delta));
     }
@@ -208,12 +237,13 @@ export function WorkflowCanvas({
                 </div>
             )}
 
-            <div className={styles.scroller}>
+            <div className={styles.scroller} onDragOver={handleAssetDragOver} onDrop={handleAssetDrop}>
                 <div
                     className={styles.bounds}
                     style={{ width: CANVAS_WIDTH * zoom, height: CANVAS_HEIGHT * zoom }}
                 >
                     <div
+                        ref={canvasRef}
                         className={styles.canvas}
                         style={{
                             width: CANVAS_WIDTH,
@@ -265,12 +295,16 @@ export function WorkflowCanvas({
 }
 
 function edgePath(source: WorkflowNode, target: WorkflowNode) {
-    const sourceX = source.position.x + 174;
-    const sourceY = source.position.y + 47;
+    const sourceX = source.position.x + NODE_WIDTH;
+    const sourceY = source.position.y + NODE_HEIGHT / 2;
     const targetX = target.position.x;
-    const targetY = target.position.y + 47;
+    const targetY = target.position.y + NODE_HEIGHT / 2;
     const controlOffset = Math.max(50, Math.abs(targetX - sourceX) * 0.45);
     return `M ${sourceX} ${sourceY} C ${sourceX + controlOffset} ${sourceY}, ${targetX - controlOffset} ${targetY}, ${targetX} ${targetY}`;
+}
+
+function clampCoordinate(value: number, min: number, max: number) {
+    return Math.round(Math.min(max, Math.max(min, value)));
 }
 
 function clampZoom(value: number) {
