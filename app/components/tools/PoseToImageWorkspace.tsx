@@ -301,9 +301,9 @@ export function PoseToImageWorkspace() {
                 </label>
                 <details className={styles.optional}>
                     <summary>負面提示詞</summary>
-                    <label className={styles.field}>
-                        <textarea rows={3} value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
-                    </label>
+                    <div className={styles.field}>
+                        <textarea aria-label="負面提示詞" rows={3} value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+                    </div>
                 </details>
             </section>
 
