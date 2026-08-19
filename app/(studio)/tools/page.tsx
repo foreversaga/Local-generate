@@ -30,7 +30,14 @@ export default function ToolsPage() {
           actionLabel="action.openTool"
         />
         <RouteCard
-          code="04 / LORA TRAINER"
+          code="04 / POSE TO IMAGE"
+          titleText="OpenPose 骨架生圖"
+          descriptionText="上傳人物圖片自動擷取 DWPose 骨架，輸入描述產生提示詞，再用 SDXL + ControlNet 依姿勢生成圖片。"
+          href="/app/tools/pose-to-image"
+          actionLabel="action.openTool"
+        />
+        <RouteCard
+          code="05 / LORA TRAINER"
           title="tools.lora.title"
           description="tools.lora.description"
           href="/app/tools/lora-trainer"
