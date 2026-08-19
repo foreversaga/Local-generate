@@ -10,6 +10,7 @@ const routes = [
   ["/app/library", "素材庫"],
   ["/app/tools", "工具"],
   ["/app/tools/image-to-image", "Image"],
+  ["/app/tools/pose-to-image", "OpenPose"],
   ["/app/tools/upscale", "SeedVR2"],
   ["/app/tools/lora-trainer", "LoRA"],
   ["/app/settings", "設定"],
