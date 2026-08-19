@@ -43,10 +43,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const [savedAt, setSavedAt] = useState("");
 
     useEffect(() => {
-        const storedProject = getWorkflowProject(window.localStorage, projectId) as WorkflowProject | null;
-        setProject(storedProject);
-        setSelectedNodeId(storedProject?.nodes[0]?.id || "");
-        setLoaded(true);
+        const timer = window.setTimeout(() => {
+            const storedProject = getWorkflowProject(window.localStorage, projectId) as WorkflowProject | null;
+            setProject(storedProject);
+            setSelectedNodeId(storedProject?.nodes[0]?.id || "");
+            setLoaded(true);
+        }, 0);
+        return () => window.clearTimeout(timer);
     }, [projectId]);
 
     useEffect(() => {

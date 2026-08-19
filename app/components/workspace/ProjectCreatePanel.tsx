@@ -22,7 +22,10 @@ export function ProjectCreatePanel() {
     const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
 
     useEffect(() => {
-        setRecentProjects(listWorkflowProjects(window.localStorage).slice(0, 3));
+        const timer = window.setTimeout(() => {
+            setRecentProjects(listWorkflowProjects(window.localStorage).slice(0, 3));
+        }, 0);
+        return () => window.clearTimeout(timer);
     }, []);
 
     function createProject(event: FormEvent<HTMLFormElement>) {
