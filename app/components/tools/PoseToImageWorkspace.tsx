@@ -314,13 +314,13 @@ export function PoseToImageWorkspace() {
                         <h3>依骨架姿勢生成圖片</h3>
                         <p className={styles.helper}>SDXL Turbo · DWPose + ControlNet · Denoise 1.0</p>
                     </div>
-                    <label className={styles.seedField}>
-                        <span>Seed</span>
+                    <div className={styles.seedField}>
+                        <label htmlFor="pose-to-image-seed">Seed</label>
                         <div>
-                            <input value={seed} inputMode="numeric" onChange={(event) => setSeed(event.target.value)} />
+                            <input id="pose-to-image-seed" value={seed} inputMode="numeric" onChange={(event) => setSeed(event.target.value)} />
                             <button type="button" className={styles.textButton} onClick={() => setSeed(String(randomSeed()))}>隨機</button>
                         </div>
-                    </label>
+                    </div>
                     <button type="button" className={styles.primaryButton} onClick={() => void generateImage()} disabled={!source || !posePreview || !prompt.trim() || !ready || submitting || active}>
                         {submitting ? "送出中…" : active ? "生成中…" : "生成圖片"}
                     </button>
