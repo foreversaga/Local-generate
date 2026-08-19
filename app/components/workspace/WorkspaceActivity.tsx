@@ -7,7 +7,7 @@ import {
     workflowJobBinding,
     workflowJobForNode,
 } from "../../lib/workflow-jobs.mjs";
-import { performJobAction, type UnifiedJob } from "../jobs/job-client";
+import { jobOutputHref, performJobAction, type UnifiedJob } from "../jobs/job-client";
 import { refreshUnifiedJobsFeed, useUnifiedJobsFeed } from "../jobs/useUnifiedJobsFeed";
 import type { WorkflowNode, WorkflowProject } from "./workflow-types";
 import styles from "./WorkspaceActivity.module.css";
@@ -125,6 +125,7 @@ function BoundJobRow({
     const zh = locale.toLowerCase().startsWith("zh");
     const status = job?.status || "queued";
     const progress = Math.max(0, Math.min(100, Math.round(Number(job?.progress) || 0)));
+    const outputHref = job ? jobOutputHref(job) : "";
     return (
         <article className={styles.boundRow}>
             <div className={styles.boundCopy}>
@@ -138,6 +139,7 @@ function BoundJobRow({
                 <div className={styles.progress} aria-label={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>
             )}
             <div className={styles.rowActions}>
+                {outputHref && <a href={outputHref} target="_blank" rel="noreferrer">{zh ? "結果" : "Output"}</a>}
                 <a href={`/app/jobs/${encodeURIComponent(binding.jobId)}?source=${encodeURIComponent(binding.source)}`}>{zh ? "詳情" : "Details"}</a>
                 {onCancel && <button type="button" onClick={onCancel}>{zh ? "取消" : "Cancel"}</button>}
                 <button type="button" onClick={onUnbind}>{zh ? "解除" : "Unlink"}</button>

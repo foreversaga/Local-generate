@@ -8,6 +8,28 @@ import type { WorkflowProject } from "./workflow-types";
 const BRIDGE_URL = "/app";
 const REF2V_WORKFLOW = "character_motion";
 
+type AssetRef = {
+    name: string;
+    root: "input" | "output";
+    kind: "image" | "video";
+};
+
+type WorkflowRenderInput = {
+    mode: string;
+    duration: number;
+    referenceImage: AssetRef | null;
+    referenceImages: AssetRef[];
+    faceReferenceImages: AssetRef[];
+    clothingReferenceImages: AssetRef[];
+    clothingMode: string;
+    clothingDescription: string;
+    referenceVideoStart: number;
+    referenceVideoEnd: number;
+    referenceVideoMaxDimension: number;
+    lastFrameImage: AssetRef | null;
+    sourceVideo: AssetRef | null;
+};
+
 type PromptPayload = {
     prompt?: string;
     negativePrompt?: string;
@@ -37,7 +59,7 @@ export async function executeWorkflowPromptNode(
         || project.nodes.find((node) => node.type === WORKFLOW_NODE_TYPES.h3Video);
     if (!h3Node) throw new Error("找不到可使用此提示詞的 H3 Video node。");
 
-    const input = buildWorkflowH3RenderInput(project, h3Node.id) as Record<string, any>;
+    const input = buildWorkflowH3RenderInput(project, h3Node.id) as WorkflowRenderInput;
     const requestMode = input.mode === "ref2v_motion" ? "ref2v" : input.mode;
     const characterMotion = input.mode === "ref2v_motion";
     const assetIssues = validateSingleRenderAssets({
@@ -92,7 +114,7 @@ export async function executeWorkflowPromptNode(
             mode: requestMode,
             duration: Number(input.duration),
             referenceImageName: input.referenceImage?.kind === "image" ? input.referenceImage.name : "",
-            referenceImageNames: referenceImages.map((asset: any) => asset.name),
+            referenceImageNames: referenceImages.map((asset) => asset.name),
             referenceImageRoles,
             ref2vWorkflow: characterMotion ? REF2V_WORKFLOW : "",
             clothingMode: characterMotion ? input.clothingMode : "character",
@@ -121,7 +143,7 @@ export async function executeWorkflowPromptNode(
     };
 }
 
-async function buildPromptImages(input: Record<string, any>, referenceImages: any[], fetchImpl: typeof fetch) {
+async function buildPromptImages(input: WorkflowRenderInput, referenceImages: AssetRef[], fetchImpl: typeof fetch) {
     const images: Array<{ role: string; data: string }> = [];
     if ((input.mode === "i2v" || input.mode === "replace") && input.referenceImage?.kind === "image") {
         images.push({ role: "reference_image", data: await assetToPromptImage(input.referenceImage, 0, fetchImpl) });
@@ -145,7 +167,7 @@ async function buildPromptImages(input: Record<string, any>, referenceImages: an
     return images;
 }
 
-async function assetToPromptImage(asset: { root: string; name: string; kind: string }, videoTime: number, fetchImpl: typeof fetch) {
+async function assetToPromptImage(asset: AssetRef, videoTime: number, fetchImpl: typeof fetch) {
     const url = `${BRIDGE_URL}/media?root=${encodeURIComponent(asset.root)}&name=${encodeURIComponent(asset.name)}`;
     const response = await fetchImpl(url);
     if (!response.ok) throw new Error(`無法讀取參考素材 ${asset.name}。`);
@@ -177,8 +199,14 @@ async function assetToPromptImage(asset: { root: string; name: string; kind: str
             if (Number.isFinite(video.duration) && video.duration > 0) {
                 video.currentTime = Math.min(Math.max(0, videoTime), Math.max(0, video.duration - 0.05));
                 await new Promise<void>((resolve) => {
-                    video.onseeked = () => resolve();
-                    window.setTimeout(resolve, 500);
+                    let settled = false;
+                    const finish = () => {
+                        if (settled) return;
+                        settled = true;
+                        resolve();
+                    };
+                    video.onseeked = finish;
+                    window.setTimeout(finish, 500);
                 });
             }
             const width = video.videoWidth || 1;
