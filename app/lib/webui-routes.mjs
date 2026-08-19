@@ -57,6 +57,7 @@ export function routeTitle(pathname, locale = "zh-TW") {
   if (normalizedPath === "/app/tools/upscale") return english ? "Tools / Video upscale" : "工具 / 影片升頻";
   if (normalizedPath === "/app/tools/text-to-image") return english ? "Tools / Text to Image" : "工具 / 文字生圖";
   if (normalizedPath === "/app/tools/image-to-image") return english ? "Tools / Image to Image" : "工具 / 以圖生圖";
+  if (normalizedPath === "/app/tools/pose-to-image") return english ? "Tools / OpenPose Pose to Image" : "工具 / OpenPose 骨架生圖";
   if (normalizedPath === "/app/tools/lora-trainer") return english ? "Tools / LoRA training" : "工具 / LoRA 訓練";
 
   const route = WEB_UI_ROUTES.find((item) => item.id === primaryRouteForPath(normalizedPath));
