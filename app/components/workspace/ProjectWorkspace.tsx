@@ -2,13 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { StudioAsset } from "../library/asset-client";
+import type { UnifiedJob } from "../jobs/job-client";
+import { useUnifiedJobsFeed } from "../jobs/useUnifiedJobsFeed";
 import { useI18n } from "../../i18n/I18nProvider";
 import { attachWorkflowAssetNode, updateWorkflowAssetRole } from "../../lib/workflow-assets.mjs";
 import { updateWorkflowNodeConfig } from "../../lib/workflow-graph.mjs";
+import {
+    bindWorkflowNodeJob,
+    unbindWorkflowNodeJob,
+    workflowExecutionState,
+} from "../../lib/workflow-jobs.mjs";
 import { updateWorkflowProjectBrief, WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-project-store.mjs";
 import { AssetDock } from "./AssetDock";
 import { WorkflowCanvas } from "./WorkflowCanvas";
+import { WorkspaceActivity } from "./WorkspaceActivity";
 import { WorkspaceInspector } from "./WorkspaceInspector";
 import type { WorkflowProject } from "./workflow-types";
 import styles from "./ProjectWorkspace.module.css";
@@ -21,6 +29,7 @@ const HISTORY_LIMIT = 30;
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const { locale } = useI18n();
     const copy = workspaceCopy(locale);
+    const { jobs } = useUnifiedJobsFeed();
     const [project, setProject] = useState<WorkflowProject | null>(null);
     const [selectedNodeId, setSelectedNodeId] = useState("");
     const [loaded, setLoaded] = useState(false);
@@ -53,6 +62,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         () => project?.nodes.find((node) => node.id === selectedNodeId) || null,
         [project, selectedNodeId],
     );
+    const executionStates = useMemo(() => {
+        if (!project) return {};
+        return Object.fromEntries(project.nodes.map((node) => [node.id, workflowExecutionState(node, jobs)]));
+    }, [jobs, project]);
 
     if (!loaded) return <div className={styles.state}>{copy.loading}</div>;
     if (!project) {
@@ -130,6 +143,16 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         if (addedNode) setSelectedNodeId(addedNode.id);
     }
 
+    function bindJob(nodeId: string, job: UnifiedJob) {
+        const nextProject = bindWorkflowNodeJob(project, nodeId, job) as WorkflowProject;
+        applyProjectChange(nextProject, { recordHistory: true });
+    }
+
+    function unbindJob(nodeId: string) {
+        const nextProject = unbindWorkflowNodeJob(project, nodeId) as WorkflowProject;
+        applyProjectChange(nextProject, { recordHistory: true });
+    }
+
     return (
         <div className={styles.workspace}>
             <header className={styles.workspaceHeader}>
@@ -153,6 +176,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     project={project}
                     locale={locale}
                     selectedNodeId={selectedNodeId}
+                    executionStates={executionStates}
                     canUndo={historyPast.length > 0}
                     canRedo={historyFuture.length > 0}
                     onSelectNode={setSelectedNodeId}
@@ -171,6 +195,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     onConfigChange={updateSelectedNodeConfig}
                 />
             </div>
+
+            <WorkspaceActivity
+                locale={locale}
+                project={project}
+                selectedNodeId={selectedNodeId}
+                onBindJob={bindJob}
+                onUnbindJob={unbindJob}
+            />
         </div>
     );
 }
@@ -188,20 +220,6 @@ function touchRestoredProject(project: WorkflowProject): WorkflowProject {
 
 function workspaceCopy(locale: string) {
     return locale.toLowerCase().startsWith("zh")
-        ? {
-            loading: "載入專案中…",
-            notFound: "找不到這個本機專案。",
-            back: "返回建立",
-            projectName: "專案名稱",
-            saved: "已儲存在本機",
-            local: "本機專案",
-        }
-        : {
-            loading: "Loading project…",
-            notFound: "This local project could not be found.",
-            back: "Back to Create",
-            projectName: "Project name",
-            saved: "Saved locally",
-            local: "Local project",
-        };
+        ? { loading: "載入專案中…", notFound: "找不到這個本機專案。", back: "返回建立", projectName: "專案名稱", saved: "已儲存在本機", local: "本機專案" }
+        : { loading: "Loading project…", notFound: "This local project could not be found.", back: "Back to Create", projectName: "Project name", saved: "Saved locally", local: "Local project" };
 }

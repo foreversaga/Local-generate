@@ -18,11 +18,19 @@ import styles from "./WorkflowCanvas.module.css";
 
 type ProjectChangeOptions = { recordHistory?: boolean };
 type CanvasPosition = { x: number; y: number };
+type ExecutionState = {
+    status: string;
+    progress: number;
+    etaMs: number | null;
+    error: string;
+    missing: boolean;
+} | null;
 
 type WorkflowCanvasProps = {
     project: WorkflowProject;
     locale: string;
     selectedNodeId: string;
+    executionStates: Record<string, ExecutionState>;
     canUndo: boolean;
     canRedo: boolean;
     onSelectNode: (nodeId: string) => void;
@@ -55,6 +63,7 @@ export function WorkflowCanvas({
     project,
     locale,
     selectedNodeId,
+    executionStates,
     canUndo,
     canRedo,
     onSelectNode,
@@ -238,55 +247,48 @@ export function WorkflowCanvas({
             )}
 
             <div className={styles.scroller} onDragOver={handleAssetDragOver} onDrop={handleAssetDrop}>
-                <div
-                    className={styles.bounds}
-                    style={{ width: CANVAS_WIDTH * zoom, height: CANVAS_HEIGHT * zoom }}
-                >
+                <div className={styles.bounds} style={{ width: CANVAS_WIDTH * zoom, height: CANVAS_HEIGHT * zoom }}>
                     <div
                         ref={canvasRef}
                         className={styles.canvas}
-                        style={{
-                            width: CANVAS_WIDTH,
-                            height: CANVAS_HEIGHT,
-                            transform: `scale(${zoom})`,
-                            transformOrigin: "0 0",
-                        }}
+                        style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT, transform: `scale(${zoom})`, transformOrigin: "0 0" }}
                     >
                         <svg className={styles.edges} viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} aria-hidden="true">
                             {project.edges.map((edge) => {
                                 const source = project.nodes.find((node) => node.id === edge.source);
                                 const target = project.nodes.find((node) => node.id === edge.target);
                                 if (!source || !target) return null;
-                                return (
-                                    <path
-                                        key={edge.id}
-                                        d={edgePath(source, target)}
-                                        data-active={connectionSourceId === source.id || undefined}
-                                    />
-                                );
+                                return <path key={edge.id} d={edgePath(source, target)} data-active={connectionSourceId === source.id || undefined} />;
                             })}
                         </svg>
 
-                        {project.nodes.map((node) => (
-                            <button
-                                key={node.id}
-                                type="button"
-                                className={`${styles.node} ${selectedNodeId === node.id ? styles.nodeSelected : ""} ${connectionSourceId === node.id ? styles.nodeConnecting : ""}`}
-                                style={{ left: node.position.x, top: node.position.y }}
-                                onClick={() => handleNodeClick(node)}
-                                onPointerDown={(event) => handlePointerDown(event, node)}
-                                onPointerMove={handlePointerMove}
-                                onPointerUp={handlePointerUp}
-                                onPointerCancel={handlePointerUp}
-                                aria-pressed={selectedNodeId === node.id}
-                            >
-                                <span className={styles.nodeType}>{nodeTypeLabel(node.type, locale)}</span>
-                                <strong>{node.title}</strong>
-                                <span className={styles.nodeStatus} data-status={node.status}>
-                                    <span aria-hidden="true" />{statusLabel(node.status, locale)}
-                                </span>
-                            </button>
-                        ))}
+                        {project.nodes.map((node) => {
+                            const execution = executionStates[node.id];
+                            const displayStatus = execution?.status || node.status;
+                            const activeExecution = execution && ["queued", "running"].includes(execution.status);
+                            return (
+                                <button
+                                    key={node.id}
+                                    type="button"
+                                    className={`${styles.node} ${selectedNodeId === node.id ? styles.nodeSelected : ""} ${connectionSourceId === node.id ? styles.nodeConnecting : ""}`}
+                                    style={{ left: node.position.x, top: node.position.y }}
+                                    onClick={() => handleNodeClick(node)}
+                                    onPointerDown={(event) => handlePointerDown(event, node)}
+                                    onPointerMove={handlePointerMove}
+                                    onPointerUp={handlePointerUp}
+                                    onPointerCancel={handlePointerUp}
+                                    aria-pressed={selectedNodeId === node.id}
+                                >
+                                    <span className={styles.nodeType}>{nodeTypeLabel(node.type, locale)}</span>
+                                    <strong>{node.title}</strong>
+                                    <span className={styles.nodeStatus} data-status={displayStatus}>
+                                        <span aria-hidden="true" />{statusLabel(displayStatus, locale)}{execution && !execution.missing ? ` · ${execution.progress}%` : ""}
+                                    </span>
+                                    {activeExecution && <span className={styles.nodeProgress} aria-hidden="true"><span style={{ width: `${execution.progress}%` }} /></span>}
+                                    {execution?.error && <small className={styles.nodeError}>{execution.error}</small>}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
             </div>
@@ -308,8 +310,7 @@ function clampCoordinate(value: number, min: number, max: number) {
 }
 
 function clampZoom(value: number) {
-    const bounded = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
-    return Number(bounded.toFixed(2));
+    return Number(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)).toFixed(2));
 }
 
 function nodeTypeLabel(type: string, locale: string) {
@@ -331,8 +332,11 @@ function statusLabel(status: string, locale: string) {
     const labels: Record<string, [string, string]> = {
         ready: ["可編輯", "Ready"],
         waiting: ["等待", "Waiting"],
+        queued: ["排隊中", "Queued"],
         running: ["執行中", "Running"],
         complete: ["完成", "Complete"],
+        partial: ["部分完成", "Partial"],
+        cancelled: ["已取消", "Cancelled"],
         error: ["失敗", "Failed"],
     };
     return labels[status]?.[zh ? 0 : 1] || status;
@@ -352,34 +356,6 @@ function connectionErrorMessage(code: string, locale: string, fallback: string) 
 
 function canvasCopy(locale: string) {
     return locale.toLowerCase().startsWith("zh")
-        ? {
-            canvas: "Workflow Canvas",
-            addNode: "新增節點",
-            undo: "復原",
-            redo: "重做",
-            zoomOut: "縮小",
-            zoomIn: "放大",
-            resetZoom: "重設縮放",
-            connect: "連線",
-            cancelConnect: "取消連線",
-            connectHelp: "已進入連線模式：點選下一個節點建立資料流；再次點起點可取消。",
-            duplicate: "複製",
-            delete: "刪除",
-            deleteFailed: "無法刪除節點。",
-        }
-        : {
-            canvas: "Workflow Canvas",
-            addNode: "Add node",
-            undo: "Undo",
-            redo: "Redo",
-            zoomOut: "Zoom out",
-            zoomIn: "Zoom in",
-            resetZoom: "Reset zoom",
-            connect: "Connect",
-            cancelConnect: "Cancel connect",
-            connectHelp: "Connect mode: select the target node to create a data flow, or select the source again to cancel.",
-            duplicate: "Duplicate",
-            delete: "Delete",
-            deleteFailed: "Unable to delete node.",
-        };
+        ? { canvas: "Workflow Canvas", addNode: "新增節點", undo: "復原", redo: "重做", zoomOut: "縮小", zoomIn: "放大", resetZoom: "重設縮放", connect: "連線", cancelConnect: "取消連線", connectHelp: "已進入連線模式：點選下一個節點建立資料流；再次點起點可取消。", duplicate: "複製", delete: "刪除", deleteFailed: "無法刪除節點。" }
+        : { canvas: "Workflow Canvas", addNode: "Add node", undo: "Undo", redo: "Redo", zoomOut: "Zoom out", zoomIn: "Zoom in", resetZoom: "Reset zoom", connect: "Connect", cancelConnect: "Cancel connect", connectHelp: "Connect mode: select the target node to create a data flow, or select the source again to cancel.", duplicate: "Duplicate", delete: "Delete", deleteFailed: "Unable to delete node." };
 }
