@@ -1,6 +1,10 @@
 "use client";
 
 import { useState, type ChangeEvent, type ReactNode } from "react";
+import {
+    singleCreateModeDefaults,
+    singleCreateModelProfilesForMode,
+} from "../../lib/single-create-controller.mjs";
 import { WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import type { WorkflowNode } from "./workflow-types";
 import styles from "./WorkspaceInspector.module.css";
@@ -23,20 +27,28 @@ const VIDEO_MODE_LABELS: Record<string, [string, string]> = {
     ref2v_motion: ["角色動作參考", "Character Motion"],
     replace: ["影片替換", "Video Replace"],
 };
+const MODEL_LABELS: Record<string, string> = {
+    nvfp4_blackwell: "NVFP4 Blackwell",
+    int4_convrot_low_vram: "INT4 ConvRot",
+    official_pruned_int8_convrot: "Official INT8",
+    ref2va_pruned_nvfp4: "Ref2VA Pruned NVFP4",
+    wan22_animate_fp8: "Wan2.2 Animate",
+};
 
-export function WorkspaceInspector({
-    node,
-    brief,
-    locale,
-    onBriefChange,
-    onConfigChange,
-}: WorkspaceInspectorProps) {
+export function WorkspaceInspector({ node, brief, locale, onBriefChange, onConfigChange }: WorkspaceInspectorProps) {
     const zh = locale.toLowerCase().startsWith("zh");
     const [advancedOpen, setAdvancedOpen] = useState(false);
 
     if (!node) {
         return <aside className={styles.inspector}><p className={styles.empty}>{zh ? "選取一個節點以查看設定。" : "Select a node to view its settings."}</p></aside>;
     }
+
+    const mode = stringConfig(node, "mode", "t2v");
+    const modeDefaults = singleCreateModeDefaults(mode);
+    const modelProfiles = singleCreateModelProfilesForMode(mode);
+    const width = numberDraftConfig(node, "width", modeDefaults.width);
+    const height = numberDraftConfig(node, "height", modeDefaults.height);
+    const resolution = resolutionValue(width, height);
 
     return (
         <aside className={styles.inspector} aria-label={zh ? "節點設定" : "Node inspector"}>
@@ -63,17 +75,18 @@ export function WorkspaceInspector({
                             <option value="scene">{zh ? "場景" : "Scene"}</option>
                             <option value="video">{zh ? "影片" : "Video"}</option>
                             <option value="audio">{zh ? "音訊" : "Audio"}</option>
+                            <option value="reference">{zh ? "一般參考" : "Reference"}</option>
                         </select>
                     </Field>
-                    <Field label={zh ? "素材名稱" : "Asset name"} helper={zh ? "下一階段會直接連到 Library Asset Dock。" : "The next asset checkpoint connects this directly to the Library Asset Dock."}>
-                        <input value={stringConfig(node, "assetName")} onChange={(event) => onConfigChange({ assetName: event.target.value })} placeholder={zh ? "尚未選擇素材" : "No asset selected"} />
+                    <Field label={zh ? "素材名稱" : "Asset name"} helper={zh ? "素材實體仍由 Library 管理，這裡只保存引用。" : "The asset remains owned by Library; the project stores only its reference."}>
+                        <input value={stringConfig(node, "assetName")} readOnly placeholder={zh ? "尚未綁定素材" : "No asset bound"} />
                     </Field>
                 </>
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.prompt && (
                 <>
-                    <Field label={zh ? "Skill" : "Skill"}>
+                    <Field label="Skill">
                         <select value={stringConfig(node, "skill", "auto")} onChange={(event) => onConfigChange({ skill: event.target.value })}>
                             <option value="auto">Auto</option>
                             <option value="h3-prompt">H3 Prompt</option>
@@ -81,11 +94,12 @@ export function WorkspaceInspector({
                             <option value="camera-control">Camera Control</option>
                         </select>
                     </Field>
-                    <Field label={zh ? "Provider" : "Provider"}>
+                    <Field label="Provider">
                         <select value={stringConfig(node, "provider", "auto")} onChange={(event) => onConfigChange({ provider: event.target.value })}>
                             <option value="auto">Auto</option>
                             <option value="ollama">Ollama</option>
                             <option value="codex">Codex CLI</option>
+                            <option value="hermes">Hermes</option>
                         </select>
                     </Field>
                     <Field label={zh ? "提示詞" : "Prompt"}>
@@ -97,17 +111,20 @@ export function WorkspaceInspector({
             {node.type === WORKFLOW_NODE_TYPES.h3Video && (
                 <>
                     <Field label={zh ? "模式" : "Mode"}>
-                        <select value={stringConfig(node, "mode", "t2v")} onChange={(event) => onConfigChange({ mode: event.target.value })}>
-                            {VIDEO_MODES.map((mode) => <option key={mode} value={mode}>{VIDEO_MODE_LABELS[mode][zh ? 0 : 1]}</option>)}
+                        <select
+                            value={mode}
+                            onChange={(event) => {
+                                const nextMode = event.target.value;
+                                const defaults = singleCreateModeDefaults(nextMode);
+                                onConfigChange({ mode: nextMode, ...defaults });
+                            }}
+                        >
+                            {VIDEO_MODES.map((option) => <option key={option} value={option}>{VIDEO_MODE_LABELS[option][zh ? 0 : 1]}</option>)}
                         </select>
                     </Field>
                     <Field label={zh ? "模型" : "Model"}>
-                        <select value={stringConfig(node, "modelProfile", "nvfp4_blackwell")} onChange={(event) => onConfigChange({ modelProfile: event.target.value })}>
-                            <option value="nvfp4_blackwell">NVFP4 Blackwell</option>
-                            <option value="int4_convrot_low_vram">INT4 ConvRot</option>
-                            <option value="official_pruned_int8_convrot">Official INT8</option>
-                            <option value="ref2va_pruned_nvfp4">Ref2VA Pruned NVFP4</option>
-                            <option value="wan22_animate_fp8">Wan2.2 Animate</option>
+                        <select value={stringConfig(node, "modelProfile", modeDefaults.modelProfile)} onChange={(event) => onConfigChange({ modelProfile: event.target.value })}>
+                            {modelProfiles.map((profile) => <option key={profile} value={profile}>{MODEL_LABELS[profile] || profile}</option>)}
                         </select>
                     </Field>
                     <div className={styles.twoColumns}>
@@ -115,26 +132,39 @@ export function WorkspaceInspector({
                             <NumberInput value={numberDraftConfig(node, "duration", 5)} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value })} />
                         </Field>
                         <Field label={zh ? "尺寸" : "Resolution"}>
-                            <select value={stringConfig(node, "resolution", "736x416")} onChange={(event) => onConfigChange({ resolution: event.target.value })}>
+                            <select
+                                value={resolution}
+                                onChange={(event) => {
+                                    const parsed = parseResolution(event.target.value);
+                                    if (parsed) onConfigChange(parsed);
+                                }}
+                            >
                                 <option value="736x416">736 × 416</option>
                                 <option value="416x736">416 × 736</option>
                                 <option value="768x768">768 × 768</option>
+                                <option value="832x480">832 × 480</option>
                                 <option value="custom">{zh ? "自訂" : "Custom"}</option>
                             </select>
                         </Field>
                     </div>
+                    {resolution === "custom" && (
+                        <div className={styles.twoColumns}>
+                            <Field label={zh ? "寬度" : "Width"}><NumberInput value={width} min={32} max={2048} step={32} onChange={(value) => onConfigChange({ width: value })} /></Field>
+                            <Field label={zh ? "高度" : "Height"}><NumberInput value={height} min={32} max={2048} step={32} onChange={(value) => onConfigChange({ height: value })} /></Field>
+                        </div>
+                    )}
                     <button type="button" className={styles.disclosure} aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((current) => !current)}>
                         <span>{zh ? "進階生成設定" : "Advanced generation"}</span><span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
                     </button>
                     {advancedOpen && (
                         <div className={styles.advanced}>
-                            <Field label="Steps"><NumberInput value={numberDraftConfig(node, "steps", 20)} min={1} max={100} step={1} onChange={(value) => onConfigChange({ steps: value })} /></Field>
+                            <Field label="Steps"><NumberInput value={numberDraftConfig(node, "steps", modeDefaults.steps)} min={1} max={80} step={1} onChange={(value) => onConfigChange({ steps: value })} /></Field>
                             <Field label="Seed"><NumberInput value={numberDraftConfig(node, "seed", 12345)} min={0} max={2147483647} step={1} onChange={(value) => onConfigChange({ seed: value })} /></Field>
-                            <Field label={zh ? "LoRA" : "LoRA"}><input value={stringConfig(node, "loraName")} onChange={(event) => onConfigChange({ loraName: event.target.value })} placeholder={zh ? "選填" : "Optional"} /></Field>
+                            <Field label="LoRA"><input value={stringConfig(node, "loraName")} onChange={(event) => onConfigChange({ loraName: event.target.value })} placeholder={zh ? "選填" : "Optional"} /></Field>
                         </div>
                     )}
                     <a className={styles.primaryLink} href="/app/create/single">{zh ? "使用現有 Single 執行" : "Run with existing Single flow"}</a>
-                    <p className={styles.helper}>{zh ? "目前 Workspace 已保存 H3 node 設定；直接執行仍沿用既有 Single request contract，等 controller 抽離後會在此直接生成。" : "The workspace now persists H3 node settings. Execution still uses the existing Single request contract until the shared controller extraction is complete."}</p>
+                    <p className={styles.helper}>{zh ? "H3 node 的 mode/default/request domain 已與 Single controller 共用；舊 SingleForm submit 尚待最後接線，因此目前執行仍回到既有頁面。" : "H3 mode/default/request behavior now shares the Single controller domain. The legacy SingleForm submit still needs the final wiring, so execution currently opens the existing flow."}</p>
                 </>
             )}
 
@@ -160,7 +190,7 @@ export function WorkspaceInspector({
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.output && (
-                <p className={styles.helper}>{zh ? "完成的圖片或影片會在後續 Jobs / Asset Dock 整合階段自動連到這個節點並註冊進 Library。" : "Completed media will be linked here and registered in Library when Jobs and Asset Dock integration is enabled."}</p>
+                <p className={styles.helper}>{zh ? "完成的圖片或影片會在後續直接執行整合時自動連到這個節點並註冊進 Library。" : "Completed media will be linked here and registered in Library when direct execution wiring is enabled."}</p>
             )}
         </aside>
     );
@@ -170,19 +200,7 @@ function Field({ label, helper, children }: { label: string; helper?: string; ch
     return <label className={styles.field}><span>{label}</span>{children}{helper && <small>{helper}</small>}</label>;
 }
 
-function NumberInput({
-    value,
-    min,
-    max,
-    step,
-    onChange,
-}: {
-    value: number | "";
-    min: number;
-    max: number;
-    step: number;
-    onChange: (value: number | "") => void;
-}) {
+function NumberInput({ value, min, max, step, onChange }: { value: number | ""; min: number; max: number; step: number; onChange: (value: number | "") => void }) {
     function handleChange(event: ChangeEvent<HTMLInputElement>) {
         const next = event.target.value;
         onChange(next === "" ? "" : Number(next));
@@ -202,6 +220,18 @@ function numberDraftConfig(node: WorkflowNode, key: string, fallback: number): n
     return Number.isFinite(number) ? number : fallback;
 }
 
+function resolutionValue(width: number | "", height: number | "") {
+    if (width === "" || height === "") return "custom";
+    const value = `${width}x${height}`;
+    return ["736x416", "416x736", "768x768", "832x480"].includes(value) ? value : "custom";
+}
+
+function parseResolution(value: string) {
+    if (value === "custom") return null;
+    const [width, height] = value.split("x").map(Number);
+    return Number.isFinite(width) && Number.isFinite(height) ? { width, height } : null;
+}
+
 function nodeTypeLabel(type: string, locale: string) {
     const zh = locale.toLowerCase().startsWith("zh");
     const labels: Record<string, [string, string]> = {
@@ -219,11 +249,7 @@ function nodeTypeLabel(type: string, locale: string) {
 function statusLabel(status: string, locale: string) {
     const zh = locale.toLowerCase().startsWith("zh");
     const labels: Record<string, [string, string]> = {
-        ready: ["可編輯", "Ready"],
-        waiting: ["等待", "Waiting"],
-        running: ["執行中", "Running"],
-        complete: ["完成", "Complete"],
-        error: ["失敗", "Failed"],
+        ready: ["可編輯", "Ready"], waiting: ["等待", "Waiting"], running: ["執行中", "Running"], complete: ["完成", "Complete"], error: ["失敗", "Failed"],
     };
     return labels[status]?.[zh ? 0 : 1] || status;
 }
