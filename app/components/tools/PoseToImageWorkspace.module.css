@@ -1,0 +1,245 @@
+.workspace {
+    display: grid;
+    gap: 16px;
+}
+
+.hero,
+.panel {
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+    border-radius: 18px;
+    background: var(--panel, rgba(255, 255, 255, 0.03));
+}
+
+.hero {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 18px;
+}
+
+.hero h2,
+.panel h3 {
+    margin: 4px 0 0;
+}
+
+.hero p,
+.helper {
+    margin: 6px 0 0;
+    color: var(--muted, rgba(255, 255, 255, 0.62));
+}
+
+.previewGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.panel {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+}
+
+.sectionHeader,
+.generateRow,
+.progressRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    opacity: 0.62;
+}
+
+.statusGroup {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.statusChip {
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 6px 9px;
+    font-size: 12px;
+}
+
+.ready {
+    color: #5ed69a;
+}
+
+.blocked,
+.warning,
+.error {
+    color: #ff9c8f;
+}
+
+.imageFrame {
+    min-height: 320px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.22);
+}
+
+.imageFrame img,
+.result img {
+    width: 100%;
+    max-height: 520px;
+    object-fit: contain;
+}
+
+.poseFrame {
+    background: #000;
+}
+
+.empty {
+    min-height: 320px;
+    display: grid;
+    place-content: center;
+    gap: 6px;
+    text-align: center;
+    border: 1px dashed var(--line, rgba(255, 255, 255, 0.12));
+    border-radius: 14px;
+    color: var(--muted, rgba(255, 255, 255, 0.62));
+}
+
+.field {
+    display: grid;
+    gap: 7px;
+}
+
+.field textarea,
+.seedField input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    color: inherit;
+    padding: 10px 12px;
+    font: inherit;
+}
+
+.field textarea {
+    resize: vertical;
+}
+
+.primaryButton,
+.secondaryButton,
+.textButton {
+    font: inherit;
+    cursor: pointer;
+}
+
+.primaryButton,
+.secondaryButton {
+    border-radius: 12px;
+    padding: 9px 13px;
+}
+
+.primaryButton {
+    border: 0;
+    background: var(--foreground, #fff);
+    color: var(--background, #111);
+    font-weight: 700;
+}
+
+.secondaryButton {
+    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    background: transparent;
+    color: inherit;
+}
+
+.textButton {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-decoration: underline;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.textButton:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.modelNote {
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    opacity: 0.62;
+}
+
+.optional {
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+    padding-top: 10px;
+}
+
+.optional summary {
+    cursor: pointer;
+    color: var(--muted, rgba(255, 255, 255, 0.7));
+}
+
+.seedField {
+    display: grid;
+    gap: 5px;
+    min-width: 180px;
+}
+
+.seedField > div {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+}
+
+.progressRow {
+    padding-top: 10px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+.result {
+    display: grid;
+    gap: 10px;
+}
+
+.result a {
+    justify-self: start;
+}
+
+.error {
+    margin: 0;
+    border: 1px solid rgba(255, 92, 76, 0.35);
+    border-radius: 12px;
+    background: rgba(255, 92, 76, 0.08);
+    padding: 11px 13px;
+}
+
+.hiddenInput {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    .previewGrid {
+        grid-template-columns: 1fr;
+    }
+
+    .hero,
+    .generateRow {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .modelNote {
+        max-width: 100%;
+    }
+}
