@@ -6,6 +6,12 @@ import type { UnifiedJob } from "../jobs/job-client";
 import { useUnifiedJobsFeed } from "../jobs/useUnifiedJobsFeed";
 import { useI18n } from "../../i18n/I18nProvider";
 import { attachWorkflowAssetNode, updateWorkflowAssetRole } from "../../lib/workflow-assets.mjs";
+import {
+    approveWorkflowCheckpoint,
+    createWorkflowCheckpoint,
+    reopenWorkflowCheckpoint,
+    restoreWorkflowCheckpoint,
+} from "../../lib/workflow-checkpoints.mjs";
 import { updateWorkflowNodeConfig } from "../../lib/workflow-graph.mjs";
 import {
     bindWorkflowNodeJob,
@@ -17,6 +23,7 @@ import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-proj
 import { AssetDock } from "./AssetDock";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkspaceActivity } from "./WorkspaceActivity";
+import { WorkspaceCheckpoints } from "./WorkspaceCheckpoints";
 import { WorkspaceInspector } from "./WorkspaceInspector";
 import type { WorkflowProject } from "./workflow-types";
 import styles from "./ProjectWorkspace.module.css";
@@ -153,16 +160,31 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         applyProjectChange(nextProject, { recordHistory: true });
     }
 
+    function createCheckpoint(type: string) {
+        const nextProject = createWorkflowCheckpoint(project, { type }) as WorkflowProject;
+        applyProjectChange(nextProject, { recordHistory: true });
+    }
+
+    function approveCheckpoint(checkpointId: string) {
+        applyProjectChange(approveWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true });
+    }
+
+    function reopenCheckpoint(checkpointId: string) {
+        applyProjectChange(reopenWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true });
+    }
+
+    function restoreCheckpoint(checkpointId: string) {
+        const restored = restoreWorkflowCheckpoint(project, checkpointId) as WorkflowProject;
+        applyProjectChange(restored, { recordHistory: true });
+        ensureSelectedNode(restored);
+    }
+
     return (
         <div className={styles.workspace}>
             <header className={styles.workspaceHeader}>
                 <div className={styles.titleGroup}>
                     <a href="/app/create" className={styles.backLink}>← {copy.back}</a>
-                    <input
-                        aria-label={copy.projectName}
-                        value={project.name}
-                        onChange={(event) => updateName(event.target.value)}
-                    />
+                    <input aria-label={copy.projectName} value={project.name} onChange={(event) => updateName(event.target.value)} />
                 </div>
                 <div className={styles.saveState}>
                     <span className={styles.saveDot} aria-hidden="true" />
@@ -203,15 +225,21 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                 onBindJob={bindJob}
                 onUnbindJob={unbindJob}
             />
+
+            <WorkspaceCheckpoints
+                locale={locale}
+                checkpoints={project.checkpoints}
+                onCreate={createCheckpoint}
+                onApprove={approveCheckpoint}
+                onReopen={reopenCheckpoint}
+                onRestore={restoreCheckpoint}
+            />
         </div>
     );
 }
 
 function defaultAssetPosition(index: number): CanvasPosition {
-    return {
-        x: 70 + (index % 3) * 42,
-        y: 360 + Math.floor(index / 3) * 110,
-    };
+    return { x: 70 + (index % 3) * 42, y: 360 + Math.floor(index / 3) * 110 };
 }
 
 function touchRestoredProject(project: WorkflowProject): WorkflowProject {

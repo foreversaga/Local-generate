@@ -27,6 +27,25 @@ export type WorkflowProjectAsset = {
     addedAt: string;
 };
 
+export type WorkflowCheckpointSnapshot = {
+    name: string;
+    brief: string;
+    nodes: WorkflowNode[];
+    edges: WorkflowEdge[];
+    assets: WorkflowProjectAsset[];
+};
+
+export type WorkflowCheckpoint = {
+    id: string;
+    type: string;
+    label: string;
+    note: string;
+    status: "pending" | "approved";
+    createdAt: string;
+    approvedAt: string;
+    snapshot: WorkflowCheckpointSnapshot;
+};
+
 export type WorkflowProject = {
     version: number;
     id: string;
@@ -37,5 +56,5 @@ export type WorkflowProject = {
     nodes: WorkflowNode[];
     edges: WorkflowEdge[];
     assets: WorkflowProjectAsset[];
-    checkpoints: unknown[];
+    checkpoints: WorkflowCheckpoint[];
 };
