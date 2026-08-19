@@ -45,6 +45,37 @@ function successResponse(value, events = [], label = "response") {
   };
 }
 
+test("a retained generation keeps the model loaded until a later cleanup request", async () => {
+  const calls = [];
+  const stopCalls = [];
+  const coordinator = createOllamaCoordinator({
+    commandRunner: async (executable, args) => {
+      stopCalls.push({ executable, args });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    fetchImpl: async (url, init) => {
+      const body = requestBody(init);
+      calls.push({ url: String(url), body });
+      return successResponse(JSON.stringify({ response: body.prompt || "" }));
+    },
+  });
+
+  await coordinator.generate({
+    ollamaUrl: OLLAMA_URL,
+    model: MODEL,
+    body: { prompt: "image prompt" },
+    unloadAfter: false,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.keep_alive, -1);
+  assert.equal(stopCalls.length, 0);
+
+  await coordinator.generate({ ollamaUrl: OLLAMA_URL, model: MODEL, body: { prompt: "cleanup later" } });
+  assert.equal(calls[1].body.keep_alive, 0);
+  assert.deepEqual(calls[2].body, { model: MODEL, prompt: "", stream: false, keep_alive: 0 });
+  assert.deepEqual(stopCalls.map(({ args }) => args), [["stop", MODEL]]);
+});
+
 test("generation and unload bodies are fully read before the H3 barrier passes", async () => {
   const generationText = deferred();
   const generationStarted = deferred();
