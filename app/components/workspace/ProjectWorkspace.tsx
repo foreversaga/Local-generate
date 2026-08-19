@@ -13,16 +13,13 @@ import {
     restoreWorkflowCheckpoint,
 } from "../../lib/workflow-checkpoints.mjs";
 import { updateWorkflowNodeConfig } from "../../lib/workflow-graph.mjs";
-import {
-    bindWorkflowNodeJob,
-    unbindWorkflowNodeJob,
-    workflowExecutionState,
-} from "../../lib/workflow-jobs.mjs";
+import { bindWorkflowNodeJob, unbindWorkflowNodeJob, workflowExecutionState } from "../../lib/workflow-jobs.mjs";
 import { updateWorkflowProjectBrief, WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-project-store.mjs";
 import { AssetDock } from "./AssetDock";
-import { executeWorkflowH3Node } from "./workspace-render-client";
 import { executeWorkflowPromptNode } from "./workspace-prompt-client";
+import { executeWorkflowH3Node } from "./workspace-render-client";
+import { executeWorkflowOpenPoseNode, executeWorkflowUpscaleNode } from "./workspace-tool-client";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkspaceActivity } from "./WorkspaceActivity";
 import { WorkspaceCheckpoints } from "./WorkspaceCheckpoints";
@@ -50,6 +47,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const [promptRunError, setPromptRunError] = useState("");
     const [h3RunningNodeId, setH3RunningNodeId] = useState("");
     const [h3RunError, setH3RunError] = useState("");
+    const [openPoseRunningNodeId, setOpenPoseRunningNodeId] = useState("");
+    const [openPoseRunError, setOpenPoseRunError] = useState("");
+    const [upscaleRunningNodeId, setUpscaleRunningNodeId] = useState("");
+    const [upscaleRunError, setUpscaleRunError] = useState("");
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -72,28 +73,19 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         return () => window.clearTimeout(timer);
     }, [loaded, project]);
 
-    const selectedNode = useMemo(
-        () => project?.nodes.find((node) => node.id === selectedNodeId) || null,
-        [project, selectedNodeId],
-    );
+    const selectedNode = useMemo(() => project?.nodes.find((node) => node.id === selectedNodeId) || null, [project, selectedNodeId]);
     const executionStates = useMemo<Record<string, ExecutionState>>(() => {
         if (!project) return {};
         return Object.fromEntries(project.nodes.map((node) => [node.id, workflowExecutionState(node, jobs)]));
     }, [jobs, project]);
     const selectedExecutionState = selectedNode ? executionStates[selectedNode.id] : null;
-    const selectedH3Busy = Boolean(
-        selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video
-        && (h3RunningNodeId === selectedNode.id || isActiveExecution(selectedExecutionState)),
-    );
+    const selectedH3Busy = nodeBusy(selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video, h3RunningNodeId, selectedNodeId, selectedExecutionState);
+    const selectedOpenPoseBusy = nodeBusy(selectedNode?.type === WORKFLOW_NODE_TYPES.openPose, openPoseRunningNodeId, selectedNodeId, selectedExecutionState);
+    const selectedUpscaleBusy = nodeBusy(selectedNode?.type === WORKFLOW_NODE_TYPES.upscale, upscaleRunningNodeId, selectedNodeId, selectedExecutionState);
 
     if (!loaded) return <div className={styles.state}>{copy.loading}</div>;
     if (!project) {
-        return (
-            <div className={styles.state}>
-                <strong>{copy.notFound}</strong>
-                <a href="/app/create">{copy.back}</a>
-            </div>
-        );
+        return <div className={styles.state}><strong>{copy.notFound}</strong><a href="/app/create">{copy.back}</a></div>;
     }
 
     function applyProjectChange(nextProject: WorkflowProject, options: ProjectChangeOptions = {}) {
@@ -102,13 +94,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
 
     function recordHistorySnapshot() {
-        if (!project) return;
         setHistoryPast((current) => [...current.slice(-(HISTORY_LIMIT - 1)), project]);
         setHistoryFuture([]);
     }
 
     function undo() {
-        if (!project || historyPast.length === 0) return;
+        if (historyPast.length === 0) return;
         const previous = historyPast.at(-1);
         if (!previous) return;
         setHistoryPast((current) => current.slice(0, -1));
@@ -119,7 +110,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
 
     function redo() {
-        if (!project || historyFuture.length === 0) return;
+        if (historyFuture.length === 0) return;
         const next = historyFuture[0];
         setHistoryFuture((current) => current.slice(1));
         setHistoryPast((current) => [...current.slice(-(HISTORY_LIMIT - 1)), project]);
@@ -134,8 +125,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
 
     function updateBrief(value: string) {
-        const nextProject = updateWorkflowProjectBrief(project, value) as WorkflowProject;
-        applyProjectChange(nextProject, { recordHistory: true });
+        applyProjectChange(updateWorkflowProjectBrief(project, value) as WorkflowProject, { recordHistory: true });
     }
 
     function updateName(value: string) {
@@ -147,31 +137,24 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         let nextProject = updateWorkflowNodeConfig(project, selectedNode.id, patch) as WorkflowProject;
         const assetKey = typeof selectedNode.config.projectAssetKey === "string" ? selectedNode.config.projectAssetKey : "";
         const role = typeof patch.role === "string" ? patch.role : "";
-        if (selectedNode.type === WORKFLOW_NODE_TYPES.asset && assetKey && role) {
-            nextProject = updateWorkflowAssetRole(nextProject, assetKey, role) as WorkflowProject;
-        }
-        setPromptRunError("");
-        setH3RunError("");
+        if (selectedNode.type === WORKFLOW_NODE_TYPES.asset && assetKey && role) nextProject = updateWorkflowAssetRole(nextProject, assetKey, role) as WorkflowProject;
+        clearExecutionErrors();
         applyProjectChange(nextProject, { recordHistory: true });
     }
 
     function addAssetToCanvas(asset: StudioAsset, position?: CanvasPosition) {
-        const nextProject = attachWorkflowAssetNode(project, asset, {
-            position: position || defaultAssetPosition(project.assets.length),
-        }) as WorkflowProject;
+        const nextProject = attachWorkflowAssetNode(project, asset, { position: position || defaultAssetPosition(project.assets.length) }) as WorkflowProject;
         const addedNode = nextProject.nodes.at(-1);
         applyProjectChange(nextProject, { recordHistory: true });
         if (addedNode) setSelectedNodeId(addedNode.id);
     }
 
     function bindJob(nodeId: string, job: UnifiedJob) {
-        const nextProject = bindWorkflowNodeJob(project, nodeId, job) as WorkflowProject;
-        applyProjectChange(nextProject, { recordHistory: true });
+        applyProjectChange(bindWorkflowNodeJob(project, nodeId, job) as WorkflowProject, { recordHistory: true });
     }
 
     function unbindJob(nodeId: string) {
-        const nextProject = unbindWorkflowNodeJob(project, nodeId) as WorkflowProject;
-        applyProjectChange(nextProject, { recordHistory: true });
+        applyProjectChange(unbindWorkflowNodeJob(project, nodeId) as WorkflowProject, { recordHistory: true });
     }
 
     async function generatePrompt(nodeId: string) {
@@ -180,12 +163,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         setPromptRunError("");
         try {
             const result = await executeWorkflowPromptNode(project, nodeId);
-            const nextProject = updateWorkflowNodeConfig(project, nodeId, {
+            applyProjectChange(updateWorkflowNodeConfig(project, nodeId, {
                 prompt: result.prompt,
                 negativePrompt: result.negativePrompt,
                 ollamaPromptReceipt: result.ollamaPromptReceipt,
-            }) as WorkflowProject;
-            applyProjectChange(nextProject, { recordHistory: true });
+            }) as WorkflowProject, { recordHistory: true });
         } catch (error) {
             setPromptRunError(error instanceof Error ? error.message : copy.promptFailed);
         } finally {
@@ -194,24 +176,18 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
 
     async function runH3Node(nodeId: string) {
-        if (h3RunningNodeId) return;
-        const currentExecution = executionStates[nodeId];
-        if (isActiveExecution(currentExecution)) {
-            setH3RunError(copy.activeJobExists);
-            return;
-        }
+        if (h3RunningNodeId || rejectActiveJob(nodeId, setH3RunError)) return;
         setH3RunningNodeId(nodeId);
         setH3RunError("");
         try {
-            const result = await executeWorkflowH3Node(project, nodeId);
+            const result = await executeWorkflowH3Node(project, nodeId, jobs);
             if (result.issues.length) {
                 setH3RunError(result.issues.map((issue) => issue.message).join("\n"));
                 return;
             }
             const job = result.jobs[0];
             if (!job) throw new Error(copy.noJobCreated);
-            const nextProject = bindWorkflowNodeJob(project, nodeId, job) as WorkflowProject;
-            applyProjectChange(nextProject, { recordHistory: true });
+            bindJob(nodeId, job);
             await refreshUnifiedJobsFeed();
         } catch (error) {
             setH3RunError(error instanceof Error ? error.message : copy.runFailed);
@@ -220,19 +196,52 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         }
     }
 
+    async function runOpenPoseNode(nodeId: string) {
+        if (openPoseRunningNodeId || rejectActiveJob(nodeId, setOpenPoseRunError)) return;
+        setOpenPoseRunningNodeId(nodeId);
+        setOpenPoseRunError("");
+        try {
+            bindJob(nodeId, await executeWorkflowOpenPoseNode(project, nodeId));
+            await refreshUnifiedJobsFeed();
+        } catch (error) {
+            setOpenPoseRunError(error instanceof Error ? error.message : copy.openPoseFailed);
+        } finally {
+            setOpenPoseRunningNodeId("");
+        }
+    }
+
+    async function runUpscaleNode(nodeId: string) {
+        if (upscaleRunningNodeId || rejectActiveJob(nodeId, setUpscaleRunError)) return;
+        setUpscaleRunningNodeId(nodeId);
+        setUpscaleRunError("");
+        try {
+            bindJob(nodeId, await executeWorkflowUpscaleNode(project, nodeId, jobs));
+            await refreshUnifiedJobsFeed();
+        } catch (error) {
+            setUpscaleRunError(error instanceof Error ? error.message : copy.upscaleFailed);
+        } finally {
+            setUpscaleRunningNodeId("");
+        }
+    }
+
+    function rejectActiveJob(nodeId: string, setError: (value: string) => void) {
+        if (!isActiveExecution(executionStates[nodeId])) return false;
+        setError(copy.activeJobExists);
+        return true;
+    }
+
+    function clearExecutionErrors() {
+        setPromptRunError("");
+        setH3RunError("");
+        setOpenPoseRunError("");
+        setUpscaleRunError("");
+    }
+
     function createCheckpoint(type: string) {
-        const nextProject = createWorkflowCheckpoint(project, { type }) as WorkflowProject;
-        applyProjectChange(nextProject, { recordHistory: true });
+        applyProjectChange(createWorkflowCheckpoint(project, { type }) as WorkflowProject, { recordHistory: true });
     }
-
-    function approveCheckpoint(checkpointId: string) {
-        applyProjectChange(approveWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true });
-    }
-
-    function reopenCheckpoint(checkpointId: string) {
-        applyProjectChange(reopenWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true });
-    }
-
+    function approveCheckpoint(checkpointId: string) { applyProjectChange(approveWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true }); }
+    function reopenCheckpoint(checkpointId: string) { applyProjectChange(reopenWorkflowCheckpoint(project, checkpointId) as WorkflowProject, { recordHistory: true }); }
     function restoreCheckpoint(checkpointId: string) {
         const restored = restoreWorkflowCheckpoint(project, checkpointId) as WorkflowProject;
         applyProjectChange(restored, { recordHistory: true });
@@ -242,14 +251,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     return (
         <div className={styles.workspace}>
             <header className={styles.workspaceHeader}>
-                <div className={styles.titleGroup}>
-                    <a href="/app/create" className={styles.backLink}>← {copy.back}</a>
-                    <input aria-label={copy.projectName} value={project.name} onChange={(event) => updateName(event.target.value)} />
-                </div>
-                <div className={styles.saveState}>
-                    <span className={styles.saveDot} aria-hidden="true" />
-                    <span>{savedAt ? copy.saved : copy.local}</span>
-                </div>
+                <div className={styles.titleGroup}><a href="/app/create" className={styles.backLink}>← {copy.back}</a><input aria-label={copy.projectName} value={project.name} onChange={(event) => updateName(event.target.value)} /></div>
+                <div className={styles.saveState}><span className={styles.saveDot} aria-hidden="true" /><span>{savedAt ? copy.saved : copy.local}</span></div>
             </header>
 
             <div className={styles.body}>
@@ -261,11 +264,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     executionStates={executionStates}
                     canUndo={historyPast.length > 0}
                     canRedo={historyFuture.length > 0}
-                    onSelectNode={(nodeId) => {
-                        setSelectedNodeId(nodeId);
-                        setPromptRunError("");
-                        setH3RunError("");
-                    }}
+                    onSelectNode={(nodeId) => { setSelectedNodeId(nodeId); clearExecutionErrors(); }}
                     onProjectChange={applyProjectChange}
                     onBeginContinuousEdit={recordHistorySnapshot}
                     onDropAsset={addAssetToCanvas}
@@ -281,69 +280,33 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     promptRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.prompt ? promptRunError : ""}
                     h3Running={selectedH3Busy}
                     h3RunError={selectedNode?.type === WORKFLOW_NODE_TYPES.h3Video ? h3RunError : ""}
+                    openPoseRunning={selectedOpenPoseBusy}
+                    openPoseRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.openPose ? openPoseRunError : ""}
+                    upscaleRunning={selectedUpscaleBusy}
+                    upscaleRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.upscale ? upscaleRunError : ""}
                     onBriefChange={updateBrief}
                     onConfigChange={updateSelectedNodeConfig}
                     onGeneratePrompt={(nodeId) => void generatePrompt(nodeId)}
                     onRunH3={(nodeId) => void runH3Node(nodeId)}
+                    onRunOpenPose={(nodeId) => void runOpenPoseNode(nodeId)}
+                    onRunUpscale={(nodeId) => void runUpscaleNode(nodeId)}
                 />
             </div>
 
-            <WorkspaceActivity
-                locale={locale}
-                project={project}
-                selectedNodeId={selectedNodeId}
-                onBindJob={bindJob}
-                onUnbindJob={unbindJob}
-            />
-
-            <WorkspaceCheckpoints
-                locale={locale}
-                checkpoints={project.checkpoints}
-                onCreate={createCheckpoint}
-                onApprove={approveCheckpoint}
-                onReopen={reopenCheckpoint}
-                onRestore={restoreCheckpoint}
-            />
+            <WorkspaceActivity locale={locale} project={project} selectedNodeId={selectedNodeId} onBindJob={bindJob} onUnbindJob={unbindJob} />
+            <WorkspaceCheckpoints locale={locale} checkpoints={project.checkpoints} onCreate={createCheckpoint} onApprove={approveCheckpoint} onReopen={reopenCheckpoint} onRestore={restoreCheckpoint} />
         </div>
     );
 }
 
-function isActiveExecution(state: ExecutionState) {
-    return state?.status === "queued" || state?.status === "running";
+function nodeBusy(isType: boolean, localRunningNodeId: string, selectedNodeId: string, state: ExecutionState | null) {
+    return Boolean(isType && (localRunningNodeId === selectedNodeId || isActiveExecution(state)));
 }
-
-function defaultAssetPosition(index: number): CanvasPosition {
-    return { x: 70 + (index % 3) * 42, y: 360 + Math.floor(index / 3) * 110 };
-}
-
-function touchRestoredProject(project: WorkflowProject): WorkflowProject {
-    return { ...project, updatedAt: new Date().toISOString() };
-}
-
+function isActiveExecution(state: ExecutionState | null | undefined) { return state?.status === "queued" || state?.status === "running"; }
+function defaultAssetPosition(index: number): CanvasPosition { return { x: 70 + (index % 3) * 42, y: 360 + Math.floor(index / 3) * 110 }; }
+function touchRestoredProject(project: WorkflowProject): WorkflowProject { return { ...project, updatedAt: new Date().toISOString() }; }
 function workspaceCopy(locale: string) {
     return locale.toLowerCase().startsWith("zh")
-        ? {
-            loading: "載入專案中…",
-            notFound: "找不到這個本機專案。",
-            back: "返回建立",
-            projectName: "專案名稱",
-            saved: "已儲存在本機",
-            local: "本機專案",
-            promptFailed: "無法產生提示詞。",
-            activeJobExists: "這個 H3 節點已有排隊中或執行中的工作，請先等待完成或取消工作。",
-            noJobCreated: "生成 API 沒有回傳工作。",
-            runFailed: "無法建立生成工作。",
-        }
-        : {
-            loading: "Loading project…",
-            notFound: "This local project could not be found.",
-            back: "Back to Create",
-            projectName: "Project name",
-            saved: "Saved locally",
-            local: "Local project",
-            promptFailed: "Unable to generate the prompt.",
-            activeJobExists: "This H3 node already has a queued or running job. Finish or cancel it before starting another.",
-            noJobCreated: "The generation API did not return a job.",
-            runFailed: "Unable to create the generation job.",
-        };
+        ? { loading: "載入專案中…", notFound: "找不到這個本機專案。", back: "返回建立", projectName: "專案名稱", saved: "已儲存在本機", local: "本機專案", promptFailed: "無法產生提示詞。", activeJobExists: "這個節點已有排隊中或執行中的工作，請先等待完成或取消工作。", noJobCreated: "生成 API 沒有回傳工作。", runFailed: "無法建立生成工作。", openPoseFailed: "無法啟動 OpenPose 生圖工作。", upscaleFailed: "無法啟動升頻工作。" }
+        : { loading: "Loading project…", notFound: "This local project could not be found.", back: "Back to Create", projectName: "Project name", saved: "Saved locally", local: "Local project", promptFailed: "Unable to generate the prompt.", activeJobExists: "This node already has a queued or running job. Finish or cancel it before starting another.", noJobCreated: "The generation API did not return a job.", runFailed: "Unable to create the generation job.", openPoseFailed: "Unable to start the OpenPose image job.", upscaleFailed: "Unable to start the upscale job." };
 }

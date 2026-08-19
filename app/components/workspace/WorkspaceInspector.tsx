@@ -17,10 +17,16 @@ type WorkspaceInspectorProps = {
     promptRunError?: string;
     h3Running?: boolean;
     h3RunError?: string;
+    openPoseRunning?: boolean;
+    openPoseRunError?: string;
+    upscaleRunning?: boolean;
+    upscaleRunError?: string;
     onBriefChange: (value: string) => void;
     onConfigChange: (patch: Record<string, unknown>) => void;
     onGeneratePrompt?: (nodeId: string) => void;
     onRunH3?: (nodeId: string) => void;
+    onRunOpenPose?: (nodeId: string) => void;
+    onRunUpscale?: (nodeId: string) => void;
 };
 
 const VIDEO_MODES = ["t2v", "i2v", "fl2v", "l2v", "ref2v", "ref2v_motion", "replace"] as const;
@@ -49,10 +55,16 @@ export function WorkspaceInspector({
     promptRunError = "",
     h3Running = false,
     h3RunError = "",
+    openPoseRunning = false,
+    openPoseRunError = "",
+    upscaleRunning = false,
+    upscaleRunError = "",
     onBriefChange,
     onConfigChange,
     onGeneratePrompt,
     onRunH3,
+    onRunOpenPose,
+    onRunUpscale,
 }: WorkspaceInspectorProps) {
     const zh = locale.toLowerCase().startsWith("zh");
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -134,21 +146,14 @@ export function WorkspaceInspector({
                         {promptRunning ? (zh ? "產生提示詞中…" : "Generating prompt…") : (zh ? "從 Brief 產生提示詞" : "Generate from Brief")}
                     </button>
                     {promptRunError && <p className={styles.runError} role="alert">{promptRunError}</p>}
-                    <p className={styles.helper}>{zh ? "Auto 會沿用 Settings 的提示詞提供者與模型；圖片/影片模式會把 Project 素材一併送到現有提示詞 API。" : "Auto uses the provider and model from Settings; visual modes send the Project assets through the existing prompt API."}</p>
+                    <p className={styles.helper}>{zh ? "Auto 會沿用 Settings 的提示詞提供者與模型；視覺模式會使用 Project 素材。" : "Auto uses the provider and model from Settings; visual modes use Project assets."}</p>
                 </>
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.h3Video && (
                 <>
                     <Field label={zh ? "模式" : "Mode"}>
-                        <select
-                            value={mode}
-                            onChange={(event) => {
-                                const nextMode = event.target.value;
-                                const defaults = singleCreateModeDefaults(nextMode);
-                                onConfigChange({ mode: nextMode, ...defaults });
-                            }}
-                        >
+                        <select value={mode} onChange={(event) => { const nextMode = event.target.value; onConfigChange({ mode: nextMode, ...singleCreateModeDefaults(nextMode) }); }}>
                             {VIDEO_MODES.map((option) => <option key={option} value={option}>{VIDEO_MODE_LABELS[option][zh ? 0 : 1]}</option>)}
                         </select>
                     </Field>
@@ -162,13 +167,7 @@ export function WorkspaceInspector({
                             <NumberInput value={duration} min={1} max={60} step={1} onChange={(value) => onConfigChange({ duration: value, ...(mode === "ref2v_motion" && typeof value === "number" ? { referenceVideoEnd: Number(numberDraftConfig(node, "referenceVideoStart", 0)) + value } : {}) })} />
                         </Field>
                         <Field label={zh ? "尺寸" : "Resolution"}>
-                            <select
-                                value={resolution}
-                                onChange={(event) => {
-                                    const parsed = parseResolution(event.target.value);
-                                    if (parsed) onConfigChange(parsed);
-                                }}
-                            >
+                            <select value={resolution} onChange={(event) => { const parsed = parseResolution(event.target.value); if (parsed) onConfigChange(parsed); }}>
                                 <option value="736x416">736 × 416</option>
                                 <option value="416x736">416 × 736</option>
                                 <option value="768x768">768 × 768</option>
@@ -183,7 +182,6 @@ export function WorkspaceInspector({
                             <Field label={zh ? "高度" : "Height"}><NumberInput value={height} min={32} max={2048} step={32} onChange={(value) => onConfigChange({ height: value })} /></Field>
                         </div>
                     )}
-
                     {mode === "ref2v_motion" && (
                         <div className={styles.advancedInline}>
                             <div className={styles.twoColumns}>
@@ -192,27 +190,17 @@ export function WorkspaceInspector({
                             </div>
                             <Field label={zh ? "動作影片解析度上限" : "Motion video max dimension"}>
                                 <select value={String(numberDraftConfig(node, "referenceVideoMaxDimension", 720))} onChange={(event) => onConfigChange({ referenceVideoMaxDimension: Number(event.target.value) })}>
-                                    <option value="0">{zh ? "原始" : "Original"}</option>
-                                    <option value="480">480</option>
-                                    <option value="720">720</option>
-                                    <option value="960">960</option>
+                                    <option value="0">{zh ? "原始" : "Original"}</option><option value="480">480</option><option value="720">720</option><option value="960">960</option>
                                 </select>
                             </Field>
                             <Field label={zh ? "服裝來源" : "Clothing source"}>
                                 <select value={stringConfig(node, "clothingMode", "character")} onChange={(event) => onConfigChange({ clothingMode: event.target.value })}>
-                                    <option value="character">{zh ? "沿用角色" : "Character"}</option>
-                                    <option value="reference">{zh ? "服裝參考圖" : "Reference images"}</option>
-                                    <option value="description">{zh ? "文字描述" : "Description"}</option>
+                                    <option value="character">{zh ? "沿用角色" : "Character"}</option><option value="reference">{zh ? "服裝參考圖" : "Reference images"}</option><option value="description">{zh ? "文字描述" : "Description"}</option>
                                 </select>
                             </Field>
-                            {stringConfig(node, "clothingMode", "character") === "description" && (
-                                <Field label={zh ? "服裝描述" : "Clothing description"}>
-                                    <textarea value={stringConfig(node, "clothingDescription")} onChange={(event) => onConfigChange({ clothingDescription: event.target.value })} rows={4} />
-                                </Field>
-                            )}
+                            {stringConfig(node, "clothingMode", "character") === "description" && <Field label={zh ? "服裝描述" : "Clothing description"}><textarea value={stringConfig(node, "clothingDescription")} onChange={(event) => onConfigChange({ clothingDescription: event.target.value })} rows={4} /></Field>}
                         </div>
                     )}
-
                     <button type="button" className={styles.disclosure} aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((current) => !current)}>
                         <span>{zh ? "進階生成設定" : "Advanced generation"}</span><span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
                     </button>
@@ -228,49 +216,48 @@ export function WorkspaceInspector({
                                 </>
                             ) : (
                                 <>
-                                    <Field label="H3 Realism People">
-                                        <select value={booleanConfig(node, "h3LoraEnabled", false) ? "on" : "off"} onChange={(event) => onConfigChange({ h3LoraEnabled: event.target.value === "on" })}>
-                                            <option value="off">{zh ? "不套用" : "Off"}</option>
-                                            <option value="on">{zh ? "套用" : "On"}</option>
-                                        </select>
-                                    </Field>
+                                    <Field label="H3 Realism People"><select value={booleanConfig(node, "h3LoraEnabled", false) ? "on" : "off"} onChange={(event) => onConfigChange({ h3LoraEnabled: event.target.value === "on" })}><option value="off">{zh ? "不套用" : "Off"}</option><option value="on">{zh ? "套用" : "On"}</option></select></Field>
                                     {booleanConfig(node, "h3LoraEnabled", false) && <Field label={zh ? "H3 LoRA 強度" : "H3 LoRA strength"}><NumberInput value={numberDraftConfig(node, "h3LoraStrength", 0.8)} min={0} max={2} step={0.05} onChange={(value) => onConfigChange({ h3LoraStrength: value })} /></Field>}
                                 </>
                             )}
                         </div>
                     )}
-                    <button type="button" className={styles.primaryButton} disabled={h3Running || !onRunH3} onClick={() => onRunH3?.(node.id)}>
-                        {h3Running ? (zh ? "建立工作中…" : "Creating job…") : (zh ? "直接執行 H3" : "Run H3")}
-                    </button>
+                    <button type="button" className={styles.primaryButton} disabled={h3Running || !onRunH3} onClick={() => onRunH3?.(node.id)}>{h3Running ? (zh ? "工作執行中…" : "Job running…") : (zh ? "直接執行 H3" : "Run H3")}</button>
                     {h3RunError && <p className={styles.runError} role="alert">{h3RunError}</p>}
-                    <p className={styles.helper}>{zh ? "會使用 Project 的 Prompt 與素材角色直接建立既有 Single Video Job；生成狀態會自動綁回這個節點。" : "Creates the existing Single Video job directly from the Project prompt and asset roles, then binds progress back to this node."}</p>
+                    <p className={styles.helper}>{zh ? "使用 Project 的 Prompt、素材與上游節點結果建立既有 Single Video Job。" : "Creates the existing Single Video job from the Project prompt, assets, and upstream node outputs."}</p>
                 </>
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.openPose && (
                 <>
-                    <Field label={zh ? "ControlNet 強度" : "ControlNet strength"}>
-                        <NumberInput value={numberDraftConfig(node, "strength", 0.8)} min={0} max={2} step={0.05} onChange={(value) => onConfigChange({ strength: value })} />
-                    </Field>
-                    <a className={styles.secondaryLink} href="/app/tools/pose-to-image">{zh ? "開啟現有 OpenPose 工具" : "Open existing OpenPose tool"}</a>
+                    <Field label={zh ? "ControlNet 強度" : "ControlNet strength"}><NumberInput value={numberDraftConfig(node, "strength", 1.2)} min={0} max={2} step={0.05} onChange={(value) => onConfigChange({ strength: value })} /></Field>
+                    <button type="button" className={styles.disclosure} aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((current) => !current)}><span>{zh ? "進階生圖設定" : "Advanced image settings"}</span><span aria-hidden="true">{advancedOpen ? "−" : "+"}</span></button>
+                    {advancedOpen && (
+                        <div className={styles.advanced}>
+                            <Field label="Denoise"><NumberInput value={numberDraftConfig(node, "denoise", 1)} min={0.55} max={1} step={0.05} onChange={(value) => onConfigChange({ denoise: value })} /></Field>
+                            <Field label="Steps"><NumberInput value={numberDraftConfig(node, "steps", 35)} min={1} max={80} step={1} onChange={(value) => onConfigChange({ steps: value })} /></Field>
+                            <Field label="CFG"><NumberInput value={numberDraftConfig(node, "cfg", 5)} min={1} max={20} step={0.5} onChange={(value) => onConfigChange({ cfg: value })} /></Field>
+                            <Field label="Seed"><NumberInput value={numberDraftConfig(node, "seed", 12345)} min={0} max={2147483647} step={1} onChange={(value) => onConfigChange({ seed: value })} /></Field>
+                        </div>
+                    )}
+                    <button type="button" className={styles.primaryButton} disabled={openPoseRunning || !onRunOpenPose} onClick={() => onRunOpenPose?.(node.id)}>{openPoseRunning ? (zh ? "骨架生圖執行中…" : "Pose job running…") : (zh ? "直接執行 OpenPose 生圖" : "Run OpenPose image")}</button>
+                    {openPoseRunError && <p className={styles.runError} role="alert">{openPoseRunError}</p>}
+                    <p className={styles.helper}>{zh ? "直接復用現有 Juggernaut XL + DWPose / ControlNet img2img API；需要上游圖片素材與 Prompt。" : "Reuses the existing Juggernaut XL + DWPose / ControlNet img2img API; requires an upstream image asset and Prompt."}</p>
+                    <a className={styles.secondaryLink} href="/app/tools/pose-to-image">{zh ? "開啟完整 OpenPose 工具" : "Open full OpenPose tool"}</a>
                 </>
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.upscale && (
                 <>
-                    <Field label={zh ? "放大倍率" : "Scale"}>
-                        <select value={stringConfig(node, "scale", "2")} onChange={(event) => onConfigChange({ scale: event.target.value })}>
-                            <option value="2">2×</option>
-                            <option value="4">4×</option>
-                        </select>
-                    </Field>
-                    <a className={styles.secondaryLink} href="/app/tools/upscale">{zh ? "開啟現有升頻工具" : "Open existing Upscale tool"}</a>
+                    <Field label={zh ? "放大倍率" : "Scale"} helper={zh ? "目前既有 SeedVR2 API 固定為 2×。" : "The existing SeedVR2 API currently runs at a fixed 2× scale."}><input value="2×" readOnly /></Field>
+                    <button type="button" className={styles.primaryButton} disabled={upscaleRunning || !onRunUpscale} onClick={() => onRunUpscale?.(node.id)}>{upscaleRunning ? (zh ? "升頻執行中…" : "Upscale running…") : (zh ? "直接執行 2× 升頻" : "Run 2× Upscale")}</button>
+                    {upscaleRunError && <p className={styles.runError} role="alert">{upscaleRunError}</p>}
+                    <p className={styles.helper}>{zh ? "優先使用上游完成影片的輸出；沒有上游結果時才使用 Project 中的影片素材。" : "Uses a completed upstream video output first, then falls back to a Project video asset."}</p>
+                    <a className={styles.secondaryLink} href="/app/tools/upscale">{zh ? "開啟完整升頻工具" : "Open full Upscale tool"}</a>
                 </>
             )}
 
-            {node.type === WORKFLOW_NODE_TYPES.output && (
-                <p className={styles.helper}>{zh ? "生成結果會由既有 Job backend 註冊進 Library；在 Activity 可直接開啟結果。" : "The existing job backend registers completed media in Library; open the result from Activity."}</p>
-            )}
+            {node.type === WORKFLOW_NODE_TYPES.output && <p className={styles.helper}>{zh ? "生成結果由既有 Job backend 註冊進 Library；可從 Activity 開啟結果。" : "Existing job backends register completed media in Library; open results from Activity."}</p>}
         </aside>
     );
 }
@@ -280,60 +267,14 @@ function Field({ label, helper, children }: { label: string; helper?: string; ch
 }
 
 function NumberInput({ value, min, max, step, onChange }: { value: number | ""; min: number; max: number; step: number; onChange: (value: number | "") => void }) {
-    function handleChange(event: ChangeEvent<HTMLInputElement>) {
-        const next = event.target.value;
-        onChange(next === "" ? "" : Number(next));
-    }
+    function handleChange(event: ChangeEvent<HTMLInputElement>) { const next = event.target.value; onChange(next === "" ? "" : Number(next)); }
     return <input type="number" value={value} min={min} max={max} step={step} onChange={handleChange} />;
 }
 
-function stringConfig(node: WorkflowNode, key: string, fallback = "") {
-    const value = node.config[key];
-    return typeof value === "string" ? value : fallback;
-}
-
-function booleanConfig(node: WorkflowNode, key: string, fallback: boolean) {
-    const value = node.config[key];
-    return typeof value === "boolean" ? value : fallback;
-}
-
-function numberDraftConfig(node: WorkflowNode, key: string, fallback: number): number | "" {
-    const value = node.config[key];
-    if (value === "") return "";
-    const number = Number(value);
-    return Number.isFinite(number) ? number : fallback;
-}
-
-function resolutionValue(width: number | "", height: number | "") {
-    if (width === "" || height === "") return "custom";
-    const value = `${width}x${height}`;
-    return ["736x416", "416x736", "768x768", "832x480"].includes(value) ? value : "custom";
-}
-
-function parseResolution(value: string) {
-    if (value === "custom") return null;
-    const [width, height] = value.split("x").map(Number);
-    return Number.isFinite(width) && Number.isFinite(height) ? { width, height } : null;
-}
-
-function nodeTypeLabel(type: string, locale: string) {
-    const zh = locale.toLowerCase().startsWith("zh");
-    const labels: Record<string, [string, string]> = {
-        [WORKFLOW_NODE_TYPES.brief]: ["需求", "Brief"],
-        [WORKFLOW_NODE_TYPES.asset]: ["素材", "Asset"],
-        [WORKFLOW_NODE_TYPES.prompt]: ["提示詞", "Prompt"],
-        [WORKFLOW_NODE_TYPES.h3Video]: ["影片生成", "Video generation"],
-        [WORKFLOW_NODE_TYPES.openPose]: ["姿勢", "Pose"],
-        [WORKFLOW_NODE_TYPES.upscale]: ["升頻", "Upscale"],
-        [WORKFLOW_NODE_TYPES.output]: ["輸出", "Output"],
-    };
-    return labels[type]?.[zh ? 0 : 1] || type;
-}
-
-function statusLabel(status: string, locale: string) {
-    const zh = locale.toLowerCase().startsWith("zh");
-    const labels: Record<string, [string, string]> = {
-        ready: ["可編輯", "Ready"], waiting: ["等待", "Waiting"], running: ["執行中", "Running"], complete: ["完成", "Complete"], error: ["失敗", "Failed"],
-    };
-    return labels[status]?.[zh ? 0 : 1] || status;
-}
+function stringConfig(node: WorkflowNode, key: string, fallback = "") { const value = node.config[key]; return typeof value === "string" ? value : fallback; }
+function booleanConfig(node: WorkflowNode, key: string, fallback: boolean) { const value = node.config[key]; return typeof value === "boolean" ? value : fallback; }
+function numberDraftConfig(node: WorkflowNode, key: string, fallback: number): number | "" { const value = node.config[key]; if (value === "") return ""; const number = Number(value); return Number.isFinite(number) ? number : fallback; }
+function resolutionValue(width: number | "", height: number | "") { if (width === "" || height === "") return "custom"; const value = `${width}x${height}`; return ["736x416", "416x736", "768x768", "832x480"].includes(value) ? value : "custom"; }
+function parseResolution(value: string) { if (value === "custom") return null; const [width, height] = value.split("x").map(Number); return Number.isFinite(width) && Number.isFinite(height) ? { width, height } : null; }
+function nodeTypeLabel(type: string, locale: string) { const zh = locale.toLowerCase().startsWith("zh"); const labels: Record<string, [string, string]> = { [WORKFLOW_NODE_TYPES.brief]: ["需求", "Brief"], [WORKFLOW_NODE_TYPES.asset]: ["素材", "Asset"], [WORKFLOW_NODE_TYPES.prompt]: ["提示詞", "Prompt"], [WORKFLOW_NODE_TYPES.h3Video]: ["影片生成", "Video generation"], [WORKFLOW_NODE_TYPES.openPose]: ["姿勢生圖", "Pose image"], [WORKFLOW_NODE_TYPES.upscale]: ["升頻", "Upscale"], [WORKFLOW_NODE_TYPES.output]: ["輸出", "Output"] }; return labels[type]?.[zh ? 0 : 1] || type; }
+function statusLabel(status: string, locale: string) { const zh = locale.toLowerCase().startsWith("zh"); const labels: Record<string, [string, string]> = { ready: ["可編輯", "Ready"], waiting: ["等待", "Waiting"], running: ["執行中", "Running"], complete: ["完成", "Complete"], error: ["失敗", "Failed"] }; return labels[status]?.[zh ? 0 : 1] || status; }

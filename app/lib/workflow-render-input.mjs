@@ -1,5 +1,6 @@
 import { prepareSingleRenderBatch, singleCreateModeDefaults, singleCreateModelProfilesForMode } from "./single-create-controller.mjs";
 import { WORKFLOW_NODE_TYPES } from "./workflow-project.mjs";
+import { workflowExecutionOutputAssets } from "./workflow-tool-input.mjs";
 
 const IMAGE_REFERENCE_ROLES = Object.freeze([
     "character",
@@ -12,7 +13,7 @@ const IMAGE_REFERENCE_ROLES = Object.freeze([
     "last-frame",
 ]);
 
-export function buildWorkflowH3RenderInput(project, nodeId) {
+export function buildWorkflowH3RenderInput(project, nodeId, options = {}) {
     assertProject(project);
     const node = requireH3Node(project, nodeId);
     const mode = text(node.config?.mode) || "t2v";
@@ -26,7 +27,8 @@ export function buildWorkflowH3RenderInput(project, nodeId) {
     const prompt = text(node.config?.prompt) || text(promptNode?.config?.prompt);
     const negativePrompt = text(node.config?.negativePrompt) || text(promptNode?.config?.negativePrompt);
     const ollamaPromptReceipt = text(node.config?.ollamaPromptReceipt) || text(promptNode?.config?.ollamaPromptReceipt);
-    const assets = normalizeAssets(project.assets);
+    const executionAssets = workflowExecutionOutputAssets(project, node.id, options.jobs || []);
+    const assets = normalizeAssets([...(project.assets || []), ...executionAssets]);
 
     const firstFrame = firstImageByRoles(assets, ["first-frame", "reference", "character", "face"]);
     const lastFrame = firstImageByRoles(assets, ["last-frame"]);
@@ -72,7 +74,8 @@ export function buildWorkflowH3RenderInput(project, nodeId) {
 }
 
 export function prepareWorkflowH3Render(project, nodeId, options = {}) {
-    return prepareSingleRenderBatch(buildWorkflowH3RenderInput(project, nodeId), options);
+    const { jobs = [], ...batchOptions } = options;
+    return prepareSingleRenderBatch(buildWorkflowH3RenderInput(project, nodeId, { jobs }), batchOptions);
 }
 
 function referenceImageForMode(mode, firstFrame, references) {
@@ -81,6 +84,7 @@ function referenceImageForMode(mode, firstFrame, references) {
 }
 
 function normalizeAssets(assets) {
+    const seen = new Set();
     return (Array.isArray(assets) ? assets : [])
         .filter((asset) => ["input", "output"].includes(text(asset?.root)) && ["image", "video"].includes(text(asset?.kind)))
         .map((asset) => ({
@@ -89,7 +93,13 @@ function normalizeAssets(assets) {
             kind: text(asset.kind),
             role: text(asset.role) || (asset.kind === "video" ? "video" : "reference"),
         }))
-        .filter((asset) => asset.name);
+        .filter((asset) => {
+            if (!asset.name) return false;
+            const key = `${asset.root}:${asset.name}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
 }
 
 function imagesByRoles(assets, roles) {

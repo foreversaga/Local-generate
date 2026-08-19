@@ -21,9 +21,10 @@ export type WorkflowH3ExecutionResult = {
 export async function executeWorkflowH3Node(
     project: WorkflowProject,
     nodeId: string,
+    upstreamJobs: UnifiedJob[] = [],
     fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<WorkflowH3ExecutionResult> {
-    const prepared = prepareWorkflowH3Render(project, nodeId) as {
+    const prepared = prepareWorkflowH3Render(project, nodeId, { jobs: upstreamJobs }) as {
         issues: ValidationIssue[];
         requests: Record<string, unknown>[];
     };
@@ -36,9 +37,7 @@ export async function executeWorkflowH3Node(
             body: JSON.stringify(request),
         });
         const payload = await response.json().catch(() => ({})) as ApiPayload;
-        if (!response.ok || !payload.job?.id) {
-            throw new Error(apiErrorMessage(payload, "無法建立生成工作"));
-        }
+        if (!response.ok || !payload.job?.id) throw new Error(apiErrorMessage(payload, "無法建立生成工作"));
         return adaptJob(payload.job, "video") as UnifiedJob;
     }));
 
