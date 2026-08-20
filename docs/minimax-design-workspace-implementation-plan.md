@@ -154,6 +154,7 @@ The main workspace stops exposing dozens of unrelated controls at once. Settings
 - Support Approve, Edit, Regenerate, and Restore.
 - Add a planner interface that can convert Brief + assets into graph changes.
 - Integrate Hermes/Skills behind the planner and Prompt nodes rather than creating a separate Hermes page.
+- Expose Hermes through dedicated bridge domains: `/app/api/hermes/status`, `/app/api/hermes/prompt`, and `/app/api/hermes/plan`, leaving the existing Ollama/Codex `/app/api/prompt` contract unchanged.
 - Require explicit review checkpoints for high-cost downstream generation when configured.
 
 ### Benefit
