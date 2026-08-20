@@ -84,6 +84,27 @@ jobs:
           H3_STUDIO_BASE_URL: http://127.0.0.1:8787
         run: npm run web:smoke
 
+      - name: Capture quality gate outcomes
+        if: always()
+        run: |
+          cat > quality-gate-outcomes.txt <<'EOF'
+          install=${{ steps.install.outcome }}
+          lint=${{ steps.lint.outcome }}
+          build=${{ steps.build.outcome }}
+          unit=${{ steps.unit.outcome }}
+          server=${{ steps.server.outcome }}
+          smoke=${{ steps.smoke.outcome }}
+          EOF
+
+      - name: Upload quality gate outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-outcomes-${{ github.sha }}
+          path: quality-gate-outcomes.txt
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Publish commit status
         if: always() && github.event_name == 'push'
         env:
