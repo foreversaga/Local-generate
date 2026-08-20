@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const baseUrl = String(process.env.H3_STUDIO_BASE_URL || "").replace(/\/$/, "");
+const requireLocalServices = process.env.H3_STUDIO_REQUIRE_LOCAL_SERVICES === "1";
 const routes = [
   ["/app", "H3 STUDIO"],
   ["/app/create/single", "單次影片"],
@@ -38,6 +39,10 @@ test("health endpoint exposes a ready bridge contract", { skip: !baseUrl }, asyn
   const payload = JSON.parse(body);
   assert.equal(payload.bridge, true);
   assert.equal(typeof payload.runtime?.mode, "string");
-  assert.equal(payload.comfy?.online, true);
-  assert.equal(payload.ollama?.online, true);
+  assert.equal(typeof payload.comfy?.online, "boolean");
+  assert.equal(typeof payload.ollama?.online, "boolean");
+  if (requireLocalServices) {
+    assert.equal(payload.comfy.online, true);
+    assert.equal(payload.ollama.online, true);
+  }
 });

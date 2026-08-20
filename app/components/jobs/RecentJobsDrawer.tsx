@@ -4,37 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { activeJobCount } from "../../lib/job-adapter.mjs";
 import { jobStatusLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
-import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-client";
+import { useUnifiedJobsFeed } from "./useUnifiedJobsFeed";
 import styles from "./RecentJobsDrawer.module.css";
 
 export function RecentJobsDrawer() {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
-  const [jobs, setJobs] = useState<UnifiedJob[]>([]);
-  const [sourceErrors, setSourceErrors] = useState<JobSourceError[]>([]);
+  const { jobs, errors: sourceErrors } = useUnifiedJobsFeed();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    let active = true;
-    let timer = 0;
-    const refresh = async () => {
-      let delay = 15_000;
-      try {
-        if (document.visibilityState !== "hidden") {
-          const snapshot = await fetchUnifiedJobs({ limitPerSource: 5, summary: true, includeOutputAvailability: false });
-          if (active) { setJobs(snapshot.jobs); setSourceErrors(snapshot.errors); }
-          if (activeJobCount(snapshot.jobs) > 0) delay = 5000;
-        }
-      } catch {
-        // Keep the last known badge state and retry on the next scheduled pass.
-      } finally {
-        if (active) timer = window.setTimeout(() => void refresh(), delay);
-      }
-    };
-    void refresh();
-    return () => { active = false; window.clearTimeout(timer); };
-  }, []);
 
   useEffect(() => {
     if (!open) return;

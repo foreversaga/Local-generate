@@ -152,6 +152,7 @@ export function SettingsWorkspace() {
     ? reasoningValues
     : [...reasoningValues, settings.codexReasoningEffort];
   const codexReady = Boolean(health?.codex?.online && health?.codex?.skill);
+  const hermesReady = Boolean(health?.hermes?.online && health?.hermes?.skill);
   const comfyDevices = health?.comfy?.devices || [];
 
   function updateSettings(patch: Partial<SettingsModel>) {
@@ -214,6 +215,7 @@ export function SettingsWorkspace() {
           <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd><small>{health?.comfy?.url || "—"}</small></div>
           <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd><small>{health?.ollama?.url || "—"}</small></div>
           <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "技能已就緒" : "—")}</small></div>
+          <div><dt>Hermes Agent</dt><dd><StatusBadge value={hermesReady} pending={statusLoading} /></dd><small>{health?.hermes?.online ? `${health.hermes.model || "hermes-agent"} · ${health.hermes.skillName || "h3-prompt-writing"}` : health?.hermes?.url || "—"}</small></div>
         </dl>
         <div className={styles.deviceList}>
           <strong>ComfyUI 裝置</strong>
@@ -274,6 +276,7 @@ export function SettingsWorkspace() {
           <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
           <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
           <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
+          <div><dt>Hermes Agent</dt><dd>{health?.hermes?.url || "—"}</dd></div>
           <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
         </dl>
       </section>

@@ -6,7 +6,7 @@ const MAX_REF2V_IMAGES = 9;
 
 /**
  * @typedef {{
- *   provider: "ollama" | "codex";
+ *   provider: "ollama" | "codex" | "hermes";
  *   model: string;
  *   codexModel: string;
  *   reasoningEffort: string;
@@ -27,6 +27,7 @@ const MAX_REF2V_IMAGES = 9;
  *   sourceVideoName?: string;
  *   images?: PromptImage[];
  *   cameraPlan?: object;
+ *   skill?: string;
  * }} SinglePromptRequestInput
  */
 
@@ -57,6 +58,8 @@ export function buildSinglePromptRequest(input) {
     sourceVideoName: input.sourceVideoName || "",
     images: input.images || [],
   };
+
+  if (input.skill) payload.skill = input.skill;
 
   if (input.mode === "ref2v") {
     payload.referenceImageNames = referenceImageNames;

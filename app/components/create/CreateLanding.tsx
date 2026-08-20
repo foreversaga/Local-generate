@@ -9,6 +9,7 @@ import { useI18n } from "../../i18n/I18nProvider";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import type { StudioAsset } from "../library/asset-client";
 import { fetchUnifiedJobs, type UnifiedJob } from "../jobs/job-client";
+import { ProjectCreatePanel } from "../workspace/ProjectCreatePanel";
 import styles from "./CreateLanding.module.css";
 
 export function CreateLanding() {
@@ -34,19 +35,36 @@ export function CreateLanding() {
 
     return (
         <div className={styles.layout}>
-            <section className={styles.cards}>
-                <WorkflowCard
-                    code="01 / SINGLE"
-                    title={t("create.single.title")}
-                    description={t("create.single.description")}
-                    href="/app/create/single"
-                />
-                <WorkflowCard
-                    code="02 / LONG"
-                    title={t("create.long.title")}
-                    description={t("create.long.description")}
-                    href="/app/create/long"
-                />
+            <ProjectCreatePanel />
+
+            <section className={styles.quickStart} aria-labelledby="quick-start-heading">
+                <div className={styles.sectionHeading}>
+                    <span>QUICK START</span>
+                    <h2 id="quick-start-heading">{locale.toLowerCase().startsWith("zh") ? "直接使用既有工作流" : "Use an existing workflow"}</h2>
+                </div>
+                <div className={styles.cards}>
+                    <WorkflowCard
+                        code="01 / SINGLE"
+                        title={t("create.single.title")}
+                        description={t("create.single.description")}
+                        href="/app/create/single"
+                    />
+                    <WorkflowCard
+                        code="02 / LONG"
+                        title={t("create.long.title")}
+                        description={t("create.long.description")}
+                        href="/app/create/long"
+                    />
+                </div>
+            </section>
+
+            <section className={styles.assetStart}>
+                <div>
+                    <span>{t("create.fromAsset.eyebrow")}</span>
+                    <h2>{t("create.fromAsset.title")}</h2>
+                    <p>{t("create.fromAsset.description")}</p>
+                </div>
+                <AssetPickerButton allowedRoots={["input", "output"]} label={t("create.fromAsset.action")} onSelect={startFromAsset} />
             </section>
 
             <section className={styles.assetStart} aria-labelledby="tools-heading">
@@ -65,15 +83,6 @@ export function CreateLanding() {
                         <span>{ACTION_LABELS.openTool} →</span>
                     </a>
                 </div>
-            </section>
-
-            <section className={styles.assetStart}>
-                <div>
-                    <span>{t("create.fromAsset.eyebrow")}</span>
-                    <h2>{t("create.fromAsset.title")}</h2>
-                    <p>{t("create.fromAsset.description")}</p>
-                </div>
-            <AssetPickerButton allowedRoots={["input", "output"]} label={t("create.fromAsset.action")} onSelect={startFromAsset} />
             </section>
 
             <section className={styles.recent}>
