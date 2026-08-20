@@ -33,6 +33,17 @@ test("workflow prompt configuration respects an explicit Codex provider after re
     assert.equal(resolved.reasoningEffort, "high");
 });
 
+test("workflow prompt configuration uses Hermes only when its API and H3 skill are ready", () => {
+    const resolved = resolveWorkflowPromptConfiguration(stored, {
+        ollama: { online: true, models: ["installed-model"] },
+        codex: { online: true, skill: true, models: [{ value: "gpt-new", reasoningEfforts: ["high"] }] },
+        hermes: { online: true, skill: true, skillName: "h3-prompt-writing", model: "hermes-agent" },
+    }, "hermes");
+
+    assert.equal(resolved.provider, "hermes");
+    assert.equal(resolved.model, "hermes-agent");
+});
+
 test("workflow prompt configuration fails before request creation when the selected provider is unavailable", () => {
     assert.throws(
         () => resolveWorkflowPromptConfiguration(stored, { ollama: { online: false, models: [] } }, "ollama"),
@@ -43,7 +54,11 @@ test("workflow prompt configuration fails before request creation when the selec
         /h3-prompt-writing skill/,
     );
     assert.throws(
-        () => resolveWorkflowPromptConfiguration(stored, {}, "hermes"),
-        /Hermes provider/,
+        () => resolveWorkflowPromptConfiguration(stored, { hermes: { online: false } }, "hermes"),
+        /Hermes Agent 尚未連線/,
+    );
+    assert.throws(
+        () => resolveWorkflowPromptConfiguration(stored, { hermes: { online: true, skill: false, skillName: "h3-prompt-writing" } }, "hermes"),
+        /h3-prompt-writing skill/,
     );
 });

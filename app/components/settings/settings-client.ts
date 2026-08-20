@@ -21,6 +21,14 @@ export type StudioHealth = {
     skill?: boolean;
     models?: CodexHealthModel[];
   };
+  hermes?: {
+    online?: boolean;
+    url?: string;
+    model?: string;
+    models?: string[];
+    skill?: boolean;
+    skillName?: string;
+  };
   comfy?: {
     online?: boolean;
     url?: string;
@@ -89,10 +97,16 @@ async function readPayload(response: Response) {
 }
 
 export async function fetchStudioHealth() {
-  const response = await fetch(`${BRIDGE_URL}/api/health`, { cache: "no-store" });
+  const [response, hermesResponse] = await Promise.all([
+    fetch(`${BRIDGE_URL}/api/health`, { cache: "no-store" }),
+    fetch(`${BRIDGE_URL}/api/hermes/status`, { cache: "no-store" }).catch(() => null),
+  ]);
   const payload = await readPayload(response);
   if (!response.ok) throw new SettingsApiError(apiErrorMessage(payload, "Unable to load service health."), response.status, payload);
-  return payload as StudioHealth;
+  const hermes = hermesResponse?.ok
+    ? await hermesResponse.json().catch(() => ({ online: false }))
+    : { online: false };
+  return { ...payload, hermes } as StudioHealth;
 }
 
 export async function fetchRuntimeStatus() {

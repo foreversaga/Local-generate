@@ -2,13 +2,21 @@ import { reconcileStudioSettings } from "./studio-settings.mjs";
 
 export function resolveWorkflowPromptConfiguration(storedSettings, health, configuredProvider = "auto") {
     const providerOverride = normalizeText(configuredProvider).toLowerCase();
-    if (providerOverride === "hermes") {
-        throw new Error("Hermes provider 尚未接入現有 /app/api/prompt contract，請先選 Auto、Ollama 或 Codex CLI。");
-    }
     const settings = reconcileStudioSettings(storedSettings, health);
-    const provider = providerOverride === "ollama" || providerOverride === "codex"
+    const provider = providerOverride === "ollama" || providerOverride === "codex" || providerOverride === "hermes"
         ? providerOverride
         : settings.promptProvider;
+
+    if (provider === "hermes") {
+        if (!health?.hermes?.online) throw new Error("Hermes Agent 尚未連線。");
+        if (!health?.hermes?.skill) throw new Error(`Hermes Agent 找不到 ${health?.hermes?.skillName || "h3-prompt-writing"} skill。`);
+        return {
+            provider,
+            model: normalizeText(health?.hermes?.model) || "hermes-agent",
+            codexModel: settings.codexModel,
+            reasoningEffort: settings.codexReasoningEffort,
+        };
+    }
 
     if (provider === "ollama") {
         const models = Array.isArray(health?.ollama?.models) ? health.ollama.models.map(String).filter(Boolean) : [];

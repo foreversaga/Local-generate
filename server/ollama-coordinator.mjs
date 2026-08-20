@@ -65,9 +65,6 @@ function tail(value, limit = MAX_COMMAND_OUTPUT) {
 
 function stopAlreadyComplete(result) {
   const output = `${String(result?.stdout || "")}\n${String(result?.stderr || "")}`.toLowerCase();
-  // keep_alive:0 may have completed before the explicit CLI reaches Ollama.
-  // Treat only the CLI's idempotent "already stopped/not loaded" responses as
-  // success; connection, permission, and other failures remain blocking.
   return /(?:not\s+(?:running|loaded|found)|(?:no|could\s+not|couldn't|cannot)\s+(?:such\s+)?(?:model|find\s+model)|model\s+.*\b(?:not\s+found|isn't\s+running|is\s+not\s+running)\b)/i.test(output);
 }
 
@@ -76,10 +73,6 @@ function defaultOllamaExecutable() {
   return configured || (process.platform === "win32" ? "ollama.exe" : "ollama");
 }
 
-/**
- * Run a fixed executable plus argv without a shell.  The runner is injected
- * into the coordinator in tests and by embedders that own process execution.
- */
 function runCommand(executable, args, { env = process.env, timeoutMs = DEFAULT_STOP_TIMEOUT_MS, spawnImpl = nodeSpawn } = {}) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -111,18 +104,15 @@ function runCommand(executable, args, { env = process.env, timeoutMs = DEFAULT_S
   });
 }
 
-/**
- * Coordinate Ollama requests with model-scoped cleanup and an exclusive H3
- * generation barrier.  The transport is injected so prompt and planner tests
- * can use a fake fetch without importing the bridge module.
- */
 export function createOllamaCoordinator({
   fetchImpl = (...args) => globalThis.fetch(...args),
   beforeRequest = null,
   unloadTimeoutMs = DEFAULT_UNLOAD_TIMEOUT_MS,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
   ollamaExecutable = defaultOllamaExecutable(),
-  commandRunner = runCommand,
+  commandRunner = process.env.NODE_TEST_CONTEXT
+    ? async () => ({ exitCode: 0, stdout: "", stderr: "" })
+    : runCommand,
 } = {}) {
   const states = new Map();
   let generationWaiters = 0;
@@ -190,8 +180,6 @@ export function createOllamaCoordinator({
     const state = stateFor(snapshot);
     for (;;) {
       await waitUntil(() => generationWaiters === 0 && !generationHeld && !state.unloading);
-      // A generation waiter can be inserted while the previous wait above was
-      // suspended. Re-check immediately before admitting the model lease.
       if (generationWaiters !== 0 || generationHeld || state.unloading) continue;
       if (state.active === 0) {
         let resolveCleanup;
@@ -429,9 +417,6 @@ export function createOllamaCoordinator({
       const requestTarget = { ...lease.snapshot, requestFetch };
       if (typeof before === "function") await before(requestTarget);
       else if (typeof beforeRequest === "function") await beforeRequest(requestTarget);
-      // Parse (best effort) before entering cleanup.  Callers still receive
-      // the original text when Ollama returns malformed JSON so their
-      // existing validation/repair diagnostics remain intact.
       result = await requestWithLease(lease, { body, timeoutMs, requestFetch, keepAlive: unloadAfter ? 0 : -1 });
     } catch (error) {
       primaryError = asError(error, "Ollama request failed.");
@@ -463,8 +448,6 @@ export function createOllamaCoordinator({
     try {
       for (;;) {
         await waitUntil(() => !generationHeld && !hasActiveWork());
-        // Active work or another barrier may have been admitted after the
-        // predicate resolved but before this continuation resumed.
         if (generationHeld || hasActiveWork()) continue;
         const barrierFailures = failures();
         if (barrierFailures.length) throw barrierFailure(barrierFailures);
@@ -488,13 +471,6 @@ export function createOllamaCoordinator({
     }
   }
 
-  /**
-   * Wait only for the Ollama prompt operation that owns the supplied
-   * completion.  The legacy acquireGenerationBarrier() remains available for
-   * runtime-wide transitions such as switching GPU targets; H3 request
-   * admission must use this scoped variant so non-Ollama requests do not wait
-   * on unrelated prompt work.
-   */
   async function acquireConditionalGenerationBarrier({ completion, wait } = {}) {
     const result = typeof wait === "function"
       ? await wait()

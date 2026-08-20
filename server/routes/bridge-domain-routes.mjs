@@ -1,4 +1,12 @@
 import { createDomainRouter } from "../runtime/domain-router.mjs";
+import { createHermesPromptClient } from "../hermes-prompt-client.mjs";
+import { createHermesWorkflowPlanner } from "../workflow/hermes-workflow-planner.mjs";
+import { buildH3PromptSystem } from "../h3-prompt/instruction.mjs";
+import { validateH3Prompt } from "../h3-prompt/validator.mjs";
+
+const HERMES_DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, flicker, jitter, deformed face, extra limbs, warped hands, unwanted random text, logo, watermark, identity drift, face drift, face morphing, facial feature drift, age drift, hairstyle drift, costume drift, body-shape drift";
+const hermesPromptClient = createHermesPromptClient();
+const hermesWorkflowPlanner = createHermesWorkflowPlanner({ hermesClient: hermesPromptClient });
 
 const POSE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
 const POSE_PREVIEW_TIMEOUT_MS = 60_000;
@@ -194,6 +202,72 @@ async function handlePosePreviewRoute({ req, res, readJson, sendJson, sendError,
   }
 }
 
+function hermesMode(value) {
+  const mode = String(value || "t2v").trim().toLowerCase();
+  if (mode === "replace") return "i2v";
+  if (["t2v", "i2v", "fl2v", "l2v", "ref2v"].includes(mode)) return mode;
+  throw Object.assign(new Error(`Unsupported Hermes prompt mode: ${mode}.`), { status: 400, code: "HERMES_MODE_INVALID" });
+}
+
+async function handleHermesRoute({ req, res, pathname, readJson, sendJson, sendError }) {
+  try {
+    if (pathname === "/api/hermes/status") {
+      if (req.method !== "GET") {
+        sendError(res, 405, "Hermes status accepts GET requests only.", "METHOD_NOT_ALLOWED");
+        return true;
+      }
+      sendJson(res, 200, await hermesPromptClient.status());
+      return true;
+    }
+
+    if (req.method !== "POST") {
+      sendError(res, 405, "Hermes prompt endpoints accept POST requests only.", "METHOD_NOT_ALLOWED");
+      return true;
+    }
+    const body = await readJson(req);
+    if (pathname === "/api/hermes/plan") {
+      sendJson(res, 200, await hermesWorkflowPlanner.plan({ brief: body?.brief, assets: body?.assets }));
+      return true;
+    }
+    if (pathname === "/api/hermes/prompt") {
+      const mode = hermesMode(body?.mode);
+      const duration = Number(body?.duration);
+      const images = Array.isArray(body?.images) ? body.images.slice(0, 9) : [];
+      const skillHint = String(body?.skill || "auto").trim();
+      const system = [
+        `Use the installed "${hermesPromptClient.skillName}" skill for H3 prompt-writing guidance.`,
+        skillHint && skillHint !== "auto" ? `Prompt specialty requested by the workflow: ${skillHint}.` : "",
+        buildH3PromptSystem({ mode, duration, hasVisualReference: images.length > 0 }),
+      ].filter(Boolean).join("\n\n");
+      const prompt = await hermesPromptClient.complete({
+        system,
+        prompt: String(body?.brief || "").trim(),
+        visualInputs: images,
+        model: String(body?.model || "").trim(),
+      });
+      const validated = validateH3Prompt(prompt, { mode, duration });
+      sendJson(res, 200, {
+        provider: "hermes",
+        model: String(body?.model || hermesPromptClient.model || "hermes-agent"),
+        prompt: validated.prompt,
+        negativePrompt: String(body?.negativePrompt || "").trim() || HERMES_DEFAULT_NEGATIVE_PROMPT,
+      });
+      return true;
+    }
+    sendError(res, 404, "Hermes endpoint not found.", "NOT_FOUND");
+    return true;
+  } catch (error) {
+    sendError(
+      res,
+      Number.isInteger(error?.status) ? error.status : 500,
+      error instanceof Error ? error.message : "Hermes request failed.",
+      error?.code || "HERMES_ERROR",
+      error?.details,
+    );
+    return true;
+  }
+}
+
 /**
  * Build the ComfyUI-backed domain routers without importing the bridge
  * composition root. Runtime-switched controllers are supplied through getters
@@ -238,6 +312,11 @@ export function createBridgeDomainRouter({
   }
 
   return createDomainRouter([
+    {
+      name: "hermes",
+      matches: ({ pathname }) => pathname === "/api/hermes/status" || pathname === "/api/hermes/prompt" || pathname === "/api/hermes/plan",
+      handle: ({ req, res, pathname, readJson, sendJson, sendError }) => handleHermesRoute({ req, res, pathname, readJson, sendJson, sendError }),
+    },
     {
       name: "upscale",
       matches: ({ pathname }) => pathname === "/api/upscale" || pathname.startsWith("/api/upscale/"),

@@ -34,10 +34,7 @@ export function WorkspaceActivity({
     const selectedNode = project.nodes.find((node) => node.id === selectedNodeId) || null;
     const selectedBinding = workflowJobBinding(selectedNode);
     const supportedSources = selectedNode ? supportedJobSourcesForNode(selectedNode.type) : [];
-    const compatibleJobs = useMemo(
-        () => jobs.filter((job) => supportedSources.includes(job.source)).slice(0, 4),
-        [jobs, supportedSources],
-    );
+    const compatibleJobs = jobs.filter((job) => supportedSources.includes(job.source)).slice(0, 4);
     const boundNodes = useMemo(
         () => project.nodes
             .map((node) => ({ node, job: workflowJobForNode(node, jobs) as UnifiedJob | null, binding: workflowJobBinding(node) }))

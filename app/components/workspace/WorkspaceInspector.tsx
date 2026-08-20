@@ -21,7 +21,10 @@ type WorkspaceInspectorProps = {
     openPoseRunError?: string;
     upscaleRunning?: boolean;
     upscaleRunError?: string;
+    plannerRunning?: boolean;
+    plannerRunError?: string;
     onBriefChange: (value: string) => void;
+    onPlanWorkflow?: () => void;
     onConfigChange: (patch: Record<string, unknown>) => void;
     onGeneratePrompt?: (nodeId: string) => void;
     onRunH3?: (nodeId: string) => void;
@@ -59,7 +62,10 @@ export function WorkspaceInspector({
     openPoseRunError = "",
     upscaleRunning = false,
     upscaleRunError = "",
+    plannerRunning = false,
+    plannerRunError = "",
     onBriefChange,
+    onPlanWorkflow,
     onConfigChange,
     onGeneratePrompt,
     onRunH3,
@@ -90,9 +96,17 @@ export function WorkspaceInspector({
             </div>
 
             {node.type === WORKFLOW_NODE_TYPES.brief && (
-                <Field label={zh ? "專案需求" : "Project brief"} helper={zh ? "修改會自動儲存到目前專案。" : "Changes are saved automatically to this project."}>
-                    <textarea value={brief} onChange={(event) => onBriefChange(event.target.value)} rows={12} maxLength={4000} />
-                </Field>
+                <>
+                    <Field label={zh ? "專案需求" : "Project brief"} helper={zh ? "修改會自動儲存到目前專案。" : "Changes are saved automatically to this project."}>
+                        <textarea value={brief} onChange={(event) => onBriefChange(event.target.value)} rows={12} maxLength={4000} />
+                    </Field>
+                    <button type="button" className={styles.primaryButton} disabled={plannerRunning || !onPlanWorkflow || !brief.trim()} onClick={() => onPlanWorkflow?.()}>
+                        {plannerRunning ? (zh ? "Hermes 規劃中…" : "Planning with Hermes…") : (zh ? "用 Hermes 規劃工作流" : "Plan workflow with Hermes")}
+                    </button>
+                    {plannerRunError && <p className={styles.runError} role="alert">{plannerRunError}</p>}
+                    {stringConfig(node, "agentPlanReason") && <p className={styles.helper}>{zh ? "Agent 規劃：" : "Agent plan: "}{stringConfig(node, "agentPlanReason")}</p>}
+                    <p className={styles.helper}>{zh ? "Agent 只提出白名單 graph 變更；套用後仍可編輯、Undo 或從 Checkpoint 還原。" : "The agent can only propose allow-listed graph changes; the result stays editable and reversible."}</p>
+                </>
             )}
 
             {node.type === WORKFLOW_NODE_TYPES.asset && (

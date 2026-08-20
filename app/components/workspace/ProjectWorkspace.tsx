@@ -13,6 +13,7 @@ import {
     restoreWorkflowCheckpoint,
 } from "../../lib/workflow-checkpoints.mjs";
 import { updateWorkflowNodeConfig } from "../../lib/workflow-graph.mjs";
+import { applyWorkflowAgentPlan } from "../../lib/workflow-agent-plan.mjs";
 import { bindWorkflowNodeJob, unbindWorkflowNodeJob, workflowExecutionState } from "../../lib/workflow-jobs.mjs";
 import { updateWorkflowProjectBrief, WORKFLOW_NODE_TYPES } from "../../lib/workflow-project.mjs";
 import { getWorkflowProject, saveWorkflowProject } from "../../lib/workflow-project-store.mjs";
@@ -20,6 +21,7 @@ import { AssetDock } from "./AssetDock";
 import { executeWorkflowPromptNode } from "./workspace-prompt-client";
 import { executeWorkflowH3Node } from "./workspace-render-client";
 import { executeWorkflowOpenPoseNode, executeWorkflowUpscaleNode } from "./workspace-tool-client";
+import { executeWorkflowPlanner } from "./workspace-planner-client";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { WorkspaceActivity } from "./WorkspaceActivity";
 import { WorkspaceCheckpoints } from "./WorkspaceCheckpoints";
@@ -51,6 +53,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const [openPoseRunError, setOpenPoseRunError] = useState("");
     const [upscaleRunningNodeId, setUpscaleRunningNodeId] = useState("");
     const [upscaleRunError, setUpscaleRunError] = useState("");
+    const [plannerRunning, setPlannerRunning] = useState(false);
+    const [plannerRunError, setPlannerRunError] = useState("");
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -125,7 +129,24 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
 
     function updateBrief(value: string) {
+        setPlannerRunError("");
         applyProjectChange(updateWorkflowProjectBrief(project, value) as WorkflowProject, { recordHistory: true });
+    }
+
+    async function planWorkflow() {
+        if (plannerRunning) return;
+        setPlannerRunning(true);
+        setPlannerRunError("");
+        try {
+            const plan = await executeWorkflowPlanner(project);
+            let nextProject = applyWorkflowAgentPlan(project, plan) as WorkflowProject;
+            nextProject = createWorkflowCheckpoint(nextProject, { type: "agent-plan" }) as WorkflowProject;
+            applyProjectChange(nextProject, { recordHistory: true });
+        } catch (error) {
+            setPlannerRunError(error instanceof Error ? error.message : copy.plannerFailed);
+        } finally {
+            setPlannerRunning(false);
+        }
     }
 
     function updateName(value: string) {
@@ -235,6 +256,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         setH3RunError("");
         setOpenPoseRunError("");
         setUpscaleRunError("");
+        setPlannerRunError("");
     }
 
     function createCheckpoint(type: string) {
@@ -284,7 +306,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     openPoseRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.openPose ? openPoseRunError : ""}
                     upscaleRunning={selectedUpscaleBusy}
                     upscaleRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.upscale ? upscaleRunError : ""}
+                    plannerRunning={plannerRunning}
+                    plannerRunError={selectedNode?.type === WORKFLOW_NODE_TYPES.brief ? plannerRunError : ""}
                     onBriefChange={updateBrief}
+                    onPlanWorkflow={() => void planWorkflow()}
                     onConfigChange={updateSelectedNodeConfig}
                     onGeneratePrompt={(nodeId) => void generatePrompt(nodeId)}
                     onRunH3={(nodeId) => void runH3Node(nodeId)}
@@ -307,6 +332,6 @@ function defaultAssetPosition(index: number): CanvasPosition { return { x: 70 + 
 function touchRestoredProject(project: WorkflowProject): WorkflowProject { return { ...project, updatedAt: new Date().toISOString() }; }
 function workspaceCopy(locale: string) {
     return locale.toLowerCase().startsWith("zh")
-        ? { loading: "載入專案中…", notFound: "找不到這個本機專案。", back: "返回建立", projectName: "專案名稱", saved: "已儲存在本機", local: "本機專案", promptFailed: "無法產生提示詞。", activeJobExists: "這個節點已有排隊中或執行中的工作，請先等待完成或取消工作。", noJobCreated: "生成 API 沒有回傳工作。", runFailed: "無法建立生成工作。", openPoseFailed: "無法啟動 OpenPose 生圖工作。", upscaleFailed: "無法啟動升頻工作。" }
-        : { loading: "Loading project…", notFound: "This local project could not be found.", back: "Back to Create", projectName: "Project name", saved: "Saved locally", local: "Local project", promptFailed: "Unable to generate the prompt.", activeJobExists: "This node already has a queued or running job. Finish or cancel it before starting another.", noJobCreated: "The generation API did not return a job.", runFailed: "Unable to create the generation job.", openPoseFailed: "Unable to start the OpenPose image job.", upscaleFailed: "Unable to start the upscale job." };
+        ? { loading: "載入專案中…", notFound: "找不到這個本機專案。", back: "返回建立", projectName: "專案名稱", saved: "已儲存在本機", local: "本機專案", promptFailed: "無法產生提示詞。", plannerFailed: "Hermes 無法規劃工作流。", activeJobExists: "這個節點已有排隊中或執行中的工作，請先等待完成或取消工作。", noJobCreated: "生成 API 沒有回傳工作。", runFailed: "無法建立生成工作。", openPoseFailed: "無法啟動 OpenPose 生圖工作。", upscaleFailed: "無法啟動升頻工作。" }
+        : { loading: "Loading project…", notFound: "This local project could not be found.", back: "Back to Create", projectName: "Project name", saved: "Saved locally", local: "Local project", promptFailed: "Unable to generate the prompt.", plannerFailed: "Hermes could not plan the workflow.", activeJobExists: "This node already has a queued or running job. Finish or cancel it before starting another.", noJobCreated: "The generation API did not return a job.", runFailed: "Unable to create the generation job.", openPoseFailed: "Unable to start the OpenPose image job.", upscaleFailed: "Unable to start the upscale job." };
 }

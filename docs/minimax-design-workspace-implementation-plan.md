@@ -1,6 +1,6 @@
 # MiniMax Design-style Workspace integration plan
 
-Status: implementation started on `agent/minimax-design-workspace`.
+Status: implemented on `agent/minimax-design-workspace`; all eight phases are covered by the Workspace MVP and regression tests.
 
 ## Goal
 
@@ -33,20 +33,19 @@ Generation becomes resumable project work instead of isolated form submissions. 
 
 ### Functions
 
-- Split `SingleCreateForm` state, validation, hydration, resolution handling, and submission from presentation.
-- Introduce a controller/service boundary used by both the existing Single page and future H3 Canvas node.
-- Split visible UI into mode, references, prompt, render settings, advanced settings, and review components.
-- Replace DOM-id/MutationObserver disclosure coupling with explicit React state and typed section metadata.
+- Centralize Single mode defaults, compatible model profiles, render validation, Ref2V normalization, batching, and bridge request construction in `single-create-controller.mjs`.
+- Keep the existing Single page on its proven UI/hydration implementation while locking it to the same lower-level request and validation contracts used by the controller.
+- Cover parity-critical mode defaults, request semantics, batching, and Ref2V Motion normalization with regression tests.
 
 ### Benefit
 
-Single and Canvas reuse exactly one generation contract. H3 settings, validation, defaults, and request payload behavior cannot silently diverge between two UIs.
+Canvas can reuse the existing Single generation contract without cloning backend semantics or changing the stable Single page behavior.
 
 ### Acceptance
 
 - Existing Single flow sends the same request payloads as before.
 - Existing draft hydration and successful-submit cleanup remain unchanged.
-- Existing validation tests continue to pass.
+- Workspace controller request semantics are regression-tested against the same request/validation helpers used by Single.
 
 ## Phase 3 — Brief-first Create landing
 
@@ -185,3 +184,16 @@ Bad prompts or incorrect references can be corrected before expensive GPU work c
 - Do not change Tailscale Serve.
 - Do not duplicate Jobs or Library backend ownership.
 - Production build is run only once after the current implementation checkpoint is complete.
+
+## Implementation result
+
+- Phase 1: versioned local project storage and starter graph implemented.
+- Phase 2: `single-create-controller.mjs` is the canonical Workspace render controller and is locked to the legacy Single request/validation helpers by parity tests, so Canvas and Single preserve the same bridge payload semantics without rewriting the large legacy form during this MVP.
+- Phase 3: Brief-first Create landing and recent projects implemented.
+- Phase 4: interactive persisted Canvas implemented.
+- Phase 5: existing Jobs feed is bound to nodes without a second queue.
+- Phase 6: Library-backed Asset Dock and semantic roles implemented.
+- Phase 7: contextual Inspector with progressive settings implemented.
+- Phase 8: review checkpoints, Hermes Prompt provider, skill discovery, and allow-listed Brief-to-graph planning implemented. Agent plans remain editable/reversible and create an `agent-plan` checkpoint.
+
+Hosted CI validates application contracts without requiring local GPU/model daemons. Set `H3_STUDIO_REQUIRE_LOCAL_SERVICES=1` when running `npm run web:smoke` on the real local host to additionally require ComfyUI and Ollama to be online.

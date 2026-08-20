@@ -38,6 +38,13 @@ type PromptHealth = {
         skill?: boolean;
         models?: Array<{ value?: string; reasoningEfforts?: string[] }>;
     };
+    hermes?: {
+        online?: boolean;
+        model?: string;
+        models?: string[];
+        skill?: boolean;
+        skillName?: string;
+    };
 };
 
 type PromptPayload = {
@@ -108,7 +115,8 @@ export async function executeWorkflowPromptNode(
         ]
         : [];
     const images = await buildPromptImages(input, referenceImages, fetchImpl);
-    const response = await fetchImpl(`${BRIDGE_URL}/api/prompt`, {
+    const endpoint = configuration.provider === "hermes" ? "/api/hermes/prompt" : "/api/prompt";
+    const response = await fetchImpl(`${BRIDGE_URL}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildSinglePromptRequest({
@@ -116,6 +124,7 @@ export async function executeWorkflowPromptNode(
             model: configuration.model,
             codexModel: configuration.codexModel,
             reasoningEffort: configuration.reasoningEffort,
+            skill: text(promptNode.config?.skill) || "auto",
             brief: project.brief.trim(),
             negativePrompt: text(promptNode.config?.negativePrompt),
             mode: requestMode,
@@ -151,9 +160,14 @@ export async function executeWorkflowPromptNode(
 }
 
 async function fetchPromptHealth(fetchImpl: typeof fetch): Promise<PromptHealth> {
-    const response = await fetchImpl(`${BRIDGE_URL}/api/health`, { cache: "no-store" });
-    if (!response.ok) throw new Error("無法取得提示詞提供者狀態。");
-    return response.json() as Promise<PromptHealth>;
+    const [healthResponse, hermesResponse] = await Promise.all([
+        fetchImpl(`${BRIDGE_URL}/api/health`, { cache: "no-store" }),
+        fetchImpl(`${BRIDGE_URL}/api/hermes/status`, { cache: "no-store" }).catch(() => null),
+    ]);
+    if (!healthResponse.ok) throw new Error("無法取得提示詞提供者狀態。");
+    const health = await healthResponse.json() as PromptHealth;
+    const hermes = hermesResponse?.ok ? await hermesResponse.json().catch(() => ({ online: false })) : { online: false };
+    return { ...health, hermes };
 }
 
 async function buildPromptImages(input: WorkflowRenderInput, referenceImages: AssetRef[], fetchImpl: typeof fetch) {
