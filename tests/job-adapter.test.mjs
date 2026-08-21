@@ -94,11 +94,17 @@ test("job adapter integrates LoRA status, training progress, ETA, artifact and a
   assert.equal(training.progress, 25);
   assert.equal(training.etaMs, 90_000);
 
-  const hybridEta = adaptJob({ id: "video-running", status: "running", etaMs: 60_000, etaLowerMs: 48_000, etaUpperMs: 75_000, etaSource: "hybrid", etaConfidence: "medium", timingSampleCount: 4 }, "video");
+  const hybridEta = adaptJob({ id: "video-running", status: "running", elapsedMs: 12_500, estimatedDurationMs: 72_500, etaMs: 60_000, etaLowerMs: 48_000, etaUpperMs: 75_000, etaSource: "hybrid", etaConfidence: "medium", timingSampleCount: 4 }, "video");
+  assert.equal(hybridEta.elapsedMs, 12_500);
+  assert.equal(hybridEta.estimatedDurationMs, 72_500);
   assert.equal(hybridEta.etaLowerMs, 48_000);
   assert.equal(hybridEta.etaUpperMs, 75_000);
   assert.equal(hybridEta.etaSource, "hybrid");
   assert.equal(hybridEta.timingSampleCount, 4);
+
+  const missingTiming = adaptJob({ id: "video-queued", status: "queued", elapsedMs: "invalid", estimatedDurationMs: -1 }, "video");
+  assert.equal(missingTiming.elapsedMs, null);
+  assert.equal(missingTiming.estimatedDurationMs, null);
 
   const overrunTraining = adaptJob({ id: "lora-overrun", status: "training", training: { step: 101, totalSteps: 100 } }, "lora");
   assert.equal(overrunTraining.progress, 99, "active training must not report terminal 100% progress");

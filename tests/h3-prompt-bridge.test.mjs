@@ -12,6 +12,10 @@ const {
   normalizeCharacterLoraName,
   normalizeCharacterLoraStrength,
   characterLoraOptions,
+  resolveGenerationModelProfile,
+  elapsedMilliseconds,
+  markComfyExecutionStarted,
+  requestSglangPrompt,
 } = await import("../local-bridge.mjs");
 
 after(async () => {
@@ -71,6 +75,53 @@ test("health exposes structured safe Python resolver diagnostics", async () => {
   assert.ok(Object.hasOwn(response.body.python, "version"));
   assert.ok(Object.hasOwn(response.body.python, "error"));
   assert.doesNotMatch(JSON.stringify(response.body.python), /MINIMAX_H3_PYTHON=.*[A-Za-z]:|private|secret/i);
+});
+
+test("GB10 generation defaults resolve to the NVFP4 model family", () => {
+  assert.equal(resolveGenerationModelProfile("t2v", ""), "nvfp4_blackwell");
+  assert.equal(resolveGenerationModelProfile("i2v", "nvfp4_blackwell"), "nvfp4_blackwell");
+  assert.equal(resolveGenerationModelProfile("ref2v", "nvfp4_blackwell"), "ref2va_pruned_nvfp4");
+  assert.equal(resolveGenerationModelProfile("ref2v", "ref2va_pruned_nvfp4"), "ref2va_pruned_nvfp4");
+});
+
+test("Vast Ref2VA resolves to the manifest's installed NVFP4 artifact", () => {
+  assert.equal(resolveGenerationModelProfile("ref2v", "nvfp4_blackwell", { remote: true }), "ref2va_pruned_nvfp4");
+});
+
+test("Vast FL2VA defaults to the manifest's installed NVFP4 artifact", () => {
+  assert.equal(resolveGenerationModelProfile("t2v", "", { remote: true }), "nvfp4_blackwell");
+  assert.throws(
+    () => resolveGenerationModelProfile("t2v", "10eros_max_beta2_nvfp4", { remote: true }),
+    { code: "FL2VA_PROFILE_UNSUPPORTED", status: 422 },
+  );
+});
+
+test("terminal video jobs do not count queue time as execution time", () => {
+  assert.equal(elapsedMilliseconds({
+    status: "cancelled",
+    startedAt: "2026-08-19T09:12:24.439Z",
+    finishedAt: "2026-08-19T09:16:51.736Z",
+    elapsedMs: 0,
+  }), 0);
+  assert.equal(elapsedMilliseconds({
+    status: "interrupted",
+    executionStartedAt: "2026-08-19T09:12:24.439Z",
+    finishedAt: "2026-08-19T09:16:51.736Z",
+    elapsedMs: 0,
+  }), 267_297);
+});
+
+test("ComfyUI execution progress promotes queued video jobs to running", () => {
+  const queued = {
+    status: "queued",
+    executionStartedAt: "2026-08-21T03:19:53.118Z",
+  };
+  markComfyExecutionStarted(queued);
+  assert.equal(queued.status, "running");
+
+  const cancelling = { status: "cancelling", executionStartedAt: null };
+  markComfyExecutionStarted(cancelling);
+  assert.equal(cancelling.status, "cancelling");
 });
 
 test("Character LoRA bridge validation accepts safe relative paths only", () => {
@@ -164,6 +215,59 @@ test("Ollama prompt output accepts malformed H3 structure without repair", async
     assert.equal(calls.filter((body) => typeof body.prompt === "string" && body.prompt.includes("VALIDATION_CONTRACT_START")).length, 0);
     assert.match(result.body.negativePrompt, /unwanted random text/);
     assert.doesNotMatch(result.body.negativePrompt, /, text,/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("vLLM prompt provider calls OpenAI chat completions with thinking disabled", async () => {
+  const calls = [];
+  const result = await requestSglangPrompt({
+    model: "qwen3.8-27b-uncensored-nvfp4",
+    system: "Return an H3 prompt.",
+    prompt: "User idea:\nA subject enters",
+    fetcher: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ choices: [{ message: { content: VALID_T2V } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  assert.equal(result, VALID_T2V);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/v1\/chat\/completions$/);
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.model, "qwen3.8-27b-uncensored-nvfp4");
+  assert.equal(body.messages[0].content, "Return an H3 prompt.");
+  assert.equal(body.messages[1].content, "User idea:\nA subject enters");
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("vLLM provider is routed independently from Ollama", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ choices: [{ message: { content: VALID_T2V } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      provider: "sglang",
+      model: "qwen3.8-27b-uncensored-nvfp4",
+      brief: "A subject enters",
+      mode: "t2v",
+      duration: 5,
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.prompt, VALID_T2V);
+    assert.equal(result.body.ollamaPromptReceipt, undefined);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/chat\/completions$/);
+    assert.equal(calls[0].body.model, "qwen3.8-27b-uncensored-nvfp4");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -390,6 +494,65 @@ test("Ollama img2img does not silently default a prompt model", async () => {
   });
   assert.equal(result.status, 400);
   assert.equal(result.body.code, "IMG2IMG_MODEL_REQUIRED");
+});
+
+test("vLLM img2img sends the source image through the OpenAI-compatible route", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: `{"prompt":"documentary portrait, available window light, natural skin texture","negativePrompt":"plastic skin, blur, watermark","negativePrompt":""}`,
+        },
+      }],
+    }), { status: 200 });
+  };
+  try {
+    const result = await invoke("/api/prompt", {
+      provider: "sglang",
+      model: "qwen3.8-27b-uncensored-nvfp4",
+      imageModel: "flux2_dev_fp8mixed.safetensors",
+      mode: "img2img",
+      brief: "Keep the person and make the photo feel candid.",
+      images: [{ role: "source_image", data: "data:image/png;base64,aGVsbG8=" }],
+    });
+    assert.equal(result.status, 200);
+    assert.match(result.body.prompt, /documentary portrait/);
+    assert.match(result.body.negativePrompt, /plastic skin/);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/chat\/completions$/);
+    assert.equal(calls[0].body.model, "qwen3.8-27b-uncensored-nvfp4");
+    assert.equal(calls[0].body.max_tokens, 512);
+    assert.deepEqual(calls[0].body.response_format, { type: "json_object" });
+    assert.match(calls[0].body.messages[0].content, /<nature-camera-skill>/);
+    assert.match(calls[0].body.messages[0].content, /# Nature Camera/);
+    assert.match(calls[0].body.messages[0].content, /# Camera Language Reference/);
+    assert.match(calls[0].body.messages[0].content, /FLUX\.2 Dev Image Edit/);
+    assert.match(calls[0].body.messages[0].content, /Do not redescribe or reconstruct the whole source image/);
+    assert.match(calls[0].body.messages[0].content, /negativePrompt must be an empty string/);
+    const userContent = calls[0].body.messages.find((message) => message.role === "user")?.content;
+    assert.ok(Array.isArray(userContent));
+    assert.ok(userContent.some((item) => item.type === "text" && item.text.includes("Direct edit request — highest priority")));
+    assert.ok(userContent.some((item) => item.type === "text" && item.text.includes("Keep the person and make the photo feel candid.")));
+    assert.ok(userContent.some((item) => item.type === "image_url" && item.image_url?.url.includes("base64,aGVsbG8=")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("img2img prompt generation rejects an unknown target image model", async () => {
+  const result = await invoke("/api/prompt", {
+    provider: "sglang",
+    model: "qwen3.5-9b-vision",
+    imageModel: "unknown-image-model.safetensors",
+    mode: "img2img",
+    brief: "Change only the hairstyle.",
+    images: [{ role: "source_image", data: "aGVsbG8=" }],
+  });
+  assert.equal(result.status, 400);
+  assert.equal(result.body.code, "IMG2IMG_IMAGE_MODEL_UNSUPPORTED");
 });
 
 test("invalid prompt modes return 400 for prompt and generation routes", async () => {

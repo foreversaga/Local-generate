@@ -86,10 +86,8 @@ const MODE_OPTIONS: readonly ModeOption[] = [
 ] as const;
 
 const MODEL_OPTIONS: readonly ModelOption[] = [
-  { value: "nvfp4_blackwell", label: "NVFP4 Blackwell", note: "推薦 · 16GB VRAM" },
-  { value: "int4_convrot_low_vram", label: "INT4 ConvRot", note: "低顯存 fallback" },
-  { value: "official_pruned_int8_convrot", label: "Official INT8", note: "品質比較" },
-  { value: "ref2va_pruned_nvfp4", label: "Ref2VA Pruned NVFP4", note: "12.5 GB · Blackwell" },
+  { value: "nvfp4_blackwell", label: "NVFP4 Blackwell", note: "推薦 · GB10" },
+  { value: "ref2va_pruned_nvfp4", label: "Ref2VA Pruned NVFP4", note: "Blackwell" },
   { value: "wan22_animate_fp8", label: "Wan2.2 Animate", note: "影片替換模式" },
 ] as const;
 

@@ -134,7 +134,6 @@ test("Long validation covers story, images, timeline and render setup", () => {
   assert.match(validateLongCreate({ ...base, timelineMode: "manual", timelineText: "one" })[0].message, /至少需要兩段/);
   assert.match(validateLongCreate({ ...base, width: 750 })[0].message, /32 的倍數/);
   assert.deepEqual(validateLongCreate({ ...base, continuationMode: "motion_context", motionContextSeconds: 2, modelProfile: "nvfp4_blackwell" }), []);
-  assert.match(validateLongCreate({ ...base, continuationMode: "motion_context", motionContextSeconds: 1.5, modelProfile: "int4_convrot_low_vram" })[0].message, /INT4/);
 });
 
 test("Long validation requires at least two complete script cards", () => {

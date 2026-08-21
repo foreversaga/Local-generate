@@ -147,6 +147,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
   const { locale, t } = useI18n();
   const { ACTION_LABELS } = localizedCopy(locale);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
+  const elapsedText = t("jobs.elapsed", { duration: formatDuration(Number(job.elapsedMs) || 0, t) });
   const hasEta = Number.isFinite(job.etaMs);
   const hasEtaRange = Number.isFinite(job.etaLowerMs)
     && Number.isFinite(job.etaUpperMs)
@@ -176,7 +177,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
             <div className={styles.progressTrack} role="progressbar" aria-label={t("jobs.progress")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={t("jobs.progressText", { progress })}>
               <span style={{ width: `${progress}%` }} />
             </div>
-            <span>{progress}% · {etaText}</span>
+            <span>{progress}% · {elapsedText} · {etaText}</span>
           </div>
         )}
         {job.error && <p className={styles.jobError}>{job.error}</p>}

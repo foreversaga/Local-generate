@@ -45,7 +45,7 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -78,7 +78,7 @@ function normalizedPlanningSettings(source, segments, duration) {
   const rawHint = Number(source?.planningSettings?.segmentDurationHint ?? source?.planMeta?.segmentDurationHint ?? 5);
   const segmentDurationHint = Number(Math.min(60, Math.max(0.5, Number.isFinite(rawHint) ? rawHint : 5)).toFixed(3));
   return {
-    timelineMode: ["ollama", "codex"].includes(source?.planMeta?.timelineSource) || source?.planningSettings?.timelineMode === "auto" ? "auto" : "manual",
+    timelineMode: ["ollama", "sglang", "codex"].includes(source?.planMeta?.timelineSource) || source?.planningSettings?.timelineMode === "auto" ? "auto" : "manual",
     targetDuration: duration,
     segmentDurationHint,
     segmentCount: segments.length,
@@ -118,7 +118,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         segmentDurationHint: input.segmentDurationHint,
         model: input.promptProvider === "codex" || input.provider === "codex"
           ? input.codexModel || input.model || "gpt-5.6-luna"
-          : input.ollamaModel || input.model,
+          : input.promptProvider === "sglang" || input.promptProvider === "vllm" || input.provider === "sglang" || input.provider === "vllm"
+            ? input.sglangModel || input.vllmModel || input.model || "qwen3.8-27b-uncensored-nvfp4"
+            : input.ollamaModel || input.model,
         reasoningEffort: input.promptProvider === "codex" || input.provider === "codex"
           ? input.reasoningEffort || input.codexReasoningEffort || "medium"
           : undefined,
@@ -208,7 +210,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       assertLongLoraSupported(normalized);
       const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
       }

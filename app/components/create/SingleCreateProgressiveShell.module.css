@@ -5,9 +5,10 @@
 .optionalControls {
   margin: 0 0 18px;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border: 1px solid var(--line);
   border-radius: 16px;
-  background: color-mix(in srgb, Canvas 96%, currentColor 4%);
+  background: var(--panel);
+  color: var(--text);
 }
 
 .optionalHeading {
@@ -29,7 +30,7 @@
 }
 
 .optionalHeading span {
-  color: color-mix(in srgb, currentColor 62%, transparent);
+  color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.4;
 }
@@ -50,18 +51,18 @@
   min-width: 0;
   min-height: 54px;
   padding: 9px 11px;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid var(--line-soft);
   border-radius: 12px;
-  background: color-mix(in srgb, Canvas 98%, currentColor 2%);
-  color: inherit;
+  background: var(--bg-elevated);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
 .toggle:hover {
-  border-color: color-mix(in srgb, currentColor 28%, transparent);
-  background: color-mix(in srgb, Canvas 94%, currentColor 6%);
+  border-color: #3a4a57;
+  background: var(--panel-hover);
 }
 
 .toggle:active {
@@ -74,8 +75,8 @@
 }
 
 .toggleActive {
-  border-color: color-mix(in srgb, currentColor 34%, transparent);
-  background: color-mix(in srgb, Canvas 91%, currentColor 9%);
+  border-color: rgba(200, 241, 105, 0.44);
+  background: rgba(200, 241, 105, 0.08);
 }
 
 .toggleCopy {
@@ -94,7 +95,7 @@
 
 .toggleCopy small {
   overflow: hidden;
-  color: color-mix(in srgb, currentColor 58%, transparent);
+  color: var(--muted);
   font-size: 0.7rem;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -107,7 +108,7 @@
   width: 34px;
   height: 20px;
   border-radius: 999px;
-  background: color-mix(in srgb, currentColor 18%, transparent);
+  background: var(--panel-hover);
   transition: background 140ms ease;
 }
 
@@ -118,15 +119,16 @@
   width: 14px;
   height: 14px;
   border-radius: 999px;
-  background: CanvasText;
+  background: var(--muted);
   transition: transform 140ms ease;
 }
 
 .toggleActive .switchTrack {
-  background: color-mix(in srgb, currentColor 42%, transparent);
+  background: var(--lime-dark);
 }
 
 .toggleActive .switchThumb {
+  background: var(--lime);
   transform: translateX(14px);
 }
 

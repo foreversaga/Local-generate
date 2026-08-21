@@ -21,6 +21,15 @@ test("studio settings use a versioned tolerant storage contract", () => {
   assert.equal(parsed.promptProvider, "codex");
   assert.equal(parsed.codexModel, "gpt-test");
   assert.equal(parsed.codexReasoningEffort, "high");
+  const sglang = parseStudioSettings(serializeStudioSettings({ promptProvider: "sglang", vllmModel: "qwen3.8-27b-uncensored-nvfp4" }));
+  assert.equal(sglang.promptProvider, "sglang");
+  assert.equal(sglang.vllmModel, "qwen3.8-27b-uncensored-nvfp4");
+  const migratedVllm = createStudioSettings({ promptProvider: "vllm", vllmModel: "legacy-vllm-model" });
+  assert.equal(migratedVllm.promptProvider, "sglang");
+  assert.equal(migratedVllm.vllmModel, "legacy-vllm-model");
+  const migrated = createStudioSettings({ promptProvider: "hermes", hermesModel: "legacy-model" });
+  assert.equal(migrated.promptProvider, "sglang");
+  assert.equal(migrated.vllmModel, "legacy-model");
 });
 
 test("health model lists reconcile stored defaults without changing provider intent", () => {
@@ -40,4 +49,13 @@ test("missing stored Ollama model prefers the configured default when installed"
   });
 
   assert.equal(reconciled.ollamaModel, STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+});
+
+test("vLLM model selection reconciles against the Docker server model", () => {
+  const reconciled = reconcileStudioSettings(createStudioSettings({ promptProvider: "sglang", vllmModel: "missing" }), {
+    sglang: { models: ["qwen3.8-27b-uncensored-nvfp4"] },
+  });
+
+  assert.equal(reconciled.promptProvider, "sglang");
+  assert.equal(reconciled.vllmModel, "qwen3.8-27b-uncensored-nvfp4");
 });

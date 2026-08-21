@@ -38,6 +38,8 @@ const IMG2IMG_MODELS = [
         loraFamily: "SDXL",
         loraHint: "僅支援 SDXL LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: false,
+        supportsLora: true,
+        supportsPose: true,
     },
     {
         value: "v1-5-pruned-emaonly-fp16.safetensors",
@@ -49,17 +51,8 @@ const IMG2IMG_MODELS = [
         loraFamily: "SD1.5",
         loraHint: "僅支援 SD1.5 LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: false,
-    },
-    {
-        value: "z_image_turbo_bf16.safetensors",
-        label: "Z-Image Turbo／真人",
-        note: "真人寫實 · 建議 9 steps / CFG 1 · 僅限本機",
-        steps: "9",
-        cfg: "1",
-        denoise: 0.33,
-        loraFamily: "Z-Image",
-        loraHint: "僅支援以 Z-Image 訓練的 LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
-        localOnly: true,
+        supportsLora: true,
+        supportsPose: true,
     },
     {
         value: "waiIllustriousSDXL_v170.safetensors",
@@ -71,15 +64,43 @@ const IMG2IMG_MODELS = [
         loraFamily: "SDXL",
         loraHint: "僅支援 SDXL LoRA；真人起始 0.55–0.75，動漫 0.7–0.9。",
         localOnly: true,
+        supportsLora: true,
+        supportsPose: true,
+    },
+    {
+        value: "flux2_dev_fp8mixed.safetensors",
+        label: "FLUX.2 Dev · FP8 Mixed",
+        note: "官方 Image Edit · 20 steps / Guidance 4 · 僅限本機 · 非商用授權",
+        steps: "20",
+        cfg: "4",
+        denoise: 1,
+        loraFamily: "FLUX.2",
+        loraHint: "FLUX.2 Dev Image Edit 目前不提供角色 LoRA。",
+        localOnly: true,
+        supportsLora: false,
+        supportsPose: false,
     },
 ] as const;
 
-const IMG2IMG_PROMPT_MODEL_STORAGE_KEY = "h3-studio.img2img-prompt-model";
+const IMG2IMG_PROMPT_PROVIDER_STORAGE_KEY = "h3-studio.img2img-prompt-provider";
+const IMG2IMG_PROMPT_MODEL_STORAGE_KEYS = {
+    ollama: "h3-studio.img2img-prompt-model",
+    sglang: "h3-studio.img2img-sglang-prompt-model",
+} as const;
 
 type ModelValue = typeof IMG2IMG_MODELS[number]["value"];
+type PromptProvider = keyof typeof IMG2IMG_PROMPT_MODEL_STORAGE_KEYS;
 
 type PromptHealth = {
     ollama?: {
+        online?: boolean;
+        models?: string[];
+    };
+    sglang?: {
+        online?: boolean;
+        models?: string[];
+    };
+    vllm?: {
         online?: boolean;
         models?: string[];
     };
@@ -150,27 +171,46 @@ async function fetchPromptHealth(): Promise<PromptHealth | null> {
     }
 }
 
-function explicitStoredPromptModel(availableModels: readonly string[]) {
+function explicitStoredPromptModel(provider: PromptProvider, availableModels: readonly string[]) {
     if (!availableModels.length || typeof window === "undefined") return "";
     try {
-        const model = window.localStorage.getItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY)?.trim() || "";
+        const model = window.localStorage.getItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEYS[provider])?.trim() || "";
         return availableModels.includes(model) ? model : "";
     } catch {
         return "";
     }
 }
 
-function persistExplicitPromptModel(model: string) {
+function persistExplicitPromptModel(provider: PromptProvider, model: string) {
     if (typeof window === "undefined") return;
     try {
-        if (model) window.localStorage.setItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY, model);
-        else window.localStorage.removeItem(IMG2IMG_PROMPT_MODEL_STORAGE_KEY);
+        const key = IMG2IMG_PROMPT_MODEL_STORAGE_KEYS[provider];
+        if (model) window.localStorage.setItem(key, model);
+        else window.localStorage.removeItem(key);
     } catch {
         // Keep the current selection in memory when storage is unavailable.
     }
 }
 
-const LOCAL_ONLY_MODEL_MESSAGE = "Z-Image Turbo 與 WAI Illustrious SDXL 僅限本機執行環境。";
+function storedPromptProvider(): PromptProvider {
+    if (typeof window === "undefined") return "ollama";
+    try {
+        return window.localStorage.getItem(IMG2IMG_PROMPT_PROVIDER_STORAGE_KEY) === "sglang" ? "sglang" : "ollama";
+    } catch {
+        return "ollama";
+    }
+}
+
+function persistPromptProvider(provider: PromptProvider) {
+    if (typeof window === "undefined") return;
+    try {
+        window.localStorage.setItem(IMG2IMG_PROMPT_PROVIDER_STORAGE_KEY, provider);
+    } catch {
+        // Keep the current selection in memory when storage is unavailable.
+    }
+}
+
+const LOCAL_ONLY_MODEL_MESSAGE = "WAI Illustrious SDXL 僅限本機執行環境。";
 
 function parseNumberDraft(raw: string, label: string, min: number, max: number, integer = false, step?: number) {
     if (!raw.trim()) return `${label} 必須填寫。`;
@@ -229,6 +269,7 @@ export function ImageToImageWorkspace() {
     const [prompt, setPrompt] = useState("");
     const [negativePrompt, setNegativePrompt] = useState("");
     const [ollamaPromptReceipt, setOllamaPromptReceipt] = useState("");
+    const [promptProvider, setPromptProvider] = useState<PromptProvider>("ollama");
     const [promptModel, setPromptModel] = useState("");
     const [promptHealth, setPromptHealth] = useState<PromptHealth | null>(null);
     const [promptBusy, setPromptBusy] = useState(false);
@@ -266,7 +307,7 @@ export function ImageToImageWorkspace() {
     const [uploading, setUploading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [retrying, setRetrying] = useState(false);
-    const [cancelling, setCancelling] = useState(false);
+    const [cancellingJobId, setCancellingJobId] = useState("");
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState("");
     const [submitAttempted, setSubmitAttempted] = useState(false);
@@ -336,8 +377,16 @@ export function ImageToImageWorkspace() {
     }, [refreshHealth]);
 
     useEffect(() => {
-        const availableModels = promptHealth?.ollama?.models || [];
-        const storedModel = explicitStoredPromptModel(availableModels);
+        const timer = window.setTimeout(() => setPromptProvider(storedPromptProvider()), 0);
+        return () => window.clearTimeout(timer);
+    }, []);
+
+    useEffect(() => {
+        const providerHealth = promptProvider === "sglang"
+            ? promptHealth?.sglang || promptHealth?.vllm
+            : promptHealth?.ollama;
+        const availableModels = providerHealth?.models || [];
+        const storedModel = explicitStoredPromptModel(promptProvider, availableModels);
         const timer = window.setTimeout(() => {
             setPromptModel((current) => {
                 if (!availableModels.length) return "";
@@ -346,11 +395,22 @@ export function ImageToImageWorkspace() {
             });
         }, 0);
         return () => window.clearTimeout(timer);
-    }, [promptHealth]);
+    }, [promptHealth, promptProvider]);
 
     useEffect(() => {
         const requestId = ++loraRequestIdRef.current;
         let active = true;
+        if (modelOption(model)?.supportsLora === false) {
+            const timer = window.setTimeout(() => {
+                if (!active || loraRequestIdRef.current !== requestId) return;
+                setCharacterLoraRegistry({ model, values: [], status: "empty" });
+                setCharacterLoraName("");
+            }, 0);
+            return () => {
+                active = false;
+                window.clearTimeout(timer);
+            };
+        }
         void fetchImg2ImgLoras(model)
             .then((values) => {
                 if (!active || loraRequestIdRef.current !== requestId) return;
@@ -379,6 +439,7 @@ export function ImageToImageWorkspace() {
             const records = await fetchImg2ImgJobs(query);
             const sorted = records.slice().sort((a, b) => String(b.completedAt || b.createdAt || b.startedAt || "").localeCompare(String(a.completedAt || a.createdAt || a.startedAt || "")));
             setHistory(sorted);
+            setJob((current) => current || sorted.find((record) => isImg2ImgActive(record)) || null);
             setHistoryError("");
         } catch (reason) {
             setHistoryError(errorMessage(reason, "無法載入以圖生圖歷史紀錄。"));
@@ -479,6 +540,8 @@ export function ImageToImageWorkspace() {
         ? IMG2IMG_MODELS
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
     const selectedModel = modelOption(model);
+    const supportsLora = selectedModel?.supportsLora !== false;
+    const supportsPose = selectedModel?.supportsPose !== false;
     const characterLoraOptions = characterLoraRegistry.model === model ? characterLoraRegistry.values : [];
     const characterLoraDiscoveryStatus = characterLoraRegistry.model === model
         ? characterLoraRegistry.status === "idle" ? "loading" : characterLoraRegistry.status
@@ -488,11 +551,15 @@ export function ImageToImageWorkspace() {
     const characterLoraStrengthIssue = characterLoraName.trim()
         ? parseNumberDraft(characterLoraStrength, FIELD_LABELS.loraStrength, 0, 2, false, 0.05)
         : null;
-    const visiblePromptModels = promptHealth?.ollama?.models || [];
+    const promptProviderHealth = promptProvider === "sglang"
+        ? promptHealth?.sglang || promptHealth?.vllm
+        : promptHealth?.ollama;
+    const promptProviderLabel = promptProvider === "sglang" ? "vLLM" : "Ollama";
+    const visiblePromptModels = promptProviderHealth?.models || [];
     const effectivePromptModel = visiblePromptModels.includes(promptModel)
         ? promptModel
         : "";
-    const promptProviderReady = Boolean(promptHealth?.ollama?.online && visiblePromptModels.includes(effectivePromptModel));
+    const promptProviderReady = Boolean(promptProviderHealth?.online && visiblePromptModels.includes(effectivePromptModel));
     const promptGenerationReady = Boolean(effectivePromptModel && promptProviderReady);
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
     const characterLoraRequested = Boolean(characterLoraName.trim());
@@ -511,7 +578,7 @@ export function ImageToImageWorkspace() {
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
     const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
-    const canCancel = Boolean(job && (job.status === "queued" || job.status === "running") && !cancelling && !retrying);
+    const canCancel = Boolean(job && (job.status === "queued" || job.status === "running") && !cancellingJobId && !retrying);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
     const batchTotal = Math.max(1, Math.min(20, Number(job?.batchCount || batchCount) || 1));
     const completedCount = Number.isFinite(Number(job?.completedCount)) ? Number(job?.completedCount) : 0;
@@ -593,6 +660,7 @@ export function ImageToImageWorkspace() {
     function updateModel(value: ModelValue) {
         const next = modelOption(value) || DEFAULT_IMG2IMG_MODEL;
         if (next.value !== model) setCharacterLoraName("");
+        if (next.supportsPose === false) setPoseReference(null);
         setModel(next.value);
         setDenoise(next.denoise);
         setSteps(next.steps);
@@ -612,11 +680,11 @@ export function ImageToImageWorkspace() {
             return;
         }
         if (!effectivePromptModel) {
-            setError("請先選擇 Ollama 視覺模型，再產生提示詞。" );
+            setError(`請先選擇 ${promptProviderLabel} 視覺模型，再產生提示詞。`);
             return;
         }
         if (!promptProviderReady) {
-            setError("Ollama 無法使用，或尚未安裝提示詞模型。");
+            setError(`${promptProviderLabel} 無法使用，或尚未安裝提示詞模型。`);
             return;
         }
         if (promptBusy || uploading || submitting || retrying || active) return;
@@ -629,8 +697,9 @@ export function ImageToImageWorkspace() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    provider: "ollama",
+                    provider: promptProvider,
                     model: effectivePromptModel,
+                    imageModel: model,
                     mode: "img2img",
                     brief: promptDescription.trim(),
                     images: [{
@@ -640,7 +709,7 @@ export function ImageToImageWorkspace() {
                 }),
             });
             const payload = await response.json().catch(() => ({})) as PromptApiPayload;
-            if (!response.ok) throw new Error(apiErrorMessage(payload, "Ollama 沒有回傳提示詞。"));
+            if (!response.ok) throw new Error(apiErrorMessage(payload, `${promptProviderLabel} 沒有回傳提示詞。`));
             setPrompt(typeof payload.prompt === "string" ? payload.prompt.trim() : "");
             setNegativePrompt(typeof payload.negativePrompt === "string" ? payload.negativePrompt.trim() : "");
             const receipt = typeof payload.ollamaPromptReceipt === "string"
@@ -721,7 +790,7 @@ export function ImageToImageWorkspace() {
         return {
             sourceName: source?.name || "",
             sourceRoot: sourceRoot || "input",
-            ...(poseReference
+            ...(poseReference && supportsPose
                 ? { poseName: poseReference.name, poseRoot: isImg2ImgAssetRoot(poseReference.root) ? poseReference.root : "input" }
                 : {}),
             prompt: prompt.trim(),
@@ -767,14 +836,16 @@ export function ImageToImageWorkspace() {
 
     async function cancel() {
         if (!job || !canCancel) return;
-        setCancelling(true);
+        setCancellingJobId(job.id);
         setError("");
         try {
-            setJob(await cancelImg2ImgJob(job.id));
+            const cancelledJob = await cancelImg2ImgJob(job.id, "使用者中斷圖片生成。");
+            setJob(cancelledJob);
+            setHistory((records) => records.map((record) => record.id === cancelledJob.id ? cancelledJob : record));
         } catch (reason) {
             setError(errorMessage(reason, "無法取消以圖生圖工作。"));
         } finally {
-            setCancelling(false);
+            setCancellingJobId("");
         }
     }
 
@@ -859,7 +930,7 @@ export function ImageToImageWorkspace() {
                         </button>
                         <input ref={inputRef} className={styles.hiddenInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadSource(event)} />
                     </div>
-                    <div className={styles.sourceActions} aria-labelledby="img2img-pose-reference-title">
+                    {supportsPose && <div className={styles.sourceActions} aria-labelledby="img2img-pose-reference-title">
                         <div>
                             <strong id="img2img-pose-reference-title">姿勢參考圖（選填）</strong>
                             {poseReference && <span className={styles.helper}> {poseReference.name}</span>}
@@ -885,7 +956,7 @@ export function ImageToImageWorkspace() {
                             上傳姿勢參考圖
                         </button>
                         <input ref={poseInputRef} className={styles.hiddenInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadPoseReference(event)} />
-                    </div>
+                    </div>}
                 </section>
 
                 <section className={styles.panel} aria-labelledby="img2img-readiness-title">
@@ -901,7 +972,7 @@ export function ImageToImageWorkspace() {
                     <dl className={styles.readinessList}>
                         <div><dt>ComfyUI</dt><dd>{health?.comfyUi === false ? "未連線" : health?.comfyUi ? "已連線" : "—"}</dd></div>
                         <div><dt>模型</dt><dd>{modelReady ? "可用" : "缺少"}</dd></div>
-                        <div><dt>節點</dt><dd>{Object.values(health?.nodes || {}).filter(Boolean).length}/{Object.keys(health?.nodes || {}).length || "—"}</dd></div>
+                        <div><dt>節點</dt><dd>{Object.values(health?.profiles?.[model]?.nodes || health?.nodes || {}).filter(Boolean).length}/{Object.keys(health?.profiles?.[model]?.nodes || health?.nodes || {}).length || "—"}</dd></div>
                     </dl>
                     <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading}>{healthLoading ? "檢查中…" : "重新檢查"}</button>
                 </section>
@@ -917,7 +988,7 @@ export function ImageToImageWorkspace() {
                 </div>
                 <div className={styles.formGrid}>
                     <label className={styles.fieldWide}>
-                        <span>給 Ollama 的提示詞描述</span>
+                        <span>給 {promptProviderLabel} 的提示詞描述</span>
                         <textarea
                             id="img2img-description"
                             value={promptDescription}
@@ -928,12 +999,32 @@ export function ImageToImageWorkspace() {
                             onChange={(event) => { setPromptDescription(event.target.value); if (error) setError(""); }}
                         />
                         <small id="img2img-description-help">
-                            Ollama 會分析來源圖片並產生正面與負面提示詞。
+                            {promptProviderLabel} 會分析來源圖片並產生正面與負面提示詞。
                             {promptProviderReady ? ` 模型：${effectivePromptModel}` : " 視覺模型無法使用。"}
                         </small>
                     </label>
                     <label className={styles.field}>
-                        <span>Ollama 提示詞模型</span>
+                        <span>提示詞引擎</span>
+                        <select
+                            id="img2img-prompt-provider"
+                            value={promptProvider}
+                            disabled={promptBusy || active}
+                            onChange={(event) => {
+                                const nextProvider = event.target.value === "sglang" ? "sglang" : "ollama";
+                                setPromptProvider(nextProvider);
+                                setPromptModel("");
+                                persistPromptProvider(nextProvider);
+                                setOllamaPromptReceipt("");
+                                if (error) setError("");
+                            }}
+                        >
+                            <option value="ollama">Ollama</option>
+                            <option value="sglang">vLLM · Docker</option>
+                        </select>
+                        <small>選擇用來分析來源圖片並撰寫提示詞的本機引擎。</small>
+                    </label>
+                    <label className={styles.field}>
+                        <span>{promptProviderLabel} 提示詞模型</span>
                         <select
                             id="img2img-prompt-model"
                             value={effectivePromptModel}
@@ -941,15 +1032,15 @@ export function ImageToImageWorkspace() {
                             onChange={(event) => {
                                 const nextModel = event.target.value;
                                 setPromptModel(nextModel);
-                                persistExplicitPromptModel(nextModel);
+                                persistExplicitPromptModel(promptProvider, nextModel);
                             }}
                         >
-                            {visiblePromptModels.length > 0 && <option value="">請選擇 Ollama 模型</option>}
+                            {visiblePromptModels.length > 0 && <option value="">請選擇 {promptProviderLabel} 模型</option>}
                             {!visiblePromptModels.length && <option value="">沒有可用模型</option>}
                             {visiblePromptModels.map((modelName) => <option key={modelName} value={modelName}>{modelName}</option>)}
                         </select>
-                        {visiblePromptModels.length > 0 && !effectivePromptModel && <small className={styles.error} role="status">請先選擇 Ollama 視覺模型，才能產生提示詞。</small>}
-                        <small>產生以圖生圖提示詞時會使用此 Ollama 模型；需支援圖片理解。</small>
+                        {visiblePromptModels.length > 0 && !effectivePromptModel && <small className={styles.error} role="status">請先選擇 {promptProviderLabel} 視覺模型，才能產生提示詞。</small>}
+                        <small>產生以圖生圖提示詞時會使用此 {promptProviderLabel} 模型；需支援圖片理解。</small>
                     </label>
                     <button
                         type="button"
@@ -958,7 +1049,7 @@ export function ImageToImageWorkspace() {
                         disabled={!promptGenerationReady || promptBusy || uploading || submitting || retrying || active}
                         aria-busy={promptBusy}
                     >
-                        {promptBusy ? "產生提示詞中…" : "使用 Ollama 產生提示詞"}
+                        {promptBusy ? "產生提示詞中…" : `使用 ${promptProviderLabel} 產生提示詞`}
                     </button>
                     <label className={styles.fieldWide}>
                         <span>{FIELD_LABELS.prompt}（選填）</span>
@@ -967,7 +1058,8 @@ export function ImageToImageWorkspace() {
                     </label>
                     <label className={styles.fieldWide}>
                         <span>{FIELD_LABELS.negativePrompt}（選填）</span>
-                        <textarea id="img2img-negative-prompt" value={negativePrompt} rows={3} placeholder="模糊、低畫質、瑕疵" onChange={(event) => setNegativePrompt(event.target.value)} />
+                        <textarea id="img2img-negative-prompt" value={negativePrompt} rows={3} placeholder="模糊、低畫質、瑕疵" disabled={selectedModel?.value === "flux2_dev_fp8mixed.safetensors"} onChange={(event) => setNegativePrompt(event.target.value)} />
+                        {selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && <small>FLUX.2 Dev Image Edit 不使用 Negative Prompt。</small>}
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.model}</span>
@@ -985,7 +1077,7 @@ export function ImageToImageWorkspace() {
                         <select
                             id="img2img-character-lora"
                             value={characterLoraName}
-                            disabled={active || characterLoraDiscoveryStatus === "loading"}
+                            disabled={!supportsLora || active || characterLoraDiscoveryStatus === "loading"}
                             aria-describedby={`img2img-character-lora-help${characterLoraDiscoveryError ? " img2img-character-lora-discovery-error" : characterLoraNameIssue ? " img2img-character-lora-error" : ""}`}
                             aria-invalid={Boolean(characterLoraNameIssue)}
                             onChange={(event) => setCharacterLoraName(event.target.value)}
@@ -1024,8 +1116,8 @@ export function ImageToImageWorkspace() {
                     </label>}
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.denoise} <strong>{denoise.toFixed(2)}</strong></span>
-                        <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
-                        <small>越高越偏離原圖；0.45–0.70 通常較平衡。</small>
+                        <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active || selectedModel?.value === "flux2_dev_fp8mixed.safetensors"} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
+                        <small>{selectedModel?.value === "flux2_dev_fp8mixed.safetensors" ? "FLUX.2 Dev 使用 ReferenceLatent；重繪強度不適用。" : "越高越偏離原圖；0.45–0.70 通常較平衡。"}</small>
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.steps}</span>
@@ -1085,7 +1177,7 @@ export function ImageToImageWorkspace() {
                                                 max={bounds.max}
                                                 step={bounds.step}
                                                 value={range.min}
-                                                disabled={active}
+                                                disabled={active || (selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && key === "denoise")}
                                                 aria-label={`${label}最小值`}
                                                 onChange={(event) => updateRandomRange(key, "min", event.target.value)}
                                             />
@@ -1100,7 +1192,7 @@ export function ImageToImageWorkspace() {
                                                 max={bounds.max}
                                                 step={bounds.step}
                                                 value={range.max}
-                                                disabled={active}
+                                                disabled={active || (selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && key === "denoise")}
                                                 aria-label={`${label}最大值`}
                                                 onChange={(event) => updateRandomRange(key, "max", event.target.value)}
                                             />
@@ -1116,13 +1208,18 @@ export function ImageToImageWorkspace() {
                             <p className={styles.helper}>{submitAttempted && !canStart ? "請先修正檢查結果，再開始生成。" : "設定完成後，提交會建立可追蹤的工作。"}</p>
                             {error && <p className={styles.error} role="alert">{error}</p>}
                         </div>
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby="img2img-readiness-title">
-                        {uploading ? "上傳中…" : submitting ? "建立工作中…" : active ? "生成中…" : "開始生成"}
-                    </button>
+                    {active ? (
+                        <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={!canCancel} aria-busy={Boolean(cancellingJobId)}>
+                            {cancellingJobId ? "正在中斷…" : batchTotal > 1 ? "中斷批次生成" : "中斷生成"}
+                        </button>
+                    ) : (
+                        <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby="img2img-readiness-title">
+                            {uploading ? "上傳中…" : submitting ? "建立工作中…" : "開始生成"}
+                        </button>
+                    )}
                 </div>
             </section>
 
-            {canCancel && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "取消中…" : ACTION_LABELS.cancel}</button>}
             {job?.status === "cancelling" && <p className={styles.helper}>正在停止目前的圖片生成工作…</p>}
             <section className={styles.panel} aria-labelledby="img2img-job-title">
                 <div className={styles.sectionHeader}>

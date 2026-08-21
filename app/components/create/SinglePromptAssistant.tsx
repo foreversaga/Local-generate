@@ -23,7 +23,7 @@ const QWEN_OLLAMA_MODEL = "huihui_ai/qwen3-vl-abliterated:32b-instruct-q4_K_M";
 const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "ref2v_motion" | "replace";
-type PromptProvider = "ollama" | "codex";
+type PromptProvider = "ollama" | "sglang" | "codex";
 type Asset = {
   name: string;
   root: "input" | "output";
@@ -41,6 +41,14 @@ type CodexModelOption = {
 };
 type Health = {
   ollama?: {
+    online?: boolean;
+    models?: string[];
+  };
+  vllm?: {
+    online?: boolean;
+    models?: string[];
+  };
+  sglang?: {
     online?: boolean;
     models?: string[];
   };
@@ -154,6 +162,7 @@ export function SinglePromptAssistant({
   const [health, setHealth] = useState<Health | null>(null);
   const [provider, setProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
   const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
+  const [vllmModel, setVllmModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.vllmModel);
   const [codexModel, setCodexModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexModel);
   const [reasoningEffort, setReasoningEffort] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexReasoningEffort);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
@@ -193,6 +202,7 @@ export function SinglePromptAssistant({
       const stored = reconcileStudioSettings(loadStudioSettings());
       setProvider(stored.promptProvider as PromptProvider);
       setOllamaModel(stored.ollamaModel);
+      setVllmModel(stored.vllmModel);
       setCodexModel(stored.codexModel);
       setReasoningEffort(stored.codexReasoningEffort);
       setSettingsHydrated(true);
@@ -206,22 +216,28 @@ export function SinglePromptAssistant({
       const next = reconcileStudioSettings({
         promptProvider: provider,
         ollamaModel,
+        vllmModel,
         codexModel,
         codexReasoningEffort: reasoningEffort,
       }, health);
       setProvider(next.promptProvider as PromptProvider);
       setOllamaModel(next.ollamaModel);
+      setVllmModel(next.vllmModel);
       setCodexModel(next.codexModel);
       setReasoningEffort(next.codexReasoningEffort);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [codexModel, health, ollamaModel, provider, reasoningEffort, settingsHydrated]);
+  }, [codexModel, health, ollamaModel, provider, reasoningEffort, settingsHydrated, vllmModel]);
 
   const ollamaModels = health?.ollama?.models;
   const visibleModels = useMemo(() => ollamaModels || [], [ollamaModels]);
   const effectiveOllamaModel = visibleModels.includes(ollamaModel)
     ? ollamaModel
     : visibleModels[0] || ollamaModel;
+  const vllmModels = health?.sglang?.models || health?.vllm?.models || [];
+  const effectiveVllmModel = vllmModels.includes(vllmModel)
+    ? vllmModel
+    : vllmModels[0] || vllmModel;
   const ollamaOptions = useMemo(() => {
     const catalogByValue = new Map<string, (typeof PROMPT_MODEL_CATALOG)[number]>(
       PROMPT_MODEL_CATALOG.map((model) => [model.value, model] as const),
@@ -255,7 +271,9 @@ export function SinglePromptAssistant({
   const briefError = attempted && !brief.trim() ? "請先輸入提示詞描述。" : "";
   const providerReady = provider === "ollama"
     ? Boolean(health?.ollama?.online && visibleModels.length)
-    : Boolean(health?.codex?.online && health?.codex?.skill);
+    : provider === "sglang"
+      ? Boolean((health?.sglang?.online || health?.vllm?.online) && vllmModels.length)
+      : Boolean(health?.codex?.online && health?.codex?.skill);
 
   async function refreshHealth() {
     try {
@@ -316,6 +334,15 @@ export function SinglePromptAssistant({
         setError(`模型 ${effectiveOllamaModel} 尚未安裝。`);
         return;
       }
+    } else if (provider === "sglang") {
+      if (!health?.sglang?.online && !health?.vllm?.online) {
+        setError("vLLM 尚未連線。");
+        return;
+      }
+      if (!vllmModels.includes(effectiveVllmModel)) {
+        setError(`vLLM 模型 ${effectiveVllmModel} 尚未就緒。`);
+        return;
+      }
     } else {
       if (!health?.codex?.online) {
         setError("Codex CLI 尚未安裝或無法執行。");
@@ -342,7 +369,7 @@ export function SinglePromptAssistant({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildSinglePromptRequest({
           provider,
-          model: provider === "codex" ? effectiveCodexModel : effectiveOllamaModel,
+          model: provider === "codex" ? effectiveCodexModel : provider === "sglang" ? effectiveVllmModel : effectiveOllamaModel,
           codexModel: effectiveCodexModel,
           reasoningEffort: effectiveReasoning,
           brief: brief.trim(),
@@ -467,6 +494,9 @@ export function SinglePromptAssistant({
           <button type="button" className={provider === "ollama" ? styles.providerActive : ""} aria-pressed={provider === "ollama"} onClick={() => { setProvider("ollama"); setError(""); }}>
             Ollama
           </button>
+          <button type="button" className={provider === "sglang" ? styles.providerActive : ""} aria-pressed={provider === "sglang"} onClick={() => { setProvider("sglang"); setError(""); }}>
+            vLLM
+          </button>
           <button type="button" className={provider === "codex" ? styles.providerActive : ""} aria-pressed={provider === "codex"} onClick={() => { setProvider("codex"); setError(""); }}>
             Codex CLI
           </button>
@@ -483,6 +513,14 @@ export function SinglePromptAssistant({
           <select className={styles.select} value={visibleModels.length ? effectiveOllamaModel : ""} disabled={!visibleModels.length || busy} onChange={(event) => setOllamaModel(event.target.value)}>
             {!visibleModels.length && <option value="">沒有可用模型</option>}
             {ollamaOptions.map((model) => <option key={model.value} value={model.value}>{model.label} · {model.note}</option>)}
+          </select>
+        </label>
+      ) : provider === "sglang" ? (
+        <label className={styles.field}>
+          <span className={styles.label}>vLLM 模型</span>
+          <select className={styles.select} value={vllmModels.length ? effectiveVllmModel : ""} disabled={!vllmModels.length || busy} onChange={(event) => setVllmModel(event.target.value)}>
+            {!vllmModels.length && <option value="">vLLM 尚未回報模型</option>}
+            {vllmModels.map((model) => <option key={model} value={model}>{model}</option>)}
           </select>
         </label>
       ) : (
@@ -614,7 +652,7 @@ function promptFormatLabel(mode: Mode) {
 }
 
 function providerLabel(provider: PromptProvider) {
-  return provider === "codex" ? "Codex CLI" : "Ollama";
+  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "vLLM" : "Ollama";
 }
 
 function assetUrl(asset: Asset) {

@@ -24,6 +24,7 @@ export type Text2ImgHealth = {
     models: string[];
     model: string;
     profile: string;
+    provider?: string;
     reason?: string;
   };
 };
@@ -42,21 +43,11 @@ export type Text2ImgModelHealth = {
   reason?: string;
   models: Text2ImgHealth["models"];
   encoders: Record<string, Text2ImgEncoderHealth>;
-  architecture: "flux2" | "sdxl";
+  architecture: "flux2";
   defaultSteps: number;
   maxSteps: number;
   cfg: number;
   sampler: string;
-  adultLora?: Text2ImgLoraHealth;
-};
-
-export type Text2ImgLoraHealth = {
-  id: string;
-  label: string;
-  file: string;
-  license: string;
-  available: boolean;
-  ready: boolean;
 };
 
 export type Text2ImgEncoderHealth = {
@@ -95,8 +86,6 @@ export type Text2ImgJob = {
   encoderLabel: string;
   encoderPrecision: string;
   thirdPartyEncoder: boolean;
-  adultMode: boolean;
-  adultLora?: Text2ImgLoraHealth | null;
   precision: string;
   license: string;
   commercial: boolean;
@@ -113,7 +102,6 @@ export type Text2ImgSubmitInput = {
   seed: number;
   modelId: string;
   encoderId: string;
-  adultMode: boolean;
 };
 
 type Text2ImgPayload = {
@@ -167,11 +155,11 @@ export async function submitText2Img(input: Text2ImgSubmitInput) {
   return payload.job;
 }
 
-export async function generateText2ImgPrompt(description: string, { adultMode = false, unloadPromptModel = false } = {}) {
+export async function generateText2ImgPrompt(description: string, { unloadPromptModel = false } = {}) {
   const response = await fetch(`${BRIDGE_URL}/api/text2img/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ description, adultMode, unloadPromptModel }),
+    body: JSON.stringify({ description, unloadPromptModel }),
   });
   const payload = await readPayload(response);
   if (!response.ok || !payload.prompt || !payload.model || !payload.profile) {

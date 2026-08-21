@@ -1,4 +1,4 @@
-export type PromptProvider = "ollama" | "codex";
+export type PromptProvider = "ollama" | "sglang" | "codex";
 
 export type CodexHealthModel = {
   value: string;
@@ -13,6 +13,18 @@ export type StudioHealth = {
   ollama?: {
     online?: boolean;
     url?: string;
+    models?: string[];
+  };
+  vllm?: {
+    online?: boolean;
+    url?: string;
+    model?: string;
+    models?: string[];
+  };
+  sglang?: {
+    online?: boolean;
+    url?: string;
+    model?: string;
     models?: string[];
   };
   codex?: {

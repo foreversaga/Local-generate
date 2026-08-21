@@ -5,7 +5,6 @@ import { API_ERROR_CODES, LoraTrainingError, MODEL_FAMILIES, invalid, normalizeS
 import { LORA_PATHS } from './paths.mjs';
 import { datasetService } from './dataset.mjs';
 import { TRAINING_PARAMETER_ALIASES, TRAINING_PARAMETER_KEYS, resolveTrainingParameters } from './presets.mjs';
-import { Z_IMAGE_BASE_PROFILE, Z_IMAGE_PARAMETER_ALIASES, Z_IMAGE_PARAMETER_KEYS } from './backends/z-image-ai-toolkit.mjs';
 
 function result(id, status, message, details) { return { id, status, message, ...(details ? { details } : {}) }; }
 
@@ -17,7 +16,6 @@ export function createPreflightService({
   ollamaModel = process.env.OLLAMA_CAPTION_MODEL ?? 'gemma4',
   checkTrainer = async () => ({ ok: false, message: 'trainer runtime adapter is not configured' }),
   checkArtifactTarget = async () => ({ ok: true, status: 'warning', message: 'artifact target checker is not configured' }),
-  checkTrainingData,
   resolveBaseModel = async () => null,
   paths = LORA_PATHS,
   presetOptions = {},
@@ -55,28 +53,10 @@ export function createPreflightService({
     const family = normalizeTrainingFamily(config.family ?? job.family);
     const preset = config.presetId ?? config.preset ?? family;
     try {
-      const zImage = family === 'z-image';
-      const zImageConfig = {
-        ...config,
-        ...(config.aiToolkit ?? {}),
-        ...(config.zImage ?? {}),
-        ...(config.zImageConfig ?? {}),
-      };
-      if (zImage && config.baseProfile !== Z_IMAGE_BASE_PROFILE) {
-        throw new TypeError('baseProfile must be z-image-turbo for z-image training');
-      }
-      if (zImage && Object.hasOwn(zImageConfig, 'epochs')) {
-        throw new TypeError('epochs is not supported by AI Toolkit Z-Image; use steps');
-      }
-      const zDirectParameters = Object.fromEntries(Object.keys(zImageConfig)
-        .filter((key) => Z_IMAGE_PARAMETER_KEYS.includes(key) || Object.hasOwn(Z_IMAGE_PARAMETER_ALIASES, key))
-        .map((key) => [key, zImageConfig[key]]));
       const resolved = await resolveTrainingParameters({
         preset,
         family,
-        parameters: zImage
-          ? { ...zImageConfig.parameters, ...zImageConfig.overrides, ...zDirectParameters, ...config.overrides, ...config.parameters }
-          : (config.overrides ?? config.parameters ?? {}),
+        parameters: config.overrides ?? config.parameters ?? {},
       }, presetOptions);
       return Object.freeze({
         presetId: resolved.preset,
@@ -111,23 +91,7 @@ export function createPreflightService({
       }
     } catch (error) { checks.push(result('captions', 'fail', error.message)); }
 
-    const zImage = family === 'z-image';
-    if (zImage && typeof checkTrainingData === 'function') {
-      try {
-        const layout = await checkTrainingData({ job, config, family });
-        if (layout) {
-          datasetLayoutFingerprint = layout.datasetFingerprint;
-          checks.push(result('datasetLayout', layout.ok ? 'pass' : 'fail', layout.ok
-            ? `${layout.imageCount} image/caption pair(s) ready for AI Toolkit`
-            : (layout.message ?? 'AI Toolkit training data directory is unavailable'),
-          layout.ok ? {
-            imageCount: layout.imageCount, captionCount: layout.captionCount,
-            captionExtension: layout.captionExtension ?? '.txt', folderPath: layout.folderPath,
-            ...(layout.datasetFingerprint === undefined ? {} : { datasetFingerprint: layout.datasetFingerprint }),
-          } : { code: layout.code }));
-        }
-      } catch (error) { checks.push(result('datasetLayout', 'fail', error.message)); }
-    } else if (!zImage && typeof dataset.inspectTrainerLayout === 'function') {
+    if (typeof dataset.inspectTrainerLayout === 'function') {
       // The Studio stores images and captions in separate canonical splits,
       // while sd-scripts discovers DreamBooth data only from immediate
       // `<repeats>_<class_tokens>` subdirectories.  Validate the pair contract

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WINDOWS_RENAME_RETRY_DELAYS_MS = Object.freeze([5, 10, 20, 40, 80]);
 const WINDOWS_TRANSIENT_RENAME_ERRORS = new Set(["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"]);
-const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const DEFAULT_MAX_TERMINAL_JOBS = 100;
 const writes = new Map();
 
@@ -80,10 +80,12 @@ function safeTimestamp(value) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 function integerOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   return Number.isInteger(Number(value)) ? Number(value) : null;
 }
 
@@ -212,11 +214,13 @@ function canonicalJob(input = {}) {
   const height = integerOrNull(input.height ?? input.dimensions?.height ?? request.height);
   const attempt = Math.max(1, integerOrNull(input.attempt ?? input.provenance?.attempt) || 1);
   const timestamps = {};
-  for (const key of ["createdAt", "updatedAt", "queuedAt", "startedAt", "finishedAt", "interruptedAt"]) {
+  for (const key of ["createdAt", "updatedAt", "queuedAt", "processStartedAt", "executionStartedAt", "startedAt", "finishedAt", "interruptedAt"]) {
     const value = safeTimestamp(input[key]);
     if (value) timestamps[key] = value;
   }
-  const output = safeOutput(input.output || (input.outputRelativeName ? { root: "output", name: input.outputRelativeName } : null));
+  // outputRelativeName is reserved before generation starts. It must never be
+  // promoted to an actual artifact until ComfyUI has produced the file.
+  const output = safeOutput(input.output);
   const provenance = safeProvenance(input.provenance, request);
   provenance.attempt = attempt;
   const runtimeMode = input.runtimeMode === "remote" ? "remote" : "local";
@@ -245,6 +249,8 @@ function canonicalJob(input = {}) {
     outputName: safeRelative(input.outputName || output?.name, { allowEmpty: false }) || null,
     error: safeText(input.error),
     exitCode: integerOrNull(input.exitCode),
+    elapsedMs: numberOrNull(input.elapsedMs),
+    queueElapsedMs: numberOrNull(input.queueElapsedMs),
     ...timestamps,
     attempt,
     recoverable: Boolean(input.recoverable),

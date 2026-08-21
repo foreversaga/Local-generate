@@ -32,6 +32,9 @@ test("single-video Create uses progressive disclosure for optional settings", as
   assert.match(css, /data-show-mode-advanced="false"/);
   assert.match(css, /#single-review-section > section:first-child/);
   assert.match(css, /#single-validation-summary > ul:not\(:has\(button\)\)/);
+  assert.doesNotMatch(css, /\bCanvas(?:Text)?\b/);
+  assert.match(css, /background:\s*var\(--panel\)/);
+  assert.match(css, /color:\s*var\(--text\)/);
 });
 
 test("single-video advanced controls stay mounted when collapsed", async () => {

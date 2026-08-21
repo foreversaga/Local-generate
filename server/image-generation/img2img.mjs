@@ -14,6 +14,26 @@ export const IMG2IMG_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
+export const IMG2IMG_FLUX2_REQUIRED_NODES = Object.freeze([
+  "UNETLoader",
+  "CLIPLoader",
+  "VAELoader",
+  "LoadImage",
+  "GetImageSize",
+  "VAEEncode",
+  "CLIPTextEncode",
+  "FluxGuidance",
+  "ReferenceLatent",
+  "BasicGuider",
+  "RandomNoise",
+  "KSamplerSelect",
+  "Flux2Scheduler",
+  "EmptyFlux2LatentImage",
+  "SamplerCustomAdvanced",
+  "VAEDecode",
+  "SaveImage",
+]);
+
 // Pose references use the native ComfyUI ControlNet API plus the already
 // installed controlnet_aux DWPose preprocessor.  The actual ControlNet model
 // is intentionally configured by the runtime (no model is downloaded here).
@@ -21,29 +41,6 @@ export const IMG2IMG_POSE_REQUIRED_NODES = Object.freeze([
   "ControlNetLoader",
   "ControlNetApplyAdvanced",
   "DWPreprocessor",
-]);
-
-const IMG2IMG_COMMON_NODES = Object.freeze([
-  "LoadImage",
-  "VAEEncode",
-  "CLIPTextEncode",
-  "KSampler",
-  "VAEDecode",
-  "SaveImage",
-]);
-
-const JUGGERNAUT_XL_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
-const JUGGERNAUT_XL_REQUIRED_NODES = Object.freeze([
-  ...IMG2IMG_REQUIRED_NODES,
-  "ImageScaleToTotalPixels",
-]);
-
-const Z_IMAGE_REQUIRED_NODES = Object.freeze([
-  "UNETLoader",
-  "CLIPLoader",
-  "VAELoader",
-  ...IMG2IMG_COMMON_NODES,
-  "ModelSamplingAuraFlow",
 ]);
 
 const IMG2IMG_PROFILE_DEFINITIONS = {
@@ -55,20 +52,6 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     localOnly: false,
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 4, cfg: 1, denoise: 0.65 },
-  },
-  [JUGGERNAUT_XL_MODEL]: {
-    model: JUGGERNAUT_XL_MODEL,
-    workflow: "checkpoint",
-    loader: "CheckpointLoaderSimple",
-    loraLoader: "LoraLoader",
-    localOnly: false,
-    requiredNodes: JUGGERNAUT_XL_REQUIRED_NODES,
-    defaults: { steps: 35, cfg: 5, denoise: 1 },
-    sampling: {
-      samplerName: "dpmpp_2m",
-      scheduler: "karras",
-    },
-    normalizeMegapixels: 1,
   },
   "v1-5-pruned-emaonly-fp16.safetensors": {
     model: "v1-5-pruned-emaonly-fp16.safetensors",
@@ -88,24 +71,19 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 20, cfg: 7, denoise: 0.65 },
   },
-  "z_image_turbo_bf16.safetensors": {
-    model: "z_image_turbo_bf16.safetensors",
-    workflow: "z-image",
+  "flux2_dev_fp8mixed.safetensors": {
+    model: "flux2_dev_fp8mixed.safetensors",
+    workflow: "flux2-dev-edit",
     loader: "UNETLoader",
-    loraLoader: "LoraLoaderModelOnly",
     localOnly: true,
-    requiredNodes: Z_IMAGE_REQUIRED_NODES,
+    requiredNodes: IMG2IMG_FLUX2_REQUIRED_NODES,
     companions: {
-      clipName: "qwen_3_4b.safetensors",
-      clipType: "lumina2",
-      vaeName: "ae.safetensors",
+      textEncoder: "mistral_3_small_flux2_bf16.safetensors",
+      vae: "full_encoder_small_decoder.safetensors",
+      clipType: "flux2",
     },
-    defaults: { steps: 9, cfg: 1, denoise: 0.33 },
-    sampling: {
-      shift: 3,
-      samplerName: "dpmpp_2m_sde",
-      scheduler: "beta",
-    },
+    defaults: { steps: 20, cfg: 4, denoise: 1 },
+    sampling: { samplerName: "euler" },
   },
 };
 
@@ -151,8 +129,13 @@ const COMFY_NODE_PROGRESS = Object.freeze({
   DWPreprocessor: 46,
   ControlNetLoader: 48,
   ControlNetApplyAdvanced: 50,
-  ModelSamplingAuraFlow: 50,
   KSampler: 54,
+  ReferenceLatent: 46,
+  FluxGuidance: 48,
+  BasicGuider: 50,
+  Flux2Scheduler: 52,
+  EmptyFlux2LatentImage: 54,
+  SamplerCustomAdvanced: 56,
   VAEDecode: 88,
   SaveImage: 92,
 });
@@ -800,6 +783,14 @@ export function buildImg2ImgPrompt({
   const cleanNegative = String(negativePrompt || "").trim();
   const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
 
+  if (loraName && profile.workflow !== "checkpoint") {
+    throw makeError(
+      "Character LoRAs are not supported by the " + profile.workflow + " image workflow.",
+      400,
+      "IMG2IMG_LORA_UNSUPPORTED",
+    );
+  }
+
   if (profile.workflow === "checkpoint") {
     const sampling = profile.sampling || {};
     const graph = {
@@ -889,51 +880,27 @@ export function buildImg2ImgPrompt({
     return graph;
   }
 
-  if (profile.workflow === "z-image") {
-    const companions = profile.companions;
-    const sampling = profile.sampling;
-    const graph = {
+  if (profile.workflow === "flux2-dev-edit") {
+    const sampling = profile.sampling || {};
+    return {
       "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
-      "2": {
-        class_type: "CLIPLoader",
-        inputs: { clip_name: companions.clipName, type: companions.clipType, device: "default" },
-      },
-      "3": { class_type: "VAELoader", inputs: { vae_name: companions.vaeName } },
+      "2": { class_type: "CLIPLoader", inputs: { clip_name: profile.companions.textEncoder, type: profile.companions.clipType, device: "default" } },
+      "3": { class_type: "VAELoader", inputs: { vae_name: profile.companions.vae } },
       "4": { class_type: "LoadImage", inputs: { image } },
-      "5": { class_type: "VAEEncode", inputs: { pixels: link(4), vae: link(3) } },
-      "6": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(2) } },
-      "7": { class_type: "CLIPTextEncode", inputs: { text: cleanNegative, clip: link(2) } },
-      "8": { class_type: "ModelSamplingAuraFlow", inputs: { model: link(1), shift: sampling.shift } },
-      "9": {
-        class_type: "KSampler",
-        inputs: {
-          model: link(8),
-          seed: parameters.seed,
-          steps: parameters.steps,
-          cfg: parameters.cfg,
-          sampler_name: sampling.samplerName,
-          scheduler: sampling.scheduler,
-          positive: link(6),
-          negative: link(7),
-          latent_image: link(5),
-          denoise: parameters.denoise,
-        },
-      },
-      "10": { class_type: "VAEDecode", inputs: { samples: link(9), vae: link(3) } },
-      "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: cleanPrefix } },
+      "5": { class_type: "GetImageSize", inputs: { image: link(4) } },
+      "6": { class_type: "VAEEncode", inputs: { pixels: link(4), vae: link(3) } },
+      "7": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(2) } },
+      "8": { class_type: "FluxGuidance", inputs: { conditioning: link(7), guidance: parameters.cfg } },
+      "9": { class_type: "ReferenceLatent", inputs: { conditioning: link(8), latent: link(6) } },
+      "10": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(9) } },
+      "11": { class_type: "RandomNoise", inputs: { noise_seed: parameters.seed } },
+      "12": { class_type: "KSamplerSelect", inputs: { sampler_name: sampling.samplerName || "euler" } },
+      "13": { class_type: "Flux2Scheduler", inputs: { steps: parameters.steps, width: link(5), height: link(5, 1) } },
+      "14": { class_type: "EmptyFlux2LatentImage", inputs: { width: link(5), height: link(5, 1), batch_size: 1 } },
+      "15": { class_type: "SamplerCustomAdvanced", inputs: { noise: link(11), guider: link(10), sampler: link(12), sigmas: link(13), latent_image: link(14) } },
+      "16": { class_type: "VAEDecode", inputs: { samples: link(15), vae: link(3) } },
+      "17": { class_type: "SaveImage", inputs: { images: link(16), filename_prefix: cleanPrefix } },
     };
-    if (loraName) {
-      graph["12"] = {
-        class_type: "LoraLoaderModelOnly",
-        inputs: {
-          model: link(1),
-          lora_name: loraLoaderName,
-          strength_model: loraStrength,
-        },
-      };
-      graph["8"].inputs.model = link(12);
-    }
-    return graph;
   }
 
   throw makeError(`Image model ${String(model)} has no workflow implementation.`, 500, "MODEL_WORKFLOW_UNSUPPORTED");
@@ -1018,23 +985,22 @@ function checkpointModelAvailability(objectInfo, profile) {
   return comboValues(objectInfo?.CheckpointLoaderSimple, "ckpt_name").includes(profile.model);
 }
 
-function zImageModelAvailability(objectInfo, profile) {
-  const companions = profile.companions;
-  const clipNames = comboValues(objectInfo?.CLIPLoader, "clip_name");
-  const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
-  const vaeNames = comboValues(objectInfo?.VAELoader, "vae_name");
-  return {
-    model: comboValues(objectInfo?.UNETLoader, "unet_name").includes(profile.model),
-    clip: clipNames.includes(companions.clipName) && clipTypes.includes(companions.clipType),
-    vae: vaeNames.includes(companions.vaeName),
-  };
+function modelCompanionAvailability(objectInfo, profile) {
+  if (profile.workflow === "checkpoint") return { model: checkpointModelAvailability(objectInfo, profile) };
+  if (profile.workflow === "flux2-dev-edit") {
+    return {
+      model: comboValues(objectInfo?.UNETLoader, "unet_name").includes(profile.model),
+      textEncoder: comboValues(objectInfo?.CLIPLoader, "clip_name").includes(profile.companions.textEncoder),
+      clipType: comboValues(objectInfo?.CLIPLoader, "type").includes(profile.companions.clipType),
+      vae: comboValues(objectInfo?.VAELoader, "vae_name").includes(profile.companions.vae),
+    };
+  }
+  return { model: false };
 }
 
 function evaluateModelProfile(objectInfo, profile, { remote = false } = {}) {
   const nodes = nodeAvailability(objectInfo, profile.requiredNodes);
-  const companionAvailability = profile.workflow === "z-image"
-    ? zImageModelAvailability(objectInfo, profile)
-    : { model: checkpointModelAvailability(objectInfo, profile) };
+  const companionAvailability = modelCompanionAvailability(objectInfo, profile);
   const localOnly = Boolean(profile.localOnly);
   const loraLoader = profile.loraLoader || null;
   const runtimeSupported = !(remote && localOnly);

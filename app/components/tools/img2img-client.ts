@@ -58,6 +58,10 @@ export type Img2ImgHealth = {
     nodes?: Record<string, boolean>;
     models?: Record<string, boolean>;
     profiles?: Record<string, {
+        available?: boolean;
+        reason?: string;
+        nodes?: Record<string, boolean>;
+        companions?: Record<string, boolean>;
         loraLoader?: string | null;
         loraAvailable?: boolean;
     }>;
@@ -294,11 +298,16 @@ export function isImg2ImgRetryable(job?: Img2ImgJob | null) {
 export function img2ImgReadinessMessage(health: Img2ImgHealth | undefined, selectedModel: string) {
     if (!health) return "尚未取得 ComfyUI readiness。";
     if (health.comfyUi === false) return "ComfyUI 未連線。請啟動 ComfyUI（127.0.0.1:8188）後再試。";
-    const missingNodes = Object.entries(health.nodes || {})
+    const profile = health.profiles?.[selectedModel];
+    const missingNodes = Object.entries(profile?.nodes || health.nodes || {})
         .filter(([, available]) => !available)
         .map(([name]) => name);
     if (missingNodes.length) return `ComfyUI 缺少必要節點：${missingNodes.join("、")}。`;
-    if (health.models && Object.keys(health.models).length && health.models[selectedModel] !== true) return `未安裝所選 checkpoint：${selectedModel}。`;
+    const missingCompanions = Object.entries(profile?.companions || {})
+        .filter(([, available]) => !available)
+        .map(([name]) => name);
+    if (missingCompanions.length) return "所選模型缺少必要檔案：" + missingCompanions.join("、") + "。";
+    if (health.models && Object.keys(health.models).length && health.models[selectedModel] !== true) return `所選圖生圖模型尚未就緒：${selectedModel}。`;
     if (health.models && Object.keys(health.models).length && !Object.values(health.models).some(Boolean)) {
         return "ComfyUI 未找到支援的圖生圖 checkpoint。";
     }

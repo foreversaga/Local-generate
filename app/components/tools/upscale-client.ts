@@ -3,6 +3,22 @@ import { assetUrl, type StudioAsset } from "../library/asset-client";
 export const UPSCALE_SCALE = 2 as const;
 const BRIDGE_URL = "/app";
 
+export const UPSCALE_PROFILES = [
+    {
+        id: "seedvr2_7b_sharp_nvfp4",
+        label: "SeedVR2 7B Sharp NVFP4",
+        description: "高品質影片重建，支援 temporal chunk 與 wavelet 色彩校正。",
+    },
+    {
+        id: "h3_latent_2x",
+        label: "MiniMax H3 Latent 2x · 社群雙採樣",
+        description: "完整跑 H3 Ref2VA 低解析度採樣 → latent 2× → 重加噪 → 高解析度第二次採樣，保留來源影片與音訊。",
+    },
+] as const;
+
+export type UpscaleProfile = typeof UPSCALE_PROFILES[number]["id"];
+export const DEFAULT_UPSCALE_PROFILE: UpscaleProfile = "h3_latent_2x";
+
 export type UpscaleJobStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export type UpscaleJobRecovery = {
@@ -44,6 +60,8 @@ export type UpscaleJob = {
 export type UpscaleHealth = {
     ready: boolean;
     comfyUi: boolean;
+    profile?: UpscaleProfile | string;
+    profileLabel?: string;
     models: Record<string, { name?: string; available?: boolean }>;
     nodes: Record<string, boolean>;
 };
@@ -85,16 +103,17 @@ async function readJson<T extends object>(response: Response): Promise<T> {
     return payload;
 }
 
-export async function fetchUpscaleHealth(): Promise<UpscaleHealth> {
-    const response = await fetch(`${BRIDGE_URL}/api/upscale/health`, { cache: "no-store" });
+export async function fetchUpscaleHealth(profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE): Promise<UpscaleHealth> {
+    const query = new URLSearchParams({ profile });
+    const response = await fetch(`${BRIDGE_URL}/api/upscale/health?${query.toString()}`, { cache: "no-store" });
     return (await readJson<{ ready?: boolean; comfyUi?: boolean; models?: UpscaleHealth["models"]; nodes?: UpscaleHealth["nodes"] }>(response)) as UpscaleHealth;
 }
 
-export async function submitUpscale(source: Pick<StudioAsset, "name" | "root">): Promise<UpscaleJob> {
+export async function submitUpscale(source: Pick<StudioAsset, "name" | "root">, profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE): Promise<UpscaleJob> {
     const response = await fetch(`${BRIDGE_URL}/api/upscale`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceName: source.name, sourceRoot: source.root, scale: UPSCALE_SCALE }),
+        body: JSON.stringify({ sourceName: source.name, sourceRoot: source.root, scale: UPSCALE_SCALE, profile }),
     });
     const payload = await readJson<{ job?: UpscaleJob }>(response);
     if (!payload.job) throw new UpscaleApiError("Upscale job was not returned.", response.status);

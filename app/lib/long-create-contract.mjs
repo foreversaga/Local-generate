@@ -296,7 +296,6 @@ export function validateLongCreate(input) {
     });
   } else if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
   if (input.continuationMode === "latent_context" && input.inputType !== "image") issues.push({ field: "continuationMode", message: "Latent 影音銜接目前需要選擇「從圖片開始」，讓後續 Ref2VA 保有固定視覺參考。" });
-  if (input.modelProfile === "int4_convrot_low_vram") issues.push({ field: "modelProfile", message: "分鏡視覺參考使用 Ref2VA，不支援 INT4 ConvRot；請使用 NVFP4 Blackwell 或 Official INT8。" });
   if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "從圖片開始時需要至少一張起始參考圖片。" });
   if (input.scripts !== undefined) {
     // Script cards are the authoritative timeline.

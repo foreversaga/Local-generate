@@ -15,6 +15,7 @@ test("jobs workspace keeps filters and technical details out of the default view
   assert.match(workspace, /const \[filtersOpen, setFiltersOpen\] = useState\(false\)/);
   assert.match(workspace, /aria-controls="jobs-filter-panel"/);
   assert.match(workspace, /activeFilterCount/);
+  assert.match(workspace, /jobs\.elapsed/);
   assert.doesNotMatch(workspace, /ComfyUI:/);
   assert.doesNotMatch(workspace, /nativeCurrent\/.*nativeMaximum/);
 
@@ -22,6 +23,7 @@ test("jobs workspace keeps filters and technical details out of the default view
   assert.match(detail, /<summary>生成參數<\/summary>/);
   assert.match(detail, /<summary>技術資訊<\/summary>/);
   assert.match(detail, /ComfyUI Node/);
+  assert.match(detail, /預估總時間/);
   assert.doesNotMatch(detail, /Edit parameters and retry/);
   assert.doesNotMatch(detail, /RETRY_PROFILES/);
 });

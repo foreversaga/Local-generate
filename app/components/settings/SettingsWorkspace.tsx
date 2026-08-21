@@ -54,6 +54,7 @@ function errorMessage(reason: unknown, fallback: string) {
 function sameSettings(left: SettingsModel, right: SettingsModel) {
   return left.promptProvider === right.promptProvider &&
     left.ollamaModel === right.ollamaModel &&
+    left.vllmModel === right.vllmModel &&
     left.codexModel === right.codexModel &&
     left.codexReasoningEffort === right.codexReasoningEffort;
 }
@@ -134,6 +135,8 @@ export function SettingsWorkspace() {
   const activeOperations = Number(health?.runtime?.activeOperations || 0);
   const ollamaModels = health?.ollama?.models ?? EMPTY_MODELS;
   const ollamaOptions = useMemo(() => Array.from(new Set([...ollamaModels, settings.ollamaModel])), [ollamaModels, settings.ollamaModel]);
+  const vllmModels = health?.sglang?.models ?? health?.vllm?.models ?? EMPTY_MODELS;
+  const vllmOptions = useMemo(() => Array.from(new Set([...vllmModels, settings.vllmModel])), [vllmModels, settings.vllmModel]);
   const codexModels: CodexOption[] = health?.codex?.models?.length
     ? health.codex.models.map((model): CodexOption => ({
       value: model.value,
@@ -213,6 +216,7 @@ export function SettingsWorkspace() {
           <div><dt>本機橋接服務</dt><dd><StatusBadge value={health?.bridge} pending={statusLoading} /></dd></div>
           <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd><small>{health?.comfy?.url || "—"}</small></div>
           <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd><small>{health?.ollama?.url || "—"}</small></div>
+          <div><dt>vLLM</dt><dd><StatusBadge value={health?.sglang?.online || health?.vllm?.online} pending={statusLoading} /></dd><small>{health?.sglang?.url || health?.vllm?.url || "—"}</small></div>
           <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "技能已就緒" : "—")}</small></div>
         </dl>
         <div className={styles.deviceList}>
@@ -233,11 +237,23 @@ export function SettingsWorkspace() {
         <div className={styles.formGrid}>
           <label className={styles.field}>
             <span>提示詞提供者</span>
-            <select value={settings.promptProvider} onChange={(event) => updateSettings({ promptProvider: event.target.value as "ollama" | "codex" })}>
+            <select value={settings.promptProvider} onChange={(event) => updateSettings({ promptProvider: event.target.value as "ollama" | "sglang" | "codex" })}>
               <option value="ollama">Ollama</option>
+              <option value="sglang">vLLM · Docker</option>
               <option value="codex">Codex CLI</option>
             </select>
-            <small>{settings.promptProvider === "ollama" ? (health?.ollama?.online ? "Ollama 在線" : "Ollama 尚未就緒") : (codexReady ? "Codex CLI 與 skill 就緒" : "需要 Codex CLI 與 h3-prompt-writing skill")}</small>
+            <small>{settings.promptProvider === "ollama"
+              ? (health?.ollama?.online ? "Ollama 在線" : "Ollama 尚未就緒")
+              : settings.promptProvider === "sglang"
+                ? ((health?.sglang?.online || health?.vllm?.online) ? "vLLM 在線" : "vLLM 尚未就緒")
+                : (codexReady ? "Codex CLI 與 skill 就緒" : "需要 Codex CLI 與 h3-prompt-writing skill")}</small>
+          </label>
+          <label className={styles.field}>
+            <span>vLLM 模型</span>
+            <select value={settings.vllmModel} onChange={(event) => updateSettings({ vllmModel: event.target.value })}>
+              {vllmOptions.map((model) => <option key={model} value={model}>{model}{vllmModels.includes(model) ? " · 已載入" : " · 儲存值"}</option>)}
+            </select>
+            <small>{vllmModels.length ? `vLLM 已載入：${vllmModels.join(", ")}` : "尚未取得 vLLM 模型"}</small>
           </label>
           <label className={styles.field}>
             <span>Ollama 模型</span>
@@ -274,6 +290,7 @@ export function SettingsWorkspace() {
           <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
           <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
           <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
+          <div><dt>vLLM</dt><dd>{health?.sglang?.model || health?.vllm?.model || "—"}</dd></div>
           <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
         </dl>
       </section>

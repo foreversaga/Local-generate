@@ -120,6 +120,10 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const active = job.status === "queued" || job.status === "running";
   const complete = job.status === "complete" || job.status === "partial";
+  const hasElapsed = Number.isFinite(job.elapsedMs);
+  const elapsedText = hasElapsed
+    ? t("jobs.elapsed", { duration: formatEtaDuration(Number(job.elapsedMs), t) })
+    : "";
   const hasEta = Number.isFinite(job.etaMs);
   const hasEtaRange = Number.isFinite(job.etaLowerMs)
     && Number.isFinite(job.etaUpperMs)
@@ -150,7 +154,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             <>
               <div className={styles.statusProgressHeader}>
                 <strong>{progress}%</strong>
-                <span>{etaText}</span>
+                <span>{elapsedText} · {etaText}</span>
               </div>
               <div className={styles.statusProgressTrack} role="progressbar" aria-label="工作進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}% 已完成`}>
                 <span style={{ width: `${progress}%` }} />
@@ -165,6 +169,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             <div className={styles.statusMessage}>
               <strong>{job.status === "error" ? "生成失敗" : job.status === "cancelled" ? "工作已取消" : "工作狀態"}</strong>
               <span>{job.updatedAt ? formatDate(job.updatedAt, locale) : job.stage || "—"}</span>
+              {hasElapsed && <span>{elapsedText}</span>}
             </div>
           )}
         </section>
@@ -207,6 +212,8 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
               {job.comfyNode && <div><dt>ComfyUI Node</dt><dd>{job.comfyNode}{job.comfyNodeTitle ? ` · ${job.comfyNodeTitle}` : ""}</dd></div>}
               {job.nativeCurrent !== null && job.nativeMaximum !== null && Number.isFinite(Number(job.nativeCurrent)) && Number.isFinite(Number(job.nativeMaximum)) && <div><dt>Sampler Step</dt><dd>{job.nativeCurrent}/{job.nativeMaximum}</dd></div>}
+              {hasElapsed && <div><dt>已執行</dt><dd>{formatEtaDuration(Number(job.elapsedMs), t)}</dd></div>}
+              {Number.isFinite(job.estimatedDurationMs) && <div><dt>預估總時間</dt><dd>{formatEtaDuration(Number(job.estimatedDurationMs), t)}</dd></div>}
               {job.progressSource && <div><dt>Progress Source</dt><dd>{job.progressSource}</dd></div>}
               {job.etaSource && <div><dt>ETA Source</dt><dd>{job.etaSource}{job.etaConfidence ? ` · ${job.etaConfidence}` : ""}</dd></div>}
             </dl>

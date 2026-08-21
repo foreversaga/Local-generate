@@ -17,14 +17,6 @@ import { checkArtifactTarget as checkConfiguredArtifactTarget } from './artifact
 import { normalizeTrainingParameters, resolveTrainingCommand } from './presets.mjs';
 import { inspectRuntimeRevision, preflightLoraTraining } from './health.mjs';
 import { createPythonResolver, toPublicPythonResolution } from '../runtime/python-resolver.mjs';
-import {
-  checkZImageToolkitRuntime,
-  createZImageTrainingRunner,
-  Z_IMAGE_BASE_PROFILE,
-  resolveZImageTrainingCommand,
-  resolveZImageTrainingDataDirectory,
-  inspectZImageDatasetDirectory,
-} from './backends/z-image-ai-toolkit.mjs';
 
 function serviceError(code, message, status = 500, details) {
   return new LoraTrainingError(code, message, { status, details });
@@ -239,35 +231,7 @@ export function createLoraTrainingService(options = {}) {
       ...context,
       targetDirectory: await resolveComfyTarget(context),
     })),
-    checkTrainingData: async ({ job, config }) => {
-      if (job?.family !== 'z-image') return null;
-      const locations = typeof dataset.getLocations === 'function' ? dataset.getLocations(job.id) : undefined;
-      let directory;
-      try {
-        directory = resolveZImageTrainingDataDirectory({ config, locations });
-      } catch (error) {
-        return { ok: false, code: error.code ?? 'Z_IMAGE_DATASET_MISSING', message: error.message };
-      }
-      return inspectZImageDatasetDirectory(directory, { locations });
-    },
-    checkTrainer: options.checkTrainer ?? (async ({ family, config } = {}) => {
-      if (family === 'z-image') {
-        const zImageConfig = {
-          ...(config ?? {}),
-          ...(config?.aiToolkit ?? {}),
-          ...(config?.zImage ?? {}),
-          ...(config?.zImageConfig ?? {}),
-        };
-        return checkZImageToolkitRuntime({
-          aiToolkitRoot: options.aiToolkitRoot ?? zImageConfig.aiToolkitRoot,
-          modelPath: zImageConfig.modelPath ?? zImageConfig.nameOrPath ?? zImageConfig.baseModelPath,
-          extrasPath: zImageConfig.extrasPath ?? zImageConfig.extrasNameOrPath,
-          assistantLoraPath: zImageConfig.assistantLoraPath,
-          tokenizerPath: zImageConfig.tokenizerPath,
-          python: zImageConfig.python,
-          env: options.env,
-        });
-      }
+    checkTrainer: options.checkTrainer ?? (async () => {
       const entrypoint = path.join(paths.runtime, 'sd-scripts', 'sdxl_train_network.py');
       const revision = await inspectRuntimeRevision(paths.runtime);
       const checks = [];
@@ -385,45 +349,28 @@ export function createLoraTrainingService(options = {}) {
   async function executeTraining(entry, { signal, reportProgress }) {
     const job = await store.readJob(entry.jobId);
     const config = job.config ?? {};
-    const zImage = job.family === 'z-image';
-    const zImageConfig = {
-      ...config,
-      ...(config.aiToolkit ?? {}),
-      ...(config.zImage ?? {}),
-      ...(config.zImageConfig ?? {}),
-    };
-    const configuredZModel = zImageConfig.modelPath ?? zImageConfig.nameOrPath ?? zImageConfig.baseModelPath;
-    const baseModel = zImage
-      ? normalizeBaseModel(configuredZModel ?? await resolveBaseModel({ job, family: job.family, baseProfile: config.baseProfile }))
-      : await resolveBaseModel({ job, family: job.family, baseProfile: config.baseProfile });
+    const baseModel = await resolveBaseModel({ job, family: job.family, baseProfile: config.baseProfile });
     if (!baseModel) throw serviceError('BASE_MODEL_UNAVAILABLE', 'base model could not be resolved', 422);
     const targetDirectory = await resolveComfyTarget({ job });
     if (!targetDirectory) throw serviceError('ARTIFACT_TARGET_UNAVAILABLE', 'ComfyUI LoRA target is not configured', 503);
-    const pythonResolution = zImage || typeof options.resolveCommand === 'function' ? null : await requireTrainerPython();
+    const pythonResolution = typeof options.resolveCommand === 'function' ? null : await requireTrainerPython();
     const jobDirectory = getJobPaths(job.id, paths).directory;
     const outputDirectory = resolveSafeChild(jobDirectory, 'output/staging');
     await mkdir(outputDirectory, { recursive: true });
     const tokenizerCacheDirectory = path.join(paths.runtime, 'tokenizers');
     const huggingfaceCacheDirectory = path.join(paths.runtime, 'cache', 'huggingface');
-    if (!zImage) {
-      await mkdir(tokenizerCacheDirectory, { recursive: true });
-      await mkdir(path.join(huggingfaceCacheDirectory, 'hub'), { recursive: true });
-    }
+    await mkdir(tokenizerCacheDirectory, { recursive: true });
+    await mkdir(path.join(huggingfaceCacheDirectory, 'hub'), { recursive: true });
     const outputName = config.outputName ?? job.slug;
     const datasetLocations = typeof dataset.getLocations === 'function' ? dataset.getLocations(job.id) : undefined;
-    // Z-Image/AI Toolkit consumes an already-materialized image + caption
-    // directory.  Keep the canonical Studio dataset untouched and do not
-    // route this family through the sd-scripts DreamBooth materializer.
-    const trainerDataset = zImage
-      ? { root: resolveZImageTrainingDataDirectory({ config, locations: datasetLocations }) }
-      : typeof dataset.materializeTrainerDataset === 'function'
-        ? await dataset.materializeTrainerDataset(job.id, {
-          triggerWords: job.triggerWords,
-          classTokens: config.classTokens ?? config.classToken,
-          repeats: config.trainingRepeats ?? config.repeats,
-          captionExtension: '.txt',
-        })
-        : { root: datasetLocations.dataset };
+    const trainerDataset = typeof dataset.materializeTrainerDataset === 'function'
+      ? await dataset.materializeTrainerDataset(job.id, {
+        triggerWords: job.triggerWords,
+        classTokens: config.classTokens ?? config.classToken,
+        repeats: config.trainingRepeats ?? config.repeats,
+        captionExtension: '.txt',
+      })
+      : { root: datasetLocations.dataset };
     const resolverRequest = {
       preset: config.presetId ?? config.preset ?? job.family,
       family: job.family,
@@ -431,29 +378,16 @@ export function createLoraTrainingService(options = {}) {
       // The process adapter only receives canonical trainer keys.  Public/UI
       // aliases are normalized before dispatch even when a custom resolver is
       // injected for tests or an alternate runtime.
-      parameters: zImage ? (config.overrides ?? config.parameters ?? {}) : normalizeTrainingParameters(config.overrides ?? config.parameters ?? {}),
+      parameters: normalizeTrainingParameters(config.overrides ?? config.parameters ?? {}),
       runtimeRoot: paths.runtime,
-      ...(zImage ? {
-        zImageConfig,
-        aiToolkitRoot: options.aiToolkitRoot,
-        datasetLocations,
-        baseModelPath: baseModel.path,
-        modelFormat: baseModel.format,
-        triggerWords: job.triggerWords,
-      } : { tokenizerCacheDirectory }),
+      tokenizerCacheDirectory,
       ...(pythonResolution?.executable ? { python: pythonResolution.executable } : {}),
       baseCheckpoint: baseModel.path,
       datasetDirectory: trainerDataset.root,
       outputDirectory,
       outputName,
     };
-    const resolved = await (options.resolveCommand
-      ?? (zImage ? resolveZImageTrainingCommand : resolveTrainingCommand))(resolverRequest, zImage
-      ? {
-        ...(options.zImageOptions ?? {}),
-        ...(options.env && options.zImageOptions?.env === undefined ? { env: options.env } : {}),
-      }
-      : options.presetOptions);
+    const resolved = await (options.resolveCommand ?? resolveTrainingCommand)(resolverRequest, options.presetOptions);
     if (!resolved || resolved.shell !== false) throw serviceError('UNSAFE_TRAINER_COMMAND', 'trainer command must use shell:false', 500);
 
     const startedAt = isoNow(now());
@@ -463,7 +397,7 @@ export function createLoraTrainingService(options = {}) {
       if (typeof options.executeTraining === 'function') {
         runResult = await options.executeTraining({ job, resolved, outputDirectory, signal, reportProgress });
       } else {
-        const runnerFactory = options.createRunner ?? (zImage ? createZImageTrainingRunner : createTrainingRunner);
+        const runnerFactory = options.createRunner ?? createTrainingRunner;
         const runner = runnerFactory({ onProgress: reportProgress, onLog: options.onTrainerLog });
         runResult = await runner.run(resolved, {
           // Python's stdio/argparse must not inherit a legacy Windows code
@@ -474,20 +408,13 @@ export function createLoraTrainingService(options = {}) {
           env: {
             ...(resolved.env ?? {}),
             ...(options.runnerEnv ?? {}),
-            ...(zImage ? {
-              HF_HUB_OFFLINE: '1',
-              TRANSFORMERS_OFFLINE: '1',
-              HF_DATASETS_OFFLINE: '1',
-              HF_HUB_DISABLE_TELEMETRY: '1',
-            } : {
-              HF_HOME: huggingfaceCacheDirectory,
-              HF_HUB_CACHE: path.join(huggingfaceCacheDirectory, 'hub'),
-              TRANSFORMERS_CACHE: path.join(huggingfaceCacheDirectory, 'transformers'),
-              HF_DATASETS_CACHE: path.join(huggingfaceCacheDirectory, 'datasets'),
-              HF_HUB_OFFLINE: '1',
-              TRANSFORMERS_OFFLINE: '1',
-              HF_HUB_DISABLE_TELEMETRY: '1',
-            }),
+            HF_HOME: huggingfaceCacheDirectory,
+            HF_HUB_CACHE: path.join(huggingfaceCacheDirectory, 'hub'),
+            TRANSFORMERS_CACHE: path.join(huggingfaceCacheDirectory, 'transformers'),
+            HF_DATASETS_CACHE: path.join(huggingfaceCacheDirectory, 'datasets'),
+            HF_HUB_OFFLINE: '1',
+            TRANSFORMERS_OFFLINE: '1',
+            HF_HUB_DISABLE_TELEMETRY: '1',
             PYTHONUTF8: '1',
             PYTHONIOENCODING: 'utf-8',
           },
@@ -537,26 +464,6 @@ export function createLoraTrainingService(options = {}) {
       throw artifactError;
     }
     await mkdir(targetDirectory, { recursive: true });
-    const zProvenance = zImage ? (resolved.provenance ?? {}) : null;
-    const zDatasetManifest = zImage ? await dataset.readManifest(job.id) : null;
-    if (zImage && (
-      resolved.backend !== 'ai-toolkit'
-      || typeof resolved.aiToolkitVersion !== 'string'
-      || typeof resolved.configPath !== 'string'
-      || zProvenance.offline !== true
-      || zProvenance.modelArch !== 'zimage'
-      || typeof zProvenance.assistantAdapter !== 'string'
-      || typeof zProvenance.datasetContract !== 'string'
-      || !/^[0-9a-f]{64}$/i.test(zProvenance.datasetFingerprint ?? '')
-      || !/^[0-9a-f]{64}$/i.test(zProvenance.configFingerprint ?? '')
-      || !/^[0-9a-f]{64}$/i.test(zProvenance.dependencyFingerprint ?? '')
-      || !Number.isSafeInteger(zDatasetManifest?.revision)
-      || !zProvenance.pathSources || typeof zProvenance.pathSources !== 'object'
-      || !['baseModel', 'extras', 'assistantLora', 'tokenizer', 'aiToolkit', 'python'].every((key) => typeof zProvenance.pathSources[key] === 'string' && zProvenance.pathSources[key].length > 0)
-      || (zProvenance.datasetAdapterPath !== undefined && typeof zProvenance.datasetAdapterPath !== 'string')
-    )) {
-      throw serviceError('Z_IMAGE_PROVENANCE_MISSING', 'AI Toolkit Z-Image command did not provide complete dataset/config/dependency provenance', 500);
-    }
     let registryRecord;
     let installed;
     try {
@@ -569,7 +476,6 @@ export function createLoraTrainingService(options = {}) {
             family: job.family,
             baseProfile: config.baseProfile,
             displayName: job.displayName,
-            ...(zImage ? { characterName: config.characterName ?? job.displayName } : {}),
             triggerWords: job.triggerWords,
             hash: artifact.sha256,
             size: artifact.size,
@@ -578,20 +484,7 @@ export function createLoraTrainingService(options = {}) {
               jobId: job.id, attempt: config.orchestration?.attempt ?? 1,
               presetId: resolved.preset ?? config.presetId ?? config.preset ?? job.family,
               baseModel: baseModel.path,
-              datasetRevision: zImage ? zDatasetManifest.revision : (await dataset.readManifest(job.id)).revision,
-              ...(zImage ? {
-                trainingBackend: resolved.backend,
-                aiToolkitVersion: resolved.aiToolkitVersion,
-                modelArch: zProvenance.modelArch,
-                assistantAdapter: zProvenance.assistantAdapter,
-                configPath: resolved.configPath,
-                datasetContract: zProvenance.datasetContract,
-                datasetFingerprint: zProvenance.datasetFingerprint,
-                configFingerprint: zProvenance.configFingerprint,
-                dependencyFingerprint: zProvenance.dependencyFingerprint,
-                ...(zProvenance.datasetAdapterPath === undefined ? {} : { datasetAdapterPath: zProvenance.datasetAdapterPath }),
-                pathSources: zProvenance.pathSources,
-              } : {}),
+              datasetRevision: (await dataset.readManifest(job.id)).revision,
             },
           });
         },
@@ -600,18 +493,6 @@ export function createLoraTrainingService(options = {}) {
       await persistTrainerDiagnostics({ job, config, jobDirectory, resolved, result: runResult, error, startedAt, finishedAt, phase: 'artifact' });
       throw error;
     }
-    if (zImage && (!registryRecord?.id || !registryRecord?.provenance)) {
-      throw serviceError('REGISTRY_METADATA_MISSING', 'installed artifact did not produce complete registry provenance', 500);
-    }
-    const artifactMetadata = zImage ? {
-      family: job.family,
-      baseProfile: config.baseProfile,
-      characterName: config.characterName ?? job.displayName,
-      triggerWords: [...job.triggerWords],
-      hash: installed.sha256,
-      size: installed.size,
-      provenance: registryRecord.provenance,
-    } : {};
     await controller.onQueueStateChange({
       jobId: job.id, status: 'running',
       progress: { stage: 'installed' },
@@ -623,10 +504,9 @@ export function createLoraTrainingService(options = {}) {
         sha256: installed.sha256,
         sizeBytes: installed.size,
         comfyLoaded: true,
-        ...artifactMetadata,
       },
     });
-    return { status: 'succeeded', artifact: { ...installed, ...artifactMetadata }, registry: registryRecord };
+    return { status: 'succeeded', artifact: installed, registry: registryRecord };
   }
 
   const requestGpuLease = options.gpuCoordinator
@@ -743,32 +623,6 @@ export function createLoraTrainingService(options = {}) {
   async function health({ family = 'sdxl', baseProfile } = {}) {
     await initialize();
     family = normalizeTrainingFamily(family);
-    // Never route any Z-Image health request through the legacy SDXL
-    // preflight, including malformed/missing baseProfile requests.
-    if (family === 'z-image') {
-      const zImageConfig = {
-        ...(baseProfile ? { baseProfile } : {}),
-        ...((options.zImageConfig && typeof options.zImageConfig === 'object') ? options.zImageConfig : {}),
-      };
-      const runtime = await checkZImageToolkitRuntime({
-        aiToolkitRoot: options.aiToolkitRoot ?? zImageConfig.aiToolkitRoot,
-        modelPath: zImageConfig.modelPath ?? zImageConfig.nameOrPath ?? zImageConfig.baseModelPath,
-        extrasPath: zImageConfig.extrasPath ?? zImageConfig.extrasNameOrPath,
-        assistantLoraPath: zImageConfig.assistantLoraPath,
-        tokenizerPath: zImageConfig.tokenizerPath,
-        python: zImageConfig.python,
-        env: options.env,
-      });
-      return {
-        ok: runtime.ok,
-        backend: 'ai-toolkit',
-        family: 'z-image',
-        baseProfile: Z_IMAGE_BASE_PROFILE,
-        checks: runtime.details?.checks ?? [],
-        message: runtime.message,
-        details: runtime.details,
-      };
-    }
     const pythonResolution = await resolveTrainerPython();
     const base = await resolveBaseModel({ family, baseProfile });
     const targetDirectory = await resolveComfyTarget({ family, baseProfile });

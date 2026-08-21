@@ -21,56 +21,22 @@ const SIZE_PRESETS = [
   { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
 ] as const;
 
-const DEFAULT_STEPS = 4;
+const DEFAULT_STEPS = 20;
 const DEFAULT_SEED = 12345;
 const DEFAULT_WIDTH = 1024;
 const DEFAULT_HEIGHT = 1024;
 const CUSTOM_PRESET_ID = "custom";
-const DEFAULT_MODEL_ID = "flux2-klein-4b";
+const DEFAULT_MODEL_ID = "flux2-dev";
 const DEFAULT_ENCODER_ID = "official";
-const ENCODER_OPTIONS = [
-  { id: DEFAULT_ENCODER_ID, nameKey: "text2img.encoder.official.name", noteKey: "text2img.encoder.official.note", thirdParty: false },
-  { id: "uncensored", nameKey: "text2img.encoder.uncensored.name", noteKey: "text2img.encoder.uncensored.note", thirdParty: true },
-] as const;
 const MODEL_OPTIONS = [
   {
     id: DEFAULT_MODEL_ID,
-    mark: "4B",
-    nameKey: "text2img.model.4b.name",
-    noteKey: "text2img.model.4b.note",
-    licenseKey: "text2img.model.4b.license",
-    commercial: true,
-    defaultSteps: 4,
-    maxSteps: 8,
-  },
-  {
-    id: "flux2-klein-9b",
-    mark: "9B",
-    nameKey: "text2img.model.9b.name",
-    noteKey: "text2img.model.9b.note",
-    licenseKey: "text2img.model.9b.license",
-    commercial: false,
-    defaultSteps: 4,
-    maxSteps: 8,
-  },
-  {
-    id: "flux2-dev",
     mark: "DEV",
     nameKey: "text2img.model.dev.name",
     noteKey: "text2img.model.dev.note",
     licenseKey: "text2img.model.dev.license",
     commercial: false,
     defaultSteps: 20,
-    maxSteps: 50,
-  },
-  {
-    id: "juggernaut-xl-v9",
-    mark: "XL",
-    nameKey: "text2img.model.juggernaut.name",
-    noteKey: "text2img.model.juggernaut.note",
-    licenseKey: "text2img.model.juggernaut.license",
-    commercial: false,
-    defaultSteps: 35,
     maxSteps: 50,
   },
 ] as const;
@@ -133,7 +99,6 @@ export function TextToImageWorkspace() {
   const [unloadPromptModel, setUnloadPromptModel] = useState(false);
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [encoderId, setEncoderId] = useState(DEFAULT_ENCODER_ID);
-  const [adultMode, setAdultMode] = useState(false);
   const [presetId, setPresetId] = useState<(typeof SIZE_PRESETS)[number]["id"] | typeof CUSTOM_PRESET_ID>("square");
   const [resolutionScale, setResolutionScale] = useState(100);
   const [width, setWidth] = useState(String(DEFAULT_WIDTH));
@@ -148,8 +113,7 @@ export function TextToImageWorkspace() {
   const scaleBounds = selectedPreset ? resolutionScaleBounds(selectedPreset.width, selectedPreset.height) : null;
   const selectedHealth = health?.profiles?.[modelId];
   const selectedEncoderHealth = selectedHealth?.encoders?.[encoderId];
-  const selectedReady = Boolean((selectedEncoderHealth ? selectedEncoderHealth.ready : selectedHealth?.ready)
-    && (!adultMode || selectedHealth?.adultLora?.ready));
+  const selectedReady = Boolean(selectedEncoderHealth ? selectedEncoderHealth.ready : selectedHealth?.ready);
   const defaultSteps = selectedHealth?.defaultSteps || selectedOption.defaultSteps;
   const maxSteps = selectedHealth?.maxSteps || selectedOption.maxSteps;
 
@@ -236,7 +200,7 @@ export function TextToImageWorkspace() {
       setSeed(String(normalizedSeed));
       setWidth(String(normalizedWidth));
       setHeight(String(normalizedHeight));
-      const generated = await generateText2ImgPrompt(description.trim(), { adultMode, unloadPromptModel });
+      const generated = await generateText2ImgPrompt(description.trim(), { unloadPromptModel });
       setPrompt(generated.prompt);
       setPromptModel(generated.model);
       setPromptBusy(false);
@@ -248,7 +212,6 @@ export function TextToImageWorkspace() {
         seed: normalizedSeed,
         modelId,
         encoderId,
-        adultMode,
       }));
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("text2img.submit.error"));
@@ -264,11 +227,10 @@ export function TextToImageWorkspace() {
     const repeatReady = repeatProfile?.encoders?.[encoder]?.ready
       ?? health?.profiles?.[completedJob.modelId]?.ready
       ?? false;
-    if (!repeatReady || (completedJob.adultMode && !repeatProfile?.adultLora?.ready) || isBusy) return;
+    if (!repeatReady || isBusy) return;
     setSubmitError("");
     setModelId(completedJob.modelId);
     setEncoderId(encoder);
-    setAdultMode(completedJob.adultMode);
     setPresetId(matchingPreset?.id || CUSTOM_PRESET_ID);
     setResolutionScale(100);
     setWidth(String(completedJob.width));
@@ -286,7 +248,6 @@ export function TextToImageWorkspace() {
         seed: completedJob.seed,
         modelId: completedJob.modelId,
         encoderId: encoder,
-        adultMode: completedJob.adultMode,
       }));
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("text2img.repeat.error"));
@@ -310,7 +271,7 @@ export function TextToImageWorkspace() {
   const workflowReady = Boolean(selectedReady && promptAssistantReady);
   const repeatProfile = job ? health?.profiles?.[job.modelId] : null;
   const repeatReady = Boolean(job && (repeatProfile?.encoders?.[job.encoderId || DEFAULT_ENCODER_ID]?.ready
-    ?? repeatProfile?.ready) && (!job.adultMode || repeatProfile?.adultLora?.ready));
+    ?? repeatProfile?.ready));
 
   return (
     <div className={styles.workspace}>
@@ -377,6 +338,7 @@ export function TextToImageWorkspace() {
             <span>{promptAssistantReady ? t("text2img.assistant.ready") : t("text2img.assistant.blocked")}</span>
           </div>
 
+          {health?.promptAssistant?.provider === "ollama" && (
           <button
             type="button"
             role="switch"
@@ -390,6 +352,7 @@ export function TextToImageWorkspace() {
             </span>
             <span className={styles.switchTrack} aria-hidden="true"><span className={styles.switchThumb} /></span>
           </button>
+          )}
 
           {prompt && (
             <details className={styles.promptPreview}>
@@ -413,8 +376,7 @@ export function TextToImageWorkspace() {
                       checked={modelId === item.id}
                       onChange={() => {
                         setModelId(item.id);
-                        if (item.id !== "flux2-klein-9b") setEncoderId(DEFAULT_ENCODER_ID);
-                        setAdultMode(false);
+                        setEncoderId(DEFAULT_ENCODER_ID);
                         setSteps(String(item.defaultSteps));
                         setJob(null);
                         setSubmitError("");
@@ -435,54 +397,8 @@ export function TextToImageWorkspace() {
             </div>
           </fieldset>
 
-          {modelId === "flux2-klein-9b" && <p className={styles.licenseWarning} role="note">{t("text2img.model.9b.warning")}</p>}
-          {modelId === "flux2-dev" && <p className={styles.licenseWarning} role="note">{t("text2img.model.dev.warning")}</p>}
-          {modelId === "juggernaut-xl-v9" && <p className={styles.licenseWarning} role="note">{t("text2img.model.juggernaut.warning")}</p>}
+          <p className={styles.licenseWarning} role="note">{t("text2img.model.dev.warning")}</p>
 
-          {modelId === "flux2-klein-9b" && (
-            <fieldset className={styles.encoderFieldset}>
-              <legend>{t("text2img.encoder.choose")}</legend>
-              <div className={styles.encoderGrid}>
-                {ENCODER_OPTIONS.map((item) => {
-                  const encoderHealth = selectedHealth?.encoders?.[item.id];
-                  return (
-                    <label key={item.id} className={`${styles.encoderOption} ${encoderId === item.id ? styles.encoderOptionActive : ""}`}>
-                      <input type="radio" name="text-encoder" value={item.id} checked={encoderId === item.id} onChange={() => { setEncoderId(item.id); setJob(null); setSubmitError(""); }} />
-                      <span>
-                        <strong>{t(item.nameKey)}</strong>
-                        <small>{t(item.noteKey)}</small>
-                      </span>
-                      {item.thirdParty && <em>{t("text2img.encoder.thirdParty")}</em>}
-                      {health && <i className={encoderHealth?.ready ? styles.optionReady : styles.optionMissing} aria-label={encoderHealth?.ready ? t("text2img.health.ready") : t("text2img.health.modelsMissing")} />}
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-          )}
-
-          {modelId === "flux2-klein-9b" && encoderId === "uncensored" && <p className={styles.uncensoredWarning} role="note">{t("text2img.encoder.uncensored.warning")}</p>}
-
-          {modelId === "juggernaut-xl-v9" && (
-            <fieldset className={styles.encoderFieldset}>
-              <legend>{t("text2img.adultMode.choose")}</legend>
-              <div className={styles.encoderGrid}>
-                <label className={`${styles.encoderOption} ${!adultMode ? styles.encoderOptionActive : ""}`}>
-                  <input type="radio" name="adult-mode" value="off" checked={!adultMode} onChange={() => { setAdultMode(false); setJob(null); setSubmitError(""); }} />
-                  <span><strong>{t("text2img.adultMode.off.name")}</strong><small>{t("text2img.adultMode.off.note")}</small></span>
-                  {health && <i className={selectedHealth?.ready ? styles.optionReady : styles.optionMissing} aria-label={selectedHealth?.ready ? t("text2img.health.ready") : t("text2img.health.modelsMissing")} />}
-                </label>
-                <label className={`${styles.encoderOption} ${adultMode ? styles.encoderOptionActive : ""}`}>
-                  <input type="radio" name="adult-mode" value="on" checked={adultMode} onChange={() => { setAdultMode(true); setJob(null); setSubmitError(""); }} />
-                  <span><strong>{t("text2img.adultMode.on.name")}</strong><small>{t("text2img.adultMode.on.note")}</small></span>
-                  <em>LoRA</em>
-                  {health && <i className={selectedHealth?.adultLora?.ready ? styles.optionReady : styles.optionMissing} aria-label={selectedHealth?.adultLora?.ready ? t("text2img.health.ready") : t("text2img.health.modelsMissing")} />}
-                </label>
-              </div>
-            </fieldset>
-          )}
-
-          {modelId === "juggernaut-xl-v9" && adultMode && <p className={styles.uncensoredWarning} role="note">{t("text2img.adultMode.warning")}</p>}
 
           <fieldset className={styles.presetFieldset}>
             <legend>{t("text2img.size.label")}</legend>
@@ -574,7 +490,7 @@ export function TextToImageWorkspace() {
                 onChange={(event) => setSteps(event.target.value)}
                 onBlur={() => setSteps(String(normalizeIntegerField(steps, defaultSteps, 1, maxSteps)))}
               />
-              <small>{t(modelId === "juggernaut-xl-v9" ? "text2img.steps.sdxlHelp" : "text2img.steps.help")}</small>
+              <small>{t("text2img.steps.help")}</small>
             </label>
             <label className={styles.field}>
               <span>{t("text2img.seed.label")}</span>
@@ -598,11 +514,9 @@ export function TextToImageWorkspace() {
             <span>CFG {selectedHealth?.cfg ?? 1}</span>
             <span>{selectedHealth?.sampler || "Euler"}</span>
             <span>{selectedHealth?.precision || "BF16"}</span>
-            {modelId === "flux2-klein-9b" && <span>{selectedEncoderHealth?.label || t("text2img.encoder.official.name")}</span>}
-            {modelId === "juggernaut-xl-v9" && adultMode && <span>{selectedHealth?.adultLora?.label || t("text2img.adultMode.on.name")}</span>}
             <span>{selectedHealth?.license || t(selectedOption.licenseKey)}</span>
           </div>
-          <p className={styles.helper}>{t(modelId === "juggernaut-xl-v9" ? "text2img.negativeSdxlNote" : "text2img.negativeNote")}</p>
+          <p className={styles.helper}>{t("text2img.negativeNote")}</p>
 
           {submitError && <p className={styles.error} role="alert">{submitError}</p>}
           <button className={styles.primaryButton} type="submit" disabled={!workflowReady || !description.trim() || isBusy}>

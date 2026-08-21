@@ -327,6 +327,30 @@ test("Codex planner preserves provider metadata and structured H3 segments", asy
   assert.match(plan.segments[1].prompt, /^For the target video, at 0\.00 seconds into the target video/);
 });
 
+test("vLLM planner preserves provider metadata and model selection", async () => {
+  const plan = await planSequence({
+    promptProvider: "sglang",
+    sglangModel: "qwen3.8-27b-uncensored-nvfp4",
+    inputType: "text",
+    inputText: "A lantern bearer crosses a quiet mountain bridge.",
+    timelineMode: "auto",
+    duration: 10,
+  }, {
+    request: async () => ({
+      continuityBible: { visualStyle: "cinematic", environment: "mountain bridge" },
+      segments: [
+        { start: 0, end: 5, description: "The lantern bearer reaches the bridge." },
+        { start: 5, end: 10, description: "The lantern bearer crosses into the mist." },
+      ],
+    }),
+  });
+  assert.equal(plan.promptProvider, "sglang");
+  assert.equal(plan.sglangModel, "qwen3.8-27b-uncensored-nvfp4");
+  assert.equal(plan.planMeta.source, "sglang");
+  assert.equal(plan.planMeta.timelineSource, "sglang");
+  assert.equal(plan.planMeta.promptSource, "sglang_structured");
+});
+
 test("Codex planner extracts a JSON object surrounded by short commentary", () => {
   const parsed = parsePlannerResponse("Here is the plan:\n{\"continuityBible\":{},\"segments\":[]}\n", "codex");
   assert.deepEqual(parsed, { continuityBible: {}, segments: [] });
@@ -614,7 +638,7 @@ test("legacy generation retains bounded stderr and exit code diagnostics", async
   const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
   assert.match(bridge, /job\.stderrTail = `\$\{job\.stderrTail \|\| ""\}\$\{text\}`\.slice\(-stderrLimit\)/);
   assert.match(bridge, /entry\.job\.exitCode = Number\.isInteger\(code\) \? code : null/);
-  assert.match(bridge, /job\.exitCode = Number\.isInteger\(code\) \? code : \(job\.exitCode \?\? null\)/);
+  assert.match(bridge, /job\.exitCode = job\.cancelRequested \? null : \(Number\.isInteger\(code\) \? code : \(job\.exitCode \?\? null\)\)/);
 });
 
 test("store increments revision atomically and records events", async () => {

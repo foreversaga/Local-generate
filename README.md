@@ -30,10 +30,8 @@ The important path settings are:
 - `MINIMAX_H3_ROOT` is required by `scripts/vast/start-local-runtime.ps1` and must point to the local `minimax-h3-local` checkout.
 - `MINIMAX_H3_PYTHON` is required by `scripts/vast/start-vast-remote.ps1` and must point to a usable Python executable, or to a command available on `PATH`.
 - `COMFYUI_ROOT` and `MINIMAX_H3_ROOT` can override the bridge defaults when ComfyUI and the local H3 project are not adjacent to this repository.
-- `MINIMAX_H3_AI_TOOLKIT_ROOT`, `MINIMAX_H3_AI_TOOLKIT_PYTHON`, `MINIMAX_H3_AI_TOOLKIT_FFMPEG_BIN`, and the `MINIMAX_H3_Z_IMAGE_*` settings are required only when the Z-Image / AI Toolkit training workflow is used.
+- `VLLM_URL`, `VLLM_API_KEY`, and `VLLM_PROMPT_MODEL` configure the Docker vLLM OpenAI-compatible prompt provider. Existing `SGLANG_*` names remain accepted as migration fallbacks.
 - `FFMPEG_PATH` and `FFPROBE_PATH` are required for long-video media processing when the executables are not already on `PATH`.
-
-The existing AI Toolkit variables in an older `.env.local` configure only the Z-Image training backend; they do not replace `MINIMAX_H3_ROOT` or `MINIMAX_H3_PYTHON`.
 
 Do not put credentials, API keys, SSH keys, model tokens, or provider secrets in `.env.example`. Keep real secrets in local ignored files or the deployment provider's secret store. The real Vast connection file is also local-only: copy `scripts/vast/vast-runtime.config.example.json` to `scripts/vast/vast-runtime.config.json`, then set the instance host, SSH port, user, and tunnel ports. The real file is ignored by Git.
 
@@ -147,6 +145,7 @@ The Web/API does not require Tailscale Serve and does not use an HMR WebSocket.
 - Text-to-video, reference-image-to-video, and video replacement
 - Resolution, duration, Steps, Seed, and model-profile settings
 - Upload and preview images, videos, and output MP4 files
+- Video upscale with selectable SeedVR2 7B or MiniMax H3 Latent 2x backends
 - Generation progress, cancellation, and history
 
 Web resources use only ComfyUI's two native paths: uploaded and reference media use `<COMFYUI_ROOT>/input`, while generated videos and output resources use `<COMFYUI_ROOT>/output`. The generator writes directly to ComfyUI output and does not create a second output copy in this project or in `minimax-h3-local`.

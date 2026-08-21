@@ -30,10 +30,8 @@ Copy-Item .env.example .env.local
 - `MINIMAX_H3_ROOT` 是 `scripts/vast/start-local-runtime.ps1` 必填的本機 `minimax-h3-local` 專案路徑。
 - `MINIMAX_H3_PYTHON` 是 `scripts/vast/start-vast-remote.ps1` 必填的 Python 執行檔路徑，也可以是 `PATH` 上可執行的命令。
 - 如果 ComfyUI 與本 repository 不在預設的相鄰位置，可用 `COMFYUI_ROOT` 與 `MINIMAX_H3_ROOT` 覆寫 bridge 的預設路徑。
-- 只有使用 Z-Image／AI Toolkit 訓練流程時，才需要設定 `MINIMAX_H3_AI_TOOLKIT_ROOT`、`MINIMAX_H3_AI_TOOLKIT_PYTHON`、`MINIMAX_H3_AI_TOOLKIT_FFMPEG_BIN` 與 `MINIMAX_H3_Z_IMAGE_*` 設定。
+- `VLLM_URL`、`VLLM_API_KEY` 與 `VLLM_PROMPT_MODEL` 用來設定 Docker vLLM 的 OpenAI 相容提示詞服務；既有 `SGLANG_*` 名稱仍可作為遷移備援。
 - 如果 `ffmpeg` 與 `ffprobe` 不在 `PATH`，長影片媒體處理才需要設定 `FFMPEG_PATH` 與 `FFPROBE_PATH`。
-
-舊版 `.env.local` 內既有的 AI Toolkit 變數只設定 Z-Image training backend，不能取代 `MINIMAX_H3_ROOT` 或 `MINIMAX_H3_PYTHON`。
 
 不要把 credentials、API key、SSH key、模型 token 或 provider secret 放入 `.env.example`。真實秘密請放在本機被忽略的檔案或部署 provider 的 secret store。Vast 實際連線檔也只應留在本機：將 `scripts/vast/vast-runtime.config.example.json` 複製為 `scripts/vast/vast-runtime.config.json`，再填入 instance host、SSH port、user 與 tunnel ports；實際檔案已由 Git 忽略。
 
@@ -144,6 +142,7 @@ Web/API 不需要透過 Tailscale Serve 轉送，也不使用 HMR WebSocket。
 - 文字生片、參考圖生片、影片替換
 - 解析度、秒數、Steps、Seed 與 model profile 設定
 - 上傳與預覽圖片、影片及輸出 MP4
+- 影片升頻可選 SeedVR2 7B 或 MiniMax H3 Latent 2x 後端
 - 生成進度、取消工作與歷史紀錄
 
 網頁資源只使用 ComfyUI 的兩個原生路徑：上傳與參考素材使用 `<COMFYUI_ROOT>/input`，生成影片與輸出資源使用 `<COMFYUI_ROOT>/output`。生成器直接寫入 ComfyUI output，不會在本專案或 `minimax-h3-local` 建立第二份輸出副本。

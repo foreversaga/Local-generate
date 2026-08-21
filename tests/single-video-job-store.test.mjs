@@ -92,6 +92,21 @@ test("Single Video store writes durable safe records without transient process h
   assert.doesNotMatch(JSON.stringify(saved), /private|secret-owner|kill/);
 });
 
+test("reserved output names and null exit codes are not persisted as completed artifacts", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const job = await value.store.create({
+    id: "sv-cancelled-1",
+    status: "cancelled",
+    outputRelativeName: "reserved-but-never-written.mp4",
+    exitCode: null,
+    elapsedMs: 0,
+  });
+  assert.equal(job.output, null);
+  assert.equal(job.exitCode, null);
+  assert.equal(job.elapsedMs, 0);
+});
+
 test("startup recovery preserves terminal history, requeues queued jobs, and interrupts running jobs", async (t) => {
   const value = await fixture();
   t.after(() => rm(value.root, { recursive: true, force: true }));

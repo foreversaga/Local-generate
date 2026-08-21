@@ -23,11 +23,8 @@ import { checkMediaTools } from "./server/long-video/media.mjs";
 import { LongVideoError } from "./server/long-video/schema.mjs";
 import { listJobs as listLongVideoJobs } from "./server/long-video/store.mjs";
 import { createSeedVR2Controller } from "./server/video-upscale/seedvr2.mjs";
-import { createImg2ImgController } from "./server/image-generation/img2img.mjs";
-import {
-  NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION,
-  createText2ImgController,
-} from "./server/image-generation/text2img.mjs";
+import { createImg2ImgController, IMG2IMG_MODEL_PROFILES } from "./server/image-generation/img2img.mjs";
+import { createText2ImgController } from "./server/image-generation/text2img.mjs";
 import {
   LoraTrainingError,
   captionService as loraCaptionService,
@@ -36,9 +33,6 @@ import {
   registryStore as loraRegistryStore,
   normalizeAssetIds,
   normalizeTriggerWords,
-  normalizeZImageParameters,
-  Z_IMAGE_PARAMETER_ALIASES,
-  Z_IMAGE_PARAMETER_KEYS,
   toApiError as toLoraApiError,
 } from "./server/lora-training/index.mjs";
 import { createOllamaCoordinator } from "./server/ollama-coordinator.mjs";
@@ -124,11 +118,19 @@ async function requireBridgePython() {
 }
 const REF2VA_MODEL_NAMES = Object.freeze({
   ref2va_pruned_nvfp4: "minimax_h3_ref2va_pruned_nvfp4.safetensors",
-  ref2va_pruned_int8_convrot: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
 });
 const REF2VA_PROFILE_ALIASES = Object.freeze({
   nvfp4_blackwell: "ref2va_pruned_nvfp4",
-  official_pruned_int8_convrot: "ref2va_pruned_int8_convrot",
+  ref2va_pruned_nvfp4: "ref2va_pruned_nvfp4",
+});
+const REMOTE_FL2VA_PROFILE_ALIASES = Object.freeze({
+  nvfp4_blackwell: "nvfp4_blackwell",
+});
+const FL2VA_PROFILE_NAMES = new Set(["nvfp4_blackwell"]);
+const REMOTE_REF2VA_PROFILE_ALIASES = Object.freeze({
+  // The Vast manifest intentionally ships the Blackwell NVFP4 Ref2VA file.
+  nvfp4_blackwell: "ref2va_pruned_nvfp4",
+  ref2va_pruned_nvfp4: "ref2va_pruned_nvfp4",
 });
 const REF2VA_MODEL_NAME = REF2VA_MODEL_NAMES.ref2va_pruned_nvfp4;
 const INITIAL_REMOTE_MODE = /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
@@ -146,6 +148,9 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   runtimeMode: () => runtimeContext.mode,
 });
 const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
+const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://127.0.0.1:8000/v1").replace(/\/$/, "");
+const SGLANG_API_KEY = String(process.env.VLLM_API_KEY || process.env.SGLANG_API_KEY || "").trim();
+const DEFAULT_SGLANG_MODEL = String(process.env.VLLM_PROMPT_MODEL || process.env.SGLANG_PROMPT_MODEL || "qwen3.5-9b-vision").trim();
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || GEMMA4_12B_OLLAMA_MODEL;
 const defaultOllamaModel = () => GEMMA4_12B_OLLAMA_MODEL;
@@ -157,6 +162,36 @@ const CODEX_MODELS_CACHE_PATH = path.join(CODEX_HOME, "models_cache.json");
 const H3_PROMPT_SKILL_PATH = path.resolve(
   process.env.H3_PROMPT_SKILL_PATH || path.join(CODEX_HOME, "skills", "h3-prompt-writing", "SKILL.md"),
 );
+const NATURE_CAMERA_SKILL_PATH = path.resolve(
+  process.env.NATURE_CAMERA_SKILL_PATH || path.join(CODEX_HOME, "skills", "nature-camera", "SKILL.md"),
+);
+const NATURE_CAMERA_REFERENCE_PATH = path.join(path.dirname(NATURE_CAMERA_SKILL_PATH), "references", "camera-language.md");
+let natureCameraSkillCache = null;
+
+async function loadNatureCameraSkillBundle() {
+  const [skillStat, referenceStat] = await Promise.all([
+    fs.stat(NATURE_CAMERA_SKILL_PATH),
+    fs.stat(NATURE_CAMERA_REFERENCE_PATH),
+  ]).catch(() => {
+    throw new LongVideoError("NATURE_CAMERA_SKILL_MISSING", `找不到完整 nature-camera skill：${NATURE_CAMERA_SKILL_PATH}`, 503);
+  });
+  const cacheKey = `${skillStat.mtimeMs}:${skillStat.size}:${referenceStat.mtimeMs}:${referenceStat.size}`;
+  if (natureCameraSkillCache?.key === cacheKey) return natureCameraSkillCache.value;
+  const [skill, cameraLanguage] = await Promise.all([
+    fs.readFile(NATURE_CAMERA_SKILL_PATH, "utf8"),
+    fs.readFile(NATURE_CAMERA_REFERENCE_PATH, "utf8"),
+  ]);
+  const value = [
+    "Apply the complete trusted nature-camera skill and camera-language reference below as the photographic decision policy.",
+    "Apply all relevant preservation, capture-profile, composition, calibration, optics, lighting, anatomy, and controlled-imperfection rules.",
+    "Task-specific instructions after this bundle override only the skill response-format instruction; they do not override its photographic rules.",
+    `<nature-camera-skill>\n${skill.trim()}\n</nature-camera-skill>`,
+    `<nature-camera-reference>\n${cameraLanguage.trim()}\n</nature-camera-reference>`,
+  ].join("\n\n");
+  natureCameraSkillCache = { key: cacheKey, value };
+  return value;
+}
+
 const CODEX_PROMPT_TMP_ROOT = path.join(PROJECT_ROOT, ".tmp", "codex-prompts");
 const CODEX_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_IMAGE_LIMIT_BYTES = 12 * 1024 * 1024;
@@ -183,6 +218,7 @@ const jobs = new Map();
 const jobProcesses = new Map();
 const singleJobPersistence = new Map();
 const recoveredSingleVideoMonitors = new Map();
+const inspectedTerminalSingleVideoRecords = new Set();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
 const recoverPersistedSingleVideoJobs = !process.env.NODE_TEST_CONTEXT
@@ -330,6 +366,30 @@ async function codexStatus() {
   }
 }
 
+function sglangHeaders() {
+  return {
+    "Content-Type": "application/json",
+    ...(SGLANG_API_KEY ? { Authorization: `Bearer ${SGLANG_API_KEY}` } : {}),
+  };
+}
+
+async function sglangStatus() {
+  try {
+    const payload = await fetchJson(`${SGLANG_API_BASE}/models`, { headers: sglangHeaders() }, 5000);
+    const models = Array.isArray(payload?.data)
+      ? payload.data.map((item) => String(item?.id || "").trim()).filter(Boolean)
+      : [];
+    return {
+      online: true,
+      url: SGLANG_API_BASE,
+      model: models.includes(DEFAULT_SGLANG_MODEL) ? DEFAULT_SGLANG_MODEL : models[0] || DEFAULT_SGLANG_MODEL,
+      models,
+    };
+  } catch {
+    return { online: false, url: SGLANG_API_BASE, model: DEFAULT_SGLANG_MODEL, models: [] };
+  }
+}
+
 const CODEX_REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 async function readCodexModels() {
@@ -406,11 +466,14 @@ function timingEstimate(job) {
 }
 
 function elapsedMilliseconds(job) {
-  if (job.status === "running") {
-    const startedMs = Number.isFinite(job.executionStartedMs)
-      ? job.executionStartedMs
-      : Date.parse(job.executionStartedAt || job.startedAt || "");
-    if (Number.isFinite(startedMs)) return Math.max(0, Date.now() - startedMs);
+  const startedMs = Number.isFinite(job.executionStartedMs)
+    ? job.executionStartedMs
+    : Date.parse(job.executionStartedAt || "");
+  if (job.status === "running" && Number.isFinite(startedMs)) return Math.max(0, Date.now() - startedMs);
+  if (Number.isFinite(job.elapsedMs) && job.elapsedMs > 0) return job.elapsedMs;
+  const finishedMs = Date.parse(job.finishedAt || job.completedAt || job.updatedAt || "");
+  if (Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs) {
+    return finishedMs - startedMs;
   }
   if (Number.isFinite(job.elapsedMs)) return Math.max(0, job.elapsedMs);
   return 0;
@@ -432,7 +495,7 @@ function updateJobTiming(job) {
   }
   if (["failed", "cancelled", "interrupted"].includes(job.status)) {
     job.elapsedMs = elapsedMs;
-    job.estimatedDurationMs = historical?.durationMs ?? null;
+    job.estimatedDurationMs = null;
     job.timingSampleCount = historical?.sampleCount ?? 0;
     job.etaMs = null;
     job.etaLowerMs = null;
@@ -1159,8 +1222,9 @@ let healthRequest = null;
 let healthRequestMode = "";
 
 async function loadHealth() {
-  const [ollama, comfy, codex, python] = await Promise.all([
+  const [ollama, sglang, comfy, codex, python] = await Promise.all([
     fetchJson(runtimeContext.ollamaUrl + "/api/tags").catch(() => null),
+    sglangStatus(),
     fetchJson(runtimeContext.comfyUrl + "/system_stats").catch(() => null),
     codexStatus(),
     resolveBridgePython(),
@@ -1183,6 +1247,8 @@ async function loadHealth() {
       .then((value) => value.isDirectory())
       .catch(() => false),
     ollama: { online: Boolean(ollama), url: runtimeContext.ollamaUrl, models },
+    sglang,
+    vllm: sglang,
     codex,
     comfy: { online: Boolean(comfy), url: runtimeContext.comfyUrl, remote: runtimeContext.isRemote, devices },
     runtime: runtimeContext.snapshot(),
@@ -1345,7 +1411,9 @@ export function referenceImageArgs(paths = []) {
 }
 
 function promptProvider(value) {
-  return value === "codex" ? "codex" : "ollama";
+  if (value === "codex") return "codex";
+  if (value === "sglang" || value === "vllm") return "sglang";
+  return "ollama";
 }
 
 function codexModel(value) {
@@ -1417,29 +1485,111 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [], u
   return cleanPromptText(result.response || result.message?.content);
 }
 
+export async function requestSglangPrompt({ model, system, prompt, visualInputs = [], fetcher = fetch, maxTokens = 4096, responseFormat = null }) {
+  try {
+    const userContent = visualInputs.length
+      ? [
+          { type: "text", text: prompt },
+          ...visualInputs.flatMap((item, index) => [
+            { type: "text", text: `Reference ${index + 1} role: ${item.role}` },
+            { type: "image_url", image_url: { url: `data:image/jpeg;base64,${item.data}` } },
+          ]),
+        ]
+      : prompt;
+    const response = await fetcher(`${SGLANG_API_BASE}/chat/completions`, {
+      method: "POST",
+      headers: sglangHeaders(),
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userContent },
+        ],
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: maxTokens,
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.error?.message || payload?.message || response.statusText;
+      throw new LongVideoError("SGLANG_REQUEST_FAILED", `vLLM 提示詞請求失敗：${message}`, 502);
+    }
+    const content = payload?.choices?.[0]?.message?.content;
+    const result = cleanPromptText(content);
+    if (!result) throw new LongVideoError("SGLANG_EMPTY_RESPONSE", "vLLM 回傳了空的提示詞。", 502);
+    return result;
+  } catch (error) {
+    if (error instanceof LongVideoError) throw error;
+    if (error?.name === "TimeoutError") throw new LongVideoError("SGLANG_TIMEOUT", "vLLM 提示詞請求逾時。", 504);
+    throw new LongVideoError("SGLANG_UNAVAILABLE", `無法連線 Docker vLLM：${error.message}`, 502);
+  }
+}
+
+// Compatibility export for integrations written before the local OpenAI
+// endpoint was identified as vLLM.
+export const requestVllmPrompt = requestSglangPrompt;
+
+function firstNonEmptyJsonStringField(value, key) {
+  const source = String(value || "");
+  const marker = `"${key}"`;
+  let offset = 0;
+  while (offset < source.length) {
+    const keyStart = source.indexOf(marker, offset);
+    if (keyStart < 0) return "";
+    const colon = source.indexOf(":", keyStart + marker.length);
+    if (colon < 0) return "";
+    const quote = source.indexOf("\"", colon + 1);
+    if (quote < 0) return "";
+    let escaped = false;
+    for (let index = quote + 1; index < source.length; index += 1) {
+      const character = source[index];
+      if (character === "\"" && !escaped) {
+        const encoded = source.slice(quote, index + 1);
+        try {
+          const decoded = JSON.parse(encoded).trim();
+          if (decoded) return decoded;
+        } catch {
+          break;
+        }
+        offset = index + 1;
+        break;
+      }
+      escaped = character.charCodeAt(0) === 92 ? !escaped : false;
+    }
+    if (offset <= keyStart) offset = keyStart + marker.length;
+  }
+  return "";
+}
+
 function parseImg2ImgPromptResponse(value) {
-  const raw = cleanPromptText(value);
+  const raw = cleanPromptText(value).replace(/^<think>[\s\S]*?<\/think>\s*/i, "");
   let parsed = null;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // Image-to-image prompts are free-form; keep the provider response as-is.
+    // Recover the first complete fields from truncated or duplicate-key output.
   }
-  const prompt = typeof parsed === "string"
+  const parsedPrompt = typeof parsed === "string"
     ? parsed.trim()
     : typeof parsed?.prompt === "string"
       ? parsed.prompt.trim()
-      : raw;
-  const negativePrompt = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.negativePrompt === "string"
+      : "";
+  const parsedNegative = parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.negativePrompt === "string"
     ? parsed.negativePrompt.trim()
     : "";
+  const prompt = parsedPrompt || firstNonEmptyJsonStringField(raw, "prompt") || raw;
+  const negativePrompt = parsedNegative || firstNonEmptyJsonStringField(raw, "negativePrompt");
   return { prompt, negativePrompt };
 }
 
 async function createImg2ImgPrompt(payload = {}) {
   const provider = promptProvider(payload.provider);
-  if (provider !== "ollama") {
-    throw new LongVideoError("IMG2IMG_PROVIDER_UNSUPPORTED", "以圖生圖提示詞目前僅支援 Ollama。", 400);
+  if (provider !== "ollama" && provider !== "sglang") {
+    throw new LongVideoError("IMG2IMG_PROVIDER_UNSUPPORTED", "以圖生圖提示詞僅支援 Ollama 或 vLLM。", 400);
   }
   const brief = String(payload.brief || "").trim();
   if (!brief) throw new LongVideoError("IMG2IMG_PROMPT_INPUT_REQUIRED", "請先輸入以圖生圖描述。", 400);
@@ -1456,20 +1606,46 @@ async function createImg2ImgPrompt(payload = {}) {
     data: normalizeBase64ImageData(imageInput.data, 0, "IMG2IMG_IMAGE"),
   }];
   const model = String(payload.model || "").trim();
-  if (!model) throw new LongVideoError("IMG2IMG_MODEL_REQUIRED", "請先選擇可用的 Ollama 視覺模型。", 400);
-  const response = await requestOllamaPrompt({
+  const providerLabel = provider === "sglang" ? "vLLM" : "Ollama";
+  if (!model) throw new LongVideoError("IMG2IMG_MODEL_REQUIRED", `請先選擇可用的 ${providerLabel} 視覺模型。`, 400);
+  const imageModel = String(payload.imageModel || "").trim();
+  const imageProfile = imageModel ? IMG2IMG_MODEL_PROFILES[imageModel] : null;
+  if (imageModel && !imageProfile) {
+    throw new LongVideoError("IMG2IMG_IMAGE_MODEL_UNSUPPORTED", `不支援的以圖生圖模型：${imageModel}`, 400);
+  }
+  const flux2Edit = imageProfile?.workflow === "flux2-dev-edit";
+  const requestPrompt = provider === "sglang" ? requestSglangPrompt : requestOllamaPrompt;
+  const natureCameraSkill = await loadNatureCameraSkillBundle();
+  const system = flux2Edit
+    ? [
+        "You write concise edit instructions for FLUX.2 Dev Image Edit, which directly receives the attached source image as reference conditioning.",
+        natureCameraSkill,
+        "Treat every requested transformation in the user's description as a hard requirement and state each one explicitly in the prompt.",
+        "Do not redescribe or reconstruct the whole source image. Mention visible source details only when needed to identify what must change or remain fixed.",
+        "Use direct edit language: preserve unchanged identity, pose, framing, camera position, lighting, and environment unless the user asks to change them; then describe only the requested changes and the smallest compatible nature-camera corrections.",
+        "Do not invent a new subject, pose, outfit, background, camera, or lighting change that the user did not request.",
+        "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
+        "prompt must be a non-empty English FLUX.2 edit instruction under 120 words. negativePrompt must be an empty string because this workflow does not use negative guidance.",
+        "Do not return markdown, code fences, explanations, or any additional keys.",
+      ]
+    : [
+        "You are an expert Stable Diffusion image-to-image prompt writer.",
+        natureCameraSkill,
+        "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
+        "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
+        "Both values must be non-empty English strings suitable for Stable Diffusion; negativePrompt should list unwanted artifacts and details to avoid.",
+        "Keep prompt under 120 words. negativePrompt must contain exactly 12 distinct comma-separated short terms. Never repeat a term.",
+        "Do not return markdown, code fences, explanations, or any additional keys.",
+      ];
+  const response = await requestPrompt({
     model,
-    system: [
-      "You are an expert Stable Diffusion image-to-image prompt writer.",
-      NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION,
-      "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
-      "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
-      "Both values must be non-empty English strings suitable for Stable Diffusion; negativePrompt should list unwanted artifacts and details to avoid.",
-      "Do not return markdown, code fences, explanations, or any additional keys.",
-    ].join(" "),
-    prompt: `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
+    system: system.join(" "),
+    prompt: flux2Edit
+      ? `Attached source image role: ${visualInputs[0].role}.\nDirect edit request — highest priority; include every requested change:\n${brief}`
+      : `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
     visualInputs,
-    unloadAfter: false,
+    ...(provider === "sglang" ? { maxTokens: 512, responseFormat: { type: "json_object" } } : {}),
+    ...(provider === "ollama" ? { unloadAfter: false } : {}),
   });
   return parseImg2ImgPromptResponse(response);
 }
@@ -1527,7 +1703,9 @@ async function createPrompt(payload) {
   if (requestedMode === "img2img") return await createImg2ImgPrompt(payload);
   const model = provider === "codex"
     ? codexModel(payload.codexModel || payload.model)
-    : String(payload.model || defaultOllamaModel());
+    : provider === "sglang"
+      ? String(payload.sglangModel || payload.vllmModel || payload.model || DEFAULT_SGLANG_MODEL).trim()
+      : String(payload.model || defaultOllamaModel());
   const reasoningEffort = provider === "codex"
     ? codexReasoningEffort(payload.reasoningEffort || payload.codexReasoningEffort)
     : null;
@@ -1583,10 +1761,10 @@ async function createPrompt(payload) {
     ]);
   }
   if (!brief) throw new LongVideoError("PROMPT_INPUT_REQUIRED", "請先輸入一段畫面想法。", 400);
-  if (provider === "ollama" && ["i2v", "fl2v", "l2v", "ref2v"].includes(mode) && !visualInputs.length) {
+  if ((provider === "ollama" || provider === "sglang") && ["i2v", "fl2v", "l2v", "ref2v"].includes(mode) && !visualInputs.length) {
     throw new LongVideoError(
       "PROMPT_VISUAL_INPUT_REQUIRED",
-      `Ollama ${mode.toUpperCase()} prompt generation was not given an actual image/video visual input; attach the reference media so the model cannot claim it inspected unseen content.`,
+      `${provider === "sglang" ? "vLLM" : "Ollama"} ${mode.toUpperCase()} prompt generation was not given an actual image/video visual input; attach the reference media so the model cannot claim it inspected unseen content.`,
       400,
       { mode, model },
     );
@@ -1648,20 +1826,21 @@ async function createPrompt(payload) {
       negativePrompt,
     });
   }
-  const prompt = await requestOllamaPrompt({
+  const requestLocalPrompt = provider === "sglang" ? requestSglangPrompt : requestOllamaPrompt;
+  const prompt = await requestLocalPrompt({
     model,
     system: promptSystem(mode, durationSeconds, visualInputs.length > 0),
     prompt: context + "\n\nUser idea:\n" + brief,
     visualInputs,
   });
-  if (!prompt) throw new Error("Ollama 回傳了空的提示詞。");
+  if (!prompt) throw new Error(`${provider === "sglang" ? "vLLM" : "Ollama"} 回傳了空的提示詞。`);
   let finalPrompt = prompt;
   if (mode !== "replace") {
     const validation = await validateOrRepairH3Prompt(prompt, {
       mode,
       duration: durationSeconds,
       hasVisualReference: visualInputs.length > 0,
-      repair: async (repairRequest) => requestOllamaPrompt({
+      repair: async (repairRequest) => requestLocalPrompt({
         model,
         system: promptSystem(mode, durationSeconds, visualInputs.length > 0),
         prompt: repairRequest,
@@ -1971,7 +2150,25 @@ async function planSequenceWithPromptProvider(input, options = {}) {
     else delete plannerInput.plannerImages;
   }
   const provider = promptProvider(plannerInput?.provider || plannerInput?.promptProvider);
-  if (provider !== "codex") {
+  if (provider === "sglang") {
+    const model = plannerInput?.sglangModel || plannerInput?.vllmModel || plannerInput?.model || DEFAULT_SGLANG_MODEL;
+    return defaultPlanSequence(
+      { ...plannerInput, promptProvider: "sglang", sglangModel: model },
+      {
+        ...options,
+        model,
+        skillPath: H3_PROMPT_SKILL_PATH,
+        contextLength: process.env.H3_OLLAMA_PROMPT_CONTEXT,
+        request: ({ input, model: requestModel, prompt, system }) => requestSglangPrompt({
+          model: requestModel,
+          system,
+          prompt,
+          visualInputs: input?.plannerImages || [],
+        }),
+      },
+    );
+  }
+  if (provider === "ollama") {
     const model = plannerInput?.ollamaModel || plannerInput?.model || defaultOllamaModel();
     const receipt = createOllamaPromptReceipt();
     try {
@@ -2354,20 +2551,18 @@ function characterLoraOptions(objectInfo) {
 
 const LORA_CONSUMER_FAMILIES = Object.freeze({
   "single-replace": Object.freeze(["wan22-animate"]),
-  img2img: Object.freeze(["sdxl", "illustrious", "sd15", "z-image"]),
+  img2img: Object.freeze(["sdxl", "illustrious", "sd15"]),
 });
 
 const TRAINABLE_LORA_BASE_PROFILES = Object.freeze({
   sdxl: "sdxl-base-1.0",
   illustrious: "wai-illustrious",
-  "z-image": "z-image-turbo",
 });
 
 const IMG2IMG_LORA_PROFILES = Object.freeze({
   "sd_xl_base_1.0.safetensors": Object.freeze({ family: "sdxl", baseProfile: "sdxl-base-1.0" }),
   "v1-5-pruned-emaonly-fp16.safetensors": Object.freeze({ family: "sd15", baseProfile: "sd15" }),
   "waiIllustriousSDXL_v170.safetensors": Object.freeze({ family: "illustrious", baseProfile: "wai-illustrious" }),
-  "z_image_turbo_bf16.safetensors": Object.freeze({ family: "z-image", baseProfile: "z-image-turbo" }),
   wan22_animate_fp8: Object.freeze({ family: "wan22-animate", baseProfile: "wan22-animate" }),
 });
 
@@ -2376,7 +2571,7 @@ function normalizeLoraFamilyFilter(value) {
   if (!family) return "";
   if (family === "wan") return "wan22-animate";
   if (family === "wai") return "illustrious";
-  if (!["sdxl", "illustrious", "sd15", "z-image", "wan22-animate"].includes(family)) {
+  if (!["sdxl", "illustrious", "sd15", "wan22-animate"].includes(family)) {
     throw makeRuntimeError("LORA_FAMILY_INVALID", "Unsupported LoRA family.", 400, { family });
   }
   return family;
@@ -2394,7 +2589,7 @@ function normalizeLoraConsumerFilter(value) {
 function registryConsumerMetadata(item) {
   const consumers = [];
   if (item.family === "wan22-animate") consumers.push("single-replace");
-  if (["sdxl", "illustrious", "sd15", "z-image"].includes(item.family)) consumers.push("img2img");
+  if (["sdxl", "illustrious", "sd15"].includes(item.family)) consumers.push("img2img");
   return consumers;
 }
 
@@ -2404,8 +2599,7 @@ function compatibleLoraItem(item, { family, profile, consumer }) {
   if (consumer && !registryConsumerMetadata(item).includes(consumer)) return false;
   if (profile) {
     const expected = IMG2IMG_LORA_PROFILES[profile];
-    if (expected && (item.family !== expected.family || (expected.family === "z-image" ? item.baseProfile !== expected.baseProfile : (item.baseProfile && item.baseProfile !== expected.baseProfile)))) return false;
-    if (!expected && profile === TRAINABLE_LORA_BASE_PROFILES["z-image"] && (item.family !== "z-image" || item.baseProfile !== profile)) return false;
+    if (expected && (item.family !== expected.family || (item.baseProfile && item.baseProfile !== expected.baseProfile))) return false;
     if (!expected && item.baseProfile !== profile) return false;
   }
   return true;
@@ -2578,15 +2772,6 @@ async function getLoraTrainingService() {
         ollamaProbe: probeCaptionOllama,
         comfyLoraDirectory: path.join(COMFY_ROOT, "models", "loras", "trained"),
         resolveBaseModel: ({ family, baseProfile }) => {
-          if (family === "z-image") {
-            const configured = process.env.MINIMAX_H3_Z_IMAGE_MODEL_PATH || process.env.AI_TOOLKIT_Z_IMAGE_MODEL_PATH;
-            if (!configured || !configured.trim()) return null;
-            return {
-              path: path.resolve(configured.trim()),
-              format: process.env.MINIMAX_H3_Z_IMAGE_MODEL_FORMAT || process.env.AI_TOOLKIT_Z_IMAGE_MODEL_FORMAT || "diffusers",
-              source: process.env.MINIMAX_H3_Z_IMAGE_MODEL_PATH ? "MINIMAX_H3_Z_IMAGE_MODEL_PATH" : "AI_TOOLKIT_Z_IMAGE_MODEL_PATH",
-            };
-          }
           const fileName = family === "illustrious" || baseProfile === "wai-illustrious"
             ? "waiIllustriousSDXL_v170.safetensors"
             : "sd_xl_base_1.0.safetensors";
@@ -2702,9 +2887,7 @@ function publicLoraTrainingJob(details) {
     ? config.characterName.trim()
     : job.displayName || config.outputName || job.slug || "Trained LoRA";
   const overrides = config.overrides && typeof config.overrides === "object" ? config.overrides : {};
-  const overrideKeys = training.family === "z-image"
-    ? ["rank", "alpha", "learningRate", "steps", "batchSize", "resolution", "seed"]
-    : ["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"];
+  const overrideKeys = ["rank", "alpha", "learningRate", "epochs", "steps", "batchSize", "resolution", "seed"];
   const configSummary = {
     family: training.family,
     baseProfile: training.baseProfile,
@@ -2715,13 +2898,6 @@ function publicLoraTrainingJob(details) {
     overrides: Object.fromEntries(overrideKeys
       .filter((key) => Number.isFinite(Number(overrides[key])))
       .map((key) => [key, Number(overrides[key])])),
-    ...(training.family === "z-image" ? {
-      zImageConfig: {
-        gradientCheckpointing: config.zImageConfig?.gradientCheckpointing ?? true,
-        cacheLatents: config.zImageConfig?.cacheLatents ?? true,
-        aspectRatioBuckets: config.zImageConfig?.aspectRatioBuckets ?? true,
-      },
-    } : {}),
   };
   const provenance = {};
   for (const key of ["sourceJobId", "retryOf", "attempt"]) {
@@ -2865,44 +3041,7 @@ function normalizeTrainableLoraConfig(config = {}, family = config?.family) {
       details: { field: "family", requestedFamily, configFamily },
     });
   }
-  if (requestedFamily !== "z-image") {
-    return requestedFamily ? { ...config, family: requestedFamily } : config;
-  }
-  const expectedBaseProfile = TRAINABLE_LORA_BASE_PROFILES[requestedFamily];
-  const requestedBaseProfile = config?.baseProfile === undefined
-    ? expectedBaseProfile
-    : String(config.baseProfile || "").trim();
-  if (requestedBaseProfile !== expectedBaseProfile) {
-    throw new LoraTrainingError("INVALID_REQUEST", "baseProfile is unsupported for the selected family", {
-      status: 400,
-      details: { field: "baseProfile", family: requestedFamily, allowed: [expectedBaseProfile] },
-    });
-  }
-  const section = config.zImageConfig ?? config.zImage ?? config.aiToolkit ?? config;
-  if (Object.hasOwn(config, "epochs") || Object.hasOwn(section, "epochs")) {
-    throw new LoraTrainingError("INVALID_REQUEST", "epochs is not supported by Z-Image; send training steps instead", {
-      status: 422,
-      details: { field: "epochs", allowed: ["steps"] },
-    });
-  }
-  const directParameters = Object.fromEntries(Object.keys(section)
-    .filter((key) => Z_IMAGE_PARAMETER_KEYS.includes(key) || Object.hasOwn(Z_IMAGE_PARAMETER_ALIASES, key))
-    .map((key) => [key, section[key]]));
-  try {
-    normalizeZImageParameters({
-      ...(section.parameters ?? {}),
-      ...(section.overrides ?? {}),
-      ...directParameters,
-      ...(config.overrides ?? {}),
-      ...(config.parameters ?? {}),
-    });
-  } catch (error) {
-    throw new LoraTrainingError("INVALID_REQUEST", error?.message || "Z-Image training parameters are invalid", {
-      status: 422,
-      details: { field: error?.details?.field || "overrides", allowed: [...Z_IMAGE_PARAMETER_KEYS] },
-    });
-  }
-  return { ...config, family: requestedFamily, baseProfile: expectedBaseProfile };
+  return requestedFamily ? { ...config, family: requestedFamily } : config;
 }
 
 async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
@@ -2991,7 +3130,7 @@ async function handleLoraTrainingRoute(req, res, { pathname, requestUrl }) {
       const { revision, triggerWords, ...config } = body;
       const currentFamily = String(current.family || "").trim().toLowerCase();
       const requestedFamily = config.family === undefined ? currentFamily : String(config.family).trim().toLowerCase();
-      if (config.family !== undefined && requestedFamily !== currentFamily && (currentFamily === "z-image" || requestedFamily === "z-image")) {
+      if (config.family !== undefined && requestedFamily !== currentFamily) {
         throw new LoraTrainingError("INVALID_REQUEST", "family cannot change after job creation", {
           status: 400,
           details: { field: "family", currentFamily, requestedFamily },
@@ -3174,10 +3313,13 @@ function publicJob(job) {
       } : {}),
       loraProvenance: job.loraProvenance ? structuredClone(job.loraProvenance) : { relativePath: job.characterLoraName, legacy: true },
     } : {}),
-    output: job.output,
+    output: job.status === "completed" ? job.output : null,
     error: safePublicJobError(job.error),
     exitCode: job.exitCode,
     startedAt: job.startedAt,
+    queuedAt: job.queuedAt,
+    executionStartedAt: job.executionStartedAt,
+    queueElapsedMs: job.queueElapsedMs,
     finishedAt: job.finishedAt,
     elapsedMs: job.elapsedMs,
     estimatedDurationMs: job.estimatedDurationMs,
@@ -3232,6 +3374,18 @@ function stageProgress(classType) {
   }[classType] || 20;
 }
 
+function markComfyExecutionStarted(job) {
+  if (job.status === "queued") job.status = "running";
+  if (job.executionStartedAt) return;
+  const startedAt = now();
+  const startedMs = Date.now();
+  job.executionStartedAt = startedAt;
+  job.executionStartedMs = startedMs;
+  job.startedAt = startedAt;
+  const queuedMs = Date.parse(job.queuedAt || job.createdAt || "");
+  job.queueElapsedMs = Number.isFinite(queuedMs) ? Math.max(0, startedMs - queuedMs) : null;
+}
+
 function updateJobFromStructuredEvent(job, event) {
   touchJob(job);
   const type = String(event?.type || "");
@@ -3258,6 +3412,13 @@ function updateJobFromStructuredEvent(job, event) {
     job.connectionState = event.transport === "polling" ? "polling" : "connected";
     return;
   }
+  if (type === "execution_start") {
+    markComfyExecutionStarted(job);
+    job.status = "running";
+    job.connectionState = "connected";
+    job.stage = "ComfyUI 開始執行…";
+    return;
+  }
   if (type === "executing") {
     job.connectionState = "connected";
     if (event.node == null) {
@@ -3265,12 +3426,14 @@ function updateJobFromStructuredEvent(job, event) {
       job.progress = Math.max(job.progress, 98);
       return;
     }
+    markComfyExecutionStarted(job);
     job.comfyNode = String(event.class_type || event.node);
     job.stage = String(event.stage || `ComfyUI / ${job.comfyNode}`);
     if (job.progressSource !== "native") job.progress = Math.max(job.progress, stageProgress(event.class_type));
     return;
   }
   if (type === "progress") {
+    markComfyExecutionStarted(job);
     const current = Math.max(0, Number(event.value) || 0);
     const maximum = Math.max(1, Number(event.max) || 1);
     recordNativeProgress(job, current, maximum);
@@ -3309,6 +3472,7 @@ function updateJobFromLine(job, line) {
   }
   const progress = line.match(/progress=(\d+)\/(\d+)/i);
   if (progress) {
+    markComfyExecutionStarted(job);
     const current = Number(progress[1]);
     const maximum = Math.max(1, Number(progress[2]));
     recordNativeProgress(job, current, maximum);
@@ -3324,6 +3488,7 @@ function updateJobFromLine(job, line) {
   }
   const node = line.match(/node=([^\s]+)/i);
   if (node) {
+    markComfyExecutionStarted(job);
     job.stage = "ComfyUI / " + node[1];
     job.progress = Math.min(94, Math.max(job.progress, 20));
     touchJob(job);
@@ -3411,9 +3576,7 @@ async function pumpGenerationQueue() {
 
   activeGenerationId = entry.job.id;
   entry.child.started = true;
-  entry.job.status = "running";
-  entry.job.executionStartedAt = now();
-  entry.job.executionStartedMs = Date.now();
+  entry.job.processStartedAt = now();
   entry.job.progress = Math.max(entry.job.progress, 8);
   entry.job.stage = "正在啟動生成…";
   entry.job.connectionState = "starting";
@@ -3474,15 +3637,31 @@ async function pumpGenerationQueue() {
   }
 }
 
-function resolveGenerationModelProfile(mode, value) {
+function resolveGenerationModelProfile(mode, value, options = {}) {
   const requested = String(value || "").trim();
+  const remote = options.remote ?? runtimeContext.isRemote;
   if (mode === "replace") return "wan22_animate_fp8";
-  if (mode !== "ref2v") return requested || "nvfp4_blackwell";
-  const profile = REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4";
+  if (mode !== "ref2v") {
+    const profile = remote
+      ? REMOTE_FL2VA_PROFILE_ALIASES[requested] || requested || "nvfp4_blackwell"
+      : requested || "nvfp4_blackwell";
+    if (!FL2VA_PROFILE_NAMES.has(profile)) {
+      throw makeRuntimeError(
+        "FL2VA_PROFILE_UNSUPPORTED",
+        `Unsupported FL2VA model profile: ${requested || "(empty)"}. Use nvfp4_blackwell.`,
+        422,
+        { modelProfile: requested },
+      );
+    }
+    return profile;
+  }
+  const profile = remote
+    ? REMOTE_REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4"
+    : REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4";
   if (!Object.hasOwn(REF2VA_MODEL_NAMES, profile)) {
     throw makeRuntimeError(
       "REF2VA_PROFILE_UNSUPPORTED",
-      `Unsupported Ref2VA model profile: ${requested || "(empty)"}. Use NVFP4 or Ref2VA INT8 ConvRot.`,
+      `Unsupported Ref2VA model profile: ${requested || "(empty)"}. Use the installed ${remote ? "Vast" : "local"} NVFP4 Ref2VA profile.`,
       422,
       { modelProfile: requested },
     );
@@ -3526,7 +3705,7 @@ async function startGeneration(payload, internal = {}) {
   if (requestedCharacterLora && mode === "ref2v" && !h3Selection.selected) {
     throw makeRuntimeError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference generation.", 422);
   }
-  if (requestedCharacterLora && mode !== "replace" && !["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(String(payload.modelProfile || "nvfp4_blackwell"))) {
+  if (requestedCharacterLora && mode !== "replace" && !["nvfp4_blackwell", "ref2va_pruned_nvfp4"].includes(String(payload.modelProfile || "nvfp4_blackwell"))) {
     throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${String(payload.modelProfile || "nvfp4_blackwell")}.`, 422, { modelProfile: String(payload.modelProfile || "nvfp4_blackwell") });
   }
   const registryLora = requestedCharacterLora
@@ -3676,7 +3855,7 @@ async function startGeneration(payload, internal = {}) {
   const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
   const timeoutSeconds = Math.round(clampNumber(payload.timeoutSeconds, 3600, 60, 86400));
-  if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(modelProfile)) {
+  if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "ref2va_pruned_nvfp4"].includes(modelProfile)) {
     throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${modelProfile}.`, 422, { modelProfile });
   }
   const negativePrompt = String(payload.negativePrompt || "").trim();
@@ -3819,7 +3998,7 @@ async function startGeneration(payload, internal = {}) {
     runtimeMode: runtimeContext.mode,
     createdAt,
     queuedAt,
-    startedAt: existingJob?.startedAt || createdAt,
+    startedAt: existingJob?.startedAt || null,
     updatedAt: now(),
     connectionState: "starting",
     outputName,
@@ -3962,15 +4141,38 @@ async function startGeneration(payload, internal = {}) {
     touchJob(job);
   });
   child.on("close", async (code) => {
-    job.exitCode = Number.isInteger(code) ? code : (job.exitCode ?? null);
+    job.exitCode = job.cancelRequested ? null : (Number.isInteger(code) ? code : (job.exitCode ?? null));
     await withAssetLifecycleLock(async () => {
       try {
+        if (job.promptId && (job.cancelRequested || code !== 0)) {
+          const snapshot = await inspectSingleVideoComfyPrompt(job);
+          if (["running", "pending"].includes(snapshot.state)) {
+            if (job.cancelRequested) {
+              job.status = "cancelling";
+              job.stage = "正在停止…";
+              job.output = null;
+              job.exitCode = null;
+              touchJob(job);
+              await persistSingleJob(job);
+              monitorRecoveredSingleVideoPrompt(job);
+              return;
+            }
+            await reconcileRecoveredSingleVideoJob(job, snapshot);
+            return;
+          }
+          if (["completed", "error", "interrupted"].includes(snapshot.state)) {
+            await reconcileRecoveredSingleVideoJob(job, snapshot, { cancelled: job.cancelRequested });
+            return;
+          }
+        }
         const outputRelativeName = job.outputRelativeName || outputName;
         const nativeOutputPath = await resolveMediaPath("output", outputRelativeName).catch(() => null);
         const outputExists = Boolean(nativeOutputPath);
         if (job.cancelRequested) {
           job.status = "cancelled";
           job.stage = "cancelled";
+          job.output = null;
+          job.exitCode = null;
         } else if (code === 0 && outputExists) {
           job.status = "completed";
           job.progress = 100;
@@ -3986,14 +4188,17 @@ async function startGeneration(payload, internal = {}) {
           job.stage = "failed";
           if (!job.error) job.error = "Generation exited with code " + String(code);
         }
-        job.elapsedMs = Number.isFinite(job.executionStartedMs)
-          ? Math.max(0, Date.now() - job.executionStartedMs)
-          : elapsedMilliseconds(job);
+        job.finishedAt = now();
+        const queuedMs = Date.parse(job.queuedAt || job.createdAt || "");
+        const finishedMs = Date.parse(job.finishedAt);
+        job.queueElapsedMs = Number.isFinite(queuedMs) && Number.isFinite(finishedMs)
+          ? Math.max(0, finishedMs - queuedMs - elapsedMilliseconds(job))
+          : job.queueElapsedMs;
+        job.elapsedMs = elapsedMilliseconds(job);
         if (job.status === "completed") {
           recordTimingSample(job, job.elapsedMs);
           job.etaMs = 0;
         }
-        job.finishedAt = now();
         touchJob(job);
         await persistSingleJob(job);
       } catch (error) {
@@ -4105,9 +4310,23 @@ async function cancelSingleVideoComfyPrompt(job) {
 
 async function updateRecoveredSingleVideoJob(job, patch) {
   const updated = await singleVideoJobStore.update(job.id, patch);
-  const runtimeJob = { ...updated, startedAt: updated.startedAt || updated.createdAt || now(), persistent: true };
+  const runtimeJob = { ...updated, persistent: true };
   jobs.set(runtimeJob.id, runtimeJob);
   return runtimeJob;
+}
+
+function recoveredTimingPatch(snapshot) {
+  const startedAtMs = snapshot?.timing?.startedAtMs == null ? Number.NaN : Number(snapshot.timing.startedAtMs);
+  const finishedAtMs = snapshot?.timing?.finishedAtMs == null ? Number.NaN : Number(snapshot.timing.finishedAtMs);
+  const elapsedMs = snapshot?.timing?.elapsedMs == null ? Number.NaN : Number(snapshot.timing.elapsedMs);
+  return {
+    ...(Number.isFinite(startedAtMs) ? {
+      executionStartedAt: new Date(startedAtMs).toISOString(),
+      startedAt: new Date(startedAtMs).toISOString(),
+    } : {}),
+    ...(Number.isFinite(finishedAtMs) ? { finishedAt: new Date(finishedAtMs).toISOString() } : {}),
+    elapsedMs: Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0,
+  };
 }
 
 function recoveredArtifactRelativeName(artifact) {
@@ -4179,6 +4398,7 @@ async function adoptRecoveredSingleVideoArtifact(job, snapshot) {
     exitCode: 0,
     recoverable: false,
     finishedAt: now(),
+    ...recoveredTimingPatch(snapshot),
     recovery: {
       reason: "comfy_history_adopted_after_bridge_restart",
       previousStatus: job.status,
@@ -4205,23 +4425,29 @@ function monitorRecoveredSingleVideoPrompt(job) {
         await adoptRecoveredSingleVideoArtifact(current, snapshot);
         return;
       }
-      if (snapshot.state === "error") {
+      if (["error", "interrupted"].includes(snapshot.state)) {
         if (current.status === "cancelling") {
           await updateRecoveredSingleVideoJob(current, {
             status: "cancelled",
             stage: "cancelled",
             recoverable: false,
             error: "",
-            finishedAt: now(),
+            output: null,
+            exitCode: null,
+            ...recoveredTimingPatch(snapshot),
           });
           return;
         }
         await updateRecoveredSingleVideoJob(current, {
-          status: "failed",
-          stage: "failed",
+          status: snapshot.state === "interrupted" ? "interrupted" : "failed",
+          stage: snapshot.state === "interrupted" ? "interrupted" : "failed",
           recoverable: true,
-          error: "The recovered ComfyUI prompt completed with an error.",
-          finishedAt: now(),
+          output: null,
+          exitCode: null,
+          error: snapshot.state === "interrupted"
+            ? "The ComfyUI generation was interrupted."
+            : "The recovered ComfyUI prompt completed with an error.",
+          ...recoveredTimingPatch(snapshot),
           recovery: {
             reason: "comfy_prompt_error_after_bridge_restart",
             previousStatus: current.status,
@@ -4250,6 +4476,7 @@ function monitorRecoveredSingleVideoPrompt(job) {
             : "Reattached to the pending ComfyUI prompt",
           recoverable: false,
           connectionState: "polling",
+          ...(!current.executionStartedAt ? { startedAt: null, elapsedMs: 0 } : {}),
           recovery: {
             reason: "bridge_restart_reattached",
             previousStatus: current.recovery?.previousStatus || current.status,
@@ -4309,17 +4536,21 @@ function monitorRecoveredSingleVideoPrompt(job) {
   return monitor;
 }
 
-async function reconcileRecoveredSingleVideoJob(job) {
+async function reconcileRecoveredSingleVideoJob(job, knownSnapshot = null, { cancelled = false } = {}) {
   if (!job?.promptId) return job;
-  const snapshot = await inspectSingleVideoComfyPrompt(job);
+  const snapshot = knownSnapshot || await inspectSingleVideoComfyPrompt(job);
   if (snapshot.state === "completed") return await adoptRecoveredSingleVideoArtifact(job, snapshot);
-  if (snapshot.state === "error") {
+  if (["error", "interrupted"].includes(snapshot.state)) {
     return await updateRecoveredSingleVideoJob(job, {
-      status: "failed",
-      stage: "failed",
-      recoverable: true,
-      error: "The ComfyUI prompt completed with an error while the WebUI was restarting.",
-      finishedAt: now(),
+      status: cancelled ? "cancelled" : (snapshot.state === "interrupted" ? "interrupted" : "failed"),
+      stage: cancelled ? "cancelled" : (snapshot.state === "interrupted" ? "interrupted" : "failed"),
+      recoverable: !cancelled,
+      output: null,
+      exitCode: null,
+      error: cancelled ? "" : (snapshot.state === "interrupted"
+        ? "The ComfyUI generation was interrupted."
+        : "The ComfyUI prompt completed with an error while the WebUI was restarting."),
+      ...recoveredTimingPatch(snapshot),
     });
   }
   if (snapshot.state === "running" || snapshot.state === "pending") {
@@ -4330,6 +4561,7 @@ async function reconcileRecoveredSingleVideoJob(job) {
         : "Reattached to the pending ComfyUI prompt",
       recoverable: false,
       connectionState: "polling",
+      ...(!job.executionStartedAt ? { startedAt: null, elapsedMs: 0 } : {}),
       error: "",
       finishedAt: null,
       recovery: {
@@ -4531,6 +4763,33 @@ async function retrySingleVideoJob(id, overrides = {}) {
   });
 }
 
+async function repairTerminalSingleVideoRecord(job) {
+  if (!job || !["completed", "failed", "cancelled", "interrupted"].includes(job.status)) return job;
+  if (job.promptId) {
+    const snapshot = await inspectSingleVideoComfyPrompt(job);
+    if (snapshot.state === "completed") return await adoptRecoveredSingleVideoArtifact(job, snapshot);
+    if (["error", "interrupted"].includes(snapshot.state)) {
+      return await reconcileRecoveredSingleVideoJob(job, snapshot, { cancelled: job.status === "cancelled" });
+    }
+    if (["running", "pending"].includes(snapshot.state)) {
+      return await reconcileRecoveredSingleVideoJob(job, snapshot);
+    }
+  }
+  if (job.status === "completed") return job;
+  return await updateRecoveredSingleVideoJob(job, {
+    output: null,
+    ...(job.status === "cancelled" ? { exitCode: null, error: "" } : {}),
+    ...(!job.executionStartedAt ? { elapsedMs: 0, startedAt: null } : {}),
+  });
+}
+
+async function ensureTerminalSingleVideoRecordRepaired(job) {
+  if (!job || inspectedTerminalSingleVideoRecords.has(job.id)) return job;
+  const repaired = await repairTerminalSingleVideoRecord(job);
+  inspectedTerminalSingleVideoRecords.add(job.id);
+  return repaired;
+}
+
 async function recoverSingleVideoJobsAtStartup() {
   const recovery = await singleVideoJobStore.recover({ ownerId: SINGLE_VIDEO_OWNER_ID });
   for (const interrupted of recovery.interrupted || []) {
@@ -4544,6 +4803,13 @@ async function recoverSingleVideoJobsAtStartup() {
   if (process.env.MINIMAX_H3_SINGLE_VIDEO_AUTO_RESUME !== "0") {
     for (const queued of recovery.requeued) {
       try {
+        if (queued.promptId) {
+          const snapshot = await inspectSingleVideoComfyPrompt(queued);
+          if (["running", "pending", "completed", "error", "interrupted"].includes(snapshot.state)) {
+            await reconcileRecoveredSingleVideoJob(queued, snapshot);
+            continue;
+          }
+        }
         await resumeSingleVideoJob(queued);
       } catch (error) {
         await singleVideoJobStore.update(queued.id, {
@@ -5217,6 +5483,21 @@ function createText2ImgControllerForRuntime() {
     toAsset,
     ollamaCoordinator,
     preferredOllamaModel: defaultOllamaModel(),
+    promptAssistant: {
+      provider: "openai",
+      status: sglangStatus,
+      generate: async ({ model, system, prompt }) => requestSglangPrompt({
+        model,
+        system: [
+          await loadNatureCameraSkillBundle(),
+          "For this text-to-image task, follow the JSON output contract below while retaining all photographic rules from the complete skill.",
+          system,
+        ].join("\n\n"),
+        prompt,
+        maxTokens: 1024,
+        responseFormat: { type: "json_object" },
+      }),
+    },
     gpuCoordinator: gpuResourceCoordinator,
     gpuRuntime: runtimeContext.mode,
   });
@@ -5350,8 +5631,12 @@ async function route(req, res) {
     await ensureSingleVideoStore();
     const limit = jobListLimit(req.url, { fallback: 20, max: 100 });
     const summarize = wantsJobSummary(req.url);
-    const values = (await singleVideoJobStore.list())
-      .slice(0, limit)
+    const storedJobs = (await singleVideoJobStore.list()).slice(0, limit);
+    const repairedJobs = await Promise.all(storedJobs.map((job) => ensureTerminalSingleVideoRecordRepaired(job).catch((error) => {
+      console.warn("[single-video] terminal record repair warning", job.id, error?.message || error);
+      return job;
+    })));
+    const values = repairedJobs
       .map(publicJob)
       .map((job) => summarize ? summarizeJobRecord(job) : job);
     sendJson(res, 200, { jobs: values });
@@ -5360,11 +5645,15 @@ async function route(req, res) {
   if (req.method === "GET" && pathname.startsWith("/api/jobs/")) {
     const id = pathname.split("/").pop();
     await ensureSingleVideoStore();
-    const job = await singleVideoJobStore.read(id);
+    let job = await singleVideoJobStore.read(id);
     if (!job) {
       sendError(res, 404, "找不到這個生成工作。");
       return;
     }
+    job = await ensureTerminalSingleVideoRecordRepaired(job).catch((error) => {
+      console.warn("[single-video] terminal record repair warning", job.id, error?.message || error);
+      return job;
+    });
     sendJson(res, 200, publicJob(job));
     return;
   }
@@ -5502,6 +5791,9 @@ async function route(req, res) {
           status: "cancelled",
           stage: "cancelled",
           error: "",
+          output: null,
+          exitCode: null,
+          elapsedMs: job.executionStartedAt ? elapsedMilliseconds(job) : 0,
           recoverable: false,
           finishedAt: now(),
           recovery: {
@@ -5624,4 +5916,7 @@ export {
   resolveH3LoraSelection,
   injectH3LoraTrigger,
   h3RuntimeGraphSupportsMode,
+  resolveGenerationModelProfile,
+  elapsedMilliseconds,
+  markComfyExecutionStarted,
 };

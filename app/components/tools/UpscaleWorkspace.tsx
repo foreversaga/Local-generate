@@ -12,10 +12,13 @@ import {
     retryUpscaleJob,
     submitUpscale,
     UPSCALE_SCALE,
+    UPSCALE_PROFILES,
+    DEFAULT_UPSCALE_PROFILE,
     upscaleAssetHref,
     UpscaleApiError,
     type UpscaleHealth,
     type UpscaleJob,
+    type UpscaleProfile,
 } from "./upscale-client";
 import styles from "./UpscaleWorkspace.module.css";
 
@@ -27,6 +30,7 @@ export function UpscaleWorkspace() {
     const { ACTION_LABELS } = localizedCopy(locale);
     const [source, setSource] = useState<StudioAsset | null>(null);
     const [job, setJob] = useState<UpscaleJob | null>(null);
+    const [profile, setProfile] = useState<UpscaleProfile>(DEFAULT_UPSCALE_PROFILE);
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
@@ -37,16 +41,16 @@ export function UpscaleWorkspace() {
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
         try {
-            const next = await fetchUpscaleHealth();
+            const next = await fetchUpscaleHealth(profile);
             setHealth(next);
             setHealthError("");
         } catch (reason) {
             setHealth(null);
-            setHealthError(reason instanceof Error ? reason.message : "無法檢查 SeedVR2 是否就緒。");
+            setHealthError(reason instanceof Error ? reason.message : `無法檢查 ${profile} 是否就緒。`);
         } finally {
             setHealthLoading(false);
         }
-    }, []);
+    }, [profile]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => void refreshHealth(), 0);
@@ -56,12 +60,17 @@ export function UpscaleWorkspace() {
     const active = Boolean(job && ACTIVE_STATUSES.has(job.status));
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
     const sourceKey = source ? assetKey(source) : "";
+    const selectedProfile = UPSCALE_PROFILES.find((item) => item.id === profile) || UPSCALE_PROFILES[0];
     const missingNodes = useMemo(
         () => Object.entries(health?.nodes || {}).filter(([, available]) => !available).map(([name]) => name),
         [health?.nodes],
     );
     const availableModels = useMemo(
         () => Object.values(health?.models || {}).filter((model) => model.available).length,
+        [health?.models],
+    );
+    const modelTotal = useMemo(
+        () => Object.keys(health?.models || {}).length,
         [health?.models],
     );
     const canRetry = Boolean(job && TERMINAL_STATUSES.has(job.status) && !busy && !active);
@@ -107,12 +116,12 @@ export function UpscaleWorkspace() {
         setBusy("submit");
         setError("");
         try {
-            const next = await submitUpscale(source);
+            const next = await submitUpscale(source, profile);
             setJob(next);
-                if (next.status === "failed") setError(next.error || "SeedVR2 影片升頻失敗。" );
+            if (next.status === "failed") setError(next.error || `${selectedProfile.label} 影片升頻失敗。`);
         } catch (reason) {
             if (reason instanceof UpscaleApiError && reason.health) setHealth(reason.health);
-            setError(reason instanceof Error ? reason.message : "無法開始 SeedVR2 升頻。");
+            setError(reason instanceof Error ? reason.message : `無法開始 ${selectedProfile.label} 升頻。`);
         } finally {
             setBusy("");
         }
@@ -127,7 +136,7 @@ export function UpscaleWorkspace() {
             setJob(next);
         } catch (reason) {
             if (reason instanceof UpscaleApiError && reason.health) setHealth(reason.health);
-            setError(reason instanceof Error ? reason.message : "無法重試 SeedVR2 升頻。");
+            setError(reason instanceof Error ? reason.message : `無法重試 ${selectedProfile.label} 升頻。`);
         } finally {
             setBusy("");
         }
@@ -140,7 +149,7 @@ export function UpscaleWorkspace() {
         try {
             setJob(await cancelUpscaleJob(job.id));
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "無法取消 SeedVR2 升頻。");
+            setError(reason instanceof Error ? reason.message : `無法取消 ${selectedProfile.label} 升頻。`);
         } finally {
             setBusy("");
         }
@@ -155,7 +164,7 @@ export function UpscaleWorkspace() {
                 if (disposed) return;
                 setJob(next);
                 if (TERMINAL_STATUSES.has(next.status) && next.status === "failed") {
-                        setError(next.error || "SeedVR2 影片升頻失敗。" );
+                    setError(next.error || `${selectedProfile.label} 影片升頻失敗。`);
                 }
             } catch (reason) {
                 if (!disposed && reason instanceof UpscaleApiError && reason.status === 404) {
@@ -170,7 +179,7 @@ export function UpscaleWorkspace() {
             disposed = true;
             window.clearInterval(timer);
         };
-    }, [active, job?.id]);
+    }, [active, job?.id, selectedProfile.label]);
 
     useEffect(() => {
         const output = job?.status === "completed" ? job.output : null;
@@ -199,13 +208,24 @@ export function UpscaleWorkspace() {
         : "已就緒，可開始升頻";
     const readinessLabel = healthLoading ? localizedReadinessLabel("checking", locale) : health?.ready ? localizedReadinessLabel("ready", locale) : localizedReadinessLabel("unavailable", locale);
 
+    function handleProfileChange(event: ChangeEvent<HTMLSelectElement>) {
+        if (active || busy) return;
+        const next = event.target.value as UpscaleProfile;
+        if (!UPSCALE_PROFILES.some((item) => item.id === next)) return;
+        setProfile(next);
+        setHealth(null);
+        setHealthError("");
+        setJob(null);
+        setError("");
+    }
+
     return (
         <div className={styles.workspace}>
             <section className={styles.header}>
                 <div>
-                    <span className={styles.kicker}>影片升頻 / SEEDVR2</span>
+                    <span className={styles.kicker}>影片升頻 / {selectedProfile.label}</span>
                     <h2>影片升頻</h2>
-                    <p>使用原生 SeedVR2 7B Sharp NVFP4、auto chunk、overlap 1 與 wavelet 色彩校正，產生清晰穩定的 2× 影片升頻結果。</p>
+                    <p>{selectedProfile.description} 產生保留原始音訊的 {UPSCALE_SCALE}× 影片升頻結果。</p>
                 </div>
                 <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
             </section>
@@ -247,15 +267,21 @@ export function UpscaleWorkspace() {
                     <div className={styles.cardHeading}>
                         <div>
                             <span className={styles.kicker}>升頻設定檔</span>
-                            <h3>SeedVR2 7B Sharp NVFP4</h3>
+                            <h3>{selectedProfile.label}</h3>
                         </div>
                         <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
                     </div>
+                    <label className={styles.profileField}>
+                        <span>運算後端</span>
+                        <select value={profile} onChange={handleProfileChange} disabled={active || Boolean(busy)} aria-label="選擇升頻後端">
+                            {UPSCALE_PROFILES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                        </select>
+                    </label>
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
                         <span className={`${styles.statusDot} ${health?.ready ? styles.online : ""}`} />
                         <div>
                             <strong>{readinessLabel}</strong>
-                            <span>{health?.comfyUi === false ? "ComfyUI 未連線。" : `${availableModels}/2 個模型檔案可用 · ${missingNodes.length ? `${missingNodes.length} 個節點缺失` : "原生節點可用"}`}</span>
+                            <span>{health?.comfyUi === false ? "ComfyUI 未連線。" : `${availableModels}/${modelTotal || 0} 個模型檔案可用 · ${missingNodes.length ? `${missingNodes.length} 個節點缺失` : "原生節點可用"}`}</span>
                         </div>
                         <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading || Boolean(busy)}>{ACTION_LABELS.refresh}</button>
                     </div>
@@ -270,11 +296,11 @@ export function UpscaleWorkspace() {
                             <span>{statusLabel}</span>
                             {job && <strong>{progress}%</strong>}
                         </div>
-                        {job && <div className={styles.progressTrack} role="progressbar" aria-label="SeedVR2 進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
+                        {job && <div className={styles.progressTrack} role="progressbar" aria-label={`${selectedProfile.label} 進度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
                     </div>
                     {active && job?.status !== "cancelling" && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={Boolean(busy)}>{busy === "cancel" ? "取消中…" : ACTION_LABELS.cancel}</button>}
                     {job && (job.status === "failed" || job.status === "cancelled" || job.status === "interrupted") && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={!canRetry}>{busy === "retry" ? "重試中…" : ACTION_LABELS.retry}</button>}
-                    {job?.status === "cancelling" && <p className={styles.helper}>正在停止目前的 SeedVR2 流程…</p>}
+                    {job?.status === "cancelling" && <p className={styles.helper}>正在停止目前的 {selectedProfile.label} 流程…</p>}
                 </div>
             </section>
 

@@ -90,6 +90,7 @@ type LongPlan = {
   duration?: number;
   promptProvider?: PromptProvider;
   ollamaModel?: string;
+  sglangModel?: string;
   codexModel?: string;
   codexReasoningEffort?: string;
   negativePrompt?: string;
@@ -135,8 +136,6 @@ type ValidationIssue = { field: string; message: string };
 
 const RENDER_MODELS = [
   { value: "nvfp4_blackwell", label: "NVFP4 Blackwell" },
-  { value: "int4_convrot_low_vram", label: "INT4 ConvRot" },
-  { value: "official_pruned_int8_convrot", label: "Official INT8" },
 ] as const;
 
 export function LongCreateForm() {
@@ -362,14 +361,14 @@ export function LongCreateForm() {
     setOutputFolder(next.outputFolder || "");
     setDuration(next.duration || 10);
     setTimeline((next.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
-    setTimelineMode(["ollama", "codex"].includes(next.planMeta?.timelineSource || "") ? "auto" : "manual");
+    setTimelineMode(["ollama", "sglang", "codex"].includes(next.planMeta?.timelineSource || "") ? "auto" : "manual");
     setSegmentDurationHint(next.planningSettings?.segmentDurationHint || next.planMeta?.segmentDurationHint || 5);
     if (next.width) setWidth(next.width);
     if (next.height) setHeight(next.height);
     if (next.inputType !== "image" && next.width && next.height) setResolutionStatus("manual");
     if (next.steps) setSteps(next.steps);
     if (next.seed !== undefined) setSeed(next.seed);
-    if (next.modelProfile) setModelProfile(next.modelProfile);
+    setModelProfile(RENDER_MODELS.some((model) => model.value === next.modelProfile) ? next.modelProfile : "nvfp4_blackwell");
     const nextH3Enabled = next.h3LoraEnabled === true || next.h3LoraPreset === H3_REALISM_PEOPLE_PRESET || next.characterLoraName === H3_REALISM_PEOPLE_PRESET;
     setH3LoraEnabled(nextH3Enabled);
     setCharacterLoraName(nextH3Enabled ? H3_REALISM_PEOPLE_PRESET : next.characterLoraName || "");
@@ -790,7 +789,6 @@ export function LongCreateForm() {
 
   function updateContinuationMode(value: ContinuationMode) {
     setContinuationMode(value);
-    if (value !== "legacy_tail" && modelProfile === "int4_convrot_low_vram") setModelProfile("nvfp4_blackwell");
     markPlanDirty();
   }
 
@@ -992,7 +990,7 @@ export function LongCreateForm() {
             </Field>}
           </div>
           <p className={styles.helper}>固定 H3 preset 支援 T2V/I2V/Ref2VA；舊版自訂 LoRA 仍限 T2V/I2V。strength 範圍 0–2，固定預設 0.8。</p>
-          <Field label="模型設定檔" error={attempted ? issuesByField.get("modelProfile") : ""}><select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value} disabled={continuationMode !== "legacy_tail" && model.value === "int4_convrot_low_vram"}>{model.label}</option>)}</select></Field>
+          <Field label="模型設定檔" error={attempted ? issuesByField.get("modelProfile") : ""}><select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field>
           <div className={styles.resolutionField}>
             <span className={styles.label}>影片尺寸</span>
             <div className={styles.resolutionRow}>

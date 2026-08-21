@@ -84,6 +84,8 @@ export function adaptJob(raw, source = "video") {
     comfyQueueRemaining: numericOrNull(raw?.comfyQueueRemaining),
     createdAt,
     updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
+    elapsedMs: nonNegativeNumberOrNull(raw?.elapsedMs),
+    estimatedDurationMs: nonNegativeNumberOrNull(raw?.estimatedDurationMs),
     etaMs: etaMilliseconds(raw, source),
     etaLowerMs: numericOrNull(raw?.etaLowerMs),
     etaUpperMs: numericOrNull(raw?.etaUpperMs),
@@ -285,6 +287,12 @@ function etaMilliseconds(raw, source) {
   const seconds = Number(training.etaSeconds ?? raw?.etaSeconds);
   if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
   return parseEta(training.eta ?? raw?.eta);
+}
+
+function nonNegativeNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 }
 
 function parseEta(value) {

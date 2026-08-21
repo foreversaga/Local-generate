@@ -14,6 +14,23 @@ export const SEEDVR2_VAE_NAME = "seedvr2_ema_vae_fp16.safetensors";
 export const SEEDVR2_PROFILE = "seedvr2_7b_sharp_nvfp4";
 export const SEEDVR2_PROFILE_LABEL = "SeedVR2 7B Sharp NVFP4";
 
+export const H3_LATENT_UPSCALER_NAME = "h3_clean_latent_upscaler_v1_mamad8.safetensors";
+export const H3_LATENT_VAE_NAME = "minimax_h3_video_vae_fp16.safetensors";
+export const H3_LATENT_AUDIO_VAE_NAME = "minimax_h3_audio_vae_fp32.safetensors";
+export const H3_LATENT_ENCODER_NAME = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
+export const H3_LATENT_DIFFUSION_NAMES = Object.freeze([
+  "minimax_h3_ref2va_pruned_nvfp4.safetensors",
+]);
+export const H3_LATENT_PROFILE = "h3_latent_2x";
+export const H3_LATENT_PROFILE_LABEL = "MiniMax H3 Latent 2x · 社群雙採樣";
+export const H3_LATENT_SCALE = 2;
+export const H3_LATENT_UPSCALE_METHOD = "bilinear";
+export const H3_LATENT_PASS1_STEPS = 25;
+export const H3_LATENT_PASS2_STEPS = 15;
+export const H3_LATENT_PASS2_DENOISE = 0.4;
+export const H3_LATENT_PASS2_SIGMAS = "0.9864, 0.9740, 0.9587, 0.9400, 0.9158, 0.8845, 0.8406, 0.7774, 0.6744, 0.4856, 0.0000";
+export const H3_LATENT_PROMPT = "Use <Video 1> as the exact source for the subjects, motion, camera movement, composition, lighting, and pacing. Preserve <Audio 1> exactly. Reconstruct clean, natural fine detail at the larger canvas without changing the scene.";
+
 export const SEEDVR2_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
   "GetVideoComponents",
@@ -28,6 +45,33 @@ export const SEEDVR2_REQUIRED_NODES = Object.freeze([
   "SeedVR2TemporalMerge",
   "VAEDecodeTiled",
   "SeedVR2PostProcessing",
+  "CreateVideo",
+  "SaveVideo",
+]);
+
+export const H3_LATENT_REQUIRED_NODES = Object.freeze([
+  "LoadVideo",
+  "GetVideoComponents",
+  "GetImageSize",
+  "UNETLoader",
+  "CLIPLoader",
+  "VAELoader",
+  "MiniMaxH3ReferenceToVideo",
+  "RandomNoise",
+  "KSamplerSelect",
+  "BasicScheduler",
+  "BasicGuider",
+  "SamplerCustomAdvanced",
+  "LTXVSeparateAVLatent",
+  "MiniMaxH3LatentUpscale",
+  "LTXVConcatAVLatent",
+  "MiniMaxH3AddNoise",
+  "MiniMaxH3ShiftSigmas",
+  "MiniMaxH3ConditioningUpscale",
+  "ManualSigmas",
+  "DisableNoise",
+  "VAEDecode",
+  "VAEDecodeAudio",
   "CreateVideo",
   "SaveVideo",
 ]);
@@ -60,6 +104,16 @@ const SEEDVR2_NODE_PROGRESS = Object.freeze({
   SeedVR2PostProcessing: 88,
   CreateVideo: 90,
   SaveVideo: 90,
+});
+const UPSCALE_NODE_PROGRESS = Object.freeze({
+  ...SEEDVR2_NODE_PROGRESS,
+  MiniMaxH3ReferenceToVideo: 40,
+  BasicScheduler: 42,
+  LTXVSeparateAVLatent: 48,
+  MiniMaxH3LatentUpscale: 52,
+  MiniMaxH3AddNoise: 58,
+  SamplerCustomAdvanced: 76,
+  VAEDecode: 86,
 });
 
 function isoNow(now = Date.now()) {
@@ -216,7 +270,15 @@ function seedvr2NodeInfo(graph, event = {}) {
 }
 
 function seedvr2NodeBaseline(classType) {
-  return Number(SEEDVR2_NODE_PROGRESS[classType]) || 28;
+  return Number(UPSCALE_NODE_PROGRESS[classType]) || 28;
+}
+
+function profileLabel(profile) {
+  return profile === H3_LATENT_PROFILE ? H3_LATENT_PROFILE_LABEL : SEEDVR2_PROFILE_LABEL;
+}
+
+function profileShortName(profile) {
+  return profile === H3_LATENT_PROFILE ? "h3latent" : "seedvr2";
 }
 
 function applySeedVR2ProgressEvent(job, graph, event, runtime) {
@@ -232,7 +294,7 @@ function applySeedVR2ProgressEvent(job, graph, event, runtime) {
   }
   if (event.type === "websocket_unavailable" || event.type === "websocket_error") {
     runtime.wsState = event.connectionState || "error";
-    if (job.status === "running" && job.progress >= 25) job.stage = "Processing SeedVR2 (history fallback)";
+    if (job.status === "running" && job.progress >= 25) job.stage = `Processing ${profileLabel(job.profile)} (history fallback)`;
     return;
   }
   if (event.type === "websocket_closed") {
@@ -291,7 +353,7 @@ function applySeedVR2ProgressEvent(job, graph, event, runtime) {
     return;
   }
   if (event.type === "execution_error" || event.type === "execution_interrupted") {
-    const message = asErrorMessage(event.exception_message || event.message || event.error || "ComfyUI reported a SeedVR2 execution error.");
+    const message = asErrorMessage(event.exception_message || event.message || event.error || `ComfyUI reported a ${profileLabel(job.profile)} execution error.`);
     runtime.wsState = "error";
     runtime.wsTerminal = "error";
     runtime.comfyError = { message, code: "COMFY_EXECUTION_FAILED" };
@@ -337,6 +399,12 @@ function comboValues(nodeInfo, key) {
   const spec = nodeInfo?.input?.required?.[key];
   if (!Array.isArray(spec)) return [];
   if (Array.isArray(spec[0])) return spec[0].map((value) => String(value));
+  // ComfyUI V3 schemas expose a combo as ["COMBO", { options: [...] }].
+  // Keep accepting the legacy [options, config] shape above because native
+  // nodes from older ComfyUI versions still use it.
+  if (spec[0] === "COMBO" && Array.isArray(spec[1]?.options)) {
+    return spec[1].options.map((value) => String(value));
+  }
   return [];
 }
 
@@ -357,6 +425,46 @@ export function evaluateSeedVR2Readiness(objectInfo, {
   };
   const ready = Boolean(comfyUi) && Object.values(nodes).every(Boolean) && models.unet.available && models.vae.available;
   return { ready, comfyUi: Boolean(comfyUi), models, nodes };
+}
+
+export function evaluateH3LatentReadiness(objectInfo, {
+  diffusionNames = H3_LATENT_DIFFUSION_NAMES,
+  encoderName = H3_LATENT_ENCODER_NAME,
+  vaeName = H3_LATENT_VAE_NAME,
+  audioVaeName = H3_LATENT_AUDIO_VAE_NAME,
+  modelFiles = {},
+  comfyUi = true,
+} = {}) {
+  const nodes = Object.fromEntries(H3_LATENT_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
+  const diffusionOptions = comboValues(objectInfo?.UNETLoader, "unet_name");
+  const encoderListed = comboValues(objectInfo?.CLIPLoader, "clip_name").includes(encoderName);
+  const vaeOptions = comboValues(objectInfo?.VAELoader, "vae_name");
+  const diffusionFileMap = modelFiles.diffusion && typeof modelFiles.diffusion === "object"
+    ? modelFiles.diffusion
+    : {};
+  const diffusionName = diffusionNames.find((name) => diffusionOptions.includes(name) && diffusionFileMap[name] !== false)
+    || diffusionNames.find((name) => diffusionOptions.includes(name))
+    || diffusionNames[0];
+  const diffusionFile = modelFiles.diffusion === undefined
+    ? true
+    : Boolean(diffusionFileMap[diffusionName]);
+  const encoderFile = modelFiles.encoder === undefined ? true : Boolean(modelFiles.encoder);
+  const videoVaeFile = modelFiles.videoVae === undefined ? true : Boolean(modelFiles.videoVae);
+  const audioVaeFile = modelFiles.audioVae === undefined ? true : Boolean(modelFiles.audioVae);
+  const models = {
+    diffusion: { name: diffusionName, available: diffusionOptions.includes(diffusionName) && diffusionFile },
+    encoder: { name: encoderName, available: encoderListed && encoderFile },
+    videoVae: { name: vaeName, available: vaeOptions.includes(vaeName) && videoVaeFile },
+    audioVae: { name: audioVaeName, available: vaeOptions.includes(audioVaeName) && audioVaeFile },
+  };
+  const modelReady = models.diffusion.available && models.encoder.available
+    && models.videoVae.available && models.audioVae.available;
+  return {
+    ready: Boolean(comfyUi) && Object.values(nodes).every(Boolean) && modelReady,
+    comfyUi: Boolean(comfyUi),
+    models,
+    nodes,
+  };
 }
 
 function link(node, output = 0) {
@@ -439,6 +547,117 @@ export function buildSeedVR2Prompt({
       class_type: "SaveVideo",
       inputs: {
         video: link(14),
+        filename_prefix: safePrefix,
+        format: "mp4",
+        codec: "h264",
+        "codec.encoding": "re-encode",
+        "codec.encoding.crf": 18,
+      },
+    },
+  };
+}
+
+export function buildH3LatentPrompt({
+  sourceName,
+  filenamePrefix = "h3latent_upscaled",
+  diffusionName = H3_LATENT_DIFFUSION_NAMES[0],
+  encoderName = H3_LATENT_ENCODER_NAME,
+  vaeName = H3_LATENT_VAE_NAME,
+  audioVaeName = H3_LATENT_AUDIO_VAE_NAME,
+  promptText = H3_LATENT_PROMPT,
+  scaleBy = H3_LATENT_SCALE,
+  upscaleMethod = H3_LATENT_UPSCALE_METHOD,
+  pass1Steps = H3_LATENT_PASS1_STEPS,
+  pass2Sigmas = H3_LATENT_PASS2_SIGMAS,
+  seed = 0,
+} = {}) {
+  const file = normalizeVideoAssetName(sourceName);
+  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const samplerSeed = boundedSeed(seed, 0);
+  const pass2Seed = boundedSeed(samplerSeed + 1, samplerSeed);
+  return {
+    "1": { class_type: "LoadVideo", inputs: { file } },
+    "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
+    "3": { class_type: "GetImageSize", inputs: { image: link(2) } },
+    "4": { class_type: "UNETLoader", inputs: { unet_name: diffusionName, weight_dtype: "default" } },
+    "5": { class_type: "CLIPLoader", inputs: { clip_name: encoderName, type: "minimax", device: "default" } },
+    "6": { class_type: "VAELoader", inputs: { vae_name: vaeName } },
+    "7": { class_type: "VAELoader", inputs: { vae_name: audioVaeName } },
+    "8": {
+      class_type: "MiniMaxH3ReferenceToVideo",
+      inputs: {
+        clip: link(5),
+        vae: link(6),
+        audio_vae: link(7),
+        prompt: String(promptText || H3_LATENT_PROMPT),
+        width: link(3, 0),
+        height: link(3, 1),
+        length: link(3, 2),
+        ref_image_size: "match",
+        "ref_videos.ref_video_0": link(2, 0),
+        "ref_video_audios.ref_video_audio_0": link(2, 1),
+      },
+    },
+    // Pass 1: generate a native H3 low-resolution latent from the complete
+    // source video/audio reference. This is the denoised latent the community
+    // upscaler is designed to receive.
+    "9": { class_type: "RandomNoise", inputs: { noise_seed: samplerSeed } },
+    "10": { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } },
+    "11": {
+      class_type: "BasicScheduler",
+      inputs: { model: link(4), scheduler: "simple", steps: pass1Steps, denoise: 1.0 },
+    },
+    "12": { class_type: "BasicGuider", inputs: { model: link(4), conditioning: link(8, 0) } },
+    "13": {
+      class_type: "SamplerCustomAdvanced",
+      inputs: {
+        noise: link(9),
+        guider: link(12),
+        sampler: link(10),
+        sigmas: link(11),
+        latent_image: link(8, 1),
+      },
+    },
+    "14": { class_type: "LTXVSeparateAVLatent", inputs: { av_latent: link(13) } },
+    "15": {
+      class_type: "MiniMaxH3LatentUpscale",
+      inputs: { samples: link(14, 0), scale_by: scaleBy, upscale_method: upscaleMethod },
+    },
+    "16": { class_type: "RandomNoise", inputs: { noise_seed: pass2Seed } },
+    "17": { class_type: "ManualSigmas", inputs: { sigmas: String(pass2Sigmas || H3_LATENT_PASS2_SIGMAS) } },
+    "18": { class_type: "MiniMaxH3AddNoise", inputs: { model: link(4), noise: link(16), sigmas: link(17), latent_image: link(15) } },
+    "19": {
+      class_type: "MiniMaxH3ShiftSigmas",
+      inputs: { sigmas: link(17), shift_video: 12.0, shift_audio: 3.0 },
+    },
+    "20": {
+      class_type: "MiniMaxH3AddNoise",
+      inputs: { model: link(4), noise: link(16), sigmas: link(19), latent_image: link(14, 1) },
+    },
+    "21": { class_type: "LTXVConcatAVLatent", inputs: { video_latent: link(18), audio_latent: link(20) } },
+    "22": {
+      class_type: "MiniMaxH3ConditioningUpscale",
+      inputs: { conditioning: link(8, 0), scale_by: scaleBy, upscale_method: upscaleMethod },
+    },
+    "23": { class_type: "BasicGuider", inputs: { model: link(4), conditioning: link(22) } },
+    "24": { class_type: "DisableNoise", inputs: {} },
+    "25": {
+      class_type: "SamplerCustomAdvanced",
+      inputs: {
+        noise: link(24),
+        guider: link(23),
+        sampler: link(10),
+        sigmas: link(17),
+        latent_image: link(21),
+      },
+    },
+    "26": { class_type: "VAEDecode", inputs: { samples: link(25), vae: link(6) } },
+    "27": { class_type: "VAEDecodeAudio", inputs: { samples: link(25), vae: link(7) } },
+    "28": { class_type: "CreateVideo", inputs: { images: link(26), fps: link(2, 2), audio: link(27) } },
+    "29": {
+      class_type: "SaveVideo",
+      inputs: {
+        video: link(28),
         filename_prefix: safePrefix,
         format: "mp4",
         codec: "h264",
@@ -642,10 +861,36 @@ function boundedSeed(value, fallback = null) {
 
 function normalizeProfile(value) {
   const profile = String(value || SEEDVR2_PROFILE).trim();
-  if (![SEEDVR2_PROFILE, SEEDVR2_PROFILE_LABEL].includes(profile)) {
-    throw makeError("SeedVR2 profile is invalid.", 400, "PROFILE_INVALID");
+  if ([SEEDVR2_PROFILE, SEEDVR2_PROFILE_LABEL].includes(profile)) {
+    return SEEDVR2_PROFILE;
   }
-  return SEEDVR2_PROFILE;
+  if ([H3_LATENT_PROFILE, H3_LATENT_PROFILE_LABEL].includes(profile)) {
+    return H3_LATENT_PROFILE;
+  }
+  throw makeError("Upscale profile is invalid.", 400, "PROFILE_INVALID");
+}
+
+function profileReadinessConfig(profile) {
+  if (profile === H3_LATENT_PROFILE) {
+    return {
+      modelPaths: {
+        diffusion: ["diffusion_models", H3_LATENT_DIFFUSION_NAMES],
+        encoder: ["text_encoders", H3_LATENT_ENCODER_NAME],
+        videoVae: ["vae", H3_LATENT_VAE_NAME],
+        audioVae: ["vae", H3_LATENT_AUDIO_VAE_NAME],
+      },
+      evaluate: evaluateH3LatentReadiness,
+      modelFiles: ["diffusion", "encoder", "videoVae", "audioVae"],
+    };
+  }
+  return {
+    modelPaths: {
+      unet: ["diffusion_models", SEEDVR2_UNET_NAME],
+      vae: ["vae", SEEDVR2_VAE_NAME],
+    },
+    evaluate: evaluateSeedVR2Readiness,
+    modelFiles: ["unet", "vae"],
+  };
 }
 
 export function createSeedVR2Controller({
@@ -674,6 +919,14 @@ export function createSeedVR2Controller({
   const modelPaths = {
     unet: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_UNET_NAME),
     vae: path.join(comfyRootPath, "models", "vae", SEEDVR2_VAE_NAME),
+    h3Upscaler: path.join(comfyRootPath, "models", "h3_latent_upscalers", H3_LATENT_UPSCALER_NAME),
+    h3Diffusion: Object.fromEntries(H3_LATENT_DIFFUSION_NAMES.map((name) => [
+      name,
+      path.join(comfyRootPath, "models", "diffusion_models", name),
+    ])),
+    h3Encoder: path.join(comfyRootPath, "models", "text_encoders", H3_LATENT_ENCODER_NAME),
+    h3Vae: path.join(comfyRootPath, "models", "vae", H3_LATENT_VAE_NAME),
+    h3AudioVae: path.join(comfyRootPath, "models", "vae", H3_LATENT_AUDIO_VAE_NAME),
   };
   const jobs = new Map();
   const queue = [];
@@ -807,16 +1060,34 @@ export function createSeedVR2Controller({
     return payload;
   }
 
-  async function checkReadiness() {
+  async function checkReadiness(requestedProfile = SEEDVR2_PROFILE) {
+    const profile = normalizeProfile(requestedProfile);
+    const config = profileReadinessConfig(profile);
     const [statsResult, objectResult, modelFiles] = await Promise.all([
       requestJson("/system_stats").then(() => true).catch(() => false),
       requestJson("/object_info").catch(() => null),
-      Promise.all([
-        fileExists(modelPaths.unet, fsApi),
-        fileExists(modelPaths.vae, fsApi),
-      ]).then(([unet, vae]) => ({ unet, vae })),
+      Promise.all(config.modelFiles.map((key) => {
+        const [, configuredNames] = config.modelPaths[key];
+        const names = Array.isArray(configuredNames) ? configuredNames : [configuredNames];
+        const candidates = profile === H3_LATENT_PROFILE
+          ? key === "diffusion"
+            ? names.map((name) => modelPaths.h3Diffusion[name])
+            : key === "encoder"
+              ? [modelPaths.h3Encoder]
+              : key === "videoVae"
+                ? [modelPaths.h3Vae]
+                : [modelPaths.h3AudioVae]
+          : [key === "unet" ? modelPaths.unet : modelPaths.vae];
+        return Promise.all(candidates.map((candidate, index) => (
+          fileExists(candidate, fsApi).then((available) => [names[index], available])
+        ))).then((entries) => [key, key === "diffusion" ? Object.fromEntries(entries) : Boolean(entries[0]?.[1])]);
+      })).then((entries) => Object.fromEntries(entries)),
     ]);
-    return evaluateSeedVR2Readiness(objectResult, { modelFiles, comfyUi: statsResult });
+    return {
+      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult }),
+      profile,
+      profileLabel: profileLabel(profile),
+    };
   }
 
   async function resolveAsset(rootName, sourceName) {
@@ -834,7 +1105,7 @@ export function createSeedVR2Controller({
 
   async function stageOutputSource(job, source) {
     const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
-    const relativeName = `seedvr2_temp_${job.id}${extension}`;
+    const relativeName = `${profileShortName(job.profile)}_temp_${job.id}${extension}`;
     const candidate = path.resolve(inputRoot, relativeName);
     const inputReal = await realPathOrResolved(inputRoot, fsApi);
     if (!isInside(inputRoot, candidate) || !isInside(inputReal, await realPathOrResolved(path.dirname(candidate), fsApi))) {
@@ -857,7 +1128,7 @@ export function createSeedVR2Controller({
     }
     assertNotCancelled(job);
     const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
-    const uploadName = `seedvr2_temp_${sanitizeFilenamePrefix(job.id)}${extension}`;
+    const uploadName = `${profileShortName(job.profile)}_temp_${sanitizeFilenamePrefix(job.id)}${extension}`;
     let bytes;
     try {
       bytes = await fsApi.readFile(source.path);
@@ -867,13 +1138,13 @@ export function createSeedVR2Controller({
     assertNotCancelled(job);
     const form = new FormData();
     form.append("image", new Blob([bytes], { type: VIDEO_MIME_TYPES[extension] || "application/octet-stream" }), uploadName);
-    form.append("subfolder", "h3-studio-seedvr2");
+    form.append("subfolder", `h3-studio-${profileShortName(job.profile)}`);
     form.append("type", "input");
     form.append("overwrite", "true");
     const payload = await requestJson("/upload/image", { method: "POST", body: form }, 60_000, signal);
     const uploaded = artifactRelativeName({
       filename: payload?.name || uploadName,
-      subfolder: typeof payload?.subfolder === "string" ? payload.subfolder : "h3-studio-seedvr2",
+      subfolder: typeof payload?.subfolder === "string" ? payload.subfolder : `h3-studio-${profileShortName(job.profile)}`,
     });
     if (!uploaded) throw makeError("ComfyUI returned an invalid uploaded video path.", 502, "UPLOAD_RESPONSE_INVALID");
     return { loadName: uploaded, created: false };
@@ -897,7 +1168,7 @@ export function createSeedVR2Controller({
 
   function outputPrefix(job) {
     const stem = path.posix.basename(job.sourceName, path.posix.extname(job.sourceName));
-    return sanitizeFilenamePrefix(`seedvr2_${stem}_${job.id.slice(0, 8)}`);
+    return sanitizeFilenamePrefix(`${profileShortName(job.profile)}_${stem}_${job.id.slice(0, 8)}`);
   }
 
   async function artifactAsset(relativeName) {
@@ -929,7 +1200,7 @@ export function createSeedVR2Controller({
     if (typeof response.arrayBuffer !== "function") throw makeError("ComfyUI returned an unreadable video artifact.", 502, "OUTPUT_DOWNLOAD_FAILED");
     assertNotCancelled(job);
     const extension = path.posix.extname(relativeName).toLowerCase();
-    const localName = `seedvr2/${outputPrefix(job)}${extension}`;
+    const localName = `${profileShortName(job.profile)}/${outputPrefix(job)}${extension}`;
     const candidate = path.resolve(outputRoot, localName);
     if (!isInside(outputRoot, candidate)) throw makeError("Downloaded video path is unsafe.", 500, "OUTPUT_PATH_INVALID");
     const outputReal = await realPathOrResolved(outputRoot, fsApi);
@@ -968,7 +1239,7 @@ export function createSeedVR2Controller({
       const websocketProgressActive = runtime?.wsProgressSeen && !["error", "closed", "unavailable"].includes(runtime.wsState);
       if (!websocketProgressActive) {
         job.progress = Math.min(90, Math.max(Number(job.progress) || 0, 25 + Math.floor(Math.min(65, elapsed / 4000))));
-        job.stage = "Processing SeedVR2";
+        job.stage = `Processing ${profileLabel(job.profile)}`;
       }
       await persistJob(job);
       await sleep(pollIntervalMs, signal);
@@ -976,6 +1247,9 @@ export function createSeedVR2Controller({
   }
 
   async function runJob(job) {
+    const profile = normalizeProfile(job.profile);
+    job.profile = profile;
+    const label = profileLabel(profile);
     let staged = null;
     let succeeded = false;
     let failure = null;
@@ -1007,11 +1281,17 @@ export function createSeedVR2Controller({
         cancelledAt: null,
         error: "",
         progress: 5,
-        stage: "Checking SeedVR2 readiness",
+        stage: `Checking ${label} readiness`,
       });
-      const readiness = await checkReadiness();
+      const readiness = await checkReadiness(profile);
       assertNotCancelled(job);
-      if (!readiness.ready) throw makeError("SeedVR2 is unavailable: required ComfyUI nodes or model files are missing.", 503, "SEEDVR2_NOT_READY");
+      if (!readiness.ready) {
+        throw makeError(
+          `${label} is unavailable: required ComfyUI nodes or model files are missing.`,
+          503,
+          profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : "SEEDVR2_NOT_READY",
+        );
+      }
 
       await updateJob(job, { progress: 12, stage: "Validating source video" });
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
@@ -1028,13 +1308,23 @@ export function createSeedVR2Controller({
       }
       assertNotCancelled(job);
 
-      const prompt = buildSeedVR2Prompt({
-        sourceName: loadName,
-        filenamePrefix: outputPrefix(job),
-        unetName: SEEDVR2_UNET_NAME,
-        vaeName: SEEDVR2_VAE_NAME,
-        seed: job.seed,
-      });
+      const prompt = profile === H3_LATENT_PROFILE
+        ? buildH3LatentPrompt({
+          sourceName: loadName,
+          filenamePrefix: outputPrefix(job),
+          diffusionName: readiness.models?.diffusion?.name,
+          encoderName: readiness.models?.encoder?.name,
+          vaeName: readiness.models?.videoVae?.name,
+          audioVaeName: readiness.models?.audioVae?.name,
+          seed: job.seed,
+        })
+        : buildSeedVR2Prompt({
+          sourceName: loadName,
+          filenamePrefix: outputPrefix(job),
+          unetName: SEEDVR2_UNET_NAME,
+          vaeName: SEEDVR2_VAE_NAME,
+          seed: job.seed,
+        });
       await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
       assertNotCancelled(job);
       runtime.comfySession = createSeedVR2ProgressSession({
@@ -1057,7 +1347,7 @@ export function createSeedVR2Controller({
         throw makeError(rejection ? `ComfyUI rejected the workflow: ${asErrorMessage(rejection)}` : "ComfyUI did not return a prompt id.", 502, "COMFY_PROMPT_REJECTED");
       }
       runtime.promptId = String(promptId);
-      await updateJob(job, { promptId: runtime.promptId, progress: 25, stage: "Processing SeedVR2", provenance: { ...job.provenance, submittedAt: isoNow(now()) } });
+      await updateJob(job, { promptId: runtime.promptId, progress: 25, stage: `Processing ${label}`, provenance: { ...job.provenance, submittedAt: isoNow(now()) } });
       runtime.comfySession?.setPromptId(runtime.promptId);
       const artifact = await waitForHistory(job, runtime.promptId, abortController?.signal, runtime);
       assertNotCancelled(job);
@@ -1314,21 +1604,32 @@ export function createSeedVR2Controller({
     });
     const fail = sendError || ((response, status, message, code) => respond(response, status, { error: message, ...(code ? { code } : {}) }));
     if (req.method === "GET" && pathname === "/api/upscale/health") {
-      respond(res, 200, await checkReadiness());
+      try {
+        const url = new URL(req.url || "/api/upscale/health", "http://localhost");
+        const profile = normalizeProfile(url.searchParams.get("profile") || SEEDVR2_PROFILE);
+        respond(res, 200, await checkReadiness(profile));
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 503, asErrorMessage(error, "Unable to check upscale readiness."), error?.code);
+      }
       return true;
     }
     if (req.method === "POST" && pathname === "/api/upscale") {
       try {
         const body = typeof readJson === "function" ? await readJson(req) : {};
-        const readiness = await checkReadiness();
+        const profile = normalizeProfile(body?.profile);
+        const readiness = await checkReadiness(profile);
         if (!readiness.ready) {
-          respond(res, 503, { error: "SeedVR2 is not ready.", health: readiness });
+          respond(res, 503, {
+            error: `${profileLabel(profile)} is not ready.`,
+            code: profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : "SEEDVR2_NOT_READY",
+            health: readiness,
+          });
           return true;
         }
         respond(res, 202, { job: await enqueue(body) });
       } catch (error) {
         const status = Number.isInteger(error?.status) ? error.status : 400;
-        fail(res, status, asErrorMessage(error, "Unable to queue SeedVR2 upscale."), error?.code);
+        fail(res, status, asErrorMessage(error, "Unable to queue video upscale."), error?.code);
       }
       return true;
     }

@@ -37,7 +37,7 @@
 
 - 可直接輸入 H3 prompt（一般模式最多 7000 字元）及負面提示詞。
 - **Prompt Assistant** 可選 Ollama 或 Codex CLI，並設定 Ollama 模型、Codex 模型與 reasoning；提供圖片或影片時會以視覺輸入協助整理。服務不可用時仍可手動編輯提示詞。
-- 可選模型 profile（NVFP4、INT4、Official INT8、Ref2VA、Wan Animate 等，實際選項依模式而定）、寬高、時長、步數、種子、輸出名稱及 Render count。
+- 可選模型 profile（FL2VA NVFP4、Ref2VA NVFP4、Wan Animate，實際選項依模式而定）、寬高、時長、步數、種子、輸出名稱及 Render count。
 - 一般模式寬高範圍為 32–2048 且以 32 為步進；Replace 使用 16 步進。時長 2–60 秒（既有流程預設 5 秒）、步數 1–80、種子 0–2147483647、Render count 1–20；角色 LoRA strength 為 0–2。
 
 畫面會回報 Bridge/ComfyUI readiness、驗證錯誤及草稿自動儲存狀態。若素材或數值不符合模式需求，Generate 會被停用並顯示原因。
@@ -82,11 +82,11 @@
 
 ### Upscale
 
-路徑：`/app/tools/upscale`。選擇或上傳影片，先通過 SeedVR2/ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、取消、重試、預覽、開啟或下載輸出。現行工具固定使用 SeedVR2 7B Sharp NVFP4 **2×**，搭配 native auto chunk、latent overlap 1 與 wavelet 色彩校正，沒有自訂倍率。
+路徑：`/app/tools/upscale`。選擇或上傳影片，先通過所選後端的 ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、取消、重試、預覽、開啟或下載輸出。工具提供 SeedVR2 7B Sharp NVFP4 與 MiniMax H3 Latent 2x 兩個 **2×** profile：前者搭配 native auto chunk、latent overlap 1 與 wavelet 色彩校正；後者在 H3 clean latent 上直接放大空間尺寸，保留時間長度與音訊。兩者都不提供自訂倍率。
 
 ### Image-to-Image
 
-路徑：`/app/tools/image-to-image`。選擇或上傳一張來源圖片，輸入正向與負面提示詞；可用 Ollama vision 輔助產生提示詞。可選 SDXL Turbo、SD1.5；Z-Image Turbo 與 WAI Illustrious 僅在 local runtime 顯示。可設定可選 LoRA（strength 0–2）、denoise 0.01–1、steps 1–50、CFG 0–20、seed、batch 1–20 及 random ranges。
+路徑：`/app/tools/image-to-image`。選擇或上傳一張來源圖片，輸入正向與負面提示詞；可用 Ollama vision 輔助產生提示詞。可選 SDXL Turbo、SD1.5；WAI Illustrious 僅在 local runtime 顯示。可設定可選 LoRA（strength 0–2）、denoise 0.01–1、steps 1–50、CFG 0–20、seed、batch 1–20 及 random ranges。
 
 工作會顯示 ComfyUI readiness、進度與批次結果；部分批次失敗時仍可查看成功項目，輸出可下載或刪除，也可在 History 搜尋並展開查看參數。此工具目前只有 retry，沒有 cancel API。
 

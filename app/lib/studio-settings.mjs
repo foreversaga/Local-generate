@@ -5,19 +5,23 @@ export const STUDIO_SETTINGS_DEFAULTS = Object.freeze({
   version: STUDIO_SETTINGS_VERSION,
   promptProvider: "ollama",
   ollamaModel: "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M",
+  vllmModel: "qwen3.8-27b-uncensored-nvfp4",
   codexModel: "gpt-5.6-luna",
   codexReasoningEffort: "medium",
 });
 
-const PROVIDERS = new Set(["ollama", "codex"]);
+const PROVIDERS = new Set(["ollama", "sglang", "codex"]);
 const DEFAULT_REASONING = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 export function createStudioSettings(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   return {
     version: STUDIO_SETTINGS_VERSION,
-    promptProvider: PROVIDERS.has(source.promptProvider) ? source.promptProvider : STUDIO_SETTINGS_DEFAULTS.promptProvider,
+    promptProvider: source.promptProvider === "hermes" || source.promptProvider === "vllm"
+      ? "sglang"
+      : PROVIDERS.has(source.promptProvider) ? source.promptProvider : STUDIO_SETTINGS_DEFAULTS.promptProvider,
     ollamaModel: normalizeString(source.ollamaModel, STUDIO_SETTINGS_DEFAULTS.ollamaModel),
+    vllmModel: normalizeString(source.vllmModel || source.hermesModel, STUDIO_SETTINGS_DEFAULTS.vllmModel),
     codexModel: normalizeString(source.codexModel, STUDIO_SETTINGS_DEFAULTS.codexModel),
     codexReasoningEffort: normalizeString(source.codexReasoningEffort, STUDIO_SETTINGS_DEFAULTS.codexReasoningEffort),
   };
@@ -61,6 +65,9 @@ export function reconcileStudioSettings(settings, health = {}) {
   const ollamaModels = Array.isArray(health?.ollama?.models)
     ? health.ollama.models.map(String).filter(Boolean)
     : [];
+  const vllmModels = Array.isArray(health?.sglang?.models || health?.vllm?.models)
+    ? (health.sglang?.models || health.vllm.models).map(String).filter(Boolean)
+    : [];
   const codexModels = Array.isArray(health?.codex?.models)
     ? health.codex.models.filter((model) => model && typeof model === "object" && String(model.value || "").trim())
     : [];
@@ -75,6 +82,11 @@ export function reconcileStudioSettings(settings, health = {}) {
       : ollamaModels.includes(STUDIO_SETTINGS_DEFAULTS.ollamaModel)
         ? STUDIO_SETTINGS_DEFAULTS.ollamaModel
         : ollamaModels[0] || current.ollamaModel,
+    vllmModel: vllmModels.includes(current.vllmModel)
+      ? current.vllmModel
+      : vllmModels.includes(STUDIO_SETTINGS_DEFAULTS.vllmModel)
+        ? STUDIO_SETTINGS_DEFAULTS.vllmModel
+        : vllmModels[0] || current.vllmModel,
     codexModel: selectedCodex ? String(selectedCodex.value) : current.codexModel,
     codexReasoningEffort: reasoningOptions.includes(current.codexReasoningEffort)
       ? current.codexReasoningEffort

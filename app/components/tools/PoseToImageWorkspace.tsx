@@ -12,10 +12,10 @@ import {
 } from "./img2img-client";
 import styles from "./PoseToImageWorkspace.module.css";
 
-const SDXL_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
+const SDXL_MODEL = "sd_xl_turbo_1.0_fp16.safetensors";
 const DEFAULT_NEGATIVE_PROMPT = "blurry, low quality, low resolution, bad anatomy, deformed body, extra limbs, missing limbs, malformed hands, malformed feet, extra fingers, fused fingers, distorted face, watermark, text, logo";
-const DEFAULT_STEPS = 35;
-const DEFAULT_CFG = 5;
+const DEFAULT_STEPS = 4;
+const DEFAULT_CFG = 1;
 const DEFAULT_DENOISE = 1;
 const DEFAULT_POSE_CONTROL_STRENGTH = 1.2;
 const DEFAULT_POSE_RESOLUTION = 768;
@@ -319,7 +319,7 @@ export function PoseToImageWorkspace() {
                     <div>
                         <span className={styles.eyebrow}>04 / SDXL</span>
                         <h3>依骨架姿勢生成圖片</h3>
-                        <p className={styles.helper}>Juggernaut XL v9 · DPM++ 2M Karras · 35 steps · CFG 5</p>
+                        <p className={styles.helper}>SDXL Turbo 1.0 FP16 · 4 steps · CFG 1</p>
                     </div>
                     <label className={styles.denoiseField} htmlFor="pose-to-image-denoise">
                         <span>重繪強度 {denoise.toFixed(2)}</span>

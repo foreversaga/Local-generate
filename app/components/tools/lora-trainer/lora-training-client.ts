@@ -1,6 +1,6 @@
 const API_ROOT = "/app/api/lora-training";
 
-export type LoraFamily = "sdxl" | "illustrious" | "z-image";
+export type LoraFamily = "sdxl" | "illustrious";
 export type CaptionReviewMode = "auto" | "manual";
 export type LoraTrainingPrecision = "no" | "fp16" | "bf16";
 export type LoraSavePrecision = "float" | "fp16" | "bf16";
@@ -38,11 +38,6 @@ export type LoraTrainingConfig = {
     savePrecision?: LoraSavePrecision;
     lowVram?: boolean;
     layerOffloading?: boolean;
-  };
-  zImageConfig?: {
-    gradientCheckpointing?: boolean;
-    cacheLatents?: boolean;
-    aspectRatioBuckets?: boolean;
   };
 };
 

@@ -6,7 +6,7 @@ const MAX_REF2V_IMAGES = 9;
 
 /**
  * @typedef {{
- *   provider: "ollama" | "codex";
+ *   provider: "ollama" | "sglang" | "codex";
  *   model: string;
  *   codexModel: string;
  *   reasoningEffort: string;

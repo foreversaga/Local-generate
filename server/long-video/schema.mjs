@@ -129,7 +129,7 @@ export function assertLongLoraSupported(value, { mode } = {}) {
   if (!fixedH3 && ref2v) {
     fail("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference long-video segments.", 422);
   }
-  const profileSupported = ["nvfp4_blackwell", "int4_convrot_low_vram", "official_pruned_int8_convrot"].includes(profile)
+  const profileSupported = profile === "nvfp4_blackwell"
     || (fixedH3 && ref2v && profile === "ref2va_pruned_nvfp4");
   if (!profileSupported) {
     fail("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${profile}.`, 422, { modelProfile: profile });
@@ -247,7 +247,7 @@ export function validateSegment(value, index = 0) {
     ...(continuityNote ? { continuityNote } : {}),
     ...(endingState ? { endingState } : {}),
     ...(cameraPlan ? { cameraPlan } : {}),
-    ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "codex" || value.promptSource === "codex_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
+    ...(value.promptSource === "ollama" || value.promptSource === "ollama_structured" || value.promptSource === "sglang" || value.promptSource === "sglang_structured" || value.promptSource === "codex" || value.promptSource === "codex_structured" || value.promptSource === "manual" ? { promptSource: value.promptSource } : {}),
     mode: value.mode === "i2v" ? "i2v" : value.mode === "ref2v" ? "ref2v" : "t2v",
     status: SEGMENT_STATES.includes(value.status) ? value.status : "pending",
     attempt: Math.max(0, Math.floor(finite(value.attempt, 0))),
@@ -400,7 +400,7 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
   }));
   const rawSegmentDurationHint = finite(payload.planningSettings?.segmentDurationHint ?? payload.planMeta?.segmentDurationHint, 5);
   const normalizedSegmentDurationHint = Number(Math.min(60, Math.max(0.5, rawSegmentDurationHint)).toFixed(3));
-  const timelineMode = ["ollama", "codex"].includes(payload.planMeta?.timelineSource) || payload.planningSettings?.timelineMode === "auto" ? "auto" : "manual";
+  const timelineMode = ["ollama", "sglang", "codex"].includes(payload.planMeta?.timelineSource) || payload.planningSettings?.timelineMode === "auto" ? "auto" : "manual";
   const duration = payload.duration ?? timeline[timeline.length - 1].end;
   return {
     schemaVersion: 1,
@@ -440,6 +440,7 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     modelProfile: payload.modelProfile,
     ...(payload.promptProvider ? { promptProvider: payload.promptProvider } : {}),
     ...(payload.ollamaModel ? { ollamaModel: payload.ollamaModel } : {}),
+    ...(payload.sglangModel ? { sglangModel: payload.sglangModel } : {}),
     ...(payload.codexModel ? { codexModel: payload.codexModel } : {}),
     ...(payload.codexReasoningEffort ? { codexReasoningEffort: payload.codexReasoningEffort } : {}),
     seam: payload.seam,

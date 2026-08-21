@@ -12,6 +12,35 @@ function historyRecord(payload, promptId) {
   return record && typeof record === "object" ? record : null;
 }
 
+function historyMessages(record) {
+  const messages = record?.status?.messages;
+  return Array.isArray(messages) ? messages : [];
+}
+
+function historyEvent(record, names) {
+  const accepted = new Set(names);
+  return historyMessages(record).find((entry) => Array.isArray(entry) && accepted.has(entry[0])) || null;
+}
+
+function eventTimestamp(entry) {
+  const value = Number(entry?.[1]?.timestamp);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function timingFromHistory(record) {
+  const startedAtMs = eventTimestamp(historyEvent(record, ["execution_start"]));
+  const terminalEvent = [...historyMessages(record)].reverse().find((entry) => Array.isArray(entry)
+    && ["execution_success", "execution_error", "execution_interrupted"].includes(entry[0]));
+  const finishedAtMs = eventTimestamp(terminalEvent);
+  return {
+    startedAtMs,
+    finishedAtMs,
+    elapsedMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) && finishedAtMs >= startedAtMs
+      ? finishedAtMs - startedAtMs
+      : null,
+  };
+}
+
 export function videoArtifactFromHistory(record) {
   const outputs = record?.outputs;
   if (!outputs || typeof outputs !== "object") return null;
@@ -43,8 +72,12 @@ export function inspectComfyPromptPayloads({ queuePayload, historyPayload, promp
   const record = historyRecord(historyPayload, id);
   if (record) {
     const status = record.status && typeof record.status === "object" ? record.status : {};
+    const timing = timingFromHistory(record);
+    if (historyEvent(record, ["execution_interrupted"])) {
+      return { state: "interrupted", promptId: id, queue, record, timing };
+    }
     if (status.status_str === "error" || status.completed === false) {
-      return { state: "error", promptId: id, queue, record };
+      return { state: "error", promptId: id, queue, record, timing };
     }
     if (status.completed === true || (record.outputs && Object.keys(record.outputs).length > 0)) {
       return {
@@ -52,6 +85,7 @@ export function inspectComfyPromptPayloads({ queuePayload, historyPayload, promp
         promptId: id,
         queue,
         record,
+        timing,
         artifact: videoArtifactFromHistory(record),
       };
     }

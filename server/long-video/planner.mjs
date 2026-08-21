@@ -29,11 +29,18 @@ function stripJsonFence(value) {
 }
 
 function plannerProvider(input) {
-  return input?.provider === "codex" || input?.promptProvider === "codex" ? "codex" : "ollama";
+  const value = input?.provider || input?.promptProvider;
+  if (value === "codex") return "codex";
+  if (value === "sglang" || value === "vllm") return "sglang";
+  return "ollama";
 }
 
 function plannerErrorCode(provider, suffix) {
-  return `${provider === "codex" ? "CODEX" : "OLLAMA"}_${suffix}`;
+  return `${provider === "codex" ? "CODEX" : provider === "sglang" ? "SGLANG" : "OLLAMA"}_${suffix}`;
+}
+
+function plannerProviderLabel(provider) {
+  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "vLLM" : "Ollama";
 }
 
 function parseResponse(value, provider = "ollama") {
@@ -54,7 +61,7 @@ function parseResponse(value, provider = "ollama") {
         // Preserve the provider-specific INVALID_JSON error below.
       }
     }
-    const label = provider === "codex" ? "Codex CLI" : "Ollama";
+    const label = plannerProviderLabel(provider);
     throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} returned invalid JSON for sequence planning.`, 502, { cause: error.message });
   }
 }
@@ -196,7 +203,7 @@ function plannerPrompt(input, canonicalTimeline = null) {
 }
 
 function modelTimeline(segments, duration, provider = "ollama") {
-  const label = provider === "codex" ? "Codex CLI" : "Ollama";
+  const label = plannerProviderLabel(provider);
   if (!Array.isArray(segments) || segments.length < 2) {
     throw new LongVideoError(plannerErrorCode(provider, "TIMELINE_INVALID"), `${label} must return at least two timed storyboard segments.`, 502);
   }
@@ -334,7 +341,7 @@ function repairPlannerPrompt(basePrompt, raw, error, { duration, timelineMode })
 
 async function requestPlannerModel({ request, requestInput, model, prompt, system, contextLength, skillPolicy, fetchImpl, ollamaUrl, comfyUrl, remoteComfy, timeoutMs, attempt, ollamaCoordinator }) {
   const provider = plannerProvider(requestInput);
-  const label = provider === "codex" ? "Codex CLI" : "Ollama";
+  const label = plannerProviderLabel(provider);
   try {
     if (request) return await request({ input: requestInput, model, prompt, system, contextLength, skillPolicy, attempt, repair: attempt > 1 });
     if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
@@ -424,7 +431,11 @@ export async function planSequence(input, options = {}) {
   const ollamaUrl = options.ollamaUrl || process.env.OLLAMA_URL || "http://127.0.0.1:11434";
   const comfyUrl = options.comfyUrl || process.env.COMFY_URL || "";
   const remoteComfy = options.remoteComfy ?? /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
-  const model = options.model || (provider === "codex" ? input.codexModel || input.model || "gpt-5.6-luna" : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
+  const model = options.model || (provider === "codex"
+    ? input.codexModel || input.model || "gpt-5.6-luna"
+    : provider === "sglang"
+      ? input.sglangModel || input.vllmModel || input.model || "qwen3.8-27b-uncensored-nvfp4"
+      : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;
   const ollamaCoordinator = options.ollamaCoordinator || null;
@@ -460,7 +471,7 @@ export async function planSequence(input, options = {}) {
     ...(plannerImages.length ? { plannerImages } : {}),
     ...(canonicalTimeline ? { timeline: canonicalTimeline } : {}),
   };
-  const skillPack = provider === "ollama"
+  const skillPack = provider !== "codex"
     ? await loadSkillPack({
         purpose: "planning",
         mode: normalizedInput.referenceMode === "multi_reference" || ["motion_context", "latent_context"].includes(normalizedInput.continuationMode) ? "ref2v" : "t2v",
@@ -502,7 +513,7 @@ export async function planSequence(input, options = {}) {
       });
       const candidate = parseResponse(raw, provider);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-        const label = provider === "codex" ? "Codex CLI" : "Ollama";
+        const label = plannerProviderLabel(provider);
         throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} must return one JSON object for sequence planning.`, 502);
       }
       const candidateSegments = Array.isArray(candidate.segments) ? candidate.segments : Array.isArray(candidate.timeline) ? candidate.timeline : [];
@@ -577,7 +588,7 @@ export async function planSequence(input, options = {}) {
     }
   }
   if (!parsed) {
-    const label = provider === "codex" ? "Codex CLI" : "Ollama";
+    const label = plannerProviderLabel(provider);
     throw new LongVideoError(plannerErrorCode(provider, "INVALID_JSON"), `${label} did not return a usable sequence plan.`, 502);
   }
   const bible = qualityContinuityBible(parsed.continuityBible || parsed.continuity_bible);
@@ -633,7 +644,7 @@ export async function planSequence(input, options = {}) {
     ...(normalizedInput.inputAsset ? { inputAsset: sanitizeAssetRef(normalizedInput.inputAsset) } : {}),
     duration: normalizedInput.duration ?? drafts[drafts.length - 1].end,
     negativePrompt,
-    ...(provider === "codex" ? { codexModel: model } : { ollamaModel: model }),
+    ...(provider === "codex" ? { codexModel: model } : provider === "sglang" ? { sglangModel: model } : { ollamaModel: model }),
     promptProvider: provider,
     continuityBible: bible,
     segments: drafts,

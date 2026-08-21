@@ -5,11 +5,20 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  H3_LATENT_PROFILE,
+  H3_LATENT_REQUIRED_NODES,
+  H3_LATENT_AUDIO_VAE_NAME,
+  H3_LATENT_DIFFUSION_NAMES,
+  H3_LATENT_ENCODER_NAME,
+  H3_LATENT_PASS2_SIGMAS,
+  H3_LATENT_VAE_NAME,
   SEEDVR2_REQUIRED_NODES,
   SEEDVR2_UNET_NAME,
   SEEDVR2_VAE_NAME,
   buildSeedVR2Prompt,
+  buildH3LatentPrompt,
   createSeedVR2Controller,
+  evaluateH3LatentReadiness,
   evaluateSeedVR2Readiness,
   normalizeVideoAssetName,
   parseSeedVR2History,
@@ -39,6 +48,14 @@ function objectInfo() {
   const info = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
   info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
+  return info;
+}
+
+function h3ObjectInfo() {
+  const info = Object.fromEntries(H3_LATENT_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
+  info.UNETLoader.input.required.unet_name = ["COMBO", { options: H3_LATENT_DIFFUSION_NAMES }];
+  info.CLIPLoader.input.required.clip_name = ["COMBO", { options: [H3_LATENT_ENCODER_NAME] }];
+  info.VAELoader.input.required.vae_name = ["COMBO", { options: [H3_LATENT_VAE_NAME, H3_LATENT_AUDIO_VAE_NAME] }];
   return info;
 }
 
@@ -80,6 +97,44 @@ test("readiness requires native nodes and exact model combos", () => {
   const missing = evaluateSeedVR2Readiness(objectInfo(), { modelFiles: { unet: false, vae: true } });
   assert.equal(missing.ready, false);
   assert.equal(missing.models.unet.available, false);
+});
+
+test("builds the community H3 latent 2x two-pass graph", () => {
+  const graph = buildH3LatentPrompt({ sourceName: "clips/source.mp4", filenamePrefix: "unsafe/prefix" });
+  assert.equal(Object.keys(graph).length, 29);
+  assert.deepEqual(
+    Object.values(graph).map((node) => node.class_type),
+    ["LoadVideo", "GetVideoComponents", "GetImageSize", "UNETLoader", "CLIPLoader", "VAELoader", "VAELoader", "MiniMaxH3ReferenceToVideo", "RandomNoise", "KSamplerSelect", "BasicScheduler", "BasicGuider", "SamplerCustomAdvanced", "LTXVSeparateAVLatent", "MiniMaxH3LatentUpscale", "RandomNoise", "ManualSigmas", "MiniMaxH3AddNoise", "MiniMaxH3ShiftSigmas", "MiniMaxH3AddNoise", "LTXVConcatAVLatent", "MiniMaxH3ConditioningUpscale", "BasicGuider", "DisableNoise", "SamplerCustomAdvanced", "VAEDecode", "VAEDecodeAudio", "CreateVideo", "SaveVideo"],
+  );
+  assert.equal(graph["4"].inputs.unet_name, H3_LATENT_DIFFUSION_NAMES[0]);
+  assert.equal(graph["5"].inputs.clip_name, H3_LATENT_ENCODER_NAME);
+  assert.equal(graph["6"].inputs.vae_name, H3_LATENT_VAE_NAME);
+  assert.equal(graph["7"].inputs.vae_name, H3_LATENT_AUDIO_VAE_NAME);
+  assert.equal(graph["8"].class_type, "MiniMaxH3ReferenceToVideo");
+  assert.deepEqual(graph["8"].inputs["ref_videos.ref_video_0"], ["2", 0]);
+  assert.deepEqual(graph["8"].inputs["ref_video_audios.ref_video_audio_0"], ["2", 1]);
+  assert.equal(graph["11"].inputs.steps, 25);
+  assert.equal(graph["15"].inputs.scale_by, 2);
+  assert.equal(graph["15"].inputs.upscale_method, "bilinear");
+  assert.equal(graph["17"].inputs.sigmas, H3_LATENT_PASS2_SIGMAS);
+  assert.deepEqual(graph["18"].inputs.sigmas, ["17", 0]);
+  assert.deepEqual(graph["25"].inputs.noise, ["24", 0]);
+  assert.deepEqual(graph["28"].inputs.audio, ["27", 0]);
+  assert.equal(graph["29"].inputs.filename_prefix.includes("/"), false);
+
+  const modelFiles = {
+    diffusion: Object.fromEntries(H3_LATENT_DIFFUSION_NAMES.map((name) => [name, true])),
+    encoder: true,
+    videoVae: true,
+    audioVae: true,
+  };
+  const ready = evaluateH3LatentReadiness(h3ObjectInfo(), { modelFiles });
+  assert.equal(ready.ready, true);
+  assert.equal(ready.models.diffusion.name, H3_LATENT_DIFFUSION_NAMES[0]);
+  assert.equal(ready.models.videoVae.name, H3_LATENT_VAE_NAME);
+  const missing = evaluateH3LatentReadiness(h3ObjectInfo(), { modelFiles: { ...modelFiles, encoder: false } });
+  assert.equal(missing.ready, false);
+  assert.equal(missing.models.encoder.available, false);
 });
 
 test("normalizes source paths and rejects traversal/non-video names", () => {
@@ -228,6 +283,68 @@ test("remote controller uploads source video and downloads the ComfyUI artifact"
   assert.ok(uploadSeen);
   assert.ok(viewSeen);
   assert.equal(await fs.stat(path.join(inputRoot, "seedvr2_temp_remote-job.mp4")).catch(() => null), null);
+});
+
+test("controller runs the H3 latent profile with its own model paths and output namespace", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-latent-upscale-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "text_encoders"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
+  await fs.mkdir(inputRoot, { recursive: true });
+  await fs.mkdir(outputRoot, { recursive: true });
+  await fs.writeFile(path.join(root, "models", "diffusion_models", H3_LATENT_DIFFUSION_NAMES[0]), "model");
+  await fs.writeFile(path.join(root, "models", "text_encoders", H3_LATENT_ENCODER_NAME), "encoder");
+  await fs.writeFile(path.join(root, "models", "vae", H3_LATENT_VAE_NAME), "vae");
+  await fs.writeFile(path.join(root, "models", "vae", H3_LATENT_AUDIO_VAE_NAME), "audio-vae");
+  await fs.writeFile(path.join(inputRoot, "source.mp4"), "source");
+  await fs.writeFile(path.join(outputRoot, "h3_result.mp4"), "result");
+  let promptSeen = null;
+  const fetchImpl = async (url, init = {}) => {
+    if (url.endsWith("/system_stats")) return response({ devices: [] });
+    if (url.endsWith("/object_info")) return response(h3ObjectInfo());
+    if (url.endsWith("/prompt")) {
+      promptSeen = JSON.parse(init.body);
+      return response({ prompt_id: "h3-prompt-test" });
+    }
+    if (url.includes("/history/h3-prompt-test")) {
+      return response({ "h3-prompt-test": { status: { completed: true }, outputs: { "29": { videos: [{ filename: "h3_result.mp4", subfolder: "", type: "output" }] } } } });
+    }
+    throw new Error(`unexpected endpoint ${url}`);
+  };
+  const controller = createSeedVR2Controller({
+    comfyRoot: root,
+    inputRoot,
+    outputRoot,
+    fetchImpl,
+    pollIntervalMs: 1,
+    toAsset: async (_root, name) => ({ name, root: "output", kind: "video" }),
+    idFactory: () => "h3-latent-job",
+  });
+  const health = apiResponse();
+  assert.equal(await controller.handleRoute({ method: "GET", url: "/api/upscale/health?profile=h3_latent_2x" }, health), true);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.profile, H3_LATENT_PROFILE);
+  assert.equal(health.body.ready, true);
+  const queued = await controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: H3_LATENT_PROFILE });
+  assert.equal(queued.profile, H3_LATENT_PROFILE);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const current = await controller.getJob("h3-latent-job");
+    if (current?.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const completed = await controller.getJob("h3-latent-job");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.output.name, "h3_result.mp4");
+  assert.equal(promptSeen.prompt["4"].class_type, "UNETLoader");
+  assert.equal(promptSeen.prompt["4"].inputs.unet_name, H3_LATENT_DIFFUSION_NAMES[0]);
+  assert.equal(promptSeen.prompt["6"].inputs.vae_name, H3_LATENT_VAE_NAME);
+  assert.equal(promptSeen.prompt["8"].class_type, "MiniMaxH3ReferenceToVideo");
+  assert.equal(promptSeen.prompt["15"].class_type, "MiniMaxH3LatentUpscale");
+  assert.equal(promptSeen.prompt["25"].class_type, "SamplerCustomAdvanced");
+  assert.equal(promptSeen.prompt["29"].class_type, "SaveVideo");
+  assert.match(completed.stage, /Completed/);
 });
 
 test("controller route reports 503 when ComfyUI readiness is false", async () => {

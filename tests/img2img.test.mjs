@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   IMG2IMG_MODELS,
   IMG2IMG_MODEL_PROFILES,
+  IMG2IMG_FLUX2_REQUIRED_NODES,
   IMG2IMG_POSE_REQUIRED_NODES,
   buildImg2ImgPrompt,
   comfyWebSocketUrl,
@@ -27,13 +28,7 @@ import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs
 
 const CHECKPOINT_MODELS = IMG2IMG_MODELS.filter((model) => IMG2IMG_MODEL_PROFILES[model].workflow === "checkpoint");
 const WAI_MODEL = "waiIllustriousSDXL_v170.safetensors";
-const JUGGERNAUT_MODEL = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors";
-const Z_IMAGE_MODEL = "z_image_turbo_bf16.safetensors";
-const Z_IMAGE_COMPANIONS = {
-  clipName: "qwen_3_4b.safetensors",
-  clipType: "lumina2",
-  vaeName: "ae.safetensors",
-};
+const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
 
 function response(payload, status = 200) {
   return {
@@ -108,23 +103,27 @@ const loraObjectInfo = {
   LoraLoaderModelOnly: { input: { required: { model: ["MODEL"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"] } } },
 };
 
+const flux2ObjectInfo = {
+  ...currentObjectInfo,
+  UNETLoader: { input: { required: { unet_name: [[FLUX2_DEV_MODEL]] } } },
+  CLIPLoader: { input: { required: { clip_name: [["mistral_3_small_flux2_bf16.safetensors"]], type: [["flux2"]] } } },
+  VAELoader: { input: { required: { vae_name: [["full_encoder_small_decoder.safetensors"]] } } },
+  GetImageSize: {},
+  FluxGuidance: {},
+  ReferenceLatent: {},
+  BasicGuider: {},
+  RandomNoise: {},
+  KSamplerSelect: {},
+  Flux2Scheduler: {},
+  EmptyFlux2LatentImage: {},
+  SamplerCustomAdvanced: {},
+};
+
 const windowsLoraObjectInfo = {
   ...currentObjectInfo,
   LoraLoader: { input: { required: { lora_name: [["trained\\girl2d.safetensors"]] } } },
 };
 
-const zImageObjectInfo = {
-  LoadImage: {},
-  VAEEncode: {},
-  CLIPTextEncode: {},
-  KSampler: {},
-  VAEDecode: {},
-  SaveImage: {},
-  UNETLoader: { input: { required: { unet_name: [[Z_IMAGE_MODEL]], weight_dtype: [["default"]] } } },
-  CLIPLoader: { input: { required: { clip_name: [[Z_IMAGE_COMPANIONS.clipName]], type: [[Z_IMAGE_COMPANIONS.clipType]] } } },
-  VAELoader: { input: { required: { vae_name: [[Z_IMAGE_COMPANIONS.vaeName]] } } },
-  ModelSamplingAuraFlow: {},
-};
 
 test("builds an eight-node native img2img workflow", () => {
   const graph = buildImg2ImgPrompt({
@@ -168,30 +167,6 @@ test("adds an optional DWPose ControlNet branch without changing source conditio
   assert.deepEqual(graph["6"].inputs.positive, ["12", 0]);
   assert.deepEqual(graph["6"].inputs.negative, ["12", 1]);
   assert.deepEqual(graph["6"].inputs.latent_image, ["3", 0]);
-});
-
-test("builds the high-quality Juggernaut pose workflow with SDXL normalization and Xinsir conditioning", () => {
-  const graph = buildImg2ImgPrompt({
-    sourceName: "character.png",
-    poseName: "pose.png",
-    poseControlNetName: "xinsir_openpose_sdxl_1.0.safetensors",
-    prompt: "natural adult portrait",
-    model: JUGGERNAUT_MODEL,
-  });
-  assert.equal(graph["6"].inputs.steps, 35);
-  assert.equal(graph["6"].inputs.cfg, 5);
-  assert.equal(graph["6"].inputs.denoise, 1);
-  assert.equal(graph["6"].inputs.sampler_name, "dpmpp_2m");
-  assert.equal(graph["6"].inputs.scheduler, "karras");
-  assert.equal(graph["14"].class_type, "ImageScaleToTotalPixels");
-  assert.deepEqual(graph["14"].inputs, {
-    image: ["2", 0],
-    upscale_method: "lanczos",
-    megapixels: 1,
-    resolution_steps: 64,
-  });
-  assert.deepEqual(graph["3"].inputs.pixels, ["14", 0]);
-  assert.equal(graph["10"].inputs.scale_stick_for_xinsr_cn, "enable");
 });
 
 test("pose readiness requires configured ControlNet and DWPose nodes", () => {
@@ -244,21 +219,6 @@ test("adds a checkpoint LoRA without changing the unselected graph node ids", ()
   assert.deepEqual(graph["6"].inputs.model, ["9", 0]);
 });
 
-test("adds a model-only LoRA to the Z-Image model path", () => {
-  const graph = buildImg2ImgPrompt({
-    sourceName: "source.png",
-    prompt: "a realistic portrait",
-    model: Z_IMAGE_MODEL,
-    characterLoraName: "z-image/hero.safetensors",
-    characterLoraStrength: 0.6,
-  });
-  assert.equal(graph["12"].class_type, "LoraLoaderModelOnly");
-  assert.deepEqual(graph["12"].inputs.model, ["1", 0]);
-  assert.equal(graph["12"].inputs.lora_name, "z-image/hero.safetensors");
-  assert.equal(graph["12"].inputs.strength_model, 0.6);
-  assert.deepEqual(graph["8"].inputs.model, ["12", 0]);
-});
-
 test("validates character LoRA names and strengths", () => {
   assert.equal(normalizeCharacterLoraName(" characters\\hero.safetensors "), "characters/hero.safetensors");
   assert.equal(normalizeCharacterLoraStrength(undefined), 0.75);
@@ -290,35 +250,64 @@ test("builds the WAI checkpoint workflow without changing the native graph", () 
   assert.equal(graph["6"].inputs.denoise, 0.42);
 });
 
-test("builds the Z-Image Turbo image-conditioned workflow from local blueprint nodes", () => {
+test("builds the official FLUX.2 Dev Image Edit graph", () => {
   const graph = buildImg2ImgPrompt({
     sourceName: "source.png",
-    prompt: "a realistic portrait",
-    negativePrompt: "blur",
-    model: Z_IMAGE_MODEL,
-    denoise: 0.33,
-    steps: 9,
-    cfg: 1,
-    seed: 42,
+    prompt: "replace the background with a rainy Taipei street",
+    negativePrompt: "ignored for flux2",
+    model: FLUX2_DEV_MODEL,
+    denoise: 0.2,
+    steps: 20,
+    cfg: 4,
+    seed: 99,
   });
-  assert.equal(Object.keys(graph).length, 11);
-  assert.deepEqual(graph["1"], { class_type: "UNETLoader", inputs: { unet_name: Z_IMAGE_MODEL, weight_dtype: "default" } });
-  assert.deepEqual(graph["2"], {
-    class_type: "CLIPLoader",
-    inputs: { clip_name: Z_IMAGE_COMPANIONS.clipName, type: Z_IMAGE_COMPANIONS.clipType, device: "default" },
+  assert.equal(Object.keys(graph).length, 17);
+  assert.equal(graph["1"].class_type, "UNETLoader");
+  assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
+  assert.deepEqual(graph["2"].inputs, { clip_name: "mistral_3_small_flux2_bf16.safetensors", type: "flux2", device: "default" });
+  assert.equal(graph["3"].inputs.vae_name, "full_encoder_small_decoder.safetensors");
+  assert.equal(graph["4"].inputs.image, "source.png");
+  assert.deepEqual(graph["6"].inputs, { pixels: ["4", 0], vae: ["3", 0] });
+  assert.deepEqual(graph["9"].inputs, { conditioning: ["8", 0], latent: ["6", 0] });
+  assert.deepEqual(graph["10"].inputs.conditioning, ["9", 0]);
+  assert.deepEqual(graph["13"].inputs, { steps: 20, width: ["5", 0], height: ["5", 1] });
+  assert.deepEqual(graph["14"].inputs, { width: ["5", 0], height: ["5", 1], batch_size: 1 });
+  assert.deepEqual(graph["17"].inputs.images, ["16", 0]);
+  assert.equal(Object.values(graph).some((node) => node.class_type === "KSampler"), false);
+});
+
+test("FLUX.2 Dev readiness requires every edit node and companion file", () => {
+  const ready = evaluateImg2ImgReadiness(flux2ObjectInfo);
+  assert.deepEqual(Object.keys(ready.profiles[FLUX2_DEV_MODEL].nodes).sort(), [...IMG2IMG_FLUX2_REQUIRED_NODES].sort());
+  assert.equal(ready.models[FLUX2_DEV_MODEL], true);
+  assert.deepEqual(ready.profiles[FLUX2_DEV_MODEL].companions, { model: true, textEncoder: true, clipType: true, vae: true });
+
+  const missingVae = evaluateImg2ImgReadiness({
+    ...flux2ObjectInfo,
+    VAELoader: { input: { required: { vae_name: [["flux2-vae.safetensors"]] } } },
   });
-  assert.deepEqual(graph["3"], { class_type: "VAELoader", inputs: { vae_name: Z_IMAGE_COMPANIONS.vaeName } });
-  assert.deepEqual(graph["5"].inputs, { pixels: ["4", 0], vae: ["3", 0] });
-  assert.deepEqual(graph["8"], { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 3 } });
-  assert.equal(graph["9"].inputs.steps, 9);
-  assert.equal(graph["9"].inputs.cfg, 1);
-  assert.equal(graph["9"].inputs.seed, 42);
-  assert.equal(graph["9"].inputs.denoise, 0.33);
-  assert.equal(graph["9"].inputs.sampler_name, "dpmpp_2m_sde");
-  assert.equal(graph["9"].inputs.scheduler, "beta");
-  assert.deepEqual(graph["9"].inputs.latent_image, ["5", 0]);
-  assert.deepEqual(graph["10"].inputs, { samples: ["9", 0], vae: ["3", 0] });
-  assert.deepEqual(graph["11"].inputs.images, ["10", 0]);
+  assert.equal(missingVae.models[FLUX2_DEV_MODEL], false);
+  assert.equal(missingVae.profiles[FLUX2_DEV_MODEL].companions.vae, false);
+});
+
+test("FLUX.2 Dev edit rejects unsupported pose and character LoRA branches", () => {
+  assert.throws(() => buildImg2ImgPrompt({
+    sourceName: "source.png",
+    poseName: "pose.png",
+    poseControlNetName: "openpose.safetensors",
+    model: FLUX2_DEV_MODEL,
+  }), { code: "IMG2IMG_POSE_UNSUPPORTED" });
+  assert.throws(() => buildImg2ImgPrompt({
+    sourceName: "source.png",
+    characterLoraName: "characters/hero.safetensors",
+    model: FLUX2_DEV_MODEL,
+  }), { code: "IMG2IMG_LORA_UNSUPPORTED" });
+});
+
+test("FLUX.2 Dev edit remains local-only", () => {
+  const readiness = evaluateImg2ImgReadiness(flux2ObjectInfo, { remote: true });
+  assert.equal(readiness.models[FLUX2_DEV_MODEL], false);
+  assert.equal(readiness.profiles[FLUX2_DEV_MODEL].reason, "LOCAL_ONLY_MODEL");
 });
 
 test("readiness requires standard nodes and at least one approved checkpoint", () => {
@@ -345,32 +334,11 @@ test("readiness reports the optional LoRA loader nodes without making them requi
   assert.equal(withLoraNodes.profiles[IMG2IMG_MODELS[0]].loraAvailable, true);
 });
 
-test("readiness checks Z-Image loader nodes and companion model combos", () => {
-  const readiness = evaluateImg2ImgReadiness(zImageObjectInfo);
-  assert.equal(readiness.ready, true);
-  assert.equal(readiness.models[Z_IMAGE_MODEL], true);
-  assert.equal(readiness.profiles[Z_IMAGE_MODEL].nodes.UNETLoader, true);
-  assert.equal(readiness.profiles[Z_IMAGE_MODEL].companions.clip, true);
-  assert.equal(readiness.profiles[Z_IMAGE_MODEL].companions.vae, true);
-
-  const missingVae = evaluateImg2ImgReadiness({ ...zImageObjectInfo, VAELoader: undefined });
-  assert.equal(missingVae.models[Z_IMAGE_MODEL], false);
-  assert.equal(missingVae.ready, false);
-
-  const missingClipType = evaluateImg2ImgReadiness({
-    ...zImageObjectInfo,
-    CLIPLoader: { input: { required: { clip_name: [[Z_IMAGE_COMPANIONS.clipName]], type: [["sd3"]] } } },
-  });
-  assert.equal(missingClipType.models[Z_IMAGE_MODEL], false);
-});
-
-test("remote readiness marks local-only WAI and Z-Image profiles unavailable", () => {
-  const readiness = evaluateImg2ImgReadiness({ ...requiredObjectInfo, ...zImageObjectInfo }, { remote: true });
+test("remote readiness marks the local-only WAI profile unavailable", () => {
+  const readiness = evaluateImg2ImgReadiness(requiredObjectInfo, { remote: true });
   assert.equal(readiness.models[IMG2IMG_MODELS[0]], true);
   assert.equal(readiness.models[WAI_MODEL], false);
-  assert.equal(readiness.models[Z_IMAGE_MODEL], false);
   assert.equal(readiness.profiles[WAI_MODEL].reason, "LOCAL_ONLY_MODEL");
-  assert.equal(readiness.profiles[Z_IMAGE_MODEL].reason, "LOCAL_ONLY_MODEL");
 });
 
 test("readiness ignores unrelated current-schema checkpoints", () => {
@@ -427,28 +395,6 @@ test("POST rejects a LoRA when the selected profile loader node is unavailable",
   assert.equal(res.body.health.profiles[IMG2IMG_MODELS[0]].loraAvailable, false);
 });
 
-test("POST rejects a selected model when another profile is ready", async () => {
-  const controller = createImg2ImgController({
-    inputRoot: path.join(os.tmpdir(), "h3-img2img-model-input-missing"),
-    outputRoot: path.join(os.tmpdir(), "h3-img2img-model-output-missing"),
-    fetchImpl: async (url) => {
-      if (String(url).endsWith("/system_stats")) return response({});
-      if (String(url).endsWith("/object_info")) return response(requiredObjectInfo);
-      throw new Error(`unexpected endpoint ${url}`);
-    },
-  });
-  const res = apiResponse();
-  const handled = await controller.handleRoute({ method: "POST", url: "/api/img2img" }, res, {
-    readJson: async () => ({ sourceName: "source.png", prompt: "anime", model: Z_IMAGE_MODEL }),
-    sendJson: (_target, status, body) => { res.status = status; res.body = body; },
-    sendError: (_target, status, message, code) => { res.status = status; res.body = { error: message, code }; },
-  });
-  assert.equal(handled, true);
-  assert.equal(res.status, 503);
-  assert.equal(res.body.error, `Image model ${Z_IMAGE_MODEL} is not ready on this runtime.`);
-  assert.equal(res.body.health.models[Z_IMAGE_MODEL], false);
-});
-
 test("POST rejects a pose reference when no ControlNet model is configured", async () => {
   const controller = createImg2ImgController({
     inputRoot: path.join(os.tmpdir(), "h3-img2img-pose-input-missing"),
@@ -502,10 +448,6 @@ test("remote controller rejects local-only model profiles before queueing", asyn
     });
     await assert.rejects(
       () => controller.enqueue({ sourceName: "source.png", prompt: "anime portrait", model: WAI_MODEL }),
-      (error) => error?.code === "MODEL_RUNTIME_UNSUPPORTED" && /local runtime/.test(error.message),
-    );
-    await assert.rejects(
-      () => controller.enqueue({ sourceName: "source.png", prompt: "realistic portrait", model: Z_IMAGE_MODEL }),
       (error) => error?.code === "MODEL_RUNTIME_UNSUPPORTED" && /local runtime/.test(error.message),
     );
     assert.deepEqual(controller.getJobs(), []);
@@ -777,58 +719,6 @@ test("controller preserves actionable ComfyUI node validation details", async ()
     assert.match(job.error, /Prompt outputs failed validation/);
     assert.match(job.error, /LoraLoader\.lora_name: Value not in list/);
     assert.match(job.error, /trained\/girl2d\.safetensors/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("local controller submits the Z-Image graph and registers node 11 output", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "h3-img2img-z-local-"));
-  const inputRoot = path.join(root, "input");
-  const outputRoot = path.join(root, "output");
-  const artifactName = "img2img/z-result.png";
-  await mkdir(inputRoot, { recursive: true });
-  await mkdir(path.join(outputRoot, "img2img"), { recursive: true });
-  await writeFile(path.join(inputRoot, "source.png"), Buffer.from([137, 80, 78, 71]));
-  await writeFile(path.join(outputRoot, artifactName), Buffer.from([137, 80, 78, 71]));
-  let submittedGraph = null;
-  const fetchImpl = async (url, init = {}) => {
-    const endpoint = String(url).replace("http://local-comfy", "");
-    if (endpoint === "/system_stats") return new Response("{}");
-    if (endpoint === "/object_info") return new Response(JSON.stringify(zImageObjectInfo));
-    if (endpoint === "/prompt") {
-      submittedGraph = JSON.parse(init.body).prompt;
-      return new Response(JSON.stringify({ prompt_id: "z-prompt-1" }));
-    }
-    if (endpoint === "/history/z-prompt-1") return new Response(JSON.stringify({
-      "z-prompt-1": {
-        status: { status_str: "success", completed: true },
-        outputs: { "11": { images: [{ filename: "z-result.png", subfolder: "img2img", type: "output" }] } },
-      },
-    }));
-    throw new Error(`Unexpected endpoint: ${endpoint}`);
-  };
-  try {
-    const controller = createImg2ImgController({
-      comfyUrl: "http://local-comfy",
-      inputRoot,
-      outputRoot,
-      storeRoot: path.join(root, "records"),
-      fetchImpl,
-      pollIntervalMs: 1,
-      idFactory: () => "z-local-job",
-      toAsset: (_root, name) => ({ root: "output", name, kind: "image" }),
-    });
-    const queued = await controller.enqueue({ sourceName: "source.png", prompt: "realistic portrait", model: Z_IMAGE_MODEL });
-    let job = queued;
-    for (let count = 0; count < 100 && !["completed", "failed"].includes(job.status); count += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2));
-      job = await controller.getJob(queued.id);
-    }
-    assert.equal(job.status, "completed", job.error);
-    assert.equal(submittedGraph["1"].class_type, "UNETLoader");
-    assert.equal(submittedGraph["11"].class_type, "SaveImage");
-    assert.equal(job.output.name, artifactName);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

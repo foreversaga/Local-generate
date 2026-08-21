@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   inspectComfyPrompt,
   inspectComfyPromptPayloads,
+  timingFromHistory,
   videoArtifactFromHistory,
 } from "../server/video-generation/comfy-prompt-recovery.mjs";
 
@@ -24,6 +25,32 @@ test("prompt payload inspection distinguishes active, missing, and uncorrelated 
   assert.equal(inspectComfyPromptPayloads({
     queuePayload: { queue_running: [running], queue_pending: [] },
   }).state, "uncorrelated_busy");
+});
+
+test("history timing uses ComfyUI execution timestamps and detects interruption", () => {
+  const record = {
+    status: {
+      status_str: "error",
+      completed: false,
+      messages: [
+        ["execution_start", { prompt_id: PROMPT_ID, timestamp: 1_000 }],
+        ["execution_interrupted", { prompt_id: PROMPT_ID, timestamp: 6_250 }],
+      ],
+    },
+    outputs: {},
+  };
+  assert.deepEqual(timingFromHistory(record), {
+    startedAtMs: 1_000,
+    finishedAtMs: 6_250,
+    elapsedMs: 5_250,
+  });
+  const result = inspectComfyPromptPayloads({
+    queuePayload: { queue_running: [], queue_pending: [] },
+    historyPayload: { [PROMPT_ID]: record },
+    promptId: PROMPT_ID,
+  });
+  assert.equal(result.state, "interrupted");
+  assert.equal(result.timing.elapsedMs, 5_250);
 });
 
 test("completed history exposes the existing video artifact", () => {
