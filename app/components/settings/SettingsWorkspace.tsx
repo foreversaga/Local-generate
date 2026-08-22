@@ -136,7 +136,6 @@ export function SettingsWorkspace() {
   const ollamaModels = health?.ollama?.models ?? EMPTY_MODELS;
   const ollamaOptions = useMemo(() => Array.from(new Set([...ollamaModels, settings.ollamaModel])), [ollamaModels, settings.ollamaModel]);
   const vllmModels = health?.sglang?.models ?? health?.vllm?.models ?? EMPTY_MODELS;
-  const vllmOptions = useMemo(() => Array.from(new Set([...vllmModels, settings.vllmModel])), [vllmModels, settings.vllmModel]);
   const codexModels: CodexOption[] = health?.codex?.models?.length
     ? health.codex.models.map((model): CodexOption => ({
       value: model.value,
@@ -216,7 +215,7 @@ export function SettingsWorkspace() {
           <div><dt>本機橋接服務</dt><dd><StatusBadge value={health?.bridge} pending={statusLoading} /></dd></div>
           <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd><small>{health?.comfy?.url || "—"}</small></div>
           <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd><small>{health?.ollama?.url || "—"}</small></div>
-          <div><dt>vLLM</dt><dd><StatusBadge value={health?.sglang?.online || health?.vllm?.online} pending={statusLoading} /></dd><small>{health?.sglang?.url || health?.vllm?.url || "—"}</small></div>
+          <div><dt>Qwen3.8</dt><dd><StatusBadge value={health?.sglang?.online || health?.vllm?.online} pending={statusLoading} /></dd><small>{health?.sglang?.url || health?.vllm?.url || "—"}</small></div>
           <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "技能已就緒" : "—")}</small></div>
         </dl>
         <div className={styles.deviceList}>
@@ -239,43 +238,41 @@ export function SettingsWorkspace() {
             <span>提示詞提供者</span>
             <select value={settings.promptProvider} onChange={(event) => updateSettings({ promptProvider: event.target.value as "ollama" | "sglang" | "codex" })}>
               <option value="ollama">Ollama</option>
-              <option value="sglang">vLLM · Docker</option>
+              <option value="sglang">Qwen3.8 · OpenAI API</option>
               <option value="codex">Codex CLI</option>
             </select>
             <small>{settings.promptProvider === "ollama"
               ? (health?.ollama?.online ? "Ollama 在線" : "Ollama 尚未就緒")
               : settings.promptProvider === "sglang"
-                ? ((health?.sglang?.online || health?.vllm?.online) ? "vLLM 在線" : "vLLM 尚未就緒")
+                ? ((health?.sglang?.online || health?.vllm?.online) ? "Qwen3.8 在線" : "Qwen3.8 尚未就緒")
                 : (codexReady ? "Codex CLI 與 skill 就緒" : "需要 Codex CLI 與 h3-prompt-writing skill")}</small>
           </label>
-          <label className={styles.field}>
-            <span>vLLM 模型</span>
-            <select value={settings.vllmModel} onChange={(event) => updateSettings({ vllmModel: event.target.value })}>
-              {vllmOptions.map((model) => <option key={model} value={model}>{model}{vllmModels.includes(model) ? " · 已載入" : " · 儲存值"}</option>)}
-            </select>
-            <small>{vllmModels.length ? `vLLM 已載入：${vllmModels.join(", ")}` : "尚未取得 vLLM 模型"}</small>
-          </label>
-          <label className={styles.field}>
+          {settings.promptProvider === "sglang" && <div className={styles.field}>
+            <span>Qwen3.8 模型</span>
+            <strong>{vllmModels[0] || settings.vllmModel}</strong>
+            <small>{vllmModels.length ? "端點已載入此固定模型" : "尚未取得 Qwen3.8 模型"}</small>
+          </div>}
+          {settings.promptProvider === "ollama" && <label className={styles.field}>
             <span>Ollama 模型</span>
             <select value={settings.ollamaModel} onChange={(event) => updateSettings({ ollamaModel: event.target.value })}>
               {ollamaOptions.map((model) => <option key={model} value={model}>{model}{ollamaModels.includes(model) ? " · 已安裝" : " · 預設"}</option>)}
             </select>
             <small>{ollamaModels.length ? `${ollamaModels.length} 個可用模型` : "尚未取得安裝清單，保留目前預設"}</small>
-          </label>
-          <label className={styles.field}>
+          </label>}
+          {settings.promptProvider === "codex" && <label className={styles.field}>
             <span>Codex 模型</span>
             <select value={settings.codexModel} onChange={(event) => updateSettings({ codexModel: event.target.value })}>
               {codexOptions.map((model) => <option key={model.value} value={model.value}>{model.label || model.value}{model.note ? ` · ${model.note}` : ""}</option>)}
             </select>
             <small>{health?.codex?.models?.length ? `${health.codex.models.length} 個快取模型` : "使用內建備援清單"}</small>
-          </label>
-          <label className={styles.field}>
+          </label>}
+          {settings.promptProvider === "codex" && <label className={styles.field}>
             <span>推理強度（Codex）</span>
             <select value={settings.codexReasoningEffort} onChange={(event) => updateSettings({ codexReasoningEffort: event.target.value })}>
               {reasoningOptions.map((value: string) => <option key={value} value={value}>{REASONING_OPTIONS.find((option) => option.value === value)?.label || value}</option>)}
             </select>
             <small>會依所選 Codex 模型支援程度自動調整。</small>
-          </label>
+          </label>}
         </div>
       </section>
 
@@ -290,7 +287,7 @@ export function SettingsWorkspace() {
           <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
           <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
           <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
-          <div><dt>vLLM</dt><dd>{health?.sglang?.model || health?.vllm?.model || "—"}</dd></div>
+          <div><dt>Qwen3.8</dt><dd>{health?.sglang?.model || health?.vllm?.model || "—"}</dd></div>
           <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
         </dl>
       </section>

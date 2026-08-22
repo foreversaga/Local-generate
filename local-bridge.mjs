@@ -148,9 +148,9 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   runtimeMode: () => runtimeContext.mode,
 });
 const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
-const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://127.0.0.1:8000/v1").replace(/\/$/, "");
+const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://192.168.0.212:8003/v1").replace(/\/$/, "");
 const SGLANG_API_KEY = String(process.env.VLLM_API_KEY || process.env.SGLANG_API_KEY || "").trim();
-const DEFAULT_SGLANG_MODEL = String(process.env.VLLM_PROMPT_MODEL || process.env.SGLANG_PROMPT_MODEL || "qwen3.5-9b-vision").trim();
+const DEFAULT_SGLANG_MODEL = String(process.env.VLLM_PROMPT_MODEL || process.env.SGLANG_PROMPT_MODEL || "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf").trim();
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || GEMMA4_12B_OLLAMA_MODEL;
 const defaultOllamaModel = () => GEMMA4_12B_OLLAMA_MODEL;

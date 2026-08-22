@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createStudioSettings,
+  loadStudioSettings,
   parseStudioSettings,
   reconcileStudioSettings,
   serializeStudioSettings,
@@ -12,8 +13,10 @@ import {
 } from "../app/lib/studio-settings.mjs";
 
 test("studio settings use a versioned tolerant storage contract", () => {
-  assert.equal(STUDIO_SETTINGS_STORAGE_KEY, "h3-studio.settings.v1");
-  assert.equal(STUDIO_SETTINGS_VERSION, 1);
+  assert.equal(STUDIO_SETTINGS_STORAGE_KEY, "h3-studio.settings.v2");
+  assert.equal(STUDIO_SETTINGS_VERSION, 2);
+  assert.equal(STUDIO_SETTINGS_DEFAULTS.promptProvider, "sglang");
+  assert.equal(STUDIO_SETTINGS_DEFAULTS.vllmModel, "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf");
   assert.deepEqual(parseStudioSettings(null), STUDIO_SETTINGS_DEFAULTS);
   assert.deepEqual(parseStudioSettings("not json"), STUDIO_SETTINGS_DEFAULTS);
   assert.deepEqual(parseStudioSettings(JSON.stringify({ version: 99 })), STUDIO_SETTINGS_DEFAULTS);
@@ -30,6 +33,31 @@ test("studio settings use a versioned tolerant storage contract", () => {
   const migrated = createStudioSettings({ promptProvider: "hermes", hermesModel: "legacy-model" });
   assert.equal(migrated.promptProvider, "sglang");
   assert.equal(migrated.vllmModel, "legacy-model");
+});
+
+test("legacy browser settings migrate to the new Qwen prompt default", () => {
+  const storage = {
+    getItem(key) {
+      if (key === "h3-studio.settings.v1") {
+        return JSON.stringify({
+          version: 1,
+          promptProvider: "ollama",
+          ollamaModel: "legacy-ollama",
+          vllmModel: "legacy-vllm",
+          codexModel: "legacy-codex",
+          codexReasoningEffort: "high",
+        });
+      }
+      return null;
+    },
+  };
+
+  const migrated = loadStudioSettings(storage);
+  assert.equal(migrated.promptProvider, "sglang");
+  assert.equal(migrated.vllmModel, "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf");
+  assert.equal(migrated.ollamaModel, "legacy-ollama");
+  assert.equal(migrated.codexModel, "legacy-codex");
+  assert.equal(migrated.codexReasoningEffort, "high");
 });
 
 test("health model lists reconcile stored defaults without changing provider intent", () => {

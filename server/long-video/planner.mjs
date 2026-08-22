@@ -434,7 +434,7 @@ export async function planSequence(input, options = {}) {
   const model = options.model || (provider === "codex"
     ? input.codexModel || input.model || "gpt-5.6-luna"
     : provider === "sglang"
-      ? input.sglangModel || input.vllmModel || input.model || "qwen3.8-27b-uncensored-nvfp4"
+      ? input.sglangModel || input.vllmModel || input.model || "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf"
       : input.ollamaModel || input.model || DEFAULT_OLLAMA_MODEL);
   const timeoutMs = options.timeoutMs ?? 120000;
   const request = options.request || null;

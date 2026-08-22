@@ -554,7 +554,7 @@ export function ImageToImageWorkspace() {
     const promptProviderHealth = promptProvider === "sglang"
         ? promptHealth?.sglang || promptHealth?.vllm
         : promptHealth?.ollama;
-    const promptProviderLabel = promptProvider === "sglang" ? "vLLM" : "Ollama";
+    const promptProviderLabel = promptProvider === "sglang" ? "Qwen3.8" : "Ollama";
     const visiblePromptModels = promptProviderHealth?.models || [];
     const effectivePromptModel = visiblePromptModels.includes(promptModel)
         ? promptModel
@@ -1019,11 +1019,11 @@ export function ImageToImageWorkspace() {
                             }}
                         >
                             <option value="ollama">Ollama</option>
-                            <option value="sglang">vLLM · Docker</option>
+                            <option value="sglang">Qwen3.8 · OpenAI API</option>
                         </select>
                         <small>選擇用來分析來源圖片並撰寫提示詞的本機引擎。</small>
                     </label>
-                    <label className={styles.field}>
+                    {promptProvider === "ollama" ? <label className={styles.field}>
                         <span>{promptProviderLabel} 提示詞模型</span>
                         <select
                             id="img2img-prompt-model"
@@ -1041,7 +1041,11 @@ export function ImageToImageWorkspace() {
                         </select>
                         {visiblePromptModels.length > 0 && !effectivePromptModel && <small className={styles.error} role="status">請先選擇 {promptProviderLabel} 視覺模型，才能產生提示詞。</small>}
                         <small>產生以圖生圖提示詞時會使用此 {promptProviderLabel} 模型；需支援圖片理解。</small>
-                    </label>
+                    </label> : <div className={styles.field}>
+                        <span>Qwen3.8 提示詞模型</span>
+                        <strong>{effectivePromptModel || "尚未回報模型"}</strong>
+                        <small>此端點固定使用目前載入的 Qwen3.8 模型。</small>
+                    </div>}
                     <button
                         type="button"
                         className={styles.secondaryButton}

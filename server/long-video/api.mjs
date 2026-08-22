@@ -119,7 +119,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         model: input.promptProvider === "codex" || input.provider === "codex"
           ? input.codexModel || input.model || "gpt-5.6-luna"
           : input.promptProvider === "sglang" || input.promptProvider === "vllm" || input.provider === "sglang" || input.provider === "vllm"
-            ? input.sglangModel || input.vllmModel || input.model || "qwen3.8-27b-uncensored-nvfp4"
+            ? input.sglangModel || input.vllmModel || input.model || "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf"
             : input.ollamaModel || input.model,
         reasoningEffort: input.promptProvider === "codex" || input.provider === "codex"
           ? input.reasoningEffort || input.codexReasoningEffort || "medium"

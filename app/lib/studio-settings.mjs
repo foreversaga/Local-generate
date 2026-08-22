@@ -1,11 +1,12 @@
-export const STUDIO_SETTINGS_STORAGE_KEY = "h3-studio.settings.v1";
-export const STUDIO_SETTINGS_VERSION = 1;
+export const STUDIO_SETTINGS_STORAGE_KEY = "h3-studio.settings.v2";
+export const STUDIO_SETTINGS_VERSION = 2;
+const LEGACY_STUDIO_SETTINGS_STORAGE_KEY = "h3-studio.settings.v1";
 
 export const STUDIO_SETTINGS_DEFAULTS = Object.freeze({
   version: STUDIO_SETTINGS_VERSION,
-  promptProvider: "ollama",
+  promptProvider: "sglang",
   ollamaModel: "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M",
-  vllmModel: "qwen3.8-27b-uncensored-nvfp4",
+  vllmModel: "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf",
   codexModel: "gpt-5.6-luna",
   codexReasoningEffort: "medium",
 });
@@ -44,7 +45,17 @@ export function serializeStudioSettings(settings) {
 
 export function loadStudioSettings(storage = browserStorage()) {
   try {
-    return parseStudioSettings(storage?.getItem(STUDIO_SETTINGS_STORAGE_KEY));
+    const current = storage?.getItem(STUDIO_SETTINGS_STORAGE_KEY);
+    if (typeof current === "string" && current.trim()) return parseStudioSettings(current);
+    const legacy = JSON.parse(storage?.getItem(LEGACY_STUDIO_SETTINGS_STORAGE_KEY) || "null");
+    if (legacy && typeof legacy === "object") {
+      return createStudioSettings({
+        ...legacy,
+        promptProvider: STUDIO_SETTINGS_DEFAULTS.promptProvider,
+        vllmModel: STUDIO_SETTINGS_DEFAULTS.vllmModel,
+      });
+    }
+    return createStudioSettings();
   } catch {
     return createStudioSettings();
   }

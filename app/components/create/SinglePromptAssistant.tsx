@@ -336,11 +336,11 @@ export function SinglePromptAssistant({
       }
     } else if (provider === "sglang") {
       if (!health?.sglang?.online && !health?.vllm?.online) {
-        setError("vLLM 尚未連線。");
+        setError("Qwen3.8 尚未連線。");
         return;
       }
       if (!vllmModels.includes(effectiveVllmModel)) {
-        setError(`vLLM 模型 ${effectiveVllmModel} 尚未就緒。`);
+        setError(`Qwen3.8 模型 ${effectiveVllmModel} 尚未就緒。`);
         return;
       }
     } else {
@@ -495,7 +495,7 @@ export function SinglePromptAssistant({
             Ollama
           </button>
           <button type="button" className={provider === "sglang" ? styles.providerActive : ""} aria-pressed={provider === "sglang"} onClick={() => { setProvider("sglang"); setError(""); }}>
-            vLLM
+            Qwen3.8
           </button>
           <button type="button" className={provider === "codex" ? styles.providerActive : ""} aria-pressed={provider === "codex"} onClick={() => { setProvider("codex"); setError(""); }}>
             Codex CLI
@@ -516,13 +516,10 @@ export function SinglePromptAssistant({
           </select>
         </label>
       ) : provider === "sglang" ? (
-        <label className={styles.field}>
-          <span className={styles.label}>vLLM 模型</span>
-          <select className={styles.select} value={vllmModels.length ? effectiveVllmModel : ""} disabled={!vllmModels.length || busy} onChange={(event) => setVllmModel(event.target.value)}>
-            {!vllmModels.length && <option value="">vLLM 尚未回報模型</option>}
-            {vllmModels.map((model) => <option key={model} value={model}>{model}</option>)}
-          </select>
-        </label>
+        <div className={styles.field}>
+          <span className={styles.label}>Qwen3.8 模型</span>
+          <strong>{vllmModels.length ? effectiveVllmModel : "尚未回報模型"}</strong>
+        </div>
       ) : (
         <div className={styles.providerFields}>
           <label className={styles.field}>
@@ -652,7 +649,7 @@ function promptFormatLabel(mode: Mode) {
 }
 
 function providerLabel(provider: PromptProvider) {
-  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "vLLM" : "Ollama";
+  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "Qwen3.8" : "Ollama";
 }
 
 function assetUrl(asset: Asset) {
