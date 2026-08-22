@@ -61,7 +61,7 @@ export function CreateLanding() {
                         <span>{ACTION_LABELS.openTool} →</span>
                     </a>
                     <a className={styles.toolLink} href="/app/tools/upscale">
-                        <span><strong>{t("tools.upscale.title")}</strong><small>Video Upscale</small></span>
+                        <span><strong>{t("tools.upscale.title")}</strong><small>Image &amp; Video Upscale</small></span>
                         <span>{ACTION_LABELS.openTool} →</span>
                     </a>
                 </div>

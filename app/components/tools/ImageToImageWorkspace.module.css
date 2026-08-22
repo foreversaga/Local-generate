@@ -210,33 +210,6 @@
   color: var(--muted);
 }
 
-.readinessList {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 16px 0;
-}
-
-.readinessList div {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg-elevated);
-  padding: 10px;
-}
-
-.readinessList dt {
-  color: var(--muted-2);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.readinessList dd {
-  margin: 5px 0 0;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .formGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -572,10 +545,6 @@
   }
 
   .sourcePreview {
-    grid-template-columns: 1fr;
-  }
-
-  .readinessList {
     grid-template-columns: 1fr;
   }
 

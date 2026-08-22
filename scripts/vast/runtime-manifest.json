@@ -312,7 +312,7 @@
     {
       "id": "seedvr2_ema_vae",
       "repository": "Comfy-Org/SeedVR2",
-      "revision": "10f035adc869a5b3ffc466360b869641511c0610",
+      "revision": "0bb1f83c716d1cad6dfa730b643a4f603bc2b70b",
       "remotePath": "vae/seedvr2_ema_vae_fp16.safetensors",
       "targetPath": "/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors",
       "size": 501324814,

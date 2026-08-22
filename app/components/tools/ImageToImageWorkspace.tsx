@@ -23,7 +23,7 @@ import {
     type Img2ImgRuntimeMode,
     type Img2ImgSubmitInput,
 } from "./img2img-client";
-import { jobStatusLabel, localizedCopy, readinessLabel, sourceLabel } from "../../lib/ui-copy.mjs";
+import { jobStatusLabel, localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import styles from "./ImageToImageWorkspace.module.css";
 
@@ -574,9 +574,8 @@ export function ImageToImageWorkspace() {
     const readinessBlockingMessage = !modelRuntimeReady
         ? LOCAL_ONLY_MODEL_MESSAGE
         : characterLoraReadinessMessage || (health ? img2ImgReadinessMessage(health, model) : "");
-    const readinessMessage = readinessBlockingMessage || (health ? "ComfyUI、必要節點與所選模型設定檔均可用。" : "尚未取得 ComfyUI 檢查結果；提交時會再次檢查。 ");
+    const readinessNotice = healthError || readinessBlockingMessage;
     const modelReady = modelRuntimeReady && Boolean(health && health.models?.[model] === true);
-    const readinessState = healthLoading ? "checking" : health?.ready && modelReady && characterLoraReady ? "ready" : "blocked";
     const active = isImg2ImgActive(job);
     const canCancel = Boolean(job && (job.status === "queued" || job.status === "running") && !cancellingJobId && !retrying);
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
@@ -959,23 +958,6 @@ export function ImageToImageWorkspace() {
                     </div>}
                 </section>
 
-                <section className={styles.panel} aria-labelledby="img2img-readiness-title">
-                    <div className={styles.sectionHeader}>
-                        <div>
-                        <span className={styles.eyebrow}>ComfyUI 狀態</span>
-                            <h2 id="img2img-readiness-title">執行環境</h2>
-                        </div>
-                        <span className={`${styles.statusChip} ${styles[readinessState]}`}>{readinessLabel(readinessState === "blocked" ? "needs_attention" : readinessState, locale)}</span>
-                    </div>
-                    <p className={styles.helper} aria-live="polite" aria-atomic="true">{readinessMessage || "ComfyUI、必要節點與所選模型設定檔均可用。"}</p>
-                    {healthError && <p className={styles.error} role="alert">{healthError}</p>}
-                    <dl className={styles.readinessList}>
-                        <div><dt>ComfyUI</dt><dd>{health?.comfyUi === false ? "未連線" : health?.comfyUi ? "已連線" : "—"}</dd></div>
-                        <div><dt>模型</dt><dd>{modelReady ? "可用" : "缺少"}</dd></div>
-                        <div><dt>節點</dt><dd>{Object.values(health?.profiles?.[model]?.nodes || health?.nodes || {}).filter(Boolean).length}/{Object.keys(health?.profiles?.[model]?.nodes || health?.nodes || {}).length || "—"}</dd></div>
-                    </dl>
-                    <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading}>{healthLoading ? "檢查中…" : "重新檢查"}</button>
-                </section>
             </div>
 
             <section className={styles.panel} aria-labelledby="img2img-prompt-title">
@@ -1076,6 +1058,15 @@ export function ImageToImageWorkspace() {
                         <small>{selectedModel?.note || "尚未選擇可用模型。"}</small>
                         {runtimeMode !== "local" && <small>本機限定模型會在本機執行環境就緒後顯示。</small>}
                     </label>
+                    {readinessNotice && (
+                        <div className={styles.fieldWide} id="img2img-readiness-status" role="alert">
+                            <strong>所選模型目前無法生成</strong>
+                            <span className={styles.error}>{readinessNotice}</span>
+                            <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading}>
+                                {healthLoading ? "檢查中…" : "重新檢查"}
+                            </button>
+                        </div>
+                    )}
                     <label className={styles.field}>
                         <span>角色 LoRA <em>（選填）</em></span>
                         <select
@@ -1217,7 +1208,7 @@ export function ImageToImageWorkspace() {
                             {cancellingJobId ? "正在中斷…" : batchTotal > 1 ? "中斷批次生成" : "中斷生成"}
                         </button>
                     ) : (
-                        <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby="img2img-readiness-title">
+                        <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={!canInteract} aria-busy={submitting || retrying || uploading} aria-describedby={readinessNotice ? "img2img-readiness-status" : undefined}>
                             {uploading ? "上傳中…" : submitting ? "建立工作中…" : "開始生成"}
                         </button>
                     )}
@@ -1408,7 +1399,7 @@ function focusImg2ImgValidation(field: string) {
         cfgMin: "img2img-cfg-min",
         cfgMax: "img2img-cfg-max",
         seed: "img2img-seed",
-        readiness: "img2img-readiness-title",
+        readiness: "img2img-model",
     };
     const element = document.getElementById(ids[field] || "");
     if (element instanceof HTMLElement) {

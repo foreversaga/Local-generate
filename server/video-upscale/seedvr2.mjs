@@ -49,6 +49,20 @@ export const SEEDVR2_REQUIRED_NODES = Object.freeze([
   "SaveVideo",
 ]);
 
+export const SEEDVR2_IMAGE_REQUIRED_NODES = Object.freeze([
+  "LoadImage",
+  "ResizeImageMaskNode",
+  "SeedVR2Preprocess",
+  "VAEEncodeTiled",
+  "VAELoader",
+  "UNETLoader",
+  "SeedVR2Conditioning",
+  "KSampler",
+  "VAEDecodeTiled",
+  "SeedVR2PostProcessing",
+  "SaveImage",
+]);
+
 export const H3_LATENT_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
   "GetVideoComponents",
@@ -77,6 +91,7 @@ export const H3_LATENT_REQUIRED_NODES = Object.freeze([
 ]);
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const VIDEO_MIME_TYPES = Object.freeze({
   ".mp4": "video/mp4",
   ".mov": "video/quicktime",
@@ -84,11 +99,18 @@ const VIDEO_MIME_TYPES = Object.freeze({
   ".mkv": "video/x-matroska",
   ".avi": "video/x-msvideo",
 });
+const IMAGE_MIME_TYPES = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+});
 const ARTIFACT_KEYS = ["images", "videos", "files", "gifs"];
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
 const COMFY_WS_BUFFER_MAX = 64;
 const SEEDVR2_NODE_PROGRESS = Object.freeze({
+  LoadImage: 25,
   LoadVideo: 25,
   GetVideoComponents: 27,
   ResizeImageMaskNode: 30,
@@ -104,6 +126,7 @@ const SEEDVR2_NODE_PROGRESS = Object.freeze({
   SeedVR2PostProcessing: 88,
   CreateVideo: 90,
   SaveVideo: 90,
+  SaveImage: 90,
 });
 const UPSCALE_NODE_PROGRESS = Object.freeze({
   ...SEEDVR2_NODE_PROGRESS,
@@ -395,6 +418,28 @@ export function normalizeVideoAssetName(value) {
   return normalized;
 }
 
+export function normalizeUpscaleAssetName(value) {
+  if (typeof value !== "string") throw makeError("sourceName must be a relative image or video asset name.", 400, "SOURCE_NAME_INVALID");
+  const raw = value.replaceAll("\\", "/");
+  if (!raw || raw.length > 512 || raw.includes("\0") || raw.startsWith("/") || /^[A-Za-z]:\//.test(raw)) {
+    throw makeError("sourceName must be a relative image or video asset name.", 400, "SOURCE_NAME_INVALID");
+  }
+  const pieces = raw.split("/");
+  if (pieces.some((piece) => !piece || piece === "." || piece === "..")) {
+    throw makeError("sourceName must not contain traversal segments.", 400, "SOURCE_NAME_INVALID");
+  }
+  const normalized = pieces.join("/");
+  const extension = path.posix.extname(normalized).toLowerCase();
+  if (!VIDEO_EXTENSIONS.has(extension) && !IMAGE_EXTENSIONS.has(extension)) {
+    throw makeError("SeedVR2 accepts PNG, JPEG, WebP, and supported video assets only.", 415, "SOURCE_KIND_INVALID");
+  }
+  return normalized;
+}
+
+function sourceKindFromName(value) {
+  return IMAGE_EXTENSIONS.has(path.posix.extname(String(value || "")).toLowerCase()) ? "image" : "video";
+}
+
 function comboValues(nodeInfo, key) {
   const spec = nodeInfo?.input?.required?.[key];
   if (!Array.isArray(spec)) return [];
@@ -413,8 +458,10 @@ export function evaluateSeedVR2Readiness(objectInfo, {
   vaeName = SEEDVR2_VAE_NAME,
   modelFiles = {},
   comfyUi = true,
+  sourceKind = "video",
 } = {}) {
-  const nodes = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
+  const requiredNodes = sourceKind === "image" ? SEEDVR2_IMAGE_REQUIRED_NODES : SEEDVR2_REQUIRED_NODES;
+  const nodes = Object.fromEntries(requiredNodes.map((name) => [name, Boolean(objectInfo?.[name])]));
   const unetListed = comboValues(objectInfo?.UNETLoader, "unet_name").includes(unetName);
   const vaeListed = comboValues(objectInfo?.VAELoader, "vae_name").includes(vaeName);
   const unetFile = modelFiles.unet === undefined ? true : Boolean(modelFiles.unet);
@@ -554,6 +601,56 @@ export function buildSeedVR2Prompt({
         "codec.encoding.crf": 18,
       },
     },
+  };
+}
+
+export function buildSeedVR2ImagePrompt({
+  sourceName,
+  filenamePrefix = "seedvr2_image_upscaled",
+  unetName = SEEDVR2_UNET_NAME,
+  vaeName = SEEDVR2_VAE_NAME,
+  seed,
+  scale = 2,
+} = {}) {
+  const file = normalizeUpscaleAssetName(sourceName);
+  if (sourceKindFromName(file) !== "image") {
+    throw makeError("SeedVR2 image upscale requires a PNG, JPEG, or WebP source.", 415, "SOURCE_KIND_INVALID");
+  }
+  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
+  const multiplier = Number(scale) === 2 ? 2 : 2;
+  return {
+    "1": { class_type: "LoadImage", inputs: { image: file } },
+    "2": {
+      class_type: "ResizeImageMaskNode",
+      inputs: {
+        input: link(1),
+        resize_type: "scale by multiplier",
+        "resize_type.multiplier": multiplier,
+        scale_method: "lanczos",
+      },
+    },
+    "3": { class_type: "SeedVR2Preprocess", inputs: { resized_images: link(2) } },
+    "4": { class_type: "VAELoader", inputs: { vae_name: vaeName } },
+    "5": {
+      class_type: "VAEEncodeTiled",
+      inputs: { pixels: link(3), vae: link(4), tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 },
+    },
+    "6": { class_type: "UNETLoader", inputs: { unet_name: unetName, weight_dtype: "default" } },
+    "7": { class_type: "SeedVR2Conditioning", inputs: { model: link(6), vae_conditioning: link(5) } },
+    "8": {
+      class_type: "KSampler",
+      inputs: {
+        model: link(6), seed: samplerSeed, steps: 1, cfg: 1, sampler_name: "euler", scheduler: "simple",
+        positive: link(7, 0), negative: link(7, 1), latent_image: link(5), denoise: 1,
+      },
+    },
+    "9": {
+      class_type: "VAEDecodeTiled",
+      inputs: { samples: link(8), vae: link(4), tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 },
+    },
+    "10": { class_type: "SeedVR2PostProcessing", inputs: { images: link(9), original_resized_images: link(2), color_correction_method: "wavelet" } },
+    "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: safePrefix } },
   };
 }
 
@@ -703,7 +800,8 @@ function artifactRelativeName(candidate) {
   const pieces = [...(rawSubfolder ? rawSubfolder.split("/") : []), ...rawFilename.split("/")];
   if (pieces.some((part) => !part || part === "." || part === "..")) return null;
   const relativeName = pieces.join("/");
-  return VIDEO_EXTENSIONS.has(path.posix.extname(relativeName).toLowerCase()) ? relativeName : null;
+  const extension = path.posix.extname(relativeName).toLowerCase();
+  return VIDEO_EXTENSIONS.has(extension) || IMAGE_EXTENSIONS.has(extension) ? relativeName : null;
 }
 
 function historyArtifact(payload, promptId) {
@@ -1060,7 +1158,7 @@ export function createSeedVR2Controller({
     return payload;
   }
 
-  async function checkReadiness(requestedProfile = SEEDVR2_PROFILE) {
+  async function checkReadiness(requestedProfile = SEEDVR2_PROFILE, sourceKind = "video") {
     const profile = normalizeProfile(requestedProfile);
     const config = profileReadinessConfig(profile);
     const [statsResult, objectResult, modelFiles] = await Promise.all([
@@ -1084,14 +1182,15 @@ export function createSeedVR2Controller({
       })).then((entries) => Object.fromEntries(entries)),
     ]);
     return {
-      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult }),
+      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult, sourceKind }),
       profile,
       profileLabel: profileLabel(profile),
+      sourceKind,
     };
   }
 
   async function resolveAsset(rootName, sourceName) {
-    const cleanName = normalizeVideoAssetName(sourceName);
+    const cleanName = normalizeUpscaleAssetName(sourceName);
     const root = rootName === "output" ? outputRoot : inputRoot;
     const rootReal = await realPathOrResolved(root, fsApi);
     const candidate = path.resolve(root, cleanName);
@@ -1124,7 +1223,7 @@ export function createSeedVR2Controller({
 
   async function uploadRemoteInput(job, source, signal) {
     if (typeof FormData !== "function" || typeof Blob !== "function") {
-      throw makeError("Remote video upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
+      throw makeError("Remote media upload is unavailable in this Node runtime.", 500, "UPLOAD_UNAVAILABLE");
     }
     assertNotCancelled(job);
     const extension = path.posix.extname(source.cleanName).toLowerCase() || ".mp4";
@@ -1133,11 +1232,12 @@ export function createSeedVR2Controller({
     try {
       bytes = await fsApi.readFile(source.path);
     } catch (error) {
-      throw makeError(`Unable to read source video for remote upload: ${asErrorMessage(error)}`, 502, "SOURCE_READ_FAILED");
+      throw makeError(`Unable to read source media for remote upload: ${asErrorMessage(error)}`, 502, "SOURCE_READ_FAILED");
     }
     assertNotCancelled(job);
     const form = new FormData();
-    form.append("image", new Blob([bytes], { type: VIDEO_MIME_TYPES[extension] || "application/octet-stream" }), uploadName);
+    const mimeType = VIDEO_MIME_TYPES[extension] || IMAGE_MIME_TYPES[extension] || "application/octet-stream";
+    form.append("image", new Blob([bytes], { type: mimeType }), uploadName);
     form.append("subfolder", `h3-studio-${profileShortName(job.profile)}`);
     form.append("type", "input");
     form.append("overwrite", "true");
@@ -1146,7 +1246,7 @@ export function createSeedVR2Controller({
       filename: payload?.name || uploadName,
       subfolder: typeof payload?.subfolder === "string" ? payload.subfolder : `h3-studio-${profileShortName(job.profile)}`,
     });
-    if (!uploaded) throw makeError("ComfyUI returned an invalid uploaded video path.", 502, "UPLOAD_RESPONSE_INVALID");
+    if (!uploaded) throw makeError("ComfyUI returned an invalid uploaded media path.", 502, "UPLOAD_RESPONSE_INVALID");
     return { loadName: uploaded, created: false };
   }
 
@@ -1182,7 +1282,7 @@ export function createSeedVR2Controller({
     const stat = await fsApi.stat(candidateReal).catch(() => null);
     if (!stat?.isFile()) throw makeError("ComfyUI output is missing.", 502, "OUTPUT_ARTIFACT_MISSING");
     if (typeof toAsset === "function") return await toAsset("output", clean);
-    return { name: clean, root: "output", kind: "video" };
+    return { name: clean, root: "output", kind: sourceKindFromName(clean) };
   }
 
   async function downloadRemoteArtifact(job, artifact, signal) {
@@ -1196,25 +1296,25 @@ export function createSeedVR2Controller({
     const subfolder = String(metadata.subfolder || "").replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
     const query = new URLSearchParams({ filename, subfolder, type: "output" });
     const response = await request(`/view?${query.toString()}`, {}, 60_000, signal);
-    if (!response?.ok) throw makeError(`Unable to download generated video: HTTP ${response?.status || 0}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
-    if (typeof response.arrayBuffer !== "function") throw makeError("ComfyUI returned an unreadable video artifact.", 502, "OUTPUT_DOWNLOAD_FAILED");
+    if (!response?.ok) throw makeError(`Unable to download generated media: HTTP ${response?.status || 0}.`, 502, "OUTPUT_DOWNLOAD_FAILED");
+    if (typeof response.arrayBuffer !== "function") throw makeError("ComfyUI returned an unreadable media artifact.", 502, "OUTPUT_DOWNLOAD_FAILED");
     assertNotCancelled(job);
     const extension = path.posix.extname(relativeName).toLowerCase();
     const localName = `${profileShortName(job.profile)}/${outputPrefix(job)}${extension}`;
     const candidate = path.resolve(outputRoot, localName);
-    if (!isInside(outputRoot, candidate)) throw makeError("Downloaded video path is unsafe.", 500, "OUTPUT_PATH_INVALID");
+    if (!isInside(outputRoot, candidate)) throw makeError("Downloaded media path is unsafe.", 500, "OUTPUT_PATH_INVALID");
     const outputReal = await realPathOrResolved(outputRoot, fsApi);
     await fsApi.mkdir(path.dirname(candidate), { recursive: true });
     const parentReal = await realPathOrResolved(path.dirname(candidate), fsApi);
-    if (!isInside(outputReal, parentReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    if (!isInside(outputReal, parentReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
     const existingReal = await fsApi.realpath(candidate).catch(() => null);
-    if (existingReal && !isInside(outputReal, existingReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    if (existingReal && !isInside(outputReal, existingReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
     await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
     const createdReal = await fsApi.realpath(candidate).catch(() => null);
-    if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded video path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+    if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
     assertNotCancelled(job);
     if (typeof toAsset === "function") return await toAsset("output", localName);
-    return { name: localName, root: "output", kind: "video" };
+    return { name: localName, root: "output", kind: sourceKindFromName(localName) };
   }
 
   async function waitForHistory(job, promptId, signal, runtime = null) {
@@ -1233,7 +1333,7 @@ export function createSeedVR2Controller({
       if (parsed.state === "failed") throw makeError(parsed.error || "ComfyUI reported an execution error.", 502, "COMFY_EXECUTION_FAILED");
       const artifact = parsed.state === "completed" ? historyArtifact(payload, promptId) : null;
       if (artifact) return artifact;
-      if (parsed.state === "completed") throw makeError("ComfyUI completed without a SaveVideo artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
+      if (parsed.state === "completed") throw makeError("ComfyUI completed without a saved media artifact.", 502, "OUTPUT_ARTIFACT_MISSING");
       const elapsed = Date.now() - started;
       if (maxPollMs > 0 && elapsed >= maxPollMs) throw makeError("Timed out while waiting for ComfyUI output.", 504, "COMFY_POLL_TIMEOUT");
       const websocketProgressActive = runtime?.wsProgressSeen && !["error", "closed", "unavailable"].includes(runtime.wsState);
@@ -1250,6 +1350,7 @@ export function createSeedVR2Controller({
     const profile = normalizeProfile(job.profile);
     job.profile = profile;
     const label = profileLabel(profile);
+    const sourceKind = sourceKindFromName(job.sourceName);
     let staged = null;
     let succeeded = false;
     let failure = null;
@@ -1283,7 +1384,7 @@ export function createSeedVR2Controller({
         progress: 5,
         stage: `Checking ${label} readiness`,
       });
-      const readiness = await checkReadiness(profile);
+      const readiness = await checkReadiness(profile, sourceKind);
       assertNotCancelled(job);
       if (!readiness.ready) {
         throw makeError(
@@ -1293,16 +1394,16 @@ export function createSeedVR2Controller({
         );
       }
 
-      await updateJob(job, { progress: 12, stage: "Validating source video" });
+      await updateJob(job, { progress: 12, stage: `Validating source ${sourceKind}` });
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
       assertNotCancelled(job);
       let loadName = source.cleanName;
       if (remote) {
-        await updateJob(job, { progress: 16, stage: "Uploading source video" });
+        await updateJob(job, { progress: 16, stage: `Uploading source ${sourceKind}` });
         staged = await uploadRemoteInput(job, source, abortController?.signal);
         loadName = staged.loadName;
       } else if (job.sourceRoot === "output") {
-        await updateJob(job, { progress: 16, stage: "Staging source video" });
+        await updateJob(job, { progress: 16, stage: `Staging source ${sourceKind}` });
         staged = await stageOutputSource(job, source);
         loadName = staged.loadName;
       }
@@ -1318,7 +1419,14 @@ export function createSeedVR2Controller({
           audioVaeName: readiness.models?.audioVae?.name,
           seed: job.seed,
         })
-        : buildSeedVR2Prompt({
+        : sourceKind === "image" ? buildSeedVR2ImagePrompt({
+          sourceName: loadName,
+          filenamePrefix: outputPrefix(job),
+          unetName: SEEDVR2_UNET_NAME,
+          vaeName: SEEDVR2_VAE_NAME,
+          seed: job.seed,
+          scale: job.scale,
+        }) : buildSeedVR2Prompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
           unetName: SEEDVR2_UNET_NAME,
@@ -1351,7 +1459,7 @@ export function createSeedVR2Controller({
       runtime.comfySession?.setPromptId(runtime.promptId);
       const artifact = await waitForHistory(job, runtime.promptId, abortController?.signal, runtime);
       assertNotCancelled(job);
-      await updateJob(job, { progress: 92, stage: remote ? "Downloading output video" : "Registering output video" });
+      await updateJob(job, { progress: 92, stage: remote ? `Downloading output ${sourceKind}` : `Registering output ${sourceKind}` });
       const output = remote
         ? await downloadRemoteArtifact(job, artifact, abortController?.signal)
         : await artifactAsset(artifact.relativeName || artifact);
@@ -1465,7 +1573,11 @@ export function createSeedVR2Controller({
     if (!["input", "output"].includes(sourceRoot)) throw makeError("sourceRoot must be input or output.", 400, "SOURCE_ROOT_INVALID");
     if (Number(input.scale) !== 2) throw makeError("SeedVR2 upscale currently supports scale=2 only.", 400, "SCALE_INVALID");
     const profile = normalizeProfile(input.profile);
-    const cleanName = normalizeVideoAssetName(input.sourceName);
+    const cleanName = normalizeUpscaleAssetName(input.sourceName);
+    const sourceKind = sourceKindFromName(cleanName);
+    if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
+      throw makeError("MiniMax H3 Latent 2x accepts video assets only; use SeedVR2 7B for images.", 415, "SOURCE_KIND_INVALID");
+    }
     const seed = boundedSeed(input.seed, Math.floor(Math.random() * 2_147_483_648));
     await resolveAsset(sourceRoot, cleanName);
     const job = createJob({ sourceName: cleanName, sourceRoot, scale: 2, profile, seed });
@@ -1607,7 +1719,8 @@ export function createSeedVR2Controller({
       try {
         const url = new URL(req.url || "/api/upscale/health", "http://localhost");
         const profile = normalizeProfile(url.searchParams.get("profile") || SEEDVR2_PROFILE);
-        respond(res, 200, await checkReadiness(profile));
+        const sourceKind = url.searchParams.get("kind") === "image" ? "image" : "video";
+        respond(res, 200, await checkReadiness(profile, sourceKind));
       } catch (error) {
         fail(res, Number.isInteger(error?.status) ? error.status : 503, asErrorMessage(error, "Unable to check upscale readiness."), error?.code);
       }
@@ -1617,7 +1730,12 @@ export function createSeedVR2Controller({
       try {
         const body = typeof readJson === "function" ? await readJson(req) : {};
         const profile = normalizeProfile(body?.profile);
-        const readiness = await checkReadiness(profile);
+        const cleanName = normalizeUpscaleAssetName(body?.sourceName);
+        const sourceKind = sourceKindFromName(cleanName);
+        if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
+          throw makeError("MiniMax H3 Latent 2x accepts video assets only; use SeedVR2 7B for images.", 415, "SOURCE_KIND_INVALID");
+        }
+        const readiness = await checkReadiness(profile, sourceKind);
         if (!readiness.ready) {
           respond(res, 503, {
             error: `${profileLabel(profile)} is not ready.`,
@@ -1629,7 +1747,7 @@ export function createSeedVR2Controller({
         respond(res, 202, { job: await enqueue(body) });
       } catch (error) {
         const status = Number.isInteger(error?.status) ? error.status : 400;
-        fail(res, status, asErrorMessage(error, "Unable to queue video upscale."), error?.code);
+        fail(res, status, asErrorMessage(error, "Unable to queue media upscale."), error?.code);
       }
       return true;
     }

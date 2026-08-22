@@ -6,6 +6,7 @@ export const FLUX2_VAE = "flux2-vae.safetensors";
 export const FLUX2_CLIP_TYPE = "flux2";
 export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
 export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
+export const FLUX2_TORCH_COMPILE_BACKEND = "inductor";
 export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-dev";
 export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
 
@@ -30,6 +31,7 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
 
 export const TEXT2IMG_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
+  "TorchCompileModel",
   "CLIPLoader",
   "VAELoader",
   "CLIPTextEncode",
@@ -191,7 +193,7 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
     "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
     "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
     "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: profile.cfg } },
-    "6": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(5) } },
+    "6": { class_type: "BasicGuider", inputs: { model: link(14), conditioning: link(5) } },
     "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
     "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
     "9": { class_type: "Flux2Scheduler", inputs: { steps: request.steps, width: request.width, height: request.height } },
@@ -202,6 +204,7 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
     },
     "12": { class_type: "VAEDecode", inputs: { samples: link(11), vae: link(3) } },
     "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/flux2_dev") } },
+    "14": { class_type: "TorchCompileModel", inputs: { model: link(1), backend: FLUX2_TORCH_COMPILE_BACKEND } },
   };
 }
 

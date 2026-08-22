@@ -13,14 +13,17 @@ import {
   H3_LATENT_PASS2_SIGMAS,
   H3_LATENT_VAE_NAME,
   SEEDVR2_REQUIRED_NODES,
+  SEEDVR2_IMAGE_REQUIRED_NODES,
   SEEDVR2_UNET_NAME,
   SEEDVR2_VAE_NAME,
   buildSeedVR2Prompt,
+  buildSeedVR2ImagePrompt,
   buildH3LatentPrompt,
   createSeedVR2Controller,
   evaluateH3LatentReadiness,
   evaluateSeedVR2Readiness,
   normalizeVideoAssetName,
+  normalizeUpscaleAssetName,
   parseSeedVR2History,
 } from "../server/video-upscale/seedvr2.mjs";
 
@@ -46,6 +49,13 @@ function binaryResponse(bytes, status = 200) {
 
 function objectInfo() {
   const info = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
+  info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
+  info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
+  return info;
+}
+
+function imageObjectInfo() {
+  const info = Object.fromEntries(SEEDVR2_IMAGE_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
   info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
   return info;
@@ -89,6 +99,19 @@ test("builds corrected 15-node SeedVR2 graph with dynamic inputs", () => {
   assert.equal(graph["15"].inputs["codec.encoding.crf"], 18);
 });
 
+test("builds native 11-node SeedVR2 image graph with 7B Sharp and tiled VAE", () => {
+  const graph = buildSeedVR2ImagePrompt({ sourceName: "images/source.png", seed: 9 });
+  assert.equal(Object.keys(graph).length, 11);
+  assert.equal(graph["1"].class_type, "LoadImage");
+  assert.equal(graph["1"].inputs.image, "images/source.png");
+  assert.equal(graph["2"].inputs["resize_type.multiplier"], 2);
+  assert.equal(graph["5"].class_type, "VAEEncodeTiled");
+  assert.equal(graph["6"].inputs.unet_name, SEEDVR2_UNET_NAME);
+  assert.equal(graph["8"].inputs.steps, 1);
+  assert.equal(graph["10"].inputs.color_correction_method, "wavelet");
+  assert.equal(graph["11"].class_type, "SaveImage");
+});
+
 test("readiness requires native nodes and exact model combos", () => {
   const ready = evaluateSeedVR2Readiness(objectInfo(), { modelFiles: { unet: true, vae: true } });
   assert.equal(ready.ready, true);
@@ -97,6 +120,7 @@ test("readiness requires native nodes and exact model combos", () => {
   const missing = evaluateSeedVR2Readiness(objectInfo(), { modelFiles: { unet: false, vae: true } });
   assert.equal(missing.ready, false);
   assert.equal(missing.models.unet.available, false);
+  assert.equal(evaluateSeedVR2Readiness(imageObjectInfo(), { modelFiles: { unet: true, vae: true }, sourceKind: "image" }).ready, true);
 });
 
 test("builds the community H3 latent 2x two-pass graph", () => {
@@ -142,6 +166,9 @@ test("normalizes source paths and rejects traversal/non-video names", () => {
   assert.throws(() => normalizeVideoAssetName("../clip.mp4"), { code: "SOURCE_NAME_INVALID" });
   assert.throws(() => normalizeVideoAssetName("C:\\clip.mp4"), { code: "SOURCE_NAME_INVALID" });
   assert.throws(() => normalizeVideoAssetName("frame.png"), { code: "SOURCE_KIND_INVALID" });
+  assert.equal(normalizeUpscaleAssetName("images/frame.png"), "images/frame.png");
+  assert.equal(normalizeUpscaleAssetName("clips/source.mp4"), "clips/source.mp4");
+  assert.throws(() => normalizeUpscaleAssetName("images/frame.gif"), { code: "SOURCE_KIND_INVALID" });
   assert.equal(parseSeedVR2History({ p: { status: { status_str: "error", messages: [["execution_error", { exception_message: "bad node" }]] } } }, "p").state, "failed");
 });
 
@@ -206,6 +233,54 @@ test("controller queues one active job, preserves public shape, and cleans outpu
   assert.equal(await fs.stat(path.join(inputRoot, "seedvr2_temp_job-output.mp4")).catch(() => null), null);
   assert.equal(promptSeen.prompt["5"].inputs.vae_name, SEEDVR2_VAE_NAME);
   assert.equal(promptSeen.prompt["7"].inputs.unet_name, SEEDVR2_UNET_NAME);
+});
+
+test("controller upscales a single image with SeedVR2 7B and registers a PNG output", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-image-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
+  await fs.mkdir(inputRoot, { recursive: true });
+  await fs.mkdir(outputRoot, { recursive: true });
+  await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_UNET_NAME), "model");
+  await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
+  await fs.writeFile(path.join(inputRoot, "source.png"), "source");
+  await fs.writeFile(path.join(outputRoot, "seedvr2_result.png"), "result");
+  let promptSeen = null;
+  const controller = createSeedVR2Controller({
+    comfyRoot: root,
+    inputRoot,
+    outputRoot,
+    pollIntervalMs: 1,
+    fetchImpl: async (url, init = {}) => {
+      if (url.endsWith("/system_stats")) return response({ devices: [] });
+      if (url.endsWith("/object_info")) return response(imageObjectInfo());
+      if (url.endsWith("/prompt")) {
+        promptSeen = JSON.parse(init.body);
+        return response({ prompt_id: "prompt-image" });
+      }
+      if (url.includes("/history/prompt-image")) {
+        return response({ "prompt-image": { status: { completed: true }, outputs: { "11": { images: [{ filename: "seedvr2_result.png", subfolder: "", type: "output" }] } } } });
+      }
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+    toAsset: async (_root, name) => ({ name, root: "output", kind: "image" }),
+    idFactory: () => "image-job",
+  });
+  const queued = await controller.enqueue({ sourceName: "source.png", sourceRoot: "input", scale: 2, profile: "seedvr2_7b_sharp_nvfp4" });
+  assert.equal(queued.status, "queued");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const current = await controller.getJob("image-job");
+    if (current?.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const completed = await controller.getJob("image-job");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.output.kind, "image");
+  assert.equal(completed.output.name, "seedvr2_result.png");
+  assert.equal(promptSeen.prompt["1"].class_type, "LoadImage");
+  assert.equal(promptSeen.prompt["11"].class_type, "SaveImage");
 });
 
 test("remote controller uploads source video and downloads the ComfyUI artifact", async () => {

@@ -9,6 +9,7 @@ import {
   FLUX2_DEV_MODEL,
   FLUX2_DEV_TEXT_ENCODER,
   FLUX2_CLIP_TYPE,
+  FLUX2_TORCH_COMPILE_BACKEND,
   NATURE_CAMERA_PROFILE,
   NATURE_CAMERA_SYSTEM_PROMPT,
   TEXT2IMG_REQUIRED_NODES,
@@ -46,7 +47,7 @@ async function waitForTerminal(controller, id) {
   throw new Error("Timed out waiting for text-to-image test job.");
 }
 
-test("builds the official thirteen-node FLUX.2 Dev graph", () => {
+test("builds the compiled fourteen-node FLUX.2 Dev graph", () => {
   const graph = buildFlux2DevText2ImgPrompt({
     prompt: "A candid portrait in soft window light",
     width: 768,
@@ -55,7 +56,7 @@ test("builds the official thirteen-node FLUX.2 Dev graph", () => {
     seed: 42,
   }, { filenamePrefix: "text2img/test" });
 
-  assert.equal(Object.keys(graph).length, 13);
+  assert.equal(Object.keys(graph).length, 14);
   assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
   assert.deepEqual(graph["2"].inputs, { clip_name: FLUX2_DEV_TEXT_ENCODER, type: "flux2", device: "default" });
   assert.equal(graph["4"].inputs.text, "A candid portrait in soft window light");
@@ -65,6 +66,8 @@ test("builds the official thirteen-node FLUX.2 Dev graph", () => {
   assert.deepEqual(graph["9"].inputs, { steps: 20, width: 768, height: 1024 });
   assert.deepEqual(graph["10"].inputs, { width: 768, height: 1024, batch_size: 1 });
   assert.deepEqual(graph["13"].inputs.images, ["12", 0]);
+  assert.deepEqual(graph["14"], { class_type: "TorchCompileModel", inputs: { model: ["1", 0], backend: FLUX2_TORCH_COMPILE_BACKEND } });
+  assert.deepEqual(graph["6"].inputs.model, ["14", 0]);
 });
 
 test("builds the official FLUX.2 Dev graph with Mistral guidance", () => {
@@ -76,11 +79,11 @@ test("builds the official FLUX.2 Dev graph with Mistral guidance", () => {
     seed: 77,
   });
 
-  assert.equal(Object.keys(graph).length, 13);
+  assert.equal(Object.keys(graph).length, 14);
   assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
   assert.equal(graph["2"].inputs.clip_name, FLUX2_DEV_TEXT_ENCODER);
   assert.deepEqual(graph["5"], { class_type: "FluxGuidance", inputs: { conditioning: ["4", 0], guidance: 4 } });
-  assert.deepEqual(graph["6"], { class_type: "BasicGuider", inputs: { model: ["1", 0], conditioning: ["5", 0] } });
+  assert.deepEqual(graph["6"], { class_type: "BasicGuider", inputs: { model: ["14", 0], conditioning: ["5", 0] } });
   assert.deepEqual(graph["9"].inputs, { steps: 20, width: 1024, height: 1024 });
 });
 

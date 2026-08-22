@@ -37,11 +37,12 @@ export function UpscaleWorkspace() {
     const [error, setError] = useState("");
     const [busy, setBusy] = useState<"upload" | "submit" | "cancel" | "retry" | "">("");
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
+    const sourceKind = source?.kind || "video";
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
         try {
-            const next = await fetchUpscaleHealth(profile);
+            const next = await fetchUpscaleHealth(profile, sourceKind);
             setHealth(next);
             setHealthError("");
         } catch (reason) {
@@ -50,7 +51,7 @@ export function UpscaleWorkspace() {
         } finally {
             setHealthLoading(false);
         }
-    }, [profile]);
+    }, [profile, sourceKind]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => void refreshHealth(), 0);
@@ -83,19 +84,21 @@ export function UpscaleWorkspace() {
         setError("");
         try {
             const [uploaded] = await uploadAssets([file]);
-            if (!uploaded || uploaded.kind !== "video") throw new Error("請選擇影片素材。");
+            if (!uploaded || !["image", "video"].includes(uploaded.kind)) throw new Error("請選擇圖片或影片素材。");
+            if (uploaded.kind === "image") setProfile("seedvr2_7b_sharp_nvfp4");
             setSource(uploaded);
             setJob(null);
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "無法上傳來源影片。");
+            setError(reason instanceof Error ? reason.message : "無法上傳來源素材。");
         } finally {
             setBusy("");
         }
     }
 
     function handleLibrarySelection(assets: StudioAsset[]) {
-        const selected = assets.find((asset) => asset.kind === "video");
+        const selected = assets.find((asset) => asset.kind === "image" || asset.kind === "video");
         if (!selected || active || busy) return;
+        if (selected.kind === "image") setProfile("seedvr2_7b_sharp_nvfp4");
         setSource(selected);
         setJob(null);
         setError("");
@@ -103,7 +106,7 @@ export function UpscaleWorkspace() {
 
     async function start() {
         if (!source) {
-            setError("開始升頻前請先選擇來源影片。");
+            setError("開始升頻前請先選擇來源圖片或影片。");
             document.getElementById("upscale-source-picker")?.focus();
             return;
         }
@@ -118,7 +121,7 @@ export function UpscaleWorkspace() {
         try {
             const next = await submitUpscale(source, profile);
             setJob(next);
-            if (next.status === "failed") setError(next.error || `${selectedProfile.label} 影片升頻失敗。`);
+            if (next.status === "failed") setError(next.error || `${selectedProfile.label} 升頻失敗。`);
         } catch (reason) {
             if (reason instanceof UpscaleApiError && reason.health) setHealth(reason.health);
             setError(reason instanceof Error ? reason.message : `無法開始 ${selectedProfile.label} 升頻。`);
@@ -164,7 +167,7 @@ export function UpscaleWorkspace() {
                 if (disposed) return;
                 setJob(next);
                 if (TERMINAL_STATUSES.has(next.status) && next.status === "failed") {
-                    setError(next.error || `${selectedProfile.label} 影片升頻失敗。`);
+                    setError(next.error || `${selectedProfile.label} 升頻失敗。`);
                 }
             } catch (reason) {
                 if (!disposed && reason instanceof UpscaleApiError && reason.status === 404) {
@@ -223,9 +226,9 @@ export function UpscaleWorkspace() {
         <div className={styles.workspace}>
             <section className={styles.header}>
                 <div>
-                    <span className={styles.kicker}>影片升頻 / {selectedProfile.label}</span>
-                    <h2>影片升頻</h2>
-                    <p>{selectedProfile.description} 產生保留原始音訊的 {UPSCALE_SCALE}× 影片升頻結果。</p>
+                    <span className={styles.kicker}>圖片與影片升頻 / {selectedProfile.label}</span>
+                    <h2>圖片與影片升頻</h2>
+                    <p>{selectedProfile.description} 產生 {UPSCALE_SCALE}× 升頻結果{sourceKind === "video" ? "並保留原始音訊" : ""}。</p>
                 </div>
                 <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
             </section>
@@ -234,31 +237,31 @@ export function UpscaleWorkspace() {
                 <div className={styles.card}>
                     <div className={styles.cardHeading}>
                         <div>
-                            <span className={styles.kicker}>來源影片</span>
-                            <h3>{source ? source.name : "選擇影片"}</h3>
+                            <span className={styles.kicker}>來源素材</span>
+                            <h3>{source ? source.name : "選擇圖片或影片"}</h3>
                         </div>
                         {source && <span className={styles.sourceKind}>{source.root.toUpperCase()}</span>}
                     </div>
                     {source ? (
                         <>
-                            <video className={styles.sourcePreview} src={upscaleAssetHref(source)} controls playsInline preload="metadata">
-                                <track kind="captions" />
-                            </video>
+                            {source.kind === "image"
+                                ? <img className={styles.sourcePreview} src={upscaleAssetHref(source)} alt={source.name} />
+                                : <video className={styles.sourcePreview} src={upscaleAssetHref(source)} controls playsInline preload="metadata"><track kind="captions" /></video>}
                             <div className={styles.sourceMeta}>
-                                <span>{source.kind === "video" ? (locale === "en" ? "Video" : "影片") : source.kind} · {sourceLabel(source.root, locale)}</span>
+                                <span>{source.kind === "video" ? (locale === "en" ? "Video" : "影片") : (locale === "en" ? "Image" : "圖片")} · {sourceLabel(source.root, locale)}</span>
                                 <button type="button" className={styles.textButton} disabled={active || Boolean(busy)} onClick={() => { setSource(null); setJob(null); setError(""); }}>
                                     {ACTION_LABELS.clearSource}
                                 </button>
                             </div>
                         </>
                     ) : (
-                        <div className={styles.emptySource}>從素材庫選擇影片，或從此裝置上傳影片。</div>
+                        <div className={styles.emptySource}>從素材庫選擇圖片或影片，或從此裝置上傳。</div>
                     )}
                     <div className={styles.sourceActions}>
-                        <AssetPickerButton triggerId="upscale-source-picker" kind="video" selectedKeys={sourceKey ? [sourceKey] : []} onSelect={handleLibrarySelection} label={ACTION_LABELS.browseLibrary} />
+                        <AssetPickerButton triggerId="upscale-source-picker" allowedKinds={["image", "video"]} selectedKeys={sourceKey ? [sourceKey] : []} onSelect={handleLibrarySelection} label={ACTION_LABELS.browseLibrary} />
                         <label className={styles.uploadButton}>
-                            上傳影片
-                            <input type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo" onChange={(event) => void handleUpload(event)} disabled={active || Boolean(busy)} />
+                            上傳圖片或影片
+                            <input type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo" onChange={(event) => void handleUpload(event)} disabled={active || Boolean(busy)} />
                         </label>
                     </div>
                 </div>
@@ -274,7 +277,7 @@ export function UpscaleWorkspace() {
                     <label className={styles.profileField}>
                         <span>運算後端</span>
                         <select value={profile} onChange={handleProfileChange} disabled={active || Boolean(busy)} aria-label="選擇升頻後端">
-                            {UPSCALE_PROFILES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                            {UPSCALE_PROFILES.map((item) => <option key={item.id} value={item.id} disabled={sourceKind === "image" && !item.supportsImages}>{item.label}</option>)}
                         </select>
                     </label>
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
@@ -319,9 +322,9 @@ export function UpscaleWorkspace() {
                         </div>
                         <span className={styles.resultBadge}>{UPSCALE_SCALE}× 已完成</span>
                     </div>
-                    <video className={styles.resultPreview} src={upscaleAssetHref(job.output)} controls playsInline preload="metadata">
-                        <track kind="captions" />
-                    </video>
+                    {job.output.kind === "image"
+                        ? <img className={styles.resultPreview} src={upscaleAssetHref(job.output)} alt={job.output.name} />
+                        : <video className={styles.resultPreview} src={upscaleAssetHref(job.output)} controls playsInline preload="metadata"><track kind="captions" /></video>}
                     <div className={styles.resultActions}>
                         <a className={styles.secondaryButton} href={upscaleAssetHref(job.output)} target="_blank" rel="noreferrer">{ACTION_LABELS.preview}</a>
                         <a className={styles.secondaryButton} href={`${upscaleAssetHref(job.output)}${upscaleAssetHref(job.output).includes("?") ? "&" : "?"}download=1`} download>{ACTION_LABELS.downloadResult}</a>

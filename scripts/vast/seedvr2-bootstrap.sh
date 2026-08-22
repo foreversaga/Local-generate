@@ -6,6 +6,7 @@ readonly MODEL_ROOT="$COMFY_ROOT/models"
 readonly STAGING_ROOT=/workspace/.seedvr2-model-staging
 readonly SEEDVR2_REPO=Comfy-Org/SeedVR2
 readonly SEEDVR2_REVISION=10f035adc869a5b3ffc466360b869641511c0610
+readonly SEEDVR2_VAE_REVISION=0bb1f83c716d1cad6dfa730b643a4f603bc2b70b
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -17,6 +18,7 @@ download_model() {
   local target_path="$3"
   local expected_size="$4"
   local expected_sha="$5"
+  local revision="${6:-$SEEDVR2_REVISION}"
   local staging_dir="$STAGING_ROOT/$label"
   local source_path="$staging_dir/$remote_path"
 
@@ -35,7 +37,7 @@ download_model() {
   log "downloading $label"
   mkdir -p "$staging_dir" "$(dirname "$target_path")"
   /venv/main/bin/hf download "$SEEDVR2_REPO" "$remote_path" \
-    --revision "$SEEDVR2_REVISION" \
+    --revision "$revision" \
     --local-dir "$staging_dir"
 
   local downloaded_size
@@ -72,7 +74,8 @@ download_model \
   vae/seedvr2_ema_vae_fp16.safetensors \
   "$MODEL_ROOT/vae/seedvr2_ema_vae_fp16.safetensors" \
   501324814 \
-  20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1
+  20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1 \
+  "$SEEDVR2_VAE_REVISION"
 
 log 'restarting ComfyUI so SeedVR2 model selectors refresh'
 supervisorctl restart comfyui

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OLLAMA_RUNTIME_BIN="/home/barry0626/minimax-h3/ollama-runtime/bin/ollama"
+OLLAMA_MODEL_ROOT="/home/barry0626/minimax-h3/ollama-models"
+
+if [[ ! -x "$OLLAMA_RUNTIME_BIN" ]]; then
+  printf 'Ollama binary not found: %s\n' "$OLLAMA_RUNTIME_BIN" >&2
+  exit 127
+fi
+
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$OLLAMA_MODEL_ROOT}"
+export OLLAMA_NO_CLOUD="${OLLAMA_NO_CLOUD:-true}"
+
+exec "$OLLAMA_RUNTIME_BIN" "$@"
