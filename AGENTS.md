@@ -136,3 +136,12 @@ Invoke-WebRequest -Uri http://127.0.0.1:8787/app/api/health -UseBasicParsing -Ti
 - 重啟後必須重新執行受影響服務的 health check，並依風險執行必要的 targeted tests、完整測試、lint 或 build。
 - UI 或使用者流程改動必須在重啟後用 Browser 實際操作驗收；涉及素材、上傳、選取或資料夾流程時，必須確認成功結果與實際 API／檔案狀態。
 - 只要重啟、health check、必要測試或 Browser 驗收任一項尚未完成，不得對使用者宣稱「完成」；應明確回報尚未完成的驗收項目。
+
+## 模型部署與檔案管理（強制）
+
+- 所有本地模型推理服務一律使用 Docker 容器啟動、停止與管理；不得直接在 host 上以 Python、`llama-server`、vLLM、SGLang 或其他裸機程序啟動模型服務。
+- 所有模型權重、tokenizer、量化檔、draft/speculative 模型、MTP 相關模型檔與 adapter 必須集中存放在單一模型根目錄 `MODEL_ROOT` 下，不得散落在各專案、服務或容器目錄。
+- 每個模型可以在 `MODEL_ROOT` 下建立自己的子目錄，但不得建立第二個獨立模型根目錄或複製同一份模型到不同服務目錄。
+- Docker 容器必須透過 bind mount 掛載 `MODEL_ROOT` 使用模型檔；能唯讀時使用唯讀掛載，模型檔不得烘進 Docker image。
+- 新下載或轉換產生的模型檔必須直接寫入 `MODEL_ROOT` 對應子目錄；不得先下載到專案目錄後長期保留另一份副本。
+- Docker Compose、啟動腳本與環境設定以 `MODEL_ROOT` 作為統一模型路徑入口，不得在不同服務中硬編碼多組彼此獨立的模型實體路徑。
