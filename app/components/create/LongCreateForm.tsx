@@ -257,6 +257,21 @@ export function LongCreateForm() {
   }, [resolutionAssetKey, resolutionAssetName, resolutionAssetUrl]);
   const combinedScriptText = useMemo(() => composeLongScriptText(scripts), [scripts]);
   const totalScriptDuration = useMemo(() => scripts.reduce((total, script) => total + (Number(script.duration) || 0), 0), [scripts]);
+  const continuationLabel = continuationMode === "latent_context"
+    ? "Latent 連續生成"
+    : continuationMode === "motion_context"
+      ? "Ref2VA 參考延續"
+      : "尾幀延續";
+  const continuityContextLabel = continuationMode === "latent_context"
+    ? "前段尾端 39 幀原生影音 latent"
+    : continuationMode === "motion_context"
+      ? "上一分鏡最後 2 秒影片"
+      : "上一分鏡尾幀";
+  const h3FrameHandlingLabel = continuationMode === "latent_context"
+    ? "自動對齊 H3 原生幀網格"
+    : continuationMode === "motion_context"
+      ? "每個故事分鏡獨立生成"
+      : "尾幀作為下一段起點";
   const baseIssues = useMemo(() => validateLongCreate({
     scripts,
     inputType,
@@ -893,7 +908,7 @@ export function LongCreateForm() {
   return (
     <div className={styles.layout}>
       <nav className={styles.sectionNav} aria-label="長影片建立區段">
-        <a href="#long-story">故事</a><a href="#long-planner">規劃</a><a href="#long-segments">分段</a><a href="#long-review">檢查</a>
+        <a href="#long-story">故事</a><a href="#long-planner">規劃</a><a href="#long-segments">分鏡</a><a href="#long-review">檢查</a>
       </nav>
 
       <div className={styles.formColumn}>
@@ -930,13 +945,13 @@ export function LongCreateForm() {
               <InlineError message={attempted ? issuesByField.get("referenceAssets") : ""} />
             </div>
           )}
-          <Field label="分鏡銜接模式" error={attempted ? issuesByField.get("continuationMode") : ""}>
+          <Field label="連續生成模式" error={attempted ? issuesByField.get("continuationMode") : ""}>
             <select id="long-continuation-mode" className={styles.select} value={continuationMode} onChange={(event) => updateContinuationMode(event.target.value as ContinuationMode)}>
-              <option value="latent_context" disabled={inputType !== "image"}>連續鏡頭（Latent 影音上下文，推薦）</option>
-              <option value="motion_context">獨立分鏡一致性（Ref2VA 弱參考）</option>
-              <option value="legacy_tail">尾幀續接（舊版 I2VA）</option>
+              <option value="latent_context" disabled={inputType !== "image"}>Latent 連續生成（推薦，需圖片起點）</option>
+              <option value="motion_context">參考延續（Ref2VA）</option>
+              <option value="legacy_tail">尾幀延續（相容舊版）</option>
             </select>
-            <span className={styles.helper}>{continuationMode === "latent_context" ? "第 2 段起保護前段最後 39 幀的原生影音 latent，生成後同步裁掉重複前綴；需從圖片開始。" : continuationMode === "motion_context" ? "保留現有流程：第 2 段起把前段末尾 MP4 當 Ref2VA 弱參考，各分鏡仍獨立構圖。" : "以尾幀作下一段起點；保留舊工作相容性。"}</span>
+            <span className={styles.helper}>{continuationMode === "latent_context" ? "前段尾端 39 幀原生影音 latent 直接帶入下一段，保留動作、構圖與聲音連續性；輸出時同步移除重複前綴。" : continuationMode === "motion_context" ? "將前段最後 2 秒影片作為下一分鏡的 Ref2VA 弱視覺參考；各分鏡仍是獨立生成，這不是 Motion Context / context pin。" : "以前一分鏡尾幀作為下一段起點；只為舊工作與 I2VA 流程保留。"}</span>
           </Field>
           <LongScriptComposer value={scripts} disabled={!canInteract} error={attempted ? issuesByField.get("scripts") : ""} onChange={(next) => { setScripts(next); markPlanDirty(); }} />
           <Field label="負面提示詞／限制" helper="空白時 planner 可自行補齊。">
@@ -947,37 +962,37 @@ export function LongCreateForm() {
         <LongSection id="long-planner" code="02 / 套用與時間軸" title="套用與時間軸">
           <div className={styles.flowPanel}>
             <div className={styles.flowHeader}>
-              <div><span className={styles.eyebrow}>STORYBOARD FLOW</span><strong>一個分鏡，一支影片</strong></div>
-              <span className={styles.flowBadge}>直接</span>
+              <div><span className={styles.eyebrow}>STORYBOARD / H3 GENERATION</span><strong>分鏡定義故事，生成器負責 H3 幀處理</strong></div>
+              <span className={styles.flowBadge}>自動</span>
             </div>
             <ol className={styles.flowSteps}>
-              <li>每張劇本卡的原文預設直接成為該分鏡的 H3 提示詞；第 2 段起可在片段卡中明確選用 Ollama 延續整理。</li>
-              <li>{continuationMode === "latent_context" ? "上一分鏡最後 39 幀的原生影音 latent 會成為下一段受保護的開頭，讓動作、構圖與聲音沿同一時間線延續。" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒會自動作為下一分鏡的弱視覺參考，只維持角色、場景、光線與狀態一致。" : "上一分鏡尾幀會作為下一分鏡首幀參考。"}</li>
-              <li>{continuationMode === "latent_context" ? "輸出前同步裁掉重複的 39 幀畫面與音訊，再依分鏡順序合併；每段 latent 會保存供失敗重試。" : "各段不共享原生影音 latent；最後依分鏡順序合併。"}</li>
+              <li>每張劇本卡只定義故事分鏡、描述與故事長度；它不是 H3 底層 sampling window。</li>
+              <li>{continuationMode === "latent_context" ? "上一分鏡尾端 39 幀原生影音 latent 會成為下一段受保護的 continuity 前綴，讓動作、構圖與聲音沿同一時間線延續。" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒影片只作為 Ref2VA 弱參考，用來維持角色、場景、光線與狀態；下一分鏡仍獨立生成。" : "上一分鏡尾幀會作為下一分鏡的起點參考。"}</li>
+              <li>{continuationMode === "latent_context" ? "每個分鏡的實際生成幀會依 H3 原生幀網格微調；後續段的 continuity 重複前綴會在合併前同步裁掉畫面與音訊。" : "非 latent 模式不共享原生影音 latent；完成後再依故事分鏡順序合併。"}</li>
             </ol>
           </div>
-          <p className={styles.helper}>時間軸由上方劇本卡的影片長度自動累加，目前共 {totalScriptDuration.toFixed(1)} 秒、{scripts.length} 支影片。</p>
+          <p className={styles.helper}>目前故事總長 {totalScriptDuration.toFixed(1)} 秒、{scripts.length} 個故事分鏡；H3 實際幀數由執行器在生成時處理，不需要在主畫面手動設定 frames。</p>
           <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "套用失敗。"))}>{planning ? "套用中…" : "直接套用劇本提示詞"}</button>
           {planDirty && plan && <p className={styles.stale} role="status">劇本已變更；保存或開始前會重新直接套用。</p>}
         </LongSection>
 
-        <LongSection id="long-segments" code="03 / 片段檢查" title={`片段檢查 · ${plan?.segments.length || 0} 段`}>
-          {!plan && <div className={styles.empty}>尚未套用劇本。套用後可在此確認每段使用的原始提示詞。</div>}
+        <LongSection id="long-segments" code="03 / 分鏡檢查" title={`分鏡檢查 · ${plan?.segments.length || 0} 段`}>
+          {!plan && <div className={styles.empty}>尚未套用劇本。套用後可在此確認每個故事分鏡使用的原始提示詞。</div>}
           {plan?.segments.map((segment, index) => <article className={styles.segmentCard} key={segment.id || index}>
-            <div className={styles.segmentHeading}><div><span>分鏡 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || ((continuationMode === "motion_context" || continuationMode === "latent_context") && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
-            <Field label="分鏡長度（秒）"><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
+            <div className={styles.segmentHeading}><div><span>故事分鏡 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || ((continuationMode === "motion_context" || continuationMode === "latent_context") && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
+            <Field label="故事分鏡長度（秒）" helper={continuationMode === "latent_context" ? "這是故事時間；實際生成幀會在執行時自動對齊 H3 原生幀網格。" : "這是故事段落長度，不是底層 frame 數。"}><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
             <div className={styles.twoColumns}><Field label="分鏡描述"><textarea className={styles.compactTextarea} value={segment.description} onChange={(event) => updateSegment(index, { description: event.target.value })} /></Field><Field label="段尾狀態"><textarea className={styles.compactTextarea} value={segment.endingState || ""} onChange={(event) => updateSegment(index, { endingState: event.target.value })} /></Field></div>
             <Field label="H3 提示詞（劇本原文）"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
             <Field label="此段負面提示詞" helper="空白則使用全片設定。"><textarea className={styles.compactTextarea} value={segment.negativePrompt || ""} onChange={(event) => updateSegment(index, { negativePrompt: event.target.value })} /></Field>
             {index > 0 && <div className={styles.segmentAssistant}>
-              <div className={styles.segmentAssistantHeader}><div><strong>Ollama 延續提示詞</strong><p>參考前一分鏡提示詞與本段描述，產生本段 {continuationMode === "latent_context" ? "latent 連續" : "Ref2VA"} 提示詞及負面提示詞。</p></div><button type="button" disabled={segmentPromptBusy !== null || !canInteract} onClick={() => void generateContinuationPrompt(index)}>{segmentPromptBusy === index ? "產生中…" : "用 Ollama 產生"}</button></div>
+              <div className={styles.segmentAssistantHeader}><div><strong>Ollama 延續提示詞</strong><p>參考前一分鏡提示詞與本段描述，產生本段 {continuationMode === "latent_context" ? "latent 連續" : continuationMode === "motion_context" ? "Ref2VA 參考延續" : "尾幀延續"}提示詞及負面提示詞。</p></div><button type="button" disabled={segmentPromptBusy !== null || !canInteract} onClick={() => void generateContinuationPrompt(index)}>{segmentPromptBusy === index ? "產生中…" : "用 Ollama 產生"}</button></div>
               <div className={styles.segmentSaveRow}><label><span>另存劇本名稱</span><input value={segmentScriptNames[segmentKey(segment, index)] ?? scripts[index]?.name ?? `分鏡 ${index + 1}`} maxLength={80} onChange={(event) => setSegmentScriptNames((current) => ({ ...current, [segmentKey(segment, index)]: event.target.value }))} /></label><button type="button" disabled={segmentScriptBusy !== null || !segment.prompt?.trim()} onClick={() => void saveSegmentAsScript(index)}>{segmentScriptBusy === index ? "儲存中…" : "存成一般劇本"}</button></div>
               {segmentActionStatus[segmentKey(segment, index)] && <p className={segmentActionStatus[segmentKey(segment, index)].kind === "error" ? styles.segmentActionError : styles.segmentActionSuccess} role="status" aria-live="polite">{segmentActionStatus[segmentKey(segment, index)].message}</p>}
             </div>}
           </article>)}
         </LongSection>
 
-        <LongSection id="long-setup" code="04 / 生成設定" title="生成設定">
+        <AdvancedSection id="long-setup" code="04 / 進階設定" title="進階生成設定" summary="模型、尺寸、LoRA、Steps、Seed">
           <label className={styles.field}>
             <span className={styles.label}>H3 Realism People LoRA</span>
             <span className={styles.segmented}>
@@ -1024,13 +1039,13 @@ export function LongCreateForm() {
             <span className={styles.helper}>32 的倍數，範圍 32–2048 px。</span>
           </div>
           <div className={styles.twoColumns}><Field label="Steps" error={attempted ? issuesByField.get("steps") : ""}><input id="long-steps" className={styles.input} type="number" min={1} max={80} value={steps} onChange={(event) => setSteps(numberDraft(event.target.value))} /></Field><Field label="Seed" error={attempted ? issuesByField.get("seed") : ""}><div className={styles.seedRow}><input id="long-seed" className={styles.input} type="number" min={0} max={2147483647} value={seed} onChange={(event) => setSeed(numberDraft(event.target.value))} /><button type="button" onClick={randomizeSeed} aria-label="隨機種子">↻</button></div></Field></div>
-        </LongSection>
+        </AdvancedSection>
       </div>
 
       <aside id="long-review" className={styles.summary} aria-label="長影片生成摘要">
         <section className={styles.summaryCard}>
           <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
-          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="一致性參考" value={continuationMode === "latent_context" ? "前段尾端 39 幀（影音 latent）" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒（僅畫面）" : "上一分鏡尾幀"} /><Summary label="劇本總長" value={continuationMode === "latent_context" ? `${totalScriptDuration.toFixed(1)} 秒（各段依 H3 原生幀微調）` : `${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="劇本／影片" value={`${scripts.length} 個`} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /><Summary label="提示詞來源" value="劇本原文／選用 Ollama" /></div>
+          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="故事總長" value={`${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="故事分鏡" value={`${scripts.length} 個`} /><Summary label="連續模式" value={continuationLabel} /><Summary label="連續上下文" value={continuityContextLabel} /><Summary label="H3 幀處理" value={h3FrameHandlingLabel} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /></div>
           {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>
@@ -1051,6 +1066,18 @@ function LongSection({ id, code, title, children }: { id: string; code: string; 
   return <section id={id} className={styles.section}><div className={styles.sectionHeader}><div><span className={styles.eyebrow}>{code}</span><h2>{title}</h2></div></div><div className={styles.stack}>{children}</div></section>;
 }
 
+function AdvancedSection({ id, code, title, summary, children }: { id: string; code: string; title: string; summary: string; children: ReactNode }) {
+  return (
+    <details id={id} className={`${styles.section} ${styles.advancedSection}`}>
+      <summary className={styles.advancedSummary}>
+        <div><span className={styles.eyebrow}>{code}</span><h2>{title}</h2></div>
+        <span className={styles.advancedSummaryMeta}>{summary}</span>
+      </summary>
+      <div className={`${styles.stack} ${styles.advancedContent}`}>{children}</div>
+    </details>
+  );
+}
+
 function focusLongValidationField(field: string) {
   if (field === "scripts") {
     document.getElementById("long-script-0-content")?.focus();
@@ -1064,9 +1091,15 @@ function focusLongValidationField(field: string) {
     element?.scrollIntoView({ behavior: "smooth", block: "center" });
     return;
   }
+  const advancedFields = new Set(["width", "height", "steps", "seed", "h3LoraPreset", "characterLoraName", "characterLoraStrength", "modelProfile"]);
+  if (advancedFields.has(field)) {
+    const advanced = document.getElementById("long-setup");
+    if (advanced instanceof HTMLDetailsElement) advanced.open = true;
+  }
   const ids: Record<string, string> = {
     outputFolder: "long-output-folder",
     referenceAssets: "long-reference-assets",
+    continuationMode: "long-continuation-mode",
     duration: "long-duration",
     segmentDurationHint: "long-segment-duration",
     timelineText: "long-timeline",
