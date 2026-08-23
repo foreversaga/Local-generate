@@ -1,0 +1,40 @@
+-    cfg: 1,
+-    sampler: "ER-SDE",
+-    scheduler: "Simple",
+-    flowShift: 1.15,
+-    denoise: 1,
+-    minDimension: 512,
+-    maxDimension: 2048,
+-    dimensionStep: 16,
+-  }),
+ });
+ 
+ const FLUX_DEV_REQUIRED_NODES = Object.freeze([
+@@ -79,23 +50,8 @@ const FLUX_DEV_REQUIRED_NODES = Object.freeze([
+   "SaveImage",
+ ]);
+ 
+-const KREA2_REQUIRED_NODES = Object.freeze([
+-  "UNETLoader",
+-  "CLIPLoader",
+-  "VAELoader",
+-  "CLIPTextEncode",
+-  "ConditioningZeroOut",
+-  "EmptyLatentImage",
+-  "ModelSamplingAuraFlow",
+-  "KSampler",
+-  "VAEDecode",
+-  "SaveImage",
+-]);
+ 
+-export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...new Set([
+-  ...FLUX_DEV_REQUIRED_NODES,
+-  ...KREA2_REQUIRED_NODES,
+-])]);
++export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...FLUX_DEV_REQUIRED_NODES]);
+ 
+ const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
+ const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
+@@ -253,43 +209,7 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
+   };
+ }

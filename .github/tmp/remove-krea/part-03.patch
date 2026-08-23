@@ -1,0 +1,40 @@
+   "text2img.generate.action": "Refine with AI and generate", "text2img.generate.prompting": "Qwen3.8 27B is refining the description…", "text2img.generate.running": "Generating…", "text2img.submit.error": "Unable to start image generation.", "text2img.job.error": "Unable to refresh the generation job.",
+   "text2img.job.stage.queued": "Waiting to run", "text2img.job.stage.checking": "Checking image models", "text2img.job.stage.submitting": "Submitting the ComfyUI workflow", "text2img.job.stage.generating": "Generating the image", "text2img.job.stage.registering": "Saving the image", "text2img.job.stage.completed": "Generation complete", "text2img.job.stage.running": "Job in progress",
+   "text2img.output.eyebrow": "Generated result", "text2img.output.title": "Preview and download", "text2img.output.empty": "Waiting for the first image", "text2img.output.emptyHelp": "Complete the settings and generate. The result is also saved to the Library.", "text2img.output.generating": "The model is generating the image", "text2img.output.prompting": "Building a natural photographic prompt", "text2img.output.promptingHelp": "Qwen3.8 27B is applying coherent camera, available-light, skin, pose, and hand-integrity guidance.", "text2img.output.failed": "Generation failed", "text2img.output.alt": "Local text-to-image result", "text2img.output.open": "Open original", "text2img.output.download": "Download image", "text2img.output.library": "Open Library",
+diff --git a/server/image-generation/text2img.mjs b/server/image-generation/text2img.mjs
+index 7964a54..6dfa216 100644
+--- a/server/image-generation/text2img.mjs
++++ b/server/image-generation/text2img.mjs
+@@ -6,13 +6,8 @@ export const FLUX2_VAE = "flux2-vae.safetensors";
+ export const FLUX2_CLIP_TYPE = "flux2";
+ export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
+ export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
+-export const KREA2_TURBO_MODEL = "krea2_turbo_fp8_scaled.safetensors";
+-export const KREA2_TEXT_ENCODER = "qwen3vl_4b_fp8_scaled.safetensors";
+-export const KREA2_VAE = "qwen_image_vae.safetensors";
+-export const KREA2_CLIP_TYPE = "krea2";
+ export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-dev";
+ export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
+-export const KREA2_TURBO_MODEL_ID = "krea2-turbo";
+ 
+ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
+   [DEFAULT_TEXT2IMG_MODEL_ID]: Object.freeze({
+@@ -37,30 +32,6 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
+     maxDimension: 1536,
+     dimensionStep: 16,
+   }),
+-  [KREA2_TURBO_MODEL_ID]: Object.freeze({
+-    id: KREA2_TURBO_MODEL_ID,
+-    label: "Krea 2 Turbo · FP8 Scaled",
+-    model: KREA2_TURBO_MODEL,
+-    textEncoder: KREA2_TEXT_ENCODER,
+-    vae: KREA2_VAE,
+-    clipType: KREA2_CLIP_TYPE,
+-    precision: "FP8 Scaled",
+-    license: "Krea 2 Community License",
+-    commercial: true,
+-    architecture: "krea2",
+-    encoderLabel: "Qwen3-VL 4B · FP8 Scaled",
+-    encoderPrecision: "FP8 Scaled",
+-    defaultSteps: 8,
+-    maxSteps: 20,

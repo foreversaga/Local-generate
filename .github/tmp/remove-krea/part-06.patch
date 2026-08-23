@@ -1,0 +1,40 @@
+ 
+@@ -308,7 +228,7 @@ export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote =
+   const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
+   const vaes = comboValues(objectInfo?.VAELoader, "vae_name");
+   const profiles = Object.fromEntries(Object.values(TEXT2IMG_MODEL_PROFILES).map((profile) => {
+-    const requiredNodes = profile.architecture === "krea2" ? KREA2_REQUIRED_NODES : FLUX_DEV_REQUIRED_NODES;
++    const requiredNodes = FLUX_DEV_REQUIRED_NODES;
+     const profileNodesReady = requiredNodes.every((name) => Boolean(objectInfo?.[name]));
+     const encoders = Object.fromEntries(Object.values(encoderProfilesFor(profile)).map((encoder) => {
+       const available = textEncoders.includes(encoder.textEncoder);
+diff --git a/tests/text2img-ui.test.mjs b/tests/text2img-ui.test.mjs
+index e864bbc..6e4267a 100644
+--- a/tests/text2img-ui.test.mjs
++++ b/tests/text2img-ui.test.mjs
+@@ -27,8 +27,6 @@ test("exposes FLUX through the existing Studio text-to-image route and API", asy
+   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
+   assert.match(workspace, /nature-camera/);
+   assert.match(workspace, /flux2-dev/);
+-  assert.doesNotMatch(workspace, /krea2-turbo/);
+-  assert.doesNotMatch(workspace, /text2img\.model\.krea\.name/);
+   assert.doesNotMatch(workspace, /1152, height: 2048, steps: 10/);
+   assert.doesNotMatch(workspace, /2048, height: 1152/);
+   assert.doesNotMatch(workspace, /flux2-klein-[49]b/);
+@@ -81,7 +79,6 @@ test("exposes FLUX through the existing Studio text-to-image route and API", asy
+   assert.match(dictionaries, /"text2img\.description\.copy\.copied"/);
+   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
+   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
+-  assert.match(dictionaries, /"text2img\.size\.realisticPortrait"/);
+   assert.doesNotMatch(dictionaries, /"text2img\.model\.[49]b\.name"/);
+   assert.doesNotMatch(dictionaries, /"text2img\.model\.juggernaut\.name"/);
+   assert.doesNotMatch(dictionaries, /"text2img\.adultMode\.on\.name"/);
+diff --git a/tests/text2img.test.mjs b/tests/text2img.test.mjs
+index f784424..dc7a941 100644
+--- a/tests/text2img.test.mjs
++++ b/tests/text2img.test.mjs
+@@ -9,15 +9,10 @@ import {
+   FLUX2_DEV_MODEL,
+   FLUX2_DEV_TEXT_ENCODER,
+   FLUX2_CLIP_TYPE,
+-  KREA2_CLIP_TYPE,
