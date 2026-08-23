@@ -66,6 +66,12 @@ export type SeedVR2Settings = {
 
 export const UPSCALE_PROFILES = [
     {
+        id: "seedvr2_7b_sharp_fp16",
+        label: "SeedVR2 7B Sharp FP16 · 高品質預設",
+        description: "最高品質的 SeedVR2 7B Sharp FP16；適合追求肌膚、髮絲與材質細節。目前僅完成 UI，後端模型與 workflow 尚未啟用。",
+        supportsImages: true,
+    },
+    {
         id: "seedvr2_7b_sharp_nvfp4",
         label: "SeedVR2 7B Sharp NVFP4",
         description: "高品質圖片與影片重建，使用原生 SeedVR2 workflow 與 wavelet 色彩校正。",
@@ -80,6 +86,7 @@ export const UPSCALE_PROFILES = [
 ] as const;
 
 export type UpscaleProfile = typeof UPSCALE_PROFILES[number]["id"];
+export const DEFAULT_UPSCALE_UI_PROFILE: UpscaleProfile = "seedvr2_7b_sharp_fp16";
 export const DEFAULT_UPSCALE_PROFILE: UpscaleProfile = "h3_latent_2x";
 
 export type UpscaleJobStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
