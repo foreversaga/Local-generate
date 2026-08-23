@@ -22,7 +22,9 @@ jobs:
           ref: codex/ui-library-job-description-fixes
 
       - name: Apply UI fixes
-        run: python3 scripts/apply-ui-library-job-description-fixes.py
+        run: |
+          python3 scripts/apply-ui-library-job-description-fixes.py
+          python3 scripts/fix-rendered-html-legacy-regex.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -87,7 +89,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f unit-test.log
-          git rm scripts/apply-ui-library-job-description-fixes.py .github/workflows/ui-library-job-description-apply.yml
+          git rm scripts/apply-ui-library-job-description-fixes.py scripts/fix-rendered-html-legacy-regex.py .github/workflows/ui-library-job-description-apply.yml
           git add app/components/library/LibraryWorkspace.tsx \
                   app/components/library/LibraryWorkspace.module.css \
                   app/components/library/AssetPickerButton.module.css \
@@ -96,7 +98,8 @@ jobs:
                   app/components/tools/img2img-client.ts \
                   app/components/tools/ImageToImageWorkspace.tsx \
                   server/image-generation/img2img.mjs \
-                  tests/ui-library-job-description.test.mjs
+                  tests/ui-library-job-description.test.mjs \
+                  tests/rendered-html.test.mjs
           git diff --cached --check
           git commit -m "Fix asset browsing and job prompt descriptions"
           git push origin HEAD:codex/ui-library-job-description-fixes
