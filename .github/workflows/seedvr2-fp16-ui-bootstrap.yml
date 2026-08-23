@@ -4,12 +4,18 @@ on:
   push:
     branches:
       - codex/seedvr2-fp16-ui-final
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
 
 permissions:
   contents: write
 
 jobs:
   apply-and-verify:
+    if: ${{ github.event_name == 'push' || github.event.action == 'opened' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
