@@ -1,0 +1,64 @@
+name: SeedVR2 Advanced Sampling Apply
+
+on:
+  push:
+    branches:
+      - codex/seedvr2-advanced-sampling
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply SeedVR2 implementation
+        run: python3 scripts/apply-seedvr2-advanced-sampling.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted SeedVR2 tests
+        run: node --test tests/video-upscale.test.mjs tests/seedvr2-lifecycle.test.mjs tests/seedvr2-settings-ui.test.mjs
+
+      - name: Full unit test suite
+        run: npm run test:unit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit verified implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/apply-seedvr2-advanced-sampling.py .github/workflows/seedvr2-advanced-apply.yml
+          git add server/video-upscale/seedvr2.mjs \
+                  server/video-upscale/seedvr2-store.mjs \
+                  app/components/tools/upscale-client.ts \
+                  app/components/tools/UpscaleWorkspace.tsx \
+                  app/components/tools/UpscaleWorkspace.module.css \
+                  app/i18n/dictionaries.ts \
+                  tests/video-upscale.test.mjs \
+                  tests/seedvr2-lifecycle.test.mjs \
+                  tests/seedvr2-settings-ui.test.mjs
+          git diff --cached --check
+          git commit -m "Implement SeedVR2 advanced sampling controls"
+          git push origin HEAD:${GITHUB_REF_NAME}
