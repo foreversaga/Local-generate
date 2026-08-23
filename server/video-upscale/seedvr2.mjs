@@ -20,6 +20,63 @@ export const SEEDVR2_RESIZE_METHODS = Object.freeze(["lanczos", "bicubic", "bili
 export const SEEDVR2_COLOR_CORRECTION_METHODS = Object.freeze(["wavelet", "lab", "adain", "none"]);
 export const SEEDVR2_DEFAULT_RESIZE_METHOD = "lanczos";
 export const SEEDVR2_DEFAULT_COLOR_CORRECTION = "wavelet";
+export const SEEDVR2_MIN_STEPS = 1;
+export const SEEDVR2_MAX_STEPS = 20;
+export const SEEDVR2_MIN_CFG = 0;
+export const SEEDVR2_MAX_CFG = 20;
+export const SEEDVR2_MIN_DENOISE = 0;
+export const SEEDVR2_MAX_DENOISE = 1;
+export const SEEDVR2_DEFAULT_STEPS = 1;
+export const SEEDVR2_DEFAULT_CFG = 1;
+export const SEEDVR2_DEFAULT_SAMPLER_NAME = "euler";
+export const SEEDVR2_DEFAULT_SCHEDULER = "simple";
+export const SEEDVR2_DEFAULT_DENOISE = 1;
+export const SEEDVR2_SAMPLER_NAMES = Object.freeze([
+  "euler",
+  "euler_cfg_pp",
+  "euler_ancestral",
+  "euler_ancestral_cfg_pp",
+  "heun",
+  "heunpp2",
+  "dpm_2",
+  "dpm_2_ancestral",
+  "lms",
+  "dpm_fast",
+  "dpm_adaptive",
+  "dpmpp_2s_ancestral",
+  "dpmpp_2s_ancestral_cfg_pp",
+  "dpmpp_sde",
+  "dpmpp_sde_gpu",
+  "dpmpp_2m",
+  "dpmpp_2m_cfg_pp",
+  "dpmpp_2m_sde",
+  "dpmpp_2m_sde_gpu",
+  "dpmpp_3m_sde",
+  "dpmpp_3m_sde_gpu",
+  "ddpm",
+  "lcm",
+  "ipndm",
+  "ipndm_v",
+  "deis",
+  "res_multistep",
+  "res_multistep_cfg_pp",
+  "gradient_estimation",
+  "gradient_estimation_cfg_pp",
+  "er_sde",
+  "sa_solver",
+  "sa_solver_pece",
+]);
+export const SEEDVR2_SCHEDULERS = Object.freeze([
+  "normal",
+  "karras",
+  "exponential",
+  "sgm_uniform",
+  "simple",
+  "ddim_uniform",
+  "beta",
+  "linear_quadratic",
+  "kl_optimal",
+]);
 
 export const H3_LATENT_UPSCALER_NAME = "h3_clean_latent_upscaler_v1_mamad8.safetensors";
 export const H3_LATENT_VAE_NAME = "minimax_h3_video_vae_fp16.safetensors";
@@ -539,11 +596,16 @@ export function buildSeedVR2Prompt({
   scale = SEEDVR2_DEFAULT_SCALE,
   resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
   colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
+  steps = SEEDVR2_DEFAULT_STEPS,
+  cfg = SEEDVR2_DEFAULT_CFG,
+  samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
+  scheduler = SEEDVR2_DEFAULT_SCHEDULER,
+  denoise = SEEDVR2_DEFAULT_DENOISE,
 } = {}) {
   const file = normalizeVideoAssetName(sourceName);
   const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
-  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection });
+  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection, steps, cfg, samplerName, scheduler, denoise });
   return {
     "1": { class_type: "LoadVideo", inputs: { file } },
     "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
@@ -577,14 +639,14 @@ export function buildSeedVR2Prompt({
       inputs: {
         model: link(7),
         seed: samplerSeed,
-        steps: 1,
-        cfg: 1,
-        sampler_name: "euler",
-        scheduler: "simple",
+        steps: settings.steps,
+        cfg: settings.cfg,
+        sampler_name: settings.samplerName,
+        scheduler: settings.scheduler,
         positive: link(8, 0),
         negative: link(8, 1),
         latent_image: link(9),
-        denoise: 1,
+        denoise: settings.denoise,
       },
     },
     "11": { class_type: "SeedVR2TemporalMerge", inputs: { latents: link(10), temporal_overlap: link(9, 1) } },
@@ -624,6 +686,11 @@ export function buildSeedVR2ImagePrompt({
   scale = SEEDVR2_DEFAULT_SCALE,
   resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
   colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
+  steps = SEEDVR2_DEFAULT_STEPS,
+  cfg = SEEDVR2_DEFAULT_CFG,
+  samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
+  scheduler = SEEDVR2_DEFAULT_SCHEDULER,
+  denoise = SEEDVR2_DEFAULT_DENOISE,
 } = {}) {
   const file = normalizeUpscaleAssetName(sourceName);
   if (sourceKindFromName(file) !== "image") {
@@ -631,7 +698,7 @@ export function buildSeedVR2ImagePrompt({
   }
   const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
-  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection });
+  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection, steps, cfg, samplerName, scheduler, denoise });
   return {
     "1": { class_type: "LoadImage", inputs: { image: file } },
     "2": {
@@ -654,8 +721,8 @@ export function buildSeedVR2ImagePrompt({
     "8": {
       class_type: "KSampler",
       inputs: {
-        model: link(6), seed: samplerSeed, steps: 1, cfg: 1, sampler_name: "euler", scheduler: "simple",
-        positive: link(7, 0), negative: link(7, 1), latent_image: link(5), denoise: 1,
+        model: link(6), seed: samplerSeed, steps: settings.steps, cfg: settings.cfg, sampler_name: settings.samplerName, scheduler: settings.scheduler,
+        positive: link(7, 0), negative: link(7, 1), latent_image: link(5), denoise: settings.denoise,
       },
     },
     "9": {
@@ -935,6 +1002,13 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
     seed: job.seed,
     resizeMethod: job.resizeMethod,
     colorCorrection: job.colorCorrection,
+    ...(job.profile === SEEDVR2_PROFILE ? {
+      steps: job.steps ?? SEEDVR2_DEFAULT_STEPS,
+      cfg: job.cfg ?? SEEDVR2_DEFAULT_CFG,
+      samplerName: job.samplerName || SEEDVR2_DEFAULT_SAMPLER_NAME,
+      scheduler: job.scheduler || SEEDVR2_DEFAULT_SCHEDULER,
+      denoise: job.denoise ?? SEEDVR2_DEFAULT_DENOISE,
+    } : {}),
     prompt: cloneValue(job.prompt),
     ...(job.promptId ? { promptId: job.promptId } : {}),
     output: output || null,
@@ -991,12 +1065,47 @@ function normalizeSeedVR2Choice(value, choices, fallback, field, code) {
   return normalized;
 }
 
+function normalizeSeedVR2Integer(value, fallback, min, max, field, code) {
+  const normalized = value === undefined || value === null || value === "" ? fallback : Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < min || normalized > max) {
+    throw makeError(`SeedVR2 ${field} must be an integer between ${min} and ${max}.`, 400, code);
+  }
+  return normalized;
+}
+
+function normalizeSeedVR2Decimal(value, fallback, min, max, field, code) {
+  const numeric = value === undefined || value === null || value === "" ? fallback : Number(value);
+  if (!Number.isFinite(numeric) || numeric < min || numeric > max) {
+    throw makeError(`SeedVR2 ${field} must be between ${min} and ${max}.`, 400, code);
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
+function hasSeedVR2SamplingOverride(input = {}) {
+  return ["steps", "cfg", "samplerName", "scheduler", "denoise"]
+    .some((key) => Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined);
+}
+
 export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) {
   const normalizedProfile = normalizeProfile(profile);
-  return {
+  const base = {
     scale: normalizeSeedVR2Scale(input.scale, normalizedProfile),
     resizeMethod: normalizeSeedVR2Choice(input.resizeMethod, SEEDVR2_RESIZE_METHODS, SEEDVR2_DEFAULT_RESIZE_METHOD, "resize method", "RESIZE_METHOD_INVALID"),
     colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, SEEDVR2_DEFAULT_COLOR_CORRECTION, "color correction", "COLOR_CORRECTION_INVALID"),
+  };
+  if (normalizedProfile === H3_LATENT_PROFILE) {
+    if (hasSeedVR2SamplingOverride(input)) {
+      throw makeError("SeedVR2 advanced sampling settings are not supported by MiniMax H3 Latent.", 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
+    }
+    return base;
+  }
+  return {
+    ...base,
+    steps: normalizeSeedVR2Integer(input.steps, SEEDVR2_DEFAULT_STEPS, SEEDVR2_MIN_STEPS, SEEDVR2_MAX_STEPS, "steps", "STEPS_INVALID"),
+    cfg: normalizeSeedVR2Decimal(input.cfg, SEEDVR2_DEFAULT_CFG, SEEDVR2_MIN_CFG, SEEDVR2_MAX_CFG, "cfg", "CFG_INVALID"),
+    samplerName: normalizeSeedVR2Choice(input.samplerName, SEEDVR2_SAMPLER_NAMES, SEEDVR2_DEFAULT_SAMPLER_NAME, "sampler", "SAMPLER_INVALID"),
+    scheduler: normalizeSeedVR2Choice(input.scheduler, SEEDVR2_SCHEDULERS, SEEDVR2_DEFAULT_SCHEDULER, "scheduler", "SCHEDULER_INVALID"),
+    denoise: normalizeSeedVR2Decimal(input.denoise, SEEDVR2_DEFAULT_DENOISE, SEEDVR2_MIN_DENOISE, SEEDVR2_MAX_DENOISE, "denoise", "DENOISE_INVALID"),
   };
 }
 
@@ -1471,6 +1580,11 @@ export function createSeedVR2Controller({
           scale: job.scale,
           resizeMethod: job.resizeMethod,
           colorCorrection: job.colorCorrection,
+          steps: job.steps,
+          cfg: job.cfg,
+          samplerName: job.samplerName,
+          scheduler: job.scheduler,
+          denoise: job.denoise,
         }) : buildSeedVR2Prompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
@@ -1480,6 +1594,11 @@ export function createSeedVR2Controller({
           scale: job.scale,
           resizeMethod: job.resizeMethod,
           colorCorrection: job.colorCorrection,
+          steps: job.steps,
+          cfg: job.cfg,
+          samplerName: job.samplerName,
+          scheduler: job.scheduler,
+          denoise: job.denoise,
         });
       await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
       assertNotCancelled(job);
@@ -1578,12 +1697,18 @@ export function createSeedVR2Controller({
     seed,
     resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
     colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
+    steps = SEEDVR2_DEFAULT_STEPS,
+    cfg = SEEDVR2_DEFAULT_CFG,
+    samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
+    scheduler = SEEDVR2_DEFAULT_SCHEDULER,
+    denoise = SEEDVR2_DEFAULT_DENOISE,
     attempt = 1,
     retryOf = "",
     provenance = null,
   } = {}) {
     const id = String(idFactory());
     const createdAt = isoNow(now());
+    const sampling = profile === SEEDVR2_PROFILE ? { steps, cfg, samplerName, scheduler, denoise } : {};
     const request = {
       sourceName,
       sourceRoot,
@@ -1592,6 +1717,7 @@ export function createSeedVR2Controller({
       seed,
       resizeMethod,
       colorCorrection,
+      ...sampling,
     };
     return {
       id,
@@ -1606,6 +1732,7 @@ export function createSeedVR2Controller({
       seed,
       resizeMethod,
       colorCorrection,
+      ...sampling,
       prompt: null,
       output: null,
       error: "",
@@ -1741,6 +1868,13 @@ export function createSeedVR2Controller({
       seed: source.seed,
       resizeMethod: source.resizeMethod,
       colorCorrection: source.colorCorrection,
+      ...(source.profile === SEEDVR2_PROFILE ? {
+        steps: source.steps,
+        cfg: source.cfg,
+        samplerName: source.samplerName,
+        scheduler: source.scheduler,
+        denoise: source.denoise,
+      } : {}),
     };
     const profile = request.profile || source.profile || SEEDVR2_PROFILE;
     const settings = normalizeSeedVR2Settings(request, profile);
@@ -1797,6 +1931,7 @@ export function createSeedVR2Controller({
       try {
         const body = typeof readJson === "function" ? await readJson(req) : {};
         const profile = normalizeProfile(body?.profile);
+        normalizeSeedVR2Settings(body, profile);
         const cleanName = normalizeUpscaleAssetName(body?.sourceName);
         const sourceKind = sourceKindFromName(cleanName);
         if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {

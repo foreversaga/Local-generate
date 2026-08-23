@@ -213,7 +213,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
 test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, and provenance", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2.5, profile: SEEDVR2_PROFILE, seed: 42, resizeMethod: "bicubic", colorCorrection: "lab" });
+  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2.5, profile: SEEDVR2_PROFILE, seed: 42, resizeMethod: "bicubic", colorCorrection: "lab", steps: 6, cfg: 2.25, samplerName: "dpmpp_2m", scheduler: "karras", denoise: 0.7 });
   const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
 
   assert.equal(completed.source.name, "source.mp4");
@@ -223,10 +223,20 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(completed.seed, 42);
   assert.equal(completed.resizeMethod, "bicubic");
   assert.equal(completed.colorCorrection, "lab");
+  assert.equal(completed.steps, 6);
+  assert.equal(completed.cfg, 2.25);
+  assert.equal(completed.samplerName, "dpmpp_2m");
+  assert.equal(completed.scheduler, "karras");
+  assert.equal(completed.denoise, 0.7);
   assert.equal(completed.prompt["3"].inputs["resize_type.multiplier"], 2.5);
   assert.equal(completed.prompt["3"].inputs.scale_method, "bicubic");
   assert.equal(completed.prompt["13"].inputs.color_correction_method, "lab");
   assert.equal(completed.prompt["10"].inputs.seed, 42);
+  assert.equal(completed.prompt["10"].inputs.steps, 6);
+  assert.equal(completed.prompt["10"].inputs.cfg, 2.25);
+  assert.equal(completed.prompt["10"].inputs.sampler_name, "dpmpp_2m");
+  assert.equal(completed.prompt["10"].inputs.scheduler, "karras");
+  assert.equal(completed.prompt["10"].inputs.denoise, 0.7);
   assert.equal(completed.stage, "Completed");
   assert.equal(completed.progress, 100);
   assert.equal(completed.output.name, "seedvr2-result.mp4");
@@ -234,6 +244,11 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(completed.provenance.request.scale, 2.5);
   assert.equal(completed.provenance.request.resizeMethod, "bicubic");
   assert.equal(completed.provenance.request.colorCorrection, "lab");
+  assert.equal(completed.provenance.request.steps, 6);
+  assert.equal(completed.provenance.request.cfg, 2.25);
+  assert.equal(completed.provenance.request.samplerName, "dpmpp_2m");
+  assert.equal(completed.provenance.request.scheduler, "karras");
+  assert.equal(completed.provenance.request.denoise, 0.7);
   assert.equal(completed.provenance.attempt, 1);
   assert.equal(completed.attempt, 1);
   assert.ok(completed.createdAt && completed.updatedAt && completed.completedAt);
@@ -398,7 +413,7 @@ test("active cancel interrupts ComfyUI, prevents output registration, and persis
 test("retry creates a new attempt while preserving SeedVR2 provenance", async (t) => {
   const value = await fixture({ historyMode: (promptCount) => promptCount === 1 ? "failed" : "success", idFactory: (() => { const ids = ["failed-job", "retry-job"]; return () => ids.shift(); })() });
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 3, profile: SEEDVR2_PROFILE, seed: 77, resizeMethod: "area", colorCorrection: "none" });
+  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 3, profile: SEEDVR2_PROFILE, seed: 77, resizeMethod: "area", colorCorrection: "none", steps: 4, cfg: 1.75, samplerName: "heun", scheduler: "normal", denoise: 0.8 });
   await waitFor(() => value.store.read(failed.id), (job) => job?.status === "failed");
   const result = apiResponse();
   await value.controller.handleRoute({ method: "POST", url: `/api/upscale/jobs/${failed.id}/retry` }, result);
@@ -413,11 +428,41 @@ test("retry creates a new attempt while preserving SeedVR2 provenance", async (t
   assert.equal(retried.provenance.request.scale, 3);
   assert.equal(retried.provenance.request.resizeMethod, "area");
   assert.equal(retried.provenance.request.colorCorrection, "none");
+  assert.equal(retried.provenance.request.steps, 4);
+  assert.equal(retried.provenance.request.cfg, 1.75);
+  assert.equal(retried.provenance.request.samplerName, "heun");
+  assert.equal(retried.provenance.request.scheduler, "normal");
+  assert.equal(retried.provenance.request.denoise, 0.8);
   assert.equal(retried.scale, 3);
   assert.equal(retried.resizeMethod, "area");
   assert.equal(retried.colorCorrection, "none");
+  assert.equal(retried.steps, 4);
+  assert.equal(retried.cfg, 1.75);
+  assert.equal(retried.samplerName, "heun");
+  assert.equal(retried.scheduler, "normal");
+  assert.equal(retried.denoise, 0.8);
   assert.equal(retried.seed, 77);
   const completed = await waitFor(() => value.store.read(retried.id), (job) => job?.status === "completed");
   assert.equal(completed.attempt, 2);
   assert.equal((await value.store.read(failed.id)).attempt, 1);
+});
+
+test("legacy SeedVR2 records backfill official advanced sampling defaults", () => {
+  const job = canonicalSeedVR2Job({
+    id: "legacy-sampling",
+    sourceName: "source.mp4",
+    profile: SEEDVR2_PROFILE,
+    status: "completed",
+    provenance: { request: { sourceName: "source.mp4", sourceRoot: "input", profile: SEEDVR2_PROFILE } },
+  });
+  assert.equal(job.steps, 1);
+  assert.equal(job.cfg, 1);
+  assert.equal(job.samplerName, "euler");
+  assert.equal(job.scheduler, "simple");
+  assert.equal(job.denoise, 1);
+  assert.equal(job.provenance.request.steps, 1);
+  assert.equal(job.provenance.request.cfg, 1);
+  assert.equal(job.provenance.request.samplerName, "euler");
+  assert.equal(job.provenance.request.scheduler, "simple");
+  assert.equal(job.provenance.request.denoise, 1);
 });

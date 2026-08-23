@@ -13,6 +13,20 @@ const DEFAULT_RESIZE_METHOD = "lanczos";
 const DEFAULT_COLOR_CORRECTION = "wavelet";
 const RESIZE_METHODS = new Set(["lanczos", "bicubic", "bilinear", "area", "nearest-exact"]);
 const COLOR_CORRECTION_METHODS = new Set(["wavelet", "lab", "adain", "none"]);
+const DEFAULT_STEPS = 1;
+const DEFAULT_CFG = 1;
+const DEFAULT_SAMPLER_NAME = "euler";
+const DEFAULT_SCHEDULER = "simple";
+const DEFAULT_DENOISE = 1;
+const SAMPLER_NAMES = new Set([
+  "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2",
+  "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral",
+  "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_cfg_pp",
+  "dpmpp_2m_sde", "dpmpp_2m_sde_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "lcm",
+  "ipndm", "ipndm_v", "deis", "res_multistep", "res_multistep_cfg_pp", "gradient_estimation",
+  "gradient_estimation_cfg_pp", "er_sde", "sa_solver", "sa_solver_pece",
+]);
+const SCHEDULERS = new Set(["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "linear_quadratic", "kl_optimal"]);
 const LEGACY_JSON_MIGRATION = "seedvr2-json-v1";
 
 function defaultRoot() {
@@ -83,6 +97,17 @@ function safeChoice(value, choices, fallback) {
   return choices.has(normalized) ? normalized : fallback;
 }
 
+function safeSteps(value) {
+  const steps = safeInteger(value, DEFAULT_STEPS);
+  return steps >= 1 && steps <= 20 ? steps : DEFAULT_STEPS;
+}
+
+function safeRoundedNumber(value, fallback, min, max) {
+  const numeric = safeNumber(value, fallback);
+  if (numeric < min || numeric > max) return fallback;
+  return Math.round(numeric * 100) / 100;
+}
+
 function safePrompt(value, depth = 0) {
   if (depth > 8 || value === undefined || typeof value === "function" || typeof value === "symbol") return null;
   if (value === null || typeof value === "boolean") return value;
@@ -119,6 +144,13 @@ function safeProvenance(value, job) {
   const request = source.request && typeof source.request === "object" ? source.request : {};
   const requestSeed = safeInteger(request.seed ?? job.seed, 0);
   const profile = safeText(request.profile || job.profile, DEFAULT_PROFILE, 80);
+  const sampling = profile === DEFAULT_PROFILE ? {
+    steps: safeSteps(request.steps ?? job.steps),
+    cfg: safeRoundedNumber(request.cfg ?? job.cfg, DEFAULT_CFG, 0, 20),
+    samplerName: safeChoice(request.samplerName ?? job.samplerName, SAMPLER_NAMES, DEFAULT_SAMPLER_NAME),
+    scheduler: safeChoice(request.scheduler ?? job.scheduler, SCHEDULERS, DEFAULT_SCHEDULER),
+    denoise: safeRoundedNumber(request.denoise ?? job.denoise, DEFAULT_DENOISE, 0, 1),
+  } : {};
   return {
     request: {
       sourceName: safeRelative(request.sourceName || job.sourceName),
@@ -128,6 +160,7 @@ function safeProvenance(value, job) {
       seed: requestSeed === null ? 0 : Math.max(0, Math.min(2_147_483_647, requestSeed)),
       resizeMethod: safeChoice(request.resizeMethod ?? job.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
       colorCorrection: safeChoice(request.colorCorrection ?? job.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
+      ...sampling,
     },
     attempt: Math.max(1, Math.floor(safeNumber(source.attempt ?? job.attempt, 1))),
     ...(safeIdOptional(source.retryOf || job.retryOf) ? { retryOf: safeIdOptional(source.retryOf || job.retryOf) } : {}),
@@ -161,6 +194,13 @@ export function canonicalSeedVR2Job(input = {}) {
   const updatedAt = safeTimestamp(input.updatedAt || input.timestamps?.updatedAt) || createdAt;
   const seed = safeInteger(input.seed ?? input.provenance?.request?.seed, 0);
   const profile = safeText(input.profile, DEFAULT_PROFILE, 80);
+  const sampling = profile === DEFAULT_PROFILE ? {
+    steps: safeSteps(input.steps ?? input.provenance?.request?.steps),
+    cfg: safeRoundedNumber(input.cfg ?? input.provenance?.request?.cfg, DEFAULT_CFG, 0, 20),
+    samplerName: safeChoice(input.samplerName ?? input.provenance?.request?.samplerName, SAMPLER_NAMES, DEFAULT_SAMPLER_NAME),
+    scheduler: safeChoice(input.scheduler ?? input.provenance?.request?.scheduler, SCHEDULERS, DEFAULT_SCHEDULER),
+    denoise: safeRoundedNumber(input.denoise ?? input.provenance?.request?.denoise, DEFAULT_DENOISE, 0, 1),
+  } : {};
   const job = {
     id,
     status: PERSISTED_STATUSES.has(String(input.status || "")) ? String(input.status) : "queued",
@@ -174,6 +214,7 @@ export function canonicalSeedVR2Job(input = {}) {
     seed: seed === null ? 0 : Math.max(0, Math.min(2_147_483_647, seed)),
     resizeMethod: safeChoice(input.resizeMethod ?? input.provenance?.request?.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
     colorCorrection: safeChoice(input.colorCorrection ?? input.provenance?.request?.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
+    ...sampling,
     prompt: safePrompt(input.prompt),
     output: safeOutput(input.output),
     error: safeText(input.error, "", 1200),

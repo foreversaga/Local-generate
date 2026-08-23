@@ -125,6 +125,11 @@ test("validates SeedVR2 adjustable settings while keeping H3 fixed at 2x", () =>
     scale: 1.25,
     resizeMethod: "area",
     colorCorrection: "none",
+    steps: 1,
+    cfg: 1,
+    samplerName: "euler",
+    scheduler: "simple",
+    denoise: 1,
   });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 4.25 }), { code: "SCALE_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 2, resizeMethod: "invented" }), { code: "RESIZE_METHOD_INVALID" });
@@ -467,4 +472,55 @@ test("controller route reports 503 when ComfyUI readiness is false", async () =>
   assert.equal(handled, true);
   assert.equal(res.status, 503);
   assert.equal(res.body.health.ready, false);
+});
+
+test("SeedVR2 advanced sampling overrides reach both KSampler graphs", () => {
+  const settings = {
+    steps: 7,
+    cfg: 2.35,
+    samplerName: "dpmpp_2m",
+    scheduler: "karras",
+    denoise: 0.65,
+  };
+  const video = buildSeedVR2Prompt({ sourceName: "clips/source.mp4", seed: 7, ...settings });
+  const image = buildSeedVR2ImagePrompt({ sourceName: "images/source.png", seed: 9, ...settings });
+  for (const sampler of [video["10"].inputs, image["8"].inputs]) {
+    assert.equal(sampler.steps, 7);
+    assert.equal(sampler.cfg, 2.35);
+    assert.equal(sampler.sampler_name, "dpmpp_2m");
+    assert.equal(sampler.scheduler, "karras");
+    assert.equal(sampler.denoise, 0.65);
+  }
+
+  const defaults = buildSeedVR2Prompt({ sourceName: "clips/source.mp4", seed: 7 })["10"].inputs;
+  assert.equal(defaults.steps, 1);
+  assert.equal(defaults.cfg, 1);
+  assert.equal(defaults.sampler_name, "euler");
+  assert.equal(defaults.scheduler, "simple");
+  assert.equal(defaults.denoise, 1);
+});
+
+test("SeedVR2 advanced sampling validation uses stable 400-series error codes", () => {
+  assert.throws(() => normalizeSeedVR2Settings({ steps: 0 }), { code: "STEPS_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ steps: 1.5 }), { code: "STEPS_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ cfg: -0.01 }), { code: "CFG_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ cfg: 20.01 }), { code: "CFG_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ samplerName: "invented" }), { code: "SAMPLER_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ scheduler: "invented" }), { code: "SCHEDULER_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ denoise: -0.01 }), { code: "DENOISE_INVALID", status: 400 });
+  assert.throws(() => normalizeSeedVR2Settings({ denoise: 1.01 }), { code: "DENOISE_INVALID", status: 400 });
+  assert.deepEqual(normalizeSeedVR2Settings({ cfg: 1.234, denoise: 0.666 }), {
+    scale: 2,
+    resizeMethod: "lanczos",
+    colorCorrection: "wavelet",
+    steps: 1,
+    cfg: 1.23,
+    samplerName: "euler",
+    scheduler: "simple",
+    denoise: 0.67,
+  });
+  assert.throws(
+    () => normalizeSeedVR2Settings({ scale: 2, steps: 2 }, H3_LATENT_PROFILE),
+    { code: "SEEDVR2_SETTINGS_UNSUPPORTED", status: 400 },
+  );
 });
