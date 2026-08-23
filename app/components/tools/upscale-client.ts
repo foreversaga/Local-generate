@@ -40,6 +40,22 @@ export const SEEDVR2_SCHEDULERS = [
     { id: "beta", label: "Beta" },
 ] as const;
 
+export const SEEDVR2_DETAIL_PRESETS = [
+    { id: "default", label: "預設" },
+    { id: "skin_detail", label: "皮膚細節" },
+] as const;
+
+export const SEEDVR2_BLENDING_METHODS = [
+    { id: "multiband", label: "Multiband" },
+    { id: "linear", label: "Linear" },
+    { id: "gaussian", label: "Gaussian" },
+] as const;
+
+export const SEEDVR2_TILING_STRATEGIES = [
+    { id: "chess", label: "Chess" },
+    { id: "grid", label: "Grid" },
+] as const;
+
 export const SEEDVR2_DEFAULT_SAMPLING = {
     steps: 1,
     cfg: 1,
@@ -48,10 +64,46 @@ export const SEEDVR2_DEFAULT_SAMPLING = {
     denoise: 1,
 } as const;
 
+export const SEEDVR2_DEFAULT_DETAIL = {
+    detailPreset: "default",
+    inputNoiseScale: 0,
+    latentNoiseScale: 0,
+    tileWidth: 1024,
+    tileHeight: 1024,
+    tilePadding: 64,
+    tileUpscaleResolution: 2048,
+    blendingMethod: "multiband",
+    antiAliasingStrength: 0,
+    maskBlur: 0,
+    tilingStrategy: "chess",
+} as const;
+
+export const SEEDVR2_SKIN_DETAIL_PRESET = {
+    scale: 2,
+    resizeMethod: "lanczos",
+    colorCorrection: "wavelet",
+    ...SEEDVR2_DEFAULT_SAMPLING,
+    detailPreset: "skin_detail",
+    inputNoiseScale: 0.035,
+    latentNoiseScale: 0,
+    tileWidth: 1024,
+    tileHeight: 1024,
+    tilePadding: 64,
+    tileUpscaleResolution: 2048,
+    blendingMethod: "multiband",
+    antiAliasingStrength: 0,
+    maskBlur: 0,
+    tilingStrategy: "chess",
+} as const;
+
 export type SeedVR2ResizeMethod = typeof SEEDVR2_RESIZE_METHODS[number]["id"];
 export type SeedVR2ColorCorrection = typeof SEEDVR2_COLOR_CORRECTIONS[number]["id"];
 export type SeedVR2SamplerName = typeof SEEDVR2_SAMPLERS[number]["id"];
 export type SeedVR2Scheduler = typeof SEEDVR2_SCHEDULERS[number]["id"];
+export type SeedVR2DetailPreset = typeof SEEDVR2_DETAIL_PRESETS[number]["id"];
+export type SeedVR2BlendingMethod = typeof SEEDVR2_BLENDING_METHODS[number]["id"];
+export type SeedVR2TilingStrategy = typeof SEEDVR2_TILING_STRATEGIES[number]["id"];
+
 export type SeedVR2Settings = {
     scale: number;
     seed?: number;
@@ -62,6 +114,17 @@ export type SeedVR2Settings = {
     samplerName?: SeedVR2SamplerName;
     scheduler?: SeedVR2Scheduler;
     denoise?: number;
+    detailPreset?: SeedVR2DetailPreset;
+    inputNoiseScale?: number;
+    latentNoiseScale?: number;
+    tileWidth?: number;
+    tileHeight?: number;
+    tilePadding?: number;
+    tileUpscaleResolution?: number;
+    blendingMethod?: SeedVR2BlendingMethod;
+    antiAliasingStrength?: number;
+    maskBlur?: number;
+    tilingStrategy?: SeedVR2TilingStrategy;
 };
 
 export const UPSCALE_PROFILES = [
@@ -116,6 +179,17 @@ export type UpscaleJob = {
     samplerName?: SeedVR2SamplerName;
     scheduler?: SeedVR2Scheduler;
     denoise?: number;
+    detailPreset?: SeedVR2DetailPreset;
+    inputNoiseScale?: number;
+    latentNoiseScale?: number;
+    tileWidth?: number;
+    tileHeight?: number;
+    tilePadding?: number;
+    tileUpscaleResolution?: number;
+    blendingMethod?: SeedVR2BlendingMethod;
+    antiAliasingStrength?: number;
+    maskBlur?: number;
+    tilingStrategy?: SeedVR2TilingStrategy;
     prompt?: Record<string, unknown> | null;
     promptId?: string;
     output?: StudioAsset | null;
@@ -192,9 +266,8 @@ export async function submitUpscale(
     profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE,
     settings?: SeedVR2Settings,
 ): Promise<UpscaleJob> {
-    const parameters = profile === "seedvr2_7b_sharp_nvfp4"
-        ? settings
-        : { scale: UPSCALE_SCALE };
+    const isSeedVR2Profile = profile === "seedvr2_7b_sharp_nvfp4" || profile === "seedvr2_7b_sharp_fp16";
+    const parameters = isSeedVR2Profile ? settings : { scale: UPSCALE_SCALE };
     const response = await fetch(`${BRIDGE_URL}/api/upscale`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
