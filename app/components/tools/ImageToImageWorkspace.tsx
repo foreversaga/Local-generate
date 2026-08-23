@@ -610,7 +610,7 @@ export function ImageToImageWorkspace() {
                 return `重繪強度 ${itemDenoise} 採樣步數 ${itemSteps} CFG ${itemCfg} 隨機種子 ${itemSeed}`;
             }).join(" ");
             const baseParameters = `重繪強度 ${record.denoise} 採樣步數 ${record.steps} CFG ${record.cfg} 隨機種子 ${record.seed}`;
-            return `${record.id} ${record.prompt} ${record.model} ${record.characterLoraName || ""} ${record.characterLoraStrength ?? ""} ${baseParameters} ${itemParameters}`.toLowerCase().includes(needle);
+            return `${record.id} ${record.promptDescription || ""} ${record.prompt} ${record.model} ${record.characterLoraName || ""} ${record.characterLoraStrength ?? ""} ${baseParameters} ${itemParameters}`.toLowerCase().includes(needle);
         });
     }, [history, historyQuery]);
     const canRetry = isImg2ImgRetryable(job) && !retrying && modelAllowedForRuntime(model, runtimeMode);
@@ -807,6 +807,7 @@ export function ImageToImageWorkspace() {
             ...(poseReference && supportsPose
                 ? { poseName: poseReference.name, poseRoot: isImg2ImgAssetRoot(poseReference.root) ? poseReference.root : "input" }
                 : {}),
+            ...(promptDescription.trim() ? { promptDescription: promptDescription.trim() } : {}),
             prompt: prompt.trim(),
             negativePrompt: negativePrompt.trim(),
             ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
@@ -1345,7 +1346,7 @@ export function ImageToImageWorkspace() {
                     </button>
                 </div>
                 <label className={styles.historySearch}>
-                    <span>搜尋工作編號、提示詞、模型或隨機種子</span>
+                    <span>搜尋工作編號、提示詞描述、提示詞、模型或隨機種子</span>
                     <input type="search" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜尋歷史" aria-label="搜尋圖生圖歷史" />
                 </label>
                 {historyError && <p className={styles.error} role="alert">{historyError}</p>}
@@ -1364,6 +1365,8 @@ export function ImageToImageWorkspace() {
                                 </button>
                                 {expanded && (
                                     <div className={styles.historyDetails}>
+                                        {record.promptDescription && <><strong>提示詞描述</strong><p>{record.promptDescription}</p></>}
+                                        <strong>Prompt</strong>
                                         <p>{record.prompt}</p>
                                         <small>{FIELD_LABELS.seed}：{recordSeeds || record.seed}</small>
                                         {record.characterLoraName && <small>LoRA: {record.characterLoraName} · {Number(record.characterLoraStrength ?? 0.75).toFixed(2)}</small>}

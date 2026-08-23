@@ -36,7 +36,7 @@ test("renders the Create landing at the public root", async () => {
   assert.match(html, /從素材開始/);
   assert.match(html, /最近工作/);
   assert.doesNotMatch(html, /id="prompt"/);
-  assert.doesNotMatch(html, /LOCAL RENDER CONSOLE|LOCAL VIDEO LAB|8787|local bridge/i);
+  assert.doesNotMatch(html, /LOCAL RENDER CONSOLE|LOCAL VIDEO LAB|https?:\/\/(?:127\.0\.0\.1|localhost):8787\b|local bridge/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 

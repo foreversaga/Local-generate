@@ -1945,6 +1945,9 @@ export function createImg2ImgController({
       assertPoseReadiness(profile, readiness);
     }
     const prompt = String(input.prompt || "").trim();
+    const promptDescription = typeof input.promptDescription === "string"
+      ? input.promptDescription.trim()
+      : "";
     const ollamaPromptReceipt = typeof input.ollamaPromptReceipt === "string"
       ? input.ollamaPromptReceipt.trim()
       : "";
@@ -1971,6 +1974,7 @@ export function createImg2ImgController({
         poseControlStrength: jobPoseControlStrength,
         poseResolution: jobPoseResolution,
       } : {}),
+      ...(promptDescription ? { promptDescription } : {}),
       prompt,
       negativePrompt: String(input.negativePrompt || "").trim(),
       model,
@@ -2045,6 +2049,7 @@ export function createImg2ImgController({
             poseControlStrength: jobPoseControlStrength,
             poseResolution: jobPoseResolution,
           } : {}),
+          ...(promptDescription ? { promptDescription } : {}),
           prompt,
           negativePrompt: String(input.negativePrompt || "").trim(),
           model,
@@ -2133,6 +2138,7 @@ export function createImg2ImgController({
       sourceName: source.sourceName,
       sourceRoot: source.sourceRoot,
       ...(source.poseName ? { poseName: source.poseName, poseRoot: source.poseRoot || "input" } : {}),
+      ...(source.promptDescription ? { promptDescription: source.promptDescription } : {}),
       prompt: source.prompt,
       negativePrompt: source.negativePrompt,
       model: source.model,
