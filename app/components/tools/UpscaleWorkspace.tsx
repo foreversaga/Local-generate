@@ -21,6 +21,7 @@ import {
     SEEDVR2_SAMPLERS,
     SEEDVR2_SCHEDULERS,
     SEEDVR2_DEFAULT_SAMPLING,
+    SEEDVR2_SKIN_DETAIL_PRESET,
     upscaleAssetHref,
     UpscaleApiError,
     type UpscaleHealth,
@@ -30,7 +31,14 @@ import {
     type SeedVR2ColorCorrection,
     type SeedVR2SamplerName,
     type SeedVR2Scheduler,
+    type SeedVR2DetailPreset,
 } from "./upscale-client";
+import { SeedVR2DetailControls } from "./SeedVR2DetailControls";
+import {
+    createDefaultSeedVR2DetailDraft,
+    createSkinDetailSeedVR2Draft,
+    parseSeedVR2DetailDraft,
+} from "./seedvr2-detail";
 import { getSeedVR2Help } from "./seedvr2-help";
 import styles from "./UpscaleWorkspace.module.css";
 
@@ -52,6 +60,7 @@ export function UpscaleWorkspace() {
     const [samplerName, setSamplerName] = useState<SeedVR2SamplerName>(SEEDVR2_DEFAULT_SAMPLING.samplerName);
     const [scheduler, setScheduler] = useState<SeedVR2Scheduler>(SEEDVR2_DEFAULT_SAMPLING.scheduler);
     const [denoise, setDenoise] = useState(String(SEEDVR2_DEFAULT_SAMPLING.denoise));
+    const [detailDraft, setDetailDraft] = useState(createDefaultSeedVR2DetailDraft);
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
@@ -174,6 +183,7 @@ export function UpscaleWorkspace() {
                 throw new Error("隨機種子必須是 0 到 2147483647 的整數，留空則每次隨機。");
             }
             let samplingSettings = {};
+            let detailSettings = {};
             if (isSeedVR2) {
                 const parsedSteps = Number(steps);
                 const parsedCfg = Number(cfg);
@@ -194,6 +204,7 @@ export function UpscaleWorkspace() {
                     scheduler,
                     denoise: Math.round(parsedDenoise * 100) / 100,
                 };
+                detailSettings = parseSeedVR2DetailDraft(detailDraft, seedVR2Help.detail.errors);
             }
             const next = await submitUpscale(source, profile, {
                 scale: isSeedVR2 ? parsedScale : UPSCALE_SCALE,
@@ -201,6 +212,7 @@ export function UpscaleWorkspace() {
                 resizeMethod,
                 colorCorrection,
                 ...samplingSettings,
+                ...detailSettings,
             });
             setJob(next);
             if (next.status === "failed") setError(next.error || `${selectedProfile.label} 升頻失敗。`);
@@ -319,6 +331,30 @@ export function UpscaleWorkspace() {
         setSamplerName(SEEDVR2_DEFAULT_SAMPLING.samplerName);
         setScheduler(SEEDVR2_DEFAULT_SAMPLING.scheduler);
         setDenoise(String(SEEDVR2_DEFAULT_SAMPLING.denoise));
+        setError("");
+    }
+
+    function handleSeedVR2DetailPreset(next: SeedVR2DetailPreset) {
+        if (active || busy) return;
+        if (next === "skin_detail") {
+            setScale(String(SEEDVR2_SKIN_DETAIL_PRESET.scale));
+            setResizeMethod(SEEDVR2_SKIN_DETAIL_PRESET.resizeMethod);
+            setColorCorrection(SEEDVR2_SKIN_DETAIL_PRESET.colorCorrection);
+            setSteps(String(SEEDVR2_SKIN_DETAIL_PRESET.steps));
+            setCfg(String(SEEDVR2_SKIN_DETAIL_PRESET.cfg));
+            setSamplerName(SEEDVR2_SKIN_DETAIL_PRESET.samplerName);
+            setScheduler(SEEDVR2_SKIN_DETAIL_PRESET.scheduler);
+            setDenoise(String(SEEDVR2_SKIN_DETAIL_PRESET.denoise));
+            setDetailDraft(createSkinDetailSeedVR2Draft());
+        } else {
+            setDetailDraft(createDefaultSeedVR2DetailDraft());
+        }
+        setError("");
+    }
+
+    function resetSeedVR2Detail() {
+        if (active || busy) return;
+        setDetailDraft(createDefaultSeedVR2DetailDraft());
         setError("");
     }
 
@@ -456,6 +492,14 @@ export function UpscaleWorkspace() {
                                     </div>
                                 </div>
                             </details>
+                            <SeedVR2DetailControls
+                                locale={locale}
+                                value={detailDraft}
+                                disabled={active || Boolean(busy)}
+                                onChange={setDetailDraft}
+                                onPresetChange={handleSeedVR2DetailPreset}
+                                onReset={resetSeedVR2Detail}
+                            />
                         </div>
                     )}
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
