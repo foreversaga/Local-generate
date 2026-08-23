@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - codex/seedvr2-option-help
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
