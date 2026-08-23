@@ -25,7 +25,17 @@ jobs:
           cache: npm
 
       - name: Apply FP16 UI patch
-        run: python3 scripts/apply-seedvr2-fp16-ui.py
+        run: |
+          python3 scripts/apply-seedvr2-fp16-ui.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("app/components/tools/UpscaleWorkspace.tsx")
+          source = path.read_text(encoding="utf-8")
+          old = "    DEFAULT_UPSCALE_PROFILE,\n    DEFAULT_UPSCALE_UI_PROFILE,\n"
+          if source.count(old) != 1:
+              raise RuntimeError("expected one obsolete default-profile import")
+          path.write_text(source.replace(old, "    DEFAULT_UPSCALE_UI_PROFILE,\n", 1), encoding="utf-8")
+          PY
 
       - name: Remove temporary bootstrap files
         run: rm -f scripts/apply-seedvr2-fp16-ui.py .github/workflows/seedvr2-fp16-ui-bootstrap.yml
