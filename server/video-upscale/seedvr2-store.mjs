@@ -8,6 +8,11 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const PERSISTED_STATUSES = new Set(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
 const DEFAULT_PROFILE = "seedvr2_7b_sharp_nvfp4";
+const H3_LATENT_PROFILE = "h3_latent_2x";
+const DEFAULT_RESIZE_METHOD = "lanczos";
+const DEFAULT_COLOR_CORRECTION = "wavelet";
+const RESIZE_METHODS = new Set(["lanczos", "bicubic", "bilinear", "area", "nearest-exact"]);
+const COLOR_CORRECTION_METHODS = new Set(["wavelet", "lab", "adain", "none"]);
 const LEGACY_JSON_MIGRATION = "seedvr2-json-v1";
 
 function defaultRoot() {
@@ -67,6 +72,17 @@ function safeInteger(value, fallback = null) {
   return Number.isSafeInteger(number) ? number : fallback;
 }
 
+function safeScale(value, profile = DEFAULT_PROFILE) {
+  if (profile === H3_LATENT_PROFILE) return 2;
+  const scale = safeNumber(value, 2);
+  return scale >= 1 && scale <= 4 ? Math.round(scale * 100) / 100 : 2;
+}
+
+function safeChoice(value, choices, fallback) {
+  const normalized = String(value || fallback).trim().toLowerCase();
+  return choices.has(normalized) ? normalized : fallback;
+}
+
 function safePrompt(value, depth = 0) {
   if (depth > 8 || value === undefined || typeof value === "function" || typeof value === "symbol") return null;
   if (value === null || typeof value === "boolean") return value;
@@ -102,13 +118,16 @@ function safeProvenance(value, job) {
   const source = value && typeof value === "object" ? value : {};
   const request = source.request && typeof source.request === "object" ? source.request : {};
   const requestSeed = safeInteger(request.seed ?? job.seed, 0);
+  const profile = safeText(request.profile || job.profile, DEFAULT_PROFILE, 80);
   return {
     request: {
       sourceName: safeRelative(request.sourceName || job.sourceName),
       sourceRoot: request.sourceRoot === "output" ? "output" : "input",
-      scale: safeNumber(request.scale ?? job.scale, 2) === 2 ? 2 : 2,
-      profile: safeText(request.profile || job.profile, DEFAULT_PROFILE, 80),
+      scale: safeScale(request.scale ?? job.scale, profile),
+      profile,
       seed: requestSeed === null ? 0 : Math.max(0, Math.min(2_147_483_647, requestSeed)),
+      resizeMethod: safeChoice(request.resizeMethod ?? job.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
+      colorCorrection: safeChoice(request.colorCorrection ?? job.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
     },
     attempt: Math.max(1, Math.floor(safeNumber(source.attempt ?? job.attempt, 1))),
     ...(safeIdOptional(source.retryOf || job.retryOf) ? { retryOf: safeIdOptional(source.retryOf || job.retryOf) } : {}),
@@ -141,6 +160,7 @@ export function canonicalSeedVR2Job(input = {}) {
   const cancelledAt = safeTimestamp(input.cancelledAt || input.timestamps?.cancelledAt);
   const updatedAt = safeTimestamp(input.updatedAt || input.timestamps?.updatedAt) || createdAt;
   const seed = safeInteger(input.seed ?? input.provenance?.request?.seed, 0);
+  const profile = safeText(input.profile, DEFAULT_PROFILE, 80);
   const job = {
     id,
     status: PERSISTED_STATUSES.has(String(input.status || "")) ? String(input.status) : "queued",
@@ -149,9 +169,11 @@ export function canonicalSeedVR2Job(input = {}) {
     sourceName,
     sourceRoot,
     source: { name: sourceName, root: sourceRoot },
-    scale: 2,
-    profile: safeText(input.profile, DEFAULT_PROFILE, 80),
+    scale: safeScale(input.scale ?? input.provenance?.request?.scale, profile),
+    profile,
     seed: seed === null ? 0 : Math.max(0, Math.min(2_147_483_647, seed)),
+    resizeMethod: safeChoice(input.resizeMethod ?? input.provenance?.request?.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
+    colorCorrection: safeChoice(input.colorCorrection ?? input.provenance?.request?.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
     prompt: safePrompt(input.prompt),
     output: safeOutput(input.output),
     error: safeText(input.error, "", 1200),

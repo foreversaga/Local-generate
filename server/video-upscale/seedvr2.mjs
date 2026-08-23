@@ -13,6 +13,13 @@ export const SEEDVR2_UNET_NAME = "seedvr2_7b_sharp_nvfp4.safetensors";
 export const SEEDVR2_VAE_NAME = "seedvr2_ema_vae_fp16.safetensors";
 export const SEEDVR2_PROFILE = "seedvr2_7b_sharp_nvfp4";
 export const SEEDVR2_PROFILE_LABEL = "SeedVR2 7B Sharp NVFP4";
+export const SEEDVR2_MIN_SCALE = 1;
+export const SEEDVR2_MAX_SCALE = 4;
+export const SEEDVR2_DEFAULT_SCALE = 2;
+export const SEEDVR2_RESIZE_METHODS = Object.freeze(["lanczos", "bicubic", "bilinear", "area", "nearest-exact"]);
+export const SEEDVR2_COLOR_CORRECTION_METHODS = Object.freeze(["wavelet", "lab", "adain", "none"]);
+export const SEEDVR2_DEFAULT_RESIZE_METHOD = "lanczos";
+export const SEEDVR2_DEFAULT_COLOR_CORRECTION = "wavelet";
 
 export const H3_LATENT_UPSCALER_NAME = "h3_clean_latent_upscaler_v1_mamad8.safetensors";
 export const H3_LATENT_VAE_NAME = "minimax_h3_video_vae_fp16.safetensors";
@@ -529,10 +536,14 @@ export function buildSeedVR2Prompt({
   unetName = SEEDVR2_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
+  scale = SEEDVR2_DEFAULT_SCALE,
+  resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
+  colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
 } = {}) {
   const file = normalizeVideoAssetName(sourceName);
   const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
+  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection });
   return {
     "1": { class_type: "LoadVideo", inputs: { file } },
     "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
@@ -541,8 +552,8 @@ export function buildSeedVR2Prompt({
       inputs: {
         input: link(2),
         resize_type: "scale by multiplier",
-        "resize_type.multiplier": 2,
-        scale_method: "lanczos",
+        "resize_type.multiplier": settings.scale,
+        scale_method: settings.resizeMethod,
       },
     },
     "4": { class_type: "SeedVR2Preprocess", inputs: { resized_images: link(3) } },
@@ -588,7 +599,7 @@ export function buildSeedVR2Prompt({
         temporal_overlap: 4,
       },
     },
-    "13": { class_type: "SeedVR2PostProcessing", inputs: { images: link(12), original_resized_images: link(3), color_correction_method: "wavelet" } },
+    "13": { class_type: "SeedVR2PostProcessing", inputs: { images: link(12), original_resized_images: link(3), color_correction_method: settings.colorCorrection } },
     "14": { class_type: "CreateVideo", inputs: { images: link(13), fps: link(2, 2), audio: link(2, 1) } },
     "15": {
       class_type: "SaveVideo",
@@ -610,7 +621,9 @@ export function buildSeedVR2ImagePrompt({
   unetName = SEEDVR2_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
-  scale = 2,
+  scale = SEEDVR2_DEFAULT_SCALE,
+  resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
+  colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
 } = {}) {
   const file = normalizeUpscaleAssetName(sourceName);
   if (sourceKindFromName(file) !== "image") {
@@ -618,7 +631,7 @@ export function buildSeedVR2ImagePrompt({
   }
   const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
-  const multiplier = Number(scale) === 2 ? 2 : 2;
+  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection });
   return {
     "1": { class_type: "LoadImage", inputs: { image: file } },
     "2": {
@@ -626,8 +639,8 @@ export function buildSeedVR2ImagePrompt({
       inputs: {
         input: link(1),
         resize_type: "scale by multiplier",
-        "resize_type.multiplier": multiplier,
-        scale_method: "lanczos",
+        "resize_type.multiplier": settings.scale,
+        scale_method: settings.resizeMethod,
       },
     },
     "3": { class_type: "SeedVR2Preprocess", inputs: { resized_images: link(2) } },
@@ -649,7 +662,7 @@ export function buildSeedVR2ImagePrompt({
       class_type: "VAEDecodeTiled",
       inputs: { samples: link(8), vae: link(4), tile_size: 512, overlap: 128, temporal_size: 4096, temporal_overlap: 8 },
     },
-    "10": { class_type: "SeedVR2PostProcessing", inputs: { images: link(9), original_resized_images: link(2), color_correction_method: "wavelet" } },
+    "10": { class_type: "SeedVR2PostProcessing", inputs: { images: link(9), original_resized_images: link(2), color_correction_method: settings.colorCorrection } },
     "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: safePrefix } },
   };
 }
@@ -920,6 +933,8 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
     scale: job.scale,
     profile: job.profile,
     seed: job.seed,
+    resizeMethod: job.resizeMethod,
+    colorCorrection: job.colorCorrection,
     prompt: cloneValue(job.prompt),
     ...(job.promptId ? { promptId: job.promptId } : {}),
     output: output || null,
@@ -955,6 +970,34 @@ function boundedSeed(value, fallback = null) {
   const numeric = Number(value);
   if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric > 2_147_483_647) return fallback;
   return numeric;
+}
+
+function normalizeSeedVR2Scale(value, profile = SEEDVR2_PROFILE) {
+  const scale = Number(value ?? SEEDVR2_DEFAULT_SCALE);
+  if (!Number.isFinite(scale)) throw makeError("Upscale scale must be a number.", 400, "SCALE_INVALID");
+  if (profile === H3_LATENT_PROFILE) {
+    if (scale !== H3_LATENT_SCALE) throw makeError("MiniMax H3 Latent supports scale=2 only.", 400, "SCALE_INVALID");
+    return H3_LATENT_SCALE;
+  }
+  if (scale < SEEDVR2_MIN_SCALE || scale > SEEDVR2_MAX_SCALE) {
+    throw makeError(`SeedVR2 scale must be between ${SEEDVR2_MIN_SCALE} and ${SEEDVR2_MAX_SCALE}.`, 400, "SCALE_INVALID");
+  }
+  return Math.round(scale * 100) / 100;
+}
+
+function normalizeSeedVR2Choice(value, choices, fallback, field, code) {
+  const normalized = String(value || fallback).trim().toLowerCase();
+  if (!choices.includes(normalized)) throw makeError(`SeedVR2 ${field} is invalid.`, 400, code);
+  return normalized;
+}
+
+export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) {
+  const normalizedProfile = normalizeProfile(profile);
+  return {
+    scale: normalizeSeedVR2Scale(input.scale, normalizedProfile),
+    resizeMethod: normalizeSeedVR2Choice(input.resizeMethod, SEEDVR2_RESIZE_METHODS, SEEDVR2_DEFAULT_RESIZE_METHOD, "resize method", "RESIZE_METHOD_INVALID"),
+    colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, SEEDVR2_DEFAULT_COLOR_CORRECTION, "color correction", "COLOR_CORRECTION_INVALID"),
+  };
 }
 
 function normalizeProfile(value) {
@@ -1426,12 +1469,17 @@ export function createSeedVR2Controller({
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
           scale: job.scale,
+          resizeMethod: job.resizeMethod,
+          colorCorrection: job.colorCorrection,
         }) : buildSeedVR2Prompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
           unetName: SEEDVR2_UNET_NAME,
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
+          scale: job.scale,
+          resizeMethod: job.resizeMethod,
+          colorCorrection: job.colorCorrection,
         });
       await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
       assertNotCancelled(job);
@@ -1522,15 +1570,28 @@ export function createSeedVR2Controller({
     }, 0);
   }
 
-  function createJob({ sourceName, sourceRoot, scale = 2, profile = SEEDVR2_PROFILE, seed, attempt = 1, retryOf = "", provenance = null } = {}) {
+  function createJob({
+    sourceName,
+    sourceRoot,
+    scale = SEEDVR2_DEFAULT_SCALE,
+    profile = SEEDVR2_PROFILE,
+    seed,
+    resizeMethod = SEEDVR2_DEFAULT_RESIZE_METHOD,
+    colorCorrection = SEEDVR2_DEFAULT_COLOR_CORRECTION,
+    attempt = 1,
+    retryOf = "",
+    provenance = null,
+  } = {}) {
     const id = String(idFactory());
     const createdAt = isoNow(now());
     const request = {
       sourceName,
       sourceRoot,
-      scale: 2,
+      scale,
       profile,
       seed,
+      resizeMethod,
+      colorCorrection,
     };
     return {
       id,
@@ -1543,6 +1604,8 @@ export function createSeedVR2Controller({
       scale,
       profile,
       seed,
+      resizeMethod,
+      colorCorrection,
       prompt: null,
       output: null,
       error: "",
@@ -1571,8 +1634,8 @@ export function createSeedVR2Controller({
     await ensureStoreLoaded();
     const sourceRoot = String(input.sourceRoot || "input");
     if (!["input", "output"].includes(sourceRoot)) throw makeError("sourceRoot must be input or output.", 400, "SOURCE_ROOT_INVALID");
-    if (Number(input.scale) !== 2) throw makeError("SeedVR2 upscale currently supports scale=2 only.", 400, "SCALE_INVALID");
     const profile = normalizeProfile(input.profile);
+    const settings = normalizeSeedVR2Settings(input, profile);
     const cleanName = normalizeUpscaleAssetName(input.sourceName);
     const sourceKind = sourceKindFromName(cleanName);
     if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
@@ -1580,7 +1643,7 @@ export function createSeedVR2Controller({
     }
     const seed = boundedSeed(input.seed, Math.floor(Math.random() * 2_147_483_648));
     await resolveAsset(sourceRoot, cleanName);
-    const job = createJob({ sourceName: cleanName, sourceRoot, scale: 2, profile, seed });
+    const job = createJob({ sourceName: cleanName, sourceRoot, profile, seed, ...settings });
     await persistJob(job, { required: true });
     jobs.set(job.id, job);
     ensureGpuAdmission(job);
@@ -1676,12 +1739,16 @@ export function createSeedVR2Controller({
       scale: source.scale,
       profile: source.profile,
       seed: source.seed,
+      resizeMethod: source.resizeMethod,
+      colorCorrection: source.colorCorrection,
     };
+    const profile = request.profile || source.profile || SEEDVR2_PROFILE;
+    const settings = normalizeSeedVR2Settings(request, profile);
     const job = createJob({
       sourceName: source.sourceName,
       sourceRoot: source.sourceRoot,
-      scale: 2,
-      profile: source.profile || SEEDVR2_PROFILE,
+      ...settings,
+      profile,
       seed: boundedSeed(source.seed, 0),
       attempt,
       retryOf,
@@ -1689,8 +1756,8 @@ export function createSeedVR2Controller({
         request: {
           sourceName: request.sourceName || source.sourceName,
           sourceRoot: request.sourceRoot || source.sourceRoot,
-          scale: 2,
-          profile: request.profile || source.profile || SEEDVR2_PROFILE,
+          ...settings,
+          profile,
           seed: boundedSeed(request.seed, boundedSeed(source.seed, 0)),
         },
         attempt,

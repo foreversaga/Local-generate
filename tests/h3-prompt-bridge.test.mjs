@@ -496,7 +496,7 @@ test("Ollama img2img does not silently default a prompt model", async () => {
   assert.equal(result.body.code, "IMG2IMG_MODEL_REQUIRED");
 });
 
-test("vLLM img2img sends the source image through the OpenAI-compatible route", async () => {
+test("vLLM img2img uses the text-only OpenAI-compatible route while ComfyUI receives the source image", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
@@ -530,13 +530,15 @@ test("vLLM img2img sends the source image through the OpenAI-compatible route", 
     assert.match(calls[0].body.messages[0].content, /# Nature Camera/);
     assert.match(calls[0].body.messages[0].content, /# Camera Language Reference/);
     assert.match(calls[0].body.messages[0].content, /FLUX\.2 Dev Image Edit/);
+    assert.match(calls[0].body.messages[0].content, /You do not receive or inspect the source image/);
     assert.match(calls[0].body.messages[0].content, /Do not redescribe or reconstruct the whole source image/);
     assert.match(calls[0].body.messages[0].content, /negativePrompt must be an empty string/);
     const userContent = calls[0].body.messages.find((message) => message.role === "user")?.content;
-    assert.ok(Array.isArray(userContent));
-    assert.ok(userContent.some((item) => item.type === "text" && item.text.includes("Direct edit request — highest priority")));
-    assert.ok(userContent.some((item) => item.type === "text" && item.text.includes("Keep the person and make the photo feel candid.")));
-    assert.ok(userContent.some((item) => item.type === "image_url" && item.image_url?.url.includes("base64,aGVsbG8=")));
+    assert.equal(typeof userContent, "string");
+    assert.match(userContent, /The image generator will receive one source image separately/);
+    assert.match(userContent, /Direct edit request — highest priority/);
+    assert.match(userContent, /Keep the person and make the photo feel candid\./);
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /image_url/);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -148,7 +148,7 @@ const gpuResourceCoordinator = createGpuResourceCoordinator({
   runtimeMode: () => runtimeContext.mode,
 });
 const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced:Q4_K_M";
-const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://192.168.0.212:8003/v1").replace(/\/$/, "");
+const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://100.82.76.80:8003/v1").replace(/\/$/, "");
 const SGLANG_API_KEY = String(process.env.VLLM_API_KEY || process.env.SGLANG_API_KEY || "").trim();
 const DEFAULT_SGLANG_MODEL = String(process.env.VLLM_PROMPT_MODEL || process.env.SGLANG_PROMPT_MODEL || "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf").trim();
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
@@ -1614,12 +1614,16 @@ async function createImg2ImgPrompt(payload = {}) {
     throw new LongVideoError("IMG2IMG_IMAGE_MODEL_UNSUPPORTED", `不支援的以圖生圖模型：${imageModel}`, 400);
   }
   const flux2Edit = imageProfile?.workflow === "flux2-dev-edit";
+  const textOnlyPromptProvider = provider === "sglang";
   const requestPrompt = provider === "sglang" ? requestSglangPrompt : requestOllamaPrompt;
   const natureCameraSkill = await loadNatureCameraSkillBundle();
   const system = flux2Edit
     ? [
         "You write concise edit instructions for FLUX.2 Dev Image Edit, which directly receives the attached source image as reference conditioning.",
         natureCameraSkill,
+        ...(textOnlyPromptProvider
+          ? ["You do not receive or inspect the source image. The image generator receives it separately. Use only the user's transformation description, preserve unspecified source details generically, and do not invent visible attributes."]
+          : ["Inspect the attached source image when deciding how to express the requested edit."]),
         "Treat every requested transformation in the user's description as a hard requirement and state each one explicitly in the prompt.",
         "Do not redescribe or reconstruct the whole source image. Mention visible source details only when needed to identify what must change or remain fixed.",
         "Use direct edit language: preserve unchanged identity, pose, framing, camera position, lighting, and environment unless the user asks to change them; then describe only the requested changes and the smallest compatible nature-camera corrections.",
@@ -1631,7 +1635,9 @@ async function createImg2ImgPrompt(payload = {}) {
     : [
         "You are an expert Stable Diffusion image-to-image prompt writer.",
         natureCameraSkill,
-        "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
+        textOnlyPromptProvider
+          ? "You do not receive or inspect the source image. The image generator receives it separately. Convert only the user's transformation description into a prompt, preserve unspecified source composition and identity generically, and do not invent visible attributes."
+          : "Inspect the attached source image and apply the user's requested transformation while preserving useful composition and identity details unless the description asks otherwise.",
         "Return exactly one JSON object with exactly these two keys: prompt and negativePrompt.",
         "Both values must be non-empty English strings suitable for Stable Diffusion; negativePrompt should list unwanted artifacts and details to avoid.",
         "Keep prompt under 120 words. negativePrompt must contain exactly 12 distinct comma-separated short terms. Never repeat a term.",
@@ -1640,10 +1646,14 @@ async function createImg2ImgPrompt(payload = {}) {
   const response = await requestPrompt({
     model,
     system: system.join(" "),
-    prompt: flux2Edit
-      ? `Attached source image role: ${visualInputs[0].role}.\nDirect edit request — highest priority; include every requested change:\n${brief}`
-      : `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
-    visualInputs,
+    prompt: textOnlyPromptProvider
+      ? flux2Edit
+        ? `The image generator will receive one source image separately.\nDirect edit request — highest priority; include every requested change:\n${brief}`
+        : `The image generator will receive one source image separately.\nUser image transformation description:\n${brief}`
+      : flux2Edit
+        ? `Attached source image role: ${visualInputs[0].role}.\nDirect edit request — highest priority; include every requested change:\n${brief}`
+        : `Attached source image role: ${visualInputs[0].role}.\nUser image transformation description:\n${brief}`,
+    visualInputs: textOnlyPromptProvider ? [] : visualInputs,
     ...(provider === "sglang" ? { maxTokens: 512, responseFormat: { type: "json_object" } } : {}),
     ...(provider === "ollama" ? { unloadAfter: false } : {}),
   });
@@ -5484,7 +5494,7 @@ function createText2ImgControllerForRuntime() {
     ollamaCoordinator,
     preferredOllamaModel: defaultOllamaModel(),
     promptAssistant: {
-      provider: "openai",
+      provider: "vllm",
       status: sglangStatus,
       generate: async ({ model, system, prompt }) => requestSglangPrompt({
         model,

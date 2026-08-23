@@ -24,6 +24,7 @@ import {
   evaluateSeedVR2Readiness,
   normalizeVideoAssetName,
   normalizeUpscaleAssetName,
+  normalizeSeedVR2Settings,
   parseSeedVR2History,
 } from "../server/video-upscale/seedvr2.mjs";
 
@@ -100,16 +101,35 @@ test("builds corrected 15-node SeedVR2 graph with dynamic inputs", () => {
 });
 
 test("builds native 11-node SeedVR2 image graph with 7B Sharp and tiled VAE", () => {
-  const graph = buildSeedVR2ImagePrompt({ sourceName: "images/source.png", seed: 9 });
+  const graph = buildSeedVR2ImagePrompt({
+    sourceName: "images/source.png",
+    seed: 9,
+    scale: 3.5,
+    resizeMethod: "bicubic",
+    colorCorrection: "lab",
+  });
   assert.equal(Object.keys(graph).length, 11);
   assert.equal(graph["1"].class_type, "LoadImage");
   assert.equal(graph["1"].inputs.image, "images/source.png");
-  assert.equal(graph["2"].inputs["resize_type.multiplier"], 2);
+  assert.equal(graph["2"].inputs["resize_type.multiplier"], 3.5);
+  assert.equal(graph["2"].inputs.scale_method, "bicubic");
   assert.equal(graph["5"].class_type, "VAEEncodeTiled");
   assert.equal(graph["6"].inputs.unet_name, SEEDVR2_UNET_NAME);
   assert.equal(graph["8"].inputs.steps, 1);
-  assert.equal(graph["10"].inputs.color_correction_method, "wavelet");
+  assert.equal(graph["10"].inputs.color_correction_method, "lab");
   assert.equal(graph["11"].class_type, "SaveImage");
+});
+
+test("validates SeedVR2 adjustable settings while keeping H3 fixed at 2x", () => {
+  assert.deepEqual(normalizeSeedVR2Settings({ scale: 1.25, resizeMethod: "area", colorCorrection: "none" }), {
+    scale: 1.25,
+    resizeMethod: "area",
+    colorCorrection: "none",
+  });
+  assert.throws(() => normalizeSeedVR2Settings({ scale: 4.25 }), { code: "SCALE_INVALID" });
+  assert.throws(() => normalizeSeedVR2Settings({ scale: 2, resizeMethod: "invented" }), { code: "RESIZE_METHOD_INVALID" });
+  assert.throws(() => normalizeSeedVR2Settings({ scale: 2, colorCorrection: "invented" }), { code: "COLOR_CORRECTION_INVALID" });
+  assert.throws(() => normalizeSeedVR2Settings({ scale: 3 }, H3_LATENT_PROFILE), { code: "SCALE_INVALID" });
 });
 
 test("readiness requires native nodes and exact model combos", () => {
@@ -268,7 +288,15 @@ test("controller upscales a single image with SeedVR2 7B and registers a PNG out
     toAsset: async (_root, name) => ({ name, root: "output", kind: "image" }),
     idFactory: () => "image-job",
   });
-  const queued = await controller.enqueue({ sourceName: "source.png", sourceRoot: "input", scale: 2, profile: "seedvr2_7b_sharp_nvfp4" });
+  const queued = await controller.enqueue({
+    sourceName: "source.png",
+    sourceRoot: "input",
+    scale: 3,
+    profile: "seedvr2_7b_sharp_nvfp4",
+    seed: 123,
+    resizeMethod: "bilinear",
+    colorCorrection: "adain",
+  });
   assert.equal(queued.status, "queued");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const current = await controller.getJob("image-job");
@@ -280,6 +308,10 @@ test("controller upscales a single image with SeedVR2 7B and registers a PNG out
   assert.equal(completed.output.kind, "image");
   assert.equal(completed.output.name, "seedvr2_result.png");
   assert.equal(promptSeen.prompt["1"].class_type, "LoadImage");
+  assert.equal(promptSeen.prompt["2"].inputs["resize_type.multiplier"], 3);
+  assert.equal(promptSeen.prompt["2"].inputs.scale_method, "bilinear");
+  assert.equal(promptSeen.prompt["8"].inputs.seed, 123);
+  assert.equal(promptSeen.prompt["10"].inputs.color_correction_method, "adain");
   assert.equal(promptSeen.prompt["11"].class_type, "SaveImage");
 });
 

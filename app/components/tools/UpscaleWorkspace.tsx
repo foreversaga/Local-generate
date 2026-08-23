@@ -14,11 +14,17 @@ import {
     UPSCALE_SCALE,
     UPSCALE_PROFILES,
     DEFAULT_UPSCALE_PROFILE,
+    SEEDVR2_SCALE_MIN,
+    SEEDVR2_SCALE_MAX,
+    SEEDVR2_RESIZE_METHODS,
+    SEEDVR2_COLOR_CORRECTIONS,
     upscaleAssetHref,
     UpscaleApiError,
     type UpscaleHealth,
     type UpscaleJob,
     type UpscaleProfile,
+    type SeedVR2ResizeMethod,
+    type SeedVR2ColorCorrection,
 } from "./upscale-client";
 import styles from "./UpscaleWorkspace.module.css";
 
@@ -31,6 +37,10 @@ export function UpscaleWorkspace() {
     const [source, setSource] = useState<StudioAsset | null>(null);
     const [job, setJob] = useState<UpscaleJob | null>(null);
     const [profile, setProfile] = useState<UpscaleProfile>(DEFAULT_UPSCALE_PROFILE);
+    const [scale, setScale] = useState(String(UPSCALE_SCALE));
+    const [seed, setSeed] = useState("");
+    const [resizeMethod, setResizeMethod] = useState<SeedVR2ResizeMethod>("lanczos");
+    const [colorCorrection, setColorCorrection] = useState<SeedVR2ColorCorrection>("wavelet");
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
@@ -38,6 +48,8 @@ export function UpscaleWorkspace() {
     const [busy, setBusy] = useState<"upload" | "submit" | "cancel" | "retry" | "">("");
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
     const sourceKind = source?.kind || "video";
+    const isSeedVR2 = profile === "seedvr2_7b_sharp_nvfp4";
+    const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
@@ -119,7 +131,20 @@ export function UpscaleWorkspace() {
         setBusy("submit");
         setError("");
         try {
-            const next = await submitUpscale(source, profile);
+            const parsedScale = Number(scale);
+            if (isSeedVR2 && (scale.trim() === "" || !Number.isFinite(parsedScale) || parsedScale < SEEDVR2_SCALE_MIN || parsedScale > SEEDVR2_SCALE_MAX)) {
+                throw new Error(`SeedVR2 放大倍數必須介於 ${SEEDVR2_SCALE_MIN}× 到 ${SEEDVR2_SCALE_MAX}×。`);
+            }
+            const parsedSeed = seed.trim() === "" ? undefined : Number(seed);
+            if (parsedSeed !== undefined && (!Number.isSafeInteger(parsedSeed) || parsedSeed < 0 || parsedSeed > 2_147_483_647)) {
+                throw new Error("隨機種子必須是 0 到 2147483647 的整數，留空則每次隨機。");
+            }
+            const next = await submitUpscale(source, profile, {
+                scale: isSeedVR2 ? parsedScale : UPSCALE_SCALE,
+                seed: parsedSeed,
+                resizeMethod,
+                colorCorrection,
+            });
             setJob(next);
             if (next.status === "failed") setError(next.error || `${selectedProfile.label} 升頻失敗。`);
         } catch (reason) {
@@ -228,9 +253,9 @@ export function UpscaleWorkspace() {
                 <div>
                     <span className={styles.kicker}>圖片與影片升頻 / {selectedProfile.label}</span>
                     <h2>圖片與影片升頻</h2>
-                    <p>{selectedProfile.description} 產生 {UPSCALE_SCALE}× 升頻結果{sourceKind === "video" ? "並保留原始音訊" : ""}。</p>
+                    <p>{selectedProfile.description} 產生 {activeScale}× 升頻結果{sourceKind === "video" ? "並保留原始音訊" : ""}。</p>
                 </div>
-                <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
+                <span className={styles.scaleBadge}>{activeScale}×</span>
             </section>
 
             <section className={styles.grid}>
@@ -272,7 +297,7 @@ export function UpscaleWorkspace() {
                             <span className={styles.kicker}>升頻設定檔</span>
                             <h3>{selectedProfile.label}</h3>
                         </div>
-                        <span className={styles.scaleBadge}>{UPSCALE_SCALE}×</span>
+                        <span className={styles.scaleBadge}>{activeScale}×</span>
                     </div>
                     <label className={styles.profileField}>
                         <span>運算後端</span>
@@ -280,6 +305,37 @@ export function UpscaleWorkspace() {
                             {UPSCALE_PROFILES.map((item) => <option key={item.id} value={item.id} disabled={sourceKind === "image" && !item.supportsImages}>{item.label}</option>)}
                         </select>
                     </label>
+                    {isSeedVR2 && (
+                        <div className={styles.parameterPanel} aria-label="SeedVR2 進階參數">
+                            <div className={styles.parameterHeading}>
+                                <strong>SeedVR2 參數</strong>
+                                <span>採樣器維持官方單步設定</span>
+                            </div>
+                            <div className={styles.parameterGrid}>
+                                <label className={styles.profileField}>
+                                    <span>放大倍數</span>
+                                    <input type="number" min={SEEDVR2_SCALE_MIN} max={SEEDVR2_SCALE_MAX} step="0.25" value={scale} onChange={(event) => setScale(event.target.value)} disabled={active || Boolean(busy)} />
+                                </label>
+                                <label className={styles.profileField}>
+                                    <span>隨機種子</span>
+                                    <input type="number" min="0" max="2147483647" step="1" value={seed} placeholder="留空為隨機" onChange={(event) => setSeed(event.target.value)} disabled={active || Boolean(busy)} />
+                                </label>
+                                <label className={styles.profileField}>
+                                    <span>縮放演算法</span>
+                                    <select value={resizeMethod} onChange={(event) => setResizeMethod(event.target.value as SeedVR2ResizeMethod)} disabled={active || Boolean(busy)}>
+                                        {SEEDVR2_RESIZE_METHODS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                    </select>
+                                </label>
+                                <label className={styles.profileField}>
+                                    <span>色彩校正</span>
+                                    <select value={colorCorrection} onChange={(event) => setColorCorrection(event.target.value as SeedVR2ColorCorrection)} disabled={active || Boolean(busy)}>
+                                        {SEEDVR2_COLOR_CORRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                    </select>
+                                </label>
+                            </div>
+                            <p className={styles.helper}>1–4× 可調；倍數越高會明顯增加統一記憶體用量與處理時間。</p>
+                        </div>
+                    )}
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
                         <span className={`${styles.statusDot} ${health?.ready ? styles.online : ""}`} />
                         <div>
@@ -291,7 +347,7 @@ export function UpscaleWorkspace() {
                     {healthError && <p className={styles.inlineError} role="alert">{healthError}</p>}
                     {missingNodes.length > 0 && <p className={styles.helper}>缺少節點：{missingNodes.join(", ")}</p>}
                     <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={active || Boolean(busy)} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
-                        {busy === "submit" ? "建立工作中…" : active ? "升頻中…" : "開始 2× 升頻"}
+                        {busy === "submit" ? "建立工作中…" : active ? "升頻中…" : `開始 ${activeScale}× 升頻`}
                     </button>
                     <div className={styles.status} aria-live="polite">
                         <div className={styles.statusLine}>
@@ -320,7 +376,7 @@ export function UpscaleWorkspace() {
                             <span className={styles.kicker}>升頻結果</span>
                             <h3>{job.output.name}</h3>
                         </div>
-                        <span className={styles.resultBadge}>{UPSCALE_SCALE}× 已完成</span>
+                        <span className={styles.resultBadge}>{job.scale || activeScale}× 已完成</span>
                     </div>
                     {job.output.kind === "image"
                         ? <img className={styles.resultPreview} src={upscaleAssetHref(job.output)} alt={job.output.name} />

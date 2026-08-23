@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("exposes the FLUX text-to-image tool through the existing Studio route and API", async () => {
-  const [toolsPage, routePage, workspace, client, dictionaries] = await Promise.all([
+test("exposes FLUX and Krea through the existing Studio text-to-image route and API", async () => {
+  const [toolsPage, routePage, workspace, client, dictionaries, bridge, envExample, settings] = await Promise.all([
     readFile(new URL("../app/(studio)/tools/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/(studio)/tools/text-to-image/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/TextToImageWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/text2img-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/i18n/dictionaries.ts", import.meta.url), "utf8"),
+    readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/studio-settings.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.match(toolsPage, /href="\/app\/tools\/text-to-image"/);
@@ -24,6 +27,10 @@ test("exposes the FLUX text-to-image tool through the existing Studio route and 
   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
   assert.match(workspace, /nature-camera/);
   assert.match(workspace, /flux2-dev/);
+  assert.match(workspace, /krea2-turbo/);
+  assert.match(workspace, /text2img\.model\.krea\.name/);
+  assert.match(workspace, /1152, height: 2048, steps: 10/);
+  assert.match(workspace, /2048, height: 1152/);
   assert.doesNotMatch(workspace, /flux2-klein-[49]b/);
   assert.doesNotMatch(workspace, /juggernaut-xl-v9/);
   assert.match(workspace, /name="image-model"/);
@@ -49,8 +56,8 @@ test("exposes the FLUX text-to-image tool through the existing Studio route and 
   assert.match(workspace, /setSeed\(event\.target\.value\)/);
   assert.match(workspace, /setWidth\(event\.target\.value\)/);
   assert.match(workspace, /setHeight\(event\.target\.value\)/);
-  assert.match(workspace, /normalizeDimensionField\(width, DEFAULT_WIDTH\)/);
-  assert.match(workspace, /normalizeDimensionField\(height, DEFAULT_HEIGHT\)/);
+  assert.match(workspace, /normalizeDimensionField\(width, DEFAULT_WIDTH, minDimension, maxDimension\)/);
+  assert.match(workspace, /normalizeDimensionField\(height, DEFAULT_HEIGHT, minDimension, maxDimension\)/);
   assert.match(workspace, /resolutionScaleBounds/);
   assert.match(workspace, /scaledDimension\(selectedPreset\.width, nextScale\)/);
   assert.match(workspace, /scaledDimension\(selectedPreset\.height, nextScale\)/);
@@ -74,6 +81,8 @@ test("exposes the FLUX text-to-image tool through the existing Studio route and 
   assert.match(dictionaries, /"text2img\.description\.copy\.copied"/);
   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
+  assert.match(dictionaries, /"text2img\.model\.krea\.name"/);
+  assert.match(dictionaries, /"text2img\.size\.realisticPortrait"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.[49]b\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.juggernaut\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.adultMode\.on\.name"/);
@@ -84,4 +93,12 @@ test("exposes the FLUX text-to-image tool through the existing Studio route and 
   assert.match(dictionaries, /"text2img\.size\.scale"/);
   assert.match(dictionaries, /FLUX Non-Commercial License/);
   assert.match(dictionaries, /"text2img\.job\.stage\.registering"/);
+  assert.match(dictionaries, /Qwen3\.8 27B/);
+  assert.doesNotMatch(dictionaries, /Qwen3\.5 9B/);
+  assert.match(bridge, /http:\/\/100\.82\.76\.80:8003\/v1/);
+  assert.match(bridge, /DEFAULT_SGLANG_MODEL[\s\S]*Qwen3\.8-27B-UD-IQ3_XXS\.gguf/);
+  assert.match(bridge, /provider: "vllm"/);
+  assert.match(envExample, /VLLM_URL=http:\/\/100\.82\.76\.80:8003\/v1/);
+  assert.match(envExample, /VLLM_PROMPT_MODEL=\/models\/Qwen3\.8-27B-UD-IQ3_XXS\.gguf/);
+  assert.match(settings, /vllmModel: "\/models\/Qwen3\.8-27B-UD-IQ3_XXS\.gguf"/);
 });

@@ -13,13 +13,29 @@ import {
 } from "./text2img-client";
 import styles from "./TextToImageWorkspace.module.css";
 
-const SIZE_PRESETS = [
-  { id: "square", width: 1024, height: 1024, label: "text2img.size.square" },
-  { id: "portrait", width: 768, height: 1024, label: "text2img.size.portrait" },
-  { id: "portraitWide", width: 896, height: 1152, label: "text2img.size.portraitWide" },
-  { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
-  { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
-] as const;
+type SizePreset = {
+  id: string;
+  width: number;
+  height: number;
+  steps?: number;
+  label: "text2img.size.square" | "text2img.size.portrait" | "text2img.size.portraitWide" | "text2img.size.landscape" | "text2img.size.landscapeWide" | "text2img.size.realisticPortrait";
+};
+
+const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
+  "flux2-dev": [
+    { id: "square", width: 1024, height: 1024, label: "text2img.size.square" },
+    { id: "portrait", width: 768, height: 1024, label: "text2img.size.portrait" },
+    { id: "portraitWide", width: 896, height: 1152, label: "text2img.size.portraitWide" },
+    { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
+    { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
+  ],
+  "krea2-turbo": [
+    { id: "square", width: 1536, height: 1536, label: "text2img.size.square" },
+    { id: "portrait", width: 1152, height: 2048, label: "text2img.size.portrait" },
+    { id: "landscape", width: 2048, height: 1152, label: "text2img.size.landscape" },
+    { id: "realisticPortrait", width: 1152, height: 2048, steps: 10, label: "text2img.size.realisticPortrait" },
+  ],
+};
 
 const DEFAULT_STEPS = 20;
 const DEFAULT_SEED = 12345;
@@ -38,6 +54,28 @@ const MODEL_OPTIONS = [
     commercial: false,
     defaultSteps: 20,
     maxSteps: 50,
+    minDimension: 512,
+    maxDimension: 1536,
+    sizeHelpKey: "text2img.size.help.flux",
+    stepsHelpKey: "text2img.steps.help.flux",
+    negativeNoteKey: "text2img.negativeNote.flux",
+    warningKey: "text2img.model.dev.warning",
+  },
+  {
+    id: "krea2-turbo",
+    mark: "K2",
+    nameKey: "text2img.model.krea.name",
+    noteKey: "text2img.model.krea.note",
+    licenseKey: "text2img.model.krea.license",
+    commercial: true,
+    defaultSteps: 8,
+    maxSteps: 20,
+    minDimension: 512,
+    maxDimension: 2048,
+    sizeHelpKey: "text2img.size.help.krea",
+    stepsHelpKey: "text2img.steps.help.krea",
+    negativeNoteKey: "text2img.negativeNote.krea",
+    warningKey: "text2img.model.krea.warning",
   },
 ] as const;
 
@@ -63,15 +101,15 @@ function normalizeIntegerField(value: string, fallback: number, min: number, max
   return Math.max(min, Math.min(max, parsed));
 }
 
-function normalizeDimensionField(value: string, fallback: number) {
-  const bounded = normalizeIntegerField(value, fallback, 512, 1536);
-  return Math.max(512, Math.min(1536, Math.round(bounded / 16) * 16));
+function normalizeDimensionField(value: string, fallback: number, min: number, max: number) {
+  const bounded = normalizeIntegerField(value, fallback, min, max);
+  return Math.max(min, Math.min(max, Math.round(bounded / 16) * 16));
 }
 
-function resolutionScaleBounds(width: number, height: number) {
+function resolutionScaleBounds(width: number, height: number, minDimension: number, maxDimension: number) {
   return {
-    min: Math.ceil(Math.max(512 / width, 512 / height) * 100),
-    max: Math.floor(Math.min(1536 / width, 1536 / height) * 100),
+    min: Math.ceil(Math.max(minDimension / width, minDimension / height) * 100),
+    max: Math.floor(Math.min(maxDimension / width, maxDimension / height) * 100),
   };
 }
 
@@ -99,7 +137,7 @@ export function TextToImageWorkspace() {
   const [unloadPromptModel, setUnloadPromptModel] = useState(false);
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [encoderId, setEncoderId] = useState(DEFAULT_ENCODER_ID);
-  const [presetId, setPresetId] = useState<(typeof SIZE_PRESETS)[number]["id"] | typeof CUSTOM_PRESET_ID>("square");
+  const [presetId, setPresetId] = useState<string>("square");
   const [resolutionScale, setResolutionScale] = useState(100);
   const [width, setWidth] = useState(String(DEFAULT_WIDTH));
   const [height, setHeight] = useState(String(DEFAULT_HEIGHT));
@@ -109,13 +147,16 @@ export function TextToImageWorkspace() {
   const [submitError, setSubmitError] = useState("");
 
   const selectedOption = MODEL_OPTIONS.find((item) => item.id === modelId) || MODEL_OPTIONS[0];
-  const selectedPreset = SIZE_PRESETS.find((item) => item.id === presetId);
-  const scaleBounds = selectedPreset ? resolutionScaleBounds(selectedPreset.width, selectedPreset.height) : null;
+  const sizePresets = SIZE_PRESETS_BY_MODEL[modelId] || SIZE_PRESETS_BY_MODEL[DEFAULT_MODEL_ID];
   const selectedHealth = health?.profiles?.[modelId];
   const selectedEncoderHealth = selectedHealth?.encoders?.[encoderId];
   const selectedReady = Boolean(selectedEncoderHealth ? selectedEncoderHealth.ready : selectedHealth?.ready);
   const defaultSteps = selectedHealth?.defaultSteps || selectedOption.defaultSteps;
   const maxSteps = selectedHealth?.maxSteps || selectedOption.maxSteps;
+  const minDimension = selectedHealth?.minDimension || selectedOption.minDimension;
+  const maxDimension = selectedHealth?.maxDimension || selectedOption.maxDimension;
+  const selectedPreset = sizePresets.find((item) => item.id === presetId);
+  const scaleBounds = selectedPreset ? resolutionScaleBounds(selectedPreset.width, selectedPreset.height, minDimension, maxDimension) : null;
 
   const refreshHealth = useCallback(async () => {
     setHealthError("");
@@ -194,8 +235,8 @@ export function TextToImageWorkspace() {
     try {
       const normalizedSteps = normalizeIntegerField(steps, defaultSteps, 1, maxSteps);
       const normalizedSeed = normalizeIntegerField(seed, DEFAULT_SEED, 0, 2_147_483_647);
-      const normalizedWidth = normalizeDimensionField(width, DEFAULT_WIDTH);
-      const normalizedHeight = normalizeDimensionField(height, DEFAULT_HEIGHT);
+      const normalizedWidth = normalizeDimensionField(width, DEFAULT_WIDTH, minDimension, maxDimension);
+      const normalizedHeight = normalizeDimensionField(height, DEFAULT_HEIGHT, minDimension, maxDimension);
       setSteps(String(normalizedSteps));
       setSeed(String(normalizedSeed));
       setWidth(String(normalizedWidth));
@@ -221,7 +262,9 @@ export function TextToImageWorkspace() {
   }
 
   async function repeatGeneration(completedJob: Text2ImgJob) {
-    const matchingPreset = SIZE_PRESETS.find((item) => item.width === completedJob.width && item.height === completedJob.height);
+    const repeatPresets = SIZE_PRESETS_BY_MODEL[completedJob.modelId] || SIZE_PRESETS_BY_MODEL[DEFAULT_MODEL_ID];
+    const matchingPreset = repeatPresets.find((item) => item.width === completedJob.width && item.height === completedJob.height
+      && (item.steps === undefined || item.steps === completedJob.steps));
     const encoder = completedJob.encoderId || DEFAULT_ENCODER_ID;
     const repeatProfile = health?.profiles?.[completedJob.modelId];
     const repeatReady = repeatProfile?.encoders?.[encoder]?.ready
@@ -375,9 +418,14 @@ export function TextToImageWorkspace() {
                       value={item.id}
                       checked={modelId === item.id}
                       onChange={() => {
+                        const nextPreset = SIZE_PRESETS_BY_MODEL[item.id][0];
                         setModelId(item.id);
                         setEncoderId(DEFAULT_ENCODER_ID);
                         setSteps(String(item.defaultSteps));
+                        setPresetId(nextPreset.id);
+                        setResolutionScale(100);
+                        setWidth(String(nextPreset.width));
+                        setHeight(String(nextPreset.height));
                         setJob(null);
                         setSubmitError("");
                       }}
@@ -397,13 +445,13 @@ export function TextToImageWorkspace() {
             </div>
           </fieldset>
 
-          <p className={styles.licenseWarning} role="note">{t("text2img.model.dev.warning")}</p>
+          <p className={styles.licenseWarning} role="note">{t(selectedOption.warningKey)}</p>
 
 
           <fieldset className={styles.presetFieldset}>
             <legend>{t("text2img.size.label")}</legend>
             <div className={styles.presetGrid}>
-              {SIZE_PRESETS.map((item) => (
+              {sizePresets.map((item) => (
                 <label key={item.id} className={`${styles.preset} ${presetId === item.id ? styles.presetActive : ""}`}>
                   <input
                     type="radio"
@@ -415,6 +463,7 @@ export function TextToImageWorkspace() {
                       setResolutionScale(100);
                       setWidth(String(item.width));
                       setHeight(String(item.height));
+                      setSteps(String(item.steps ?? defaultSteps));
                     }}
                   />
                   <span>{t(item.label)}</span>
@@ -454,28 +503,28 @@ export function TextToImageWorkspace() {
                 <span>{t("text2img.size.width")}</span>
                 <input
                   type="number"
-                  min={512}
-                  max={1536}
+                  min={minDimension}
+                  max={maxDimension}
                   step={16}
                   value={width}
                   onChange={(event) => { setWidth(event.target.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
-                  onBlur={() => setWidth(String(normalizeDimensionField(width, DEFAULT_WIDTH)))}
+                  onBlur={() => setWidth(String(normalizeDimensionField(width, DEFAULT_WIDTH, minDimension, maxDimension)))}
                 />
               </label>
               <label className={styles.field}>
                 <span>{t("text2img.size.height")}</span>
                 <input
                   type="number"
-                  min={512}
-                  max={1536}
+                  min={minDimension}
+                  max={maxDimension}
                   step={16}
                   value={height}
                   onChange={(event) => { setHeight(event.target.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
-                  onBlur={() => setHeight(String(normalizeDimensionField(height, DEFAULT_HEIGHT)))}
+                  onBlur={() => setHeight(String(normalizeDimensionField(height, DEFAULT_HEIGHT, minDimension, maxDimension)))}
                 />
               </label>
             </div>
-            <small className={styles.dimensionHelp}>{t("text2img.size.help")}</small>
+            <small className={styles.dimensionHelp}>{t(selectedOption.sizeHelpKey)}</small>
           </fieldset>
 
           <div className={styles.parameterGrid}>
@@ -490,7 +539,7 @@ export function TextToImageWorkspace() {
                 onChange={(event) => setSteps(event.target.value)}
                 onBlur={() => setSteps(String(normalizeIntegerField(steps, defaultSteps, 1, maxSteps)))}
               />
-              <small>{t("text2img.steps.help")}</small>
+              <small>{t(selectedOption.stepsHelpKey)}</small>
             </label>
             <label className={styles.field}>
               <span>{t("text2img.seed.label")}</span>
@@ -516,7 +565,7 @@ export function TextToImageWorkspace() {
             <span>{selectedHealth?.precision || "BF16"}</span>
             <span>{selectedHealth?.license || t(selectedOption.licenseKey)}</span>
           </div>
-          <p className={styles.helper}>{t("text2img.negativeNote")}</p>
+          <p className={styles.helper}>{t(selectedOption.negativeNoteKey)}</p>
 
           {submitError && <p className={styles.error} role="alert">{submitError}</p>}
           <button className={styles.primaryButton} type="submit" disabled={!workflowReady || !description.trim() || isBusy}>

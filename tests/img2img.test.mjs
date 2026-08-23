@@ -251,7 +251,7 @@ test("builds the WAI checkpoint workflow without changing the native graph", () 
   assert.equal(graph["6"].inputs.denoise, 0.42);
 });
 
-test("builds the compiled FLUX.2 Dev Image Edit graph", () => {
+test("builds the eager FLUX.2 Dev Image Edit graph", () => {
   const graph = buildImg2ImgPrompt({
     sourceName: "source.png",
     prompt: "replace the background with a rainy Taipei street",
@@ -262,7 +262,7 @@ test("builds the compiled FLUX.2 Dev Image Edit graph", () => {
     cfg: 4,
     seed: 99,
   });
-  assert.equal(Object.keys(graph).length, 18);
+  assert.equal(Object.keys(graph).length, 17);
   assert.equal(graph["1"].class_type, "UNETLoader");
   assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
   assert.deepEqual(graph["2"].inputs, { clip_name: "mistral_3_small_flux2_bf16.safetensors", type: "flux2", device: "default" });
@@ -274,8 +274,8 @@ test("builds the compiled FLUX.2 Dev Image Edit graph", () => {
   assert.deepEqual(graph["13"].inputs, { steps: 20, width: ["5", 0], height: ["5", 1] });
   assert.deepEqual(graph["14"].inputs, { width: ["5", 0], height: ["5", 1], batch_size: 1 });
   assert.deepEqual(graph["17"].inputs.images, ["16", 0]);
-  assert.deepEqual(graph["18"], { class_type: "TorchCompileModel", inputs: { model: ["1", 0], backend: "inductor" } });
-  assert.deepEqual(graph["10"].inputs.model, ["18", 0]);
+  assert.equal(Object.values(graph).some((node) => node.class_type === "TorchCompileModel"), false);
+  assert.deepEqual(graph["10"].inputs.model, ["1", 0]);
   assert.equal(Object.values(graph).some((node) => node.class_type === "KSampler"), false);
 });
 

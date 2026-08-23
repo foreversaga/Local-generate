@@ -213,19 +213,27 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
 test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, and provenance", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: SEEDVR2_PROFILE, seed: 42 });
+  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2.5, profile: SEEDVR2_PROFILE, seed: 42, resizeMethod: "bicubic", colorCorrection: "lab" });
   const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
 
   assert.equal(completed.source.name, "source.mp4");
   assert.equal(completed.source.root, "input");
-  assert.equal(completed.scale, 2);
+  assert.equal(completed.scale, 2.5);
   assert.equal(completed.profile, SEEDVR2_PROFILE);
   assert.equal(completed.seed, 42);
+  assert.equal(completed.resizeMethod, "bicubic");
+  assert.equal(completed.colorCorrection, "lab");
+  assert.equal(completed.prompt["3"].inputs["resize_type.multiplier"], 2.5);
+  assert.equal(completed.prompt["3"].inputs.scale_method, "bicubic");
+  assert.equal(completed.prompt["13"].inputs.color_correction_method, "lab");
   assert.equal(completed.prompt["10"].inputs.seed, 42);
   assert.equal(completed.stage, "Completed");
   assert.equal(completed.progress, 100);
   assert.equal(completed.output.name, "seedvr2-result.mp4");
   assert.equal(completed.provenance.request.seed, 42);
+  assert.equal(completed.provenance.request.scale, 2.5);
+  assert.equal(completed.provenance.request.resizeMethod, "bicubic");
+  assert.equal(completed.provenance.request.colorCorrection, "lab");
   assert.equal(completed.provenance.attempt, 1);
   assert.equal(completed.attempt, 1);
   assert.ok(completed.createdAt && completed.updatedAt && completed.completedAt);
@@ -390,7 +398,7 @@ test("active cancel interrupts ComfyUI, prevents output registration, and persis
 test("retry creates a new attempt while preserving SeedVR2 provenance", async (t) => {
   const value = await fixture({ historyMode: (promptCount) => promptCount === 1 ? "failed" : "success", idFactory: (() => { const ids = ["failed-job", "retry-job"]; return () => ids.shift(); })() });
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: SEEDVR2_PROFILE, seed: 77 });
+  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 3, profile: SEEDVR2_PROFILE, seed: 77, resizeMethod: "area", colorCorrection: "none" });
   await waitFor(() => value.store.read(failed.id), (job) => job?.status === "failed");
   const result = apiResponse();
   await value.controller.handleRoute({ method: "POST", url: `/api/upscale/jobs/${failed.id}/retry` }, result);
@@ -402,6 +410,12 @@ test("retry creates a new attempt while preserving SeedVR2 provenance", async (t
   assert.equal(retried.provenance.originalId, failed.id);
   assert.equal(retried.provenance.request.sourceName, "source.mp4");
   assert.equal(retried.provenance.request.seed, 77);
+  assert.equal(retried.provenance.request.scale, 3);
+  assert.equal(retried.provenance.request.resizeMethod, "area");
+  assert.equal(retried.provenance.request.colorCorrection, "none");
+  assert.equal(retried.scale, 3);
+  assert.equal(retried.resizeMethod, "area");
+  assert.equal(retried.colorCorrection, "none");
   assert.equal(retried.seed, 77);
   const completed = await waitFor(() => value.store.read(retried.id), (job) => job?.status === "completed");
   assert.equal(completed.attempt, 2);

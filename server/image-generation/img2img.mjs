@@ -16,7 +16,6 @@ export const IMG2IMG_REQUIRED_NODES = Object.freeze([
 
 export const IMG2IMG_FLUX2_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
-  "TorchCompileModel",
   "CLIPLoader",
   "VAELoader",
   "LoadImage",
@@ -893,7 +892,7 @@ export function buildImg2ImgPrompt({
       "7": { class_type: "CLIPTextEncode", inputs: { text: positive, clip: link(2) } },
       "8": { class_type: "FluxGuidance", inputs: { conditioning: link(7), guidance: parameters.cfg } },
       "9": { class_type: "ReferenceLatent", inputs: { conditioning: link(8), latent: link(6) } },
-      "10": { class_type: "BasicGuider", inputs: { model: link(18), conditioning: link(9) } },
+      "10": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(9) } },
       "11": { class_type: "RandomNoise", inputs: { noise_seed: parameters.seed } },
       "12": { class_type: "KSamplerSelect", inputs: { sampler_name: sampling.samplerName || "euler" } },
       "13": { class_type: "Flux2Scheduler", inputs: { steps: parameters.steps, width: link(5), height: link(5, 1) } },
@@ -901,7 +900,6 @@ export function buildImg2ImgPrompt({
       "15": { class_type: "SamplerCustomAdvanced", inputs: { noise: link(11), guider: link(10), sampler: link(12), sigmas: link(13), latent_image: link(14) } },
       "16": { class_type: "VAEDecode", inputs: { samples: link(15), vae: link(3) } },
       "17": { class_type: "SaveImage", inputs: { images: link(16), filename_prefix: cleanPrefix } },
-      "18": { class_type: "TorchCompileModel", inputs: { model: link(1), backend: "inductor" } },
     };
   }
 

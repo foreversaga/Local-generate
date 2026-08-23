@@ -1,7 +1,33 @@
 import { assetUrl, type StudioAsset } from "../library/asset-client";
 
 export const UPSCALE_SCALE = 2 as const;
+export const SEEDVR2_SCALE_MIN = 1;
+export const SEEDVR2_SCALE_MAX = 4;
 const BRIDGE_URL = "/app";
+
+export const SEEDVR2_RESIZE_METHODS = [
+    { id: "lanczos", label: "Lanczos（細節清晰）" },
+    { id: "bicubic", label: "Bicubic（較柔和）" },
+    { id: "bilinear", label: "Bilinear（速度優先）" },
+    { id: "area", label: "Area（縮放穩定）" },
+    { id: "nearest-exact", label: "Nearest（像素風格）" },
+] as const;
+
+export const SEEDVR2_COLOR_CORRECTIONS = [
+    { id: "wavelet", label: "Wavelet（保留高頻細節）" },
+    { id: "lab", label: "LAB（色彩最貼近原圖）" },
+    { id: "adain", label: "AdaIN（快速全域校色）" },
+    { id: "none", label: "不校色" },
+] as const;
+
+export type SeedVR2ResizeMethod = typeof SEEDVR2_RESIZE_METHODS[number]["id"];
+export type SeedVR2ColorCorrection = typeof SEEDVR2_COLOR_CORRECTIONS[number]["id"];
+export type SeedVR2Settings = {
+    scale: number;
+    seed?: number;
+    resizeMethod: SeedVR2ResizeMethod;
+    colorCorrection: SeedVR2ColorCorrection;
+};
 
 export const UPSCALE_PROFILES = [
     {
@@ -41,6 +67,8 @@ export type UpscaleJob = {
     scale: number;
     profile?: string;
     seed?: number;
+    resizeMethod?: SeedVR2ResizeMethod;
+    colorCorrection?: SeedVR2ColorCorrection;
     prompt?: Record<string, unknown> | null;
     promptId?: string;
     output?: StudioAsset | null;
@@ -112,11 +140,18 @@ export async function fetchUpscaleHealth(profile: UpscaleProfile = DEFAULT_UPSCA
     return (await readJson<{ ready?: boolean; comfyUi?: boolean; models?: UpscaleHealth["models"]; nodes?: UpscaleHealth["nodes"] }>(response)) as UpscaleHealth;
 }
 
-export async function submitUpscale(source: Pick<StudioAsset, "name" | "root" | "kind">, profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE): Promise<UpscaleJob> {
+export async function submitUpscale(
+    source: Pick<StudioAsset, "name" | "root" | "kind">,
+    profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE,
+    settings?: SeedVR2Settings,
+): Promise<UpscaleJob> {
+    const parameters = profile === "seedvr2_7b_sharp_nvfp4"
+        ? settings
+        : { scale: UPSCALE_SCALE };
     const response = await fetch(`${BRIDGE_URL}/api/upscale`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceName: source.name, sourceRoot: source.root, sourceKind: source.kind, scale: UPSCALE_SCALE, profile }),
+        body: JSON.stringify({ sourceName: source.name, sourceRoot: source.root, sourceKind: source.kind, profile, ...parameters }),
     });
     const payload = await readJson<{ job?: UpscaleJob }>(response);
     if (!payload.job) throw new UpscaleApiError("Upscale job was not returned.", response.status);

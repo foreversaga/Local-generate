@@ -82,7 +82,7 @@
 
 ### Upscale
 
-路徑：`/app/tools/upscale`。選擇或上傳影片，先通過所選後端的 ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、取消、重試、預覽、開啟或下載輸出。工具提供 SeedVR2 7B Sharp NVFP4 與 MiniMax H3 Latent 2x 兩個 **2×** profile：前者搭配 native auto chunk、latent overlap 1 與 wavelet 色彩校正；後者在 H3 clean latent 上直接放大空間尺寸，保留時間長度與音訊。兩者都不提供自訂倍率。
+路徑：`/app/tools/upscale`。選擇或上傳圖片或影片，先通過所選後端的 ComfyUI readiness 檢查，再提交放大工作；可在畫面追蹤進度、取消、重試、預覽、開啟或下載輸出。SeedVR2 7B Sharp NVFP4 支援圖片與影片，可調整 1–4× 倍率、seed、resize method 與 color correction，並搭配 native auto chunk 與 latent overlap 1。MiniMax H3 Latent 2x 僅支援影片，固定在 H3 clean latent 上放大 2×，保留時間長度與音訊。
 
 ### Image-to-Image
 

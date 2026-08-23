@@ -6,9 +6,13 @@ export const FLUX2_VAE = "flux2-vae.safetensors";
 export const FLUX2_CLIP_TYPE = "flux2";
 export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
 export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
-export const FLUX2_TORCH_COMPILE_BACKEND = "inductor";
+export const KREA2_TURBO_MODEL = "krea2_turbo_fp8_scaled.safetensors";
+export const KREA2_TEXT_ENCODER = "qwen3vl_4b_fp8_scaled.safetensors";
+export const KREA2_VAE = "qwen_image_vae.safetensors";
+export const KREA2_CLIP_TYPE = "krea2";
 export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-dev";
 export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
+export const KREA2_TURBO_MODEL_ID = "krea2-turbo";
 
 export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
   [DEFAULT_TEXT2IMG_MODEL_ID]: Object.freeze({
@@ -22,16 +26,45 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
     license: "FLUX Non-Commercial License",
     commercial: false,
     architecture: "flux2",
+    encoderLabel: "Mistral 3 Small · BF16",
+    encoderPrecision: "BF16",
     defaultSteps: 20,
     maxSteps: 50,
     cfg: 4,
     sampler: "Euler",
+    scheduler: "Flux2",
+    minDimension: 512,
+    maxDimension: 1536,
+    dimensionStep: 16,
+  }),
+  [KREA2_TURBO_MODEL_ID]: Object.freeze({
+    id: KREA2_TURBO_MODEL_ID,
+    label: "Krea 2 Turbo · FP8 Scaled",
+    model: KREA2_TURBO_MODEL,
+    textEncoder: KREA2_TEXT_ENCODER,
+    vae: KREA2_VAE,
+    clipType: KREA2_CLIP_TYPE,
+    precision: "FP8 Scaled",
+    license: "Krea 2 Community License",
+    commercial: true,
+    architecture: "krea2",
+    encoderLabel: "Qwen3-VL 4B · FP8 Scaled",
+    encoderPrecision: "FP8 Scaled",
+    defaultSteps: 8,
+    maxSteps: 20,
+    cfg: 1,
+    sampler: "ER-SDE",
+    scheduler: "Simple",
+    flowShift: 1.15,
+    denoise: 1,
+    minDimension: 512,
+    maxDimension: 2048,
+    dimensionStep: 16,
   }),
 });
 
-export const TEXT2IMG_REQUIRED_NODES = Object.freeze([
+const FLUX_DEV_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
-  "TorchCompileModel",
   "CLIPLoader",
   "VAELoader",
   "CLIPTextEncode",
@@ -46,10 +79,23 @@ export const TEXT2IMG_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
-const FLUX_DEV_REQUIRED_NODES = Object.freeze([
-  "UNETLoader", "CLIPLoader", "VAELoader", "CLIPTextEncode", "FluxGuidance", "BasicGuider",
-  "RandomNoise", "KSamplerSelect", "Flux2Scheduler", "EmptyFlux2LatentImage", "SamplerCustomAdvanced", "VAEDecode", "SaveImage",
+const KREA2_REQUIRED_NODES = Object.freeze([
+  "UNETLoader",
+  "CLIPLoader",
+  "VAELoader",
+  "CLIPTextEncode",
+  "ConditioningZeroOut",
+  "EmptyLatentImage",
+  "ModelSamplingAuraFlow",
+  "KSampler",
+  "VAEDecode",
+  "SaveImage",
 ]);
+
+export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...new Set([
+  ...FLUX_DEV_REQUIRED_NODES,
+  ...KREA2_REQUIRED_NODES,
+])]);
 
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
@@ -113,9 +159,9 @@ function resolveText2ImgModel(modelId = DEFAULT_TEXT2IMG_MODEL_ID) {
 function encoderProfilesFor(profile) {
   const official = Object.freeze({
     id: DEFAULT_TEXT2IMG_ENCODER_ID,
-    label: "Mistral 3 Small · BF16",
+    label: profile.encoderLabel,
     textEncoder: profile.textEncoder,
-    precision: "BF16",
+    precision: profile.encoderPrecision,
     thirdParty: false,
     license: profile.license,
   });
@@ -141,8 +187,8 @@ export function normalizeText2ImgInput(input = {}) {
     prompt,
     modelId: profile.id,
     encoderId: encoder.id,
-    width: boundedInteger(input.width, "width", 1024, 512, 1536, 16),
-    height: boundedInteger(input.height, "height", 1024, 512, 1536, 16),
+    width: boundedInteger(input.width, "width", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
+    height: boundedInteger(input.height, "height", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
     steps: boundedInteger(input.steps, "steps", profile.defaultSteps, 1, profile.maxSteps),
     seed: boundedInteger(input.seed, "seed", 12345, 0, 2_147_483_647),
   });
@@ -193,7 +239,7 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
     "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
     "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
     "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: profile.cfg } },
-    "6": { class_type: "BasicGuider", inputs: { model: link(14), conditioning: link(5) } },
+    "6": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(5) } },
     "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
     "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
     "9": { class_type: "Flux2Scheduler", inputs: { steps: request.steps, width: request.width, height: request.height } },
@@ -204,11 +250,46 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
     },
     "12": { class_type: "VAEDecode", inputs: { samples: link(11), vae: link(3) } },
     "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/flux2_dev") } },
-    "14": { class_type: "TorchCompileModel", inputs: { model: link(1), backend: FLUX2_TORCH_COMPILE_BACKEND } },
+  };
+}
+
+/** Build the native ComfyUI API graph used by Krea 2 Turbo. */
+export function buildKrea2TurboText2ImgPrompt(input = {}, { filenamePrefix = "text2img/krea2_turbo" } = {}) {
+  const request = normalizeText2ImgInput({ ...input, modelId: KREA2_TURBO_MODEL_ID });
+  const profile = resolveText2ImgModel(request.modelId);
+  const encoder = resolveText2ImgEncoder(profile, request.encoderId);
+  return {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
+    "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
+    "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
+    "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
+    "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: link(4) } },
+    "6": { class_type: "EmptyLatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
+    "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: link(1), shift: profile.flowShift } },
+    "8": {
+      class_type: "KSampler",
+      inputs: {
+        model: link(7),
+        positive: link(4),
+        negative: link(5),
+        latent_image: link(6),
+        seed: request.seed,
+        steps: request.steps,
+        cfg: profile.cfg,
+        sampler_name: "er_sde",
+        scheduler: "simple",
+        denoise: profile.denoise,
+      },
+    },
+    "12": { class_type: "VAEDecode", inputs: { samples: link(8), vae: link(3) } },
+    "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/krea2_turbo") } },
   };
 }
 
 export function buildText2ImgPrompt(input = {}, options = {}) {
+  if (String(input?.modelId || DEFAULT_TEXT2IMG_MODEL_ID) === KREA2_TURBO_MODEL_ID) {
+    return buildKrea2TurboText2ImgPrompt(input, options);
+  }
   return buildFlux2DevText2ImgPrompt(input, options);
 }
 
@@ -227,7 +308,7 @@ export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote =
   const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
   const vaes = comboValues(objectInfo?.VAELoader, "vae_name");
   const profiles = Object.fromEntries(Object.values(TEXT2IMG_MODEL_PROFILES).map((profile) => {
-    const requiredNodes = FLUX_DEV_REQUIRED_NODES;
+    const requiredNodes = profile.architecture === "krea2" ? KREA2_REQUIRED_NODES : FLUX_DEV_REQUIRED_NODES;
     const profileNodesReady = requiredNodes.every((name) => Boolean(objectInfo?.[name]));
     const encoders = Object.fromEntries(Object.values(encoderProfilesFor(profile)).map((encoder) => {
       const available = textEncoders.includes(encoder.textEncoder);

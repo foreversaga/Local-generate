@@ -43,11 +43,17 @@ export type Text2ImgModelHealth = {
   reason?: string;
   models: Text2ImgHealth["models"];
   encoders: Record<string, Text2ImgEncoderHealth>;
-  architecture: "flux2";
+  architecture: "flux2" | "krea2";
   defaultSteps: number;
   maxSteps: number;
   cfg: number;
   sampler: string;
+  scheduler?: string;
+  flowShift?: number;
+  denoise?: number;
+  minDimension: number;
+  maxDimension: number;
+  dimensionStep: number;
 };
 
 export type Text2ImgEncoderHealth = {
@@ -140,7 +146,7 @@ async function readPayload(response: Response) {
 export async function fetchText2ImgHealth() {
   const response = await fetch(`${BRIDGE_URL}/api/text2img/health`, { cache: "no-store" });
   const payload = await readPayload(response);
-  if (!response.ok) throw new Text2ImgApiError(payloadMessage(payload, "Unable to check FLUX readiness."), response.status, payload);
+  if (!response.ok) throw new Text2ImgApiError(payloadMessage(payload, "Unable to check image-model readiness."), response.status, payload);
   return payload as unknown as Text2ImgHealth;
 }
 
@@ -151,7 +157,7 @@ export async function submitText2Img(input: Text2ImgSubmitInput) {
     body: JSON.stringify(input),
   });
   const payload = await readPayload(response);
-  if (!response.ok || !payload.job) throw new Text2ImgApiError(payloadMessage(payload, "Unable to start FLUX generation."), response.status, payload);
+  if (!response.ok || !payload.job) throw new Text2ImgApiError(payloadMessage(payload, "Unable to start image generation."), response.status, payload);
   return payload.job;
 }
 
@@ -171,6 +177,6 @@ export async function generateText2ImgPrompt(description: string, { unloadPrompt
 export async function fetchText2ImgJob(id: string) {
   const response = await fetch(`${BRIDGE_URL}/api/text2img/jobs/${encodeURIComponent(id)}`, { cache: "no-store" });
   const payload = await readPayload(response);
-  if (!response.ok || !payload.job) throw new Text2ImgApiError(payloadMessage(payload, "Unable to load FLUX generation."), response.status, payload);
+  if (!response.ok || !payload.job) throw new Text2ImgApiError(payloadMessage(payload, "Unable to load image generation."), response.status, payload);
   return payload.job;
 }

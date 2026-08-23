@@ -94,14 +94,17 @@ type PromptProvider = keyof typeof IMG2IMG_PROMPT_MODEL_STORAGE_KEYS;
 type PromptHealth = {
     ollama?: {
         online?: boolean;
+        model?: string;
         models?: string[];
     };
     sglang?: {
         online?: boolean;
+        model?: string;
         models?: string[];
     };
     vllm?: {
         online?: boolean;
+        model?: string;
         models?: string[];
     };
 };
@@ -387,11 +390,17 @@ export function ImageToImageWorkspace() {
             : promptHealth?.ollama;
         const availableModels = providerHealth?.models || [];
         const storedModel = explicitStoredPromptModel(promptProvider, availableModels);
+        const reportedModel = providerHealth?.model?.trim() || "";
+        const fixedProviderModel = promptProvider === "sglang"
+            ? availableModels.includes(reportedModel)
+                ? reportedModel
+                : availableModels.length === 1 ? availableModels[0] : ""
+            : "";
         const timer = window.setTimeout(() => {
             setPromptModel((current) => {
                 if (!availableModels.length) return "";
                 if (availableModels.includes(current)) return current;
-                return storedModel;
+                return storedModel || fixedProviderModel;
             });
         }, 0);
         return () => window.clearTimeout(timer);
@@ -556,9 +565,15 @@ export function ImageToImageWorkspace() {
         : promptHealth?.ollama;
     const promptProviderLabel = promptProvider === "sglang" ? "Qwen3.8" : "Ollama";
     const visiblePromptModels = promptProviderHealth?.models || [];
+    const reportedPromptModel = promptProviderHealth?.model?.trim() || "";
+    const fixedProviderPromptModel = promptProvider === "sglang"
+        ? visiblePromptModels.includes(reportedPromptModel)
+            ? reportedPromptModel
+            : visiblePromptModels.length === 1 ? visiblePromptModels[0] : ""
+        : "";
     const effectivePromptModel = visiblePromptModels.includes(promptModel)
         ? promptModel
-        : "";
+        : fixedProviderPromptModel;
     const promptProviderReady = Boolean(promptProviderHealth?.online && visiblePromptModels.includes(effectivePromptModel));
     const promptGenerationReady = Boolean(effectivePromptModel && promptProviderReady);
     const modelRuntimeReady = modelAllowedForRuntime(model, runtimeMode);
@@ -981,7 +996,9 @@ export function ImageToImageWorkspace() {
                             onChange={(event) => { setPromptDescription(event.target.value); if (error) setError(""); }}
                         />
                         <small id="img2img-description-help">
-                            {promptProviderLabel} 會分析來源圖片並產生正面與負面提示詞。
+                            {promptProvider === "sglang"
+                                ? "Qwen3.8 會根據轉換描述撰寫提示詞；來源圖片由 ComfyUI 圖生圖流程處理。"
+                                : "Ollama 會分析來源圖片並產生正面與負面提示詞。"}
                             {promptProviderReady ? ` 模型：${effectivePromptModel}` : " 視覺模型無法使用。"}
                         </small>
                     </label>
@@ -1003,7 +1020,7 @@ export function ImageToImageWorkspace() {
                             <option value="ollama">Ollama</option>
                             <option value="sglang">Qwen3.8 · OpenAI API</option>
                         </select>
-                        <small>選擇用來分析來源圖片並撰寫提示詞的本機引擎。</small>
+                        <small>選擇用來撰寫以圖生圖提示詞的引擎。</small>
                     </label>
                     {promptProvider === "ollama" ? <label className={styles.field}>
                         <span>{promptProviderLabel} 提示詞模型</span>
@@ -1026,7 +1043,7 @@ export function ImageToImageWorkspace() {
                     </label> : <div className={styles.field}>
                         <span>Qwen3.8 提示詞模型</span>
                         <strong>{effectivePromptModel || "尚未回報模型"}</strong>
-                        <small>此端點固定使用目前載入的 Qwen3.8 模型。</small>
+                        <small>此端點固定使用目前載入的純文字 Qwen3.8；來源圖片會直接交給 ComfyUI。</small>
                     </div>}
                     <button
                         type="button"

@@ -368,7 +368,11 @@ export function LongCreateForm() {
     if (next.inputType !== "image" && next.width && next.height) setResolutionStatus("manual");
     if (next.steps) setSteps(next.steps);
     if (next.seed !== undefined) setSeed(next.seed);
-    setModelProfile(RENDER_MODELS.some((model) => model.value === next.modelProfile) ? next.modelProfile : "nvfp4_blackwell");
+    const nextModelProfile = typeof next.modelProfile === "string"
+      && RENDER_MODELS.some((model) => model.value === next.modelProfile)
+      ? next.modelProfile
+      : "nvfp4_blackwell";
+    setModelProfile(nextModelProfile);
     const nextH3Enabled = next.h3LoraEnabled === true || next.h3LoraPreset === H3_REALISM_PEOPLE_PRESET || next.characterLoraName === H3_REALISM_PEOPLE_PRESET;
     setH3LoraEnabled(nextH3Enabled);
     setCharacterLoraName(nextH3Enabled ? H3_REALISM_PEOPLE_PRESET : next.characterLoraName || "");

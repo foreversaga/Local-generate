@@ -9,11 +9,15 @@ import {
   FLUX2_DEV_MODEL,
   FLUX2_DEV_TEXT_ENCODER,
   FLUX2_CLIP_TYPE,
-  FLUX2_TORCH_COMPILE_BACKEND,
+  KREA2_CLIP_TYPE,
+  KREA2_TEXT_ENCODER,
+  KREA2_TURBO_MODEL,
+  KREA2_VAE,
   NATURE_CAMERA_PROFILE,
   NATURE_CAMERA_SYSTEM_PROMPT,
   TEXT2IMG_REQUIRED_NODES,
   buildFlux2DevText2ImgPrompt,
+  buildKrea2TurboText2ImgPrompt,
   buildText2ImgPrompt,
   createText2ImgController,
   evaluateText2ImgReadiness,
@@ -25,9 +29,9 @@ import {
 
 const OBJECT_INFO = {
   ...Object.fromEntries(TEXT2IMG_REQUIRED_NODES.map((name) => [name, {}])),
-  UNETLoader: { input: { required: { unet_name: [[FLUX2_DEV_MODEL]] } } },
-  CLIPLoader: { input: { required: { clip_name: [[FLUX2_DEV_TEXT_ENCODER]], type: [[FLUX2_CLIP_TYPE]] } } },
-  VAELoader: { input: { required: { vae_name: [[FLUX2_VAE]] } } },
+  UNETLoader: { input: { required: { unet_name: [[FLUX2_DEV_MODEL, KREA2_TURBO_MODEL]] } } },
+  CLIPLoader: { input: { required: { clip_name: [[FLUX2_DEV_TEXT_ENCODER, KREA2_TEXT_ENCODER]], type: [[FLUX2_CLIP_TYPE, KREA2_CLIP_TYPE]] } } },
+  VAELoader: { input: { required: { vae_name: [[FLUX2_VAE, KREA2_VAE]] } } },
 };
 
 function response(payload, status = 200) {
@@ -47,7 +51,7 @@ async function waitForTerminal(controller, id) {
   throw new Error("Timed out waiting for text-to-image test job.");
 }
 
-test("builds the compiled fourteen-node FLUX.2 Dev graph", () => {
+test("builds the eager thirteen-node FLUX.2 Dev graph", () => {
   const graph = buildFlux2DevText2ImgPrompt({
     prompt: "A candid portrait in soft window light",
     width: 768,
@@ -56,7 +60,7 @@ test("builds the compiled fourteen-node FLUX.2 Dev graph", () => {
     seed: 42,
   }, { filenamePrefix: "text2img/test" });
 
-  assert.equal(Object.keys(graph).length, 14);
+  assert.equal(Object.keys(graph).length, 13);
   assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
   assert.deepEqual(graph["2"].inputs, { clip_name: FLUX2_DEV_TEXT_ENCODER, type: "flux2", device: "default" });
   assert.equal(graph["4"].inputs.text, "A candid portrait in soft window light");
@@ -66,8 +70,8 @@ test("builds the compiled fourteen-node FLUX.2 Dev graph", () => {
   assert.deepEqual(graph["9"].inputs, { steps: 20, width: 768, height: 1024 });
   assert.deepEqual(graph["10"].inputs, { width: 768, height: 1024, batch_size: 1 });
   assert.deepEqual(graph["13"].inputs.images, ["12", 0]);
-  assert.deepEqual(graph["14"], { class_type: "TorchCompileModel", inputs: { model: ["1", 0], backend: FLUX2_TORCH_COMPILE_BACKEND } });
-  assert.deepEqual(graph["6"].inputs.model, ["14", 0]);
+  assert.equal(Object.values(graph).some((node) => node.class_type === "TorchCompileModel"), false);
+  assert.deepEqual(graph["6"].inputs.model, ["1", 0]);
 });
 
 test("builds the official FLUX.2 Dev graph with Mistral guidance", () => {
@@ -79,12 +83,36 @@ test("builds the official FLUX.2 Dev graph with Mistral guidance", () => {
     seed: 77,
   });
 
-  assert.equal(Object.keys(graph).length, 14);
+  assert.equal(Object.keys(graph).length, 13);
   assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
   assert.equal(graph["2"].inputs.clip_name, FLUX2_DEV_TEXT_ENCODER);
   assert.deepEqual(graph["5"], { class_type: "FluxGuidance", inputs: { conditioning: ["4", 0], guidance: 4 } });
-  assert.deepEqual(graph["6"], { class_type: "BasicGuider", inputs: { model: ["14", 0], conditioning: ["5", 0] } });
+  assert.deepEqual(graph["6"], { class_type: "BasicGuider", inputs: { model: ["1", 0], conditioning: ["5", 0] } });
   assert.deepEqual(graph["9"].inputs, { steps: 20, width: 1024, height: 1024 });
+});
+
+test("builds the Krea 2 Turbo FP8 Scaled workflow with the requested GB10 defaults", () => {
+  const graph = buildKrea2TurboText2ImgPrompt({
+    prompt: "A candid smartphone portrait",
+    width: 1152,
+    height: 2048,
+    steps: 10,
+    seed: 8675309,
+  });
+
+  assert.equal(Object.keys(graph).length, 10);
+  assert.deepEqual(graph["1"].inputs, { unet_name: KREA2_TURBO_MODEL, weight_dtype: "default" });
+  assert.deepEqual(graph["2"].inputs, { clip_name: KREA2_TEXT_ENCODER, type: "krea2", device: "default" });
+  assert.equal(graph["3"].inputs.vae_name, KREA2_VAE);
+  assert.deepEqual(graph["5"], { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } });
+  assert.deepEqual(graph["6"].inputs, { width: 1152, height: 2048, batch_size: 1 });
+  assert.equal(graph["7"].inputs.shift, 1.15);
+  assert.deepEqual(graph["8"].inputs, {
+    model: ["7", 0], positive: ["4", 0], negative: ["5", 0], latent_image: ["6", 0],
+    seed: 8675309, steps: 10, cfg: 1, sampler_name: "er_sde", scheduler: "simple", denoise: 1,
+  });
+  assert.equal(graph["14"], undefined);
+  assert.equal(buildText2ImgPrompt({ prompt: "Krea", modelId: "krea2-turbo" })["1"].inputs.unet_name, KREA2_TURBO_MODEL);
 });
 
 test("validates prompt, dimensions, steps, and seed at the workflow boundary", () => {
@@ -106,6 +134,8 @@ test("validates prompt, dimensions, steps, and seed at the workflow boundary", (
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }), { code: "TEXT2IMG_MODEL_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", encoderId: "uncensored" }), { code: "TEXT2IMG_ENCODER_INVALID" });
   assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-dev" }).steps, 20);
+  assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "krea2-turbo", width: 2048, height: 2048 }).steps, 8);
+  assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "krea2-turbo", width: 2064 }), { code: "TEXT2IMG_WIDTH_INVALID" });
 });
 
 test("builds a bounded nature-camera description contract for realistic adult photography", () => {
@@ -166,14 +196,17 @@ test("uses an installed Ollama model to turn a short description into a photogra
   }
 });
 
-test("reports exact FLUX model and node readiness", () => {
+test("reports exact FLUX and Krea model and node readiness", () => {
   const ready = evaluateText2ImgReadiness(OBJECT_INFO);
   assert.equal(ready.ready, true);
   assert.deepEqual(ready.models, { diffusion: true, textEncoder: true, clipType: true, vae: true });
-  assert.deepEqual(Object.keys(ready.profiles), ["flux2-dev"]);
+  assert.deepEqual(Object.keys(ready.profiles), ["flux2-dev", "krea2-turbo"]);
   assert.equal(ready.profiles["flux2-dev"].ready, true);
   assert.equal(ready.profiles["flux2-dev"].commercial, false);
   assert.equal(ready.profiles["flux2-dev"].encoders.official.label, "Mistral 3 Small · BF16");
+  assert.equal(ready.profiles["krea2-turbo"].ready, true);
+  assert.equal(ready.profiles["krea2-turbo"].encoders.official.label, "Qwen3-VL 4B · FP8 Scaled");
+  assert.equal(evaluateText2ImgReadiness(OBJECT_INFO, { modelId: "krea2-turbo" }).ready, true);
   const missing = structuredClone(OBJECT_INFO);
   missing.UNETLoader.input.required.unet_name = [["another-model.safetensors"]];
   assert.equal(evaluateText2ImgReadiness(missing).reason, "MODEL_OR_COMPANION_MISSING");
