@@ -26,7 +26,9 @@ jobs:
           ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Apply SeedVR2 implementation
-        run: python3 scripts/apply-seedvr2-advanced-sampling.py
+        run: |
+          python3 -W ignore::SyntaxWarning scripts/apply-seedvr2-advanced-sampling.py
+          python3 scripts/fix-seedvr2-advanced-test.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -55,7 +57,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm scripts/apply-seedvr2-advanced-sampling.py .github/workflows/seedvr2-advanced-apply.yml
+          git rm scripts/apply-seedvr2-advanced-sampling.py scripts/fix-seedvr2-advanced-test.py .github/workflows/seedvr2-advanced-apply.yml
           git add server/video-upscale/seedvr2.mjs \
                   server/video-upscale/seedvr2-store.mjs \
                   app/components/tools/upscale-client.ts \
