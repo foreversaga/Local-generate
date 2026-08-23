@@ -48,6 +48,71 @@ test("SeedVR2 advanced sampling UI stays collapsed and preserves string editing 
   assert.match(client, /denoise\?: number/);
 });
 
+test("SeedVR2 detail reconstruction controls expose the complete backend contract", async () => {
+  const [workspace, client, controls, detailModel] = await Promise.all([
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/SeedVR2DetailControls.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/seedvr2-detail.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(workspace, /<SeedVR2DetailControls/);
+  assert.match(workspace, /parseSeedVR2DetailDraft\(detailDraft, seedVR2Help\.detail\.errors\)/);
+  assert.match(workspace, /\.\.\.detailSettings/);
+  assert.match(workspace, /handleSeedVR2DetailPreset/);
+  assert.match(workspace, /SEEDVR2_SKIN_DETAIL_PRESET/);
+  assert.match(workspace, /createSkinDetailSeedVR2Draft/);
+  assert.match(workspace, /createDefaultSeedVR2DetailDraft/);
+
+  for (const field of [
+    "detailPreset",
+    "inputNoiseScale",
+    "latentNoiseScale",
+    "tileWidth",
+    "tileHeight",
+    "tilePadding",
+    "tileUpscaleResolution",
+    "blendingMethod",
+    "antiAliasingStrength",
+    "maskBlur",
+    "tilingStrategy",
+  ]) {
+    assert.match(client, new RegExp(`${field}\\?:`));
+    assert.match(controls + detailModel, new RegExp(field));
+  }
+
+  assert.match(client, /detailPreset: "skin_detail"/);
+  assert.match(client, /inputNoiseScale: 0\.035/);
+  assert.match(client, /latentNoiseScale: 0/);
+  assert.match(client, /tileWidth: 1024/);
+  assert.match(client, /tileHeight: 1024/);
+  assert.match(client, /tilePadding: 64/);
+  assert.match(client, /tileUpscaleResolution: 2048/);
+  assert.match(client, /blendingMethod: "multiband"/);
+  assert.match(client, /antiAliasingStrength: 0/);
+  assert.match(client, /maskBlur: 0/);
+  assert.match(client, /tilingStrategy: "chess"/);
+
+  assert.match(detailModel, /inputNoiseScale: string/);
+  assert.match(detailModel, /tileUpscaleResolution: string/);
+  assert.match(detailModel, /parseDecimal\(draft\.inputNoiseScale, 0, 0\.2/);
+  assert.match(detailModel, /parseInteger\(draft\.tileWidth, 256, 2048, messages\.tileWidth, 64\)/);
+  assert.match(detailModel, /parseInteger\(draft\.tileUpscaleResolution, 512, 4096, messages\.tileUpscaleResolution, 64\)/);
+  assert.match(detailModel, /parseDecimal\(draft\.antiAliasingStrength, 0, 1/);
+  assert.match(detailModel, /parseDecimal\(draft\.maskBlur, 0, 64/);
+
+  assert.match(controls, /Input Noise Scale/);
+  assert.match(controls, /Latent Noise Scale/);
+  assert.match(controls, /Tile Width/);
+  assert.match(controls, /Tile Height/);
+  assert.match(controls, /Tile Padding/);
+  assert.match(controls, /Tile Upscale Resolution/);
+  assert.match(controls, /Blending Method/);
+  assert.match(controls, /Anti-aliasing Strength/);
+  assert.match(controls, /Mask Blur/);
+  assert.match(controls, /Tiling Strategy/);
+  assert.doesNotMatch(controls, /<details className=\{styles\.advancedSampling\} open/);
+});
 
 test("SeedVR2 controls explain what each setting and option does", async () => {
   const [workspace, helpCopy, styles] = await Promise.all([
@@ -70,18 +135,21 @@ test("SeedVR2 controls explain what each setting and option does", async () => {
   assert.match(styles, /\.fieldHelp\{/);
 
   for (const option of [
-    "lanczos", "bicubic", "bilinear", "nearest", "area",
-    "wavelet", "adain", "none",
+    "lanczos", "bicubic", "bilinear", "area",
+    "wavelet", "lab", "adain", "none",
     "euler", "euler_ancestral", "heun", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "res_multistep",
     "simple", "normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta",
+    "multiband", "linear", "gaussian", "chess", "grid",
   ]) {
     assert.match(helpCopy, new RegExp(`${option}:`));
   }
+  assert.match(helpCopy, /"nearest-exact":/);
   assert.match(helpCopy, /官方預設為 1/);
   assert.match(helpCopy, /留空會自動隨機/);
   assert.match(helpCopy, /官方預設，最適合官方 1 Step 配置/);
+  assert.match(helpCopy, /細節重建 \/ Tiled detail/);
+  assert.match(helpCopy, /0\.02–0\.06/);
 });
-
 
 test("SeedVR2 FP16 appears as the high-quality UI default without enabling backend submission", async () => {
   const [workspace, client] = await Promise.all([
