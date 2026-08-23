@@ -1,54 +1,79 @@
 name: SeedVR2 FP16 UI Bootstrap
 
 on:
-  push:
-    branches:
-      - codex/seedvr2-fp16-ui-final
   pull_request:
     branches:
       - main
     types:
       - opened
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   apply-and-verify:
-    if: ${{ github.event_name == 'push' || github.event.action == 'opened' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout branch
+      - name: Checkout feature branch
         uses: actions/checkout@v4
         with:
           ref: codex/seedvr2-fp16-ui-final
           fetch-depth: 0
 
+      - name: Check whether bootstrap is still needed
+        id: bootstrap
+        shell: bash
+        run: |
+          if [ -f scripts/apply-seedvr2-fp16-ui.py ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node.js
+        if: steps.bootstrap.outputs.run == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22.13.0
           cache: npm
 
       - name: Apply FP16 UI patch
-        run: python3 scripts/apply-seedvr2-fp16-ui.py
+        if: steps.bootstrap.outputs.run == 'true'
+        run: |
+          python3 scripts/apply-seedvr2-fp16-ui.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("app/components/tools/UpscaleWorkspace.tsx")
+          source = path.read_text(encoding="utf-8")
+          old = "    DEFAULT_UPSCALE_PROFILE,\n    DEFAULT_UPSCALE_UI_PROFILE,\n"
+          if source.count(old) != 1:
+              raise RuntimeError("expected one obsolete default-profile import")
+          path.write_text(source.replace(old, "    DEFAULT_UPSCALE_UI_PROFILE,\n", 1), encoding="utf-8")
+          PY
 
       - name: Remove temporary bootstrap files
+        if: steps.bootstrap.outputs.run == 'true'
         run: rm -f scripts/apply-seedvr2-fp16-ui.py .github/workflows/seedvr2-fp16-ui-bootstrap.yml
 
       - name: Install dependencies
+        if: steps.bootstrap.outputs.run == 'true'
         run: npm ci
 
       - name: Run SeedVR2 UI tests
+        if: steps.bootstrap.outputs.run == 'true'
         run: node --test tests/seedvr2-settings-ui.test.mjs
 
       - name: Lint
+        if: steps.bootstrap.outputs.run == 'true'
         run: npm run lint
 
       - name: Production build
+        if: steps.bootstrap.outputs.run == 'true'
         run: npm run build
 
       - name: Commit verified UI changes
+        if: steps.bootstrap.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
