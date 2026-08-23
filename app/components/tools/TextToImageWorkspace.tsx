@@ -29,12 +29,6 @@ const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
     { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
     { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
   ],
-  "krea2-turbo": [
-    { id: "square", width: 1536, height: 1536, label: "text2img.size.square" },
-    { id: "portrait", width: 1152, height: 2048, label: "text2img.size.portrait" },
-    { id: "landscape", width: 2048, height: 1152, label: "text2img.size.landscape" },
-    { id: "realisticPortrait", width: 1152, height: 2048, steps: 10, label: "text2img.size.realisticPortrait" },
-  ],
 };
 
 const DEFAULT_STEPS = 20;
@@ -60,22 +54,6 @@ const MODEL_OPTIONS = [
     stepsHelpKey: "text2img.steps.help.flux",
     negativeNoteKey: "text2img.negativeNote.flux",
     warningKey: "text2img.model.dev.warning",
-  },
-  {
-    id: "krea2-turbo",
-    mark: "K2",
-    nameKey: "text2img.model.krea.name",
-    noteKey: "text2img.model.krea.note",
-    licenseKey: "text2img.model.krea.license",
-    commercial: true,
-    defaultSteps: 8,
-    maxSteps: 20,
-    minDimension: 512,
-    maxDimension: 2048,
-    sizeHelpKey: "text2img.size.help.krea",
-    stepsHelpKey: "text2img.steps.help.krea",
-    negativeNoteKey: "text2img.negativeNote.krea",
-    warningKey: "text2img.model.krea.warning",
   },
 ] as const;
 
