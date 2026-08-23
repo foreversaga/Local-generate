@@ -20,13 +20,48 @@ export const SEEDVR2_COLOR_CORRECTIONS = [
     { id: "none", label: "不校色" },
 ] as const;
 
+export const SEEDVR2_SAMPLERS = [
+    { id: "euler", label: "Euler（官方預設）" },
+    { id: "euler_ancestral", label: "Euler Ancestral" },
+    { id: "heun", label: "Heun" },
+    { id: "dpmpp_2m", label: "DPM++ 2M" },
+    { id: "dpmpp_2m_sde", label: "DPM++ 2M SDE" },
+    { id: "dpmpp_3m_sde", label: "DPM++ 3M SDE" },
+    { id: "res_multistep", label: "RES Multistep" },
+] as const;
+
+export const SEEDVR2_SCHEDULERS = [
+    { id: "simple", label: "Simple（官方預設）" },
+    { id: "normal", label: "Normal" },
+    { id: "karras", label: "Karras" },
+    { id: "exponential", label: "Exponential" },
+    { id: "sgm_uniform", label: "SGM Uniform" },
+    { id: "ddim_uniform", label: "DDIM Uniform" },
+    { id: "beta", label: "Beta" },
+] as const;
+
+export const SEEDVR2_DEFAULT_SAMPLING = {
+    steps: 1,
+    cfg: 1,
+    samplerName: "euler",
+    scheduler: "simple",
+    denoise: 1,
+} as const;
+
 export type SeedVR2ResizeMethod = typeof SEEDVR2_RESIZE_METHODS[number]["id"];
 export type SeedVR2ColorCorrection = typeof SEEDVR2_COLOR_CORRECTIONS[number]["id"];
+export type SeedVR2SamplerName = typeof SEEDVR2_SAMPLERS[number]["id"];
+export type SeedVR2Scheduler = typeof SEEDVR2_SCHEDULERS[number]["id"];
 export type SeedVR2Settings = {
     scale: number;
     seed?: number;
     resizeMethod: SeedVR2ResizeMethod;
     colorCorrection: SeedVR2ColorCorrection;
+    steps?: number;
+    cfg?: number;
+    samplerName?: SeedVR2SamplerName;
+    scheduler?: SeedVR2Scheduler;
+    denoise?: number;
 };
 
 export const UPSCALE_PROFILES = [
@@ -69,6 +104,11 @@ export type UpscaleJob = {
     seed?: number;
     resizeMethod?: SeedVR2ResizeMethod;
     colorCorrection?: SeedVR2ColorCorrection;
+    steps?: number;
+    cfg?: number;
+    samplerName?: SeedVR2SamplerName;
+    scheduler?: SeedVR2Scheduler;
+    denoise?: number;
     prompt?: Record<string, unknown> | null;
     promptId?: string;
     output?: StudioAsset | null;

@@ -18,6 +18,9 @@ import {
     SEEDVR2_SCALE_MAX,
     SEEDVR2_RESIZE_METHODS,
     SEEDVR2_COLOR_CORRECTIONS,
+    SEEDVR2_SAMPLERS,
+    SEEDVR2_SCHEDULERS,
+    SEEDVR2_DEFAULT_SAMPLING,
     upscaleAssetHref,
     UpscaleApiError,
     type UpscaleHealth,
@@ -25,6 +28,8 @@ import {
     type UpscaleProfile,
     type SeedVR2ResizeMethod,
     type SeedVR2ColorCorrection,
+    type SeedVR2SamplerName,
+    type SeedVR2Scheduler,
 } from "./upscale-client";
 import styles from "./UpscaleWorkspace.module.css";
 
@@ -32,7 +37,7 @@ const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 export function UpscaleWorkspace() {
-    const { locale } = useI18n();
+    const { locale, t } = useI18n();
     const { ACTION_LABELS } = localizedCopy(locale);
     const [source, setSource] = useState<StudioAsset | null>(null);
     const [job, setJob] = useState<UpscaleJob | null>(null);
@@ -41,6 +46,11 @@ export function UpscaleWorkspace() {
     const [seed, setSeed] = useState("");
     const [resizeMethod, setResizeMethod] = useState<SeedVR2ResizeMethod>("lanczos");
     const [colorCorrection, setColorCorrection] = useState<SeedVR2ColorCorrection>("wavelet");
+    const [steps, setSteps] = useState(String(SEEDVR2_DEFAULT_SAMPLING.steps));
+    const [cfg, setCfg] = useState(String(SEEDVR2_DEFAULT_SAMPLING.cfg));
+    const [samplerName, setSamplerName] = useState<SeedVR2SamplerName>(SEEDVR2_DEFAULT_SAMPLING.samplerName);
+    const [scheduler, setScheduler] = useState<SeedVR2Scheduler>(SEEDVR2_DEFAULT_SAMPLING.scheduler);
+    const [denoise, setDenoise] = useState(String(SEEDVR2_DEFAULT_SAMPLING.denoise));
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
     const [healthError, setHealthError] = useState("");
@@ -50,6 +60,14 @@ export function UpscaleWorkspace() {
     const sourceKind = source?.kind || "video";
     const isSeedVR2 = profile === "seedvr2_7b_sharp_nvfp4";
     const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
+    const samplingIsDefault = steps.trim() !== ""
+        && Number(steps) === SEEDVR2_DEFAULT_SAMPLING.steps
+        && cfg.trim() !== ""
+        && Number(cfg) === SEEDVR2_DEFAULT_SAMPLING.cfg
+        && samplerName === SEEDVR2_DEFAULT_SAMPLING.samplerName
+        && scheduler === SEEDVR2_DEFAULT_SAMPLING.scheduler
+        && denoise.trim() !== ""
+        && Number(denoise) === SEEDVR2_DEFAULT_SAMPLING.denoise;
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
@@ -139,11 +157,34 @@ export function UpscaleWorkspace() {
             if (parsedSeed !== undefined && (!Number.isSafeInteger(parsedSeed) || parsedSeed < 0 || parsedSeed > 2_147_483_647)) {
                 throw new Error("隨機種子必須是 0 到 2147483647 的整數，留空則每次隨機。");
             }
+            let samplingSettings = {};
+            if (isSeedVR2) {
+                const parsedSteps = Number(steps);
+                const parsedCfg = Number(cfg);
+                const parsedDenoise = Number(denoise);
+                if (steps.trim() === "" || !Number.isSafeInteger(parsedSteps) || parsedSteps < 1 || parsedSteps > 20) {
+                    throw new Error(t("upscale.seedvr2.steps.error"));
+                }
+                if (cfg.trim() === "" || !Number.isFinite(parsedCfg) || parsedCfg < 0 || parsedCfg > 20) {
+                    throw new Error(t("upscale.seedvr2.cfg.error"));
+                }
+                if (denoise.trim() === "" || !Number.isFinite(parsedDenoise) || parsedDenoise < 0 || parsedDenoise > 1) {
+                    throw new Error(t("upscale.seedvr2.denoise.error"));
+                }
+                samplingSettings = {
+                    steps: parsedSteps,
+                    cfg: Math.round(parsedCfg * 100) / 100,
+                    samplerName,
+                    scheduler,
+                    denoise: Math.round(parsedDenoise * 100) / 100,
+                };
+            }
             const next = await submitUpscale(source, profile, {
                 scale: isSeedVR2 ? parsedScale : UPSCALE_SCALE,
                 seed: parsedSeed,
                 resizeMethod,
                 colorCorrection,
+                ...samplingSettings,
             });
             setJob(next);
             if (next.status === "failed") setError(next.error || `${selectedProfile.label} 升頻失敗。`);
@@ -247,6 +288,16 @@ export function UpscaleWorkspace() {
         setError("");
     }
 
+    function resetSeedVR2Sampling() {
+        if (active || busy) return;
+        setSteps(String(SEEDVR2_DEFAULT_SAMPLING.steps));
+        setCfg(String(SEEDVR2_DEFAULT_SAMPLING.cfg));
+        setSamplerName(SEEDVR2_DEFAULT_SAMPLING.samplerName);
+        setScheduler(SEEDVR2_DEFAULT_SAMPLING.scheduler);
+        setDenoise(String(SEEDVR2_DEFAULT_SAMPLING.denoise));
+        setError("");
+    }
+
     return (
         <div className={styles.workspace}>
             <section className={styles.header}>
@@ -309,7 +360,7 @@ export function UpscaleWorkspace() {
                         <div className={styles.parameterPanel} aria-label="SeedVR2 進階參數">
                             <div className={styles.parameterHeading}>
                                 <strong>SeedVR2 參數</strong>
-                                <span>採樣器維持官方單步設定</span>
+                                <span>{t("upscale.seedvr2.defaultSampling")}</span>
                             </div>
                             <div className={styles.parameterGrid}>
                                 <label className={styles.profileField}>
@@ -334,6 +385,44 @@ export function UpscaleWorkspace() {
                                 </label>
                             </div>
                             <p className={styles.helper}>1–4× 可調；倍數越高會明顯增加統一記憶體用量與處理時間。</p>
+                            <details className={styles.advancedSampling}>
+                                <summary>
+                                    <span>{t("upscale.seedvr2.advancedSampling")}</span>
+                                    <small>1 / 1 / euler / simple / 1.0</small>
+                                </summary>
+                                <div className={styles.advancedSamplingBody}>
+                                    <div className={styles.parameterGrid}>
+                                        <label className={styles.profileField}>
+                                            <span>{t("upscale.seedvr2.steps")}</span>
+                                            <input type="number" min="1" max="20" step="1" value={steps} onChange={(event) => setSteps(event.target.value)} disabled={active || Boolean(busy)} />
+                                        </label>
+                                        <label className={styles.profileField}>
+                                            <span>{t("upscale.seedvr2.cfg")}</span>
+                                            <input type="number" min="0" max="20" step="0.05" value={cfg} onChange={(event) => setCfg(event.target.value)} disabled={active || Boolean(busy)} />
+                                        </label>
+                                        <label className={styles.profileField}>
+                                            <span>{t("upscale.seedvr2.sampler")}</span>
+                                            <select value={samplerName} onChange={(event) => setSamplerName(event.target.value as SeedVR2SamplerName)} disabled={active || Boolean(busy)}>
+                                                {SEEDVR2_SAMPLERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                            </select>
+                                        </label>
+                                        <label className={styles.profileField}>
+                                            <span>{t("upscale.seedvr2.scheduler")}</span>
+                                            <select value={scheduler} onChange={(event) => setScheduler(event.target.value as SeedVR2Scheduler)} disabled={active || Boolean(busy)}>
+                                                {SEEDVR2_SCHEDULERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                            </select>
+                                        </label>
+                                        <label className={styles.profileField}>
+                                            <span>{t("upscale.seedvr2.denoise")}</span>
+                                            <input type="number" min="0" max="1" step="0.05" value={denoise} onChange={(event) => setDenoise(event.target.value)} disabled={active || Boolean(busy)} />
+                                        </label>
+                                    </div>
+                                    <div className={styles.advancedSamplingFooter}>
+                                        <button type="button" className={styles.textButton} onClick={resetSeedVR2Sampling} disabled={active || Boolean(busy)}>{t("upscale.seedvr2.resetSampling")}</button>
+                                        {!samplingIsDefault && <p className={styles.samplingWarning} role="status">{t("upscale.seedvr2.experimentalWarning")}</p>}
+                                    </div>
+                                </div>
+                            </details>
                         </div>
                     )}
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">
