@@ -1,3 +1,0 @@
-   const missing = structuredClone(OBJECT_INFO);
-   missing.UNETLoader.input.required.unet_name = [["another-model.safetensors"]];
-   assert.equal(evaluateText2ImgReadiness(missing).reason, "MODEL_OR_COMPANION_MISSING");
