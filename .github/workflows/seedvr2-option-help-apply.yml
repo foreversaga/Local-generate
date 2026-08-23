@@ -1,5 +1,6 @@
 name: Apply SeedVR2 option help
 
+# Kept only on the feature branch while the verified patch is applied.
 on:
   push:
     branches:
