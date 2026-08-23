@@ -56,6 +56,7 @@ export function adaptJob(raw, source = "video") {
     rawStatus: String(raw?.status || "queued"),
     title: jobTitle(raw, source),
     subtitle: jobSubtitle(raw, source),
+    description: jobDescription(raw, source),
     prompt: typeof raw?.prompt === "string"
       ? raw.prompt
       : source === "long" && typeof raw?.inputText === "string"
@@ -141,6 +142,33 @@ function positiveInteger(value) {
 function numericOrNull(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function firstNonEmptyText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "";
+}
+
+function jobDescription(raw, source) {
+  const request = raw?.provenance?.request && typeof raw.provenance.request === "object"
+    ? raw.provenance.request
+    : {};
+  if (source === "long") {
+    return firstNonEmptyText(raw?.description, raw?.inputText, request.description, request.inputText);
+  }
+  if (source === "img2img") {
+    return firstNonEmptyText(raw?.promptDescription, request.promptDescription, raw?.description, request.description);
+  }
+  return firstNonEmptyText(
+    raw?.initialDescription,
+    request.initialDescription,
+    raw?.promptDescription,
+    request.promptDescription,
+    raw?.description,
+    request.description,
+  );
 }
 
 function jobTitle(raw, source) {

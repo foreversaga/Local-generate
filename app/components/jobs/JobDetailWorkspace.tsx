@@ -120,6 +120,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const active = job.status === "queued" || job.status === "running";
   const complete = job.status === "complete" || job.status === "partial";
+  const showPromptText = Boolean(job.prompt && (!job.description || job.prompt.trim() !== job.description.trim()));
   const hasElapsed = Number.isFinite(job.elapsedMs);
   const elapsedText = hasElapsed
     ? t("jobs.elapsed", { duration: formatEtaDuration(Number(job.elapsedMs), t) })
@@ -179,13 +180,13 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         {job.artifact && <p className={styles.artifactLine}>成品：{job.artifact.fileName || job.artifact.displayName || "LoRA 模型產物"}</p>}
 
         <div className={styles.detailDisclosures}>
-          {job.prompt && (
+          {(job.description || job.prompt || job.negativePrompt) && (
             <details className={styles.detailDisclosure}>
-              <summary>提示詞</summary>
+              <summary>提示詞與描述</summary>
               <div className={styles.detailDisclosureBody}>
-                {complete && <SaveJobAsScript defaultName={job.title} prompt={job.prompt} negativePrompt={job.negativePrompt || ""} />}
-                <strong>Prompt</strong>
-                <pre className={styles.promptPreview}>{job.prompt}</pre>
+                {job.description && <><strong>提示詞描述</strong><pre className={styles.promptPreview}>{job.description}</pre></>}
+                {complete && job.prompt && <SaveJobAsScript defaultName={job.title} prompt={job.prompt} negativePrompt={job.negativePrompt || ""} />}
+                {showPromptText && <><strong>Prompt</strong><pre className={styles.promptPreview}>{job.prompt}</pre></>}
                 {job.negativePrompt && <><strong>Negative Prompt</strong><pre className={styles.promptPreview}>{job.negativePrompt}</pre></>}
               </div>
             </details>

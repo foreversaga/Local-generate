@@ -94,6 +94,7 @@ export type Img2ImgJob = {
     poseRoot?: "input" | "output";
     poseControlStrength?: number;
     poseResolution?: number;
+    promptDescription?: string;
     prompt: string;
     negativePrompt: string;
     model: string;
@@ -130,6 +131,7 @@ export type Img2ImgSubmitInput = {
     poseRoot?: "input" | "output";
     poseControlStrength?: number;
     poseResolution?: number;
+    promptDescription?: string;
     prompt: string;
     negativePrompt: string;
     ollamaPromptReceipt?: string;

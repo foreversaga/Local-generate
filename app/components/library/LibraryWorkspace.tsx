@@ -189,6 +189,7 @@ export function LibraryWorkspace() {
             setSelectedFolders(new Set());
             setPendingDelete(null);
             setSelectionMode(false);
+            setPreview(null);
             await refresh();
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
