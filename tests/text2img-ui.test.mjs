@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("exposes FLUX and Krea through the existing Studio text-to-image route and API", async () => {
+test("exposes FLUX through the existing Studio text-to-image route and API", async () => {
   const [toolsPage, routePage, workspace, client, dictionaries, bridge, envExample, settings] = await Promise.all([
     readFile(new URL("../app/(studio)/tools/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/(studio)/tools/text-to-image/page.tsx", import.meta.url), "utf8"),
@@ -27,10 +27,8 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
   assert.match(workspace, /nature-camera/);
   assert.match(workspace, /flux2-dev/);
-  assert.match(workspace, /krea2-turbo/);
-  assert.match(workspace, /text2img\.model\.krea\.name/);
-  assert.match(workspace, /1152, height: 2048, steps: 10/);
-  assert.match(workspace, /2048, height: 1152/);
+  assert.doesNotMatch(workspace, /1152, height: 2048, steps: 10/);
+  assert.doesNotMatch(workspace, /2048, height: 1152/);
   assert.doesNotMatch(workspace, /flux2-klein-[49]b/);
   assert.doesNotMatch(workspace, /juggernaut-xl-v9/);
   assert.match(workspace, /name="image-model"/);
@@ -81,8 +79,6 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(dictionaries, /"text2img\.description\.copy\.copied"/);
   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
-  assert.match(dictionaries, /"text2img\.model\.krea\.name"/);
-  assert.match(dictionaries, /"text2img\.size\.realisticPortrait"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.[49]b\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.juggernaut\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.adultMode\.on\.name"/);
