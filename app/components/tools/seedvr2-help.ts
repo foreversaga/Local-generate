@@ -1,9 +1,42 @@
 import type {
+    SeedVR2BlendingMethod,
     SeedVR2ColorCorrection,
+    SeedVR2DetailPreset,
     SeedVR2ResizeMethod,
     SeedVR2SamplerName,
     SeedVR2Scheduler,
+    SeedVR2TilingStrategy,
 } from "./upscale-client";
+
+type SeedVR2DetailHelpCopy = {
+    sectionTitle: string;
+    sectionSummaryDefault: string;
+    sectionSummarySkin: string;
+    presetLabel: string;
+    reset: string;
+    experimentalWarning: string;
+    preset: Record<SeedVR2DetailPreset, string>;
+    inputNoiseScale: string;
+    latentNoiseScale: string;
+    tileWidth: string;
+    tileHeight: string;
+    tilePadding: string;
+    tileUpscaleResolution: string;
+    antiAliasingStrength: string;
+    maskBlur: string;
+    blendingMethod: Record<SeedVR2BlendingMethod, string>;
+    tilingStrategy: Record<SeedVR2TilingStrategy, string>;
+    errors: {
+        inputNoiseScale: string;
+        latentNoiseScale: string;
+        tileWidth: string;
+        tileHeight: string;
+        tilePadding: string;
+        tileUpscaleResolution: string;
+        antiAliasingStrength: string;
+        maskBlur: string;
+    };
+};
 
 type SeedVR2HelpCopy = {
     scale: string;
@@ -15,6 +48,7 @@ type SeedVR2HelpCopy = {
     colorCorrection: Record<SeedVR2ColorCorrection, string>;
     sampler: Record<SeedVR2SamplerName, string>;
     scheduler: Record<SeedVR2Scheduler, string>;
+    detail: SeedVR2DetailHelpCopy;
 };
 
 const ZH_TW_HELP: SeedVR2HelpCopy = {
@@ -27,11 +61,12 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
         lanczos: "高品質且偏銳利的重採樣，較能保留邊緣與細節；一般放大優先選擇。",
         bicubic: "細節與平滑度較平衡，畫面通常比 Lanczos 柔和一些。",
         bilinear: "平滑且計算簡單，較容易柔化細節；適合不希望邊緣過銳的素材。",
-        nearest: "直接使用鄰近像素、不做平滑；像素邊界最硬，較適合像素風素材。",
+        "nearest-exact": "直接使用鄰近像素、不做平滑；像素邊界最硬，較適合像素風素材。",
         area: "以區域平均方式重採樣，縮小時穩定；用於放大時通常會較柔和。",
     },
     colorCorrection: {
         wavelet: "以多尺度方式校正輸出色彩，通常能兼顧來源色調與修復結果；目前建議選項。",
+        lab: "在 LAB 色彩空間對齊來源與輸出，通常能保留亮度細節並讓色彩更接近原圖。",
         adain: "以特徵統計對齊色彩與對比，校正較積極，可能改變部分局部色調。",
         none: "不做額外色彩對齊；保留模型原始輸出，但可能與來源畫面產生色偏。",
     },
@@ -53,6 +88,45 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
         ddim_uniform: "使用 DDIM 類型的均勻步驟配置，行為較規則，主要用於多步或相容性實驗。",
         beta: "依 Beta 分布安排噪聲步驟，使取樣密度偏向特定區段；屬於進階實驗選項。",
     },
+    detail: {
+        sectionTitle: "細節重建 / Tiled detail",
+        sectionSummaryDefault: "預設關閉細節增強",
+        sectionSummarySkin: "皮膚細節 · 0.035 noise · 1024 tile",
+        presetLabel: "細節預設",
+        reset: "重設細節參數",
+        experimentalWarning: "細節重建參數不是目前原生 SeedVR2 workflow 的預設；後端接上 tiled/detail workflow 後才會實際生效。提高 noise 或 tile 解析度也會增加偏離原圖、記憶體與耗時風險。",
+        preset: {
+            default: "預設（維持原工作流）",
+            skin_detail: "皮膚細節（毛孔／髮絲／材質）",
+        },
+        inputNoiseScale: "在輸入影像加入少量噪聲，讓模型有空間重建毛孔與其他高頻細節。真人素材建議從 0.02–0.06 測試。",
+        latentNoiseScale: "在 latent 階段加入噪聲。皮膚細節模式預設為 0；提高通常會讓結果更柔或增加變化。",
+        tileWidth: "每個細節重建 tile 的寬度。1024 是高品質起點；越大越吃記憶體。",
+        tileHeight: "每個細節重建 tile 的高度。通常與 Tile Width 保持一致。",
+        tilePadding: "tile 周圍額外重疊區域，可降低接縫；64 是一般高品質起點。",
+        tileUpscaleResolution: "單一 tile 的細節重建目標解析度；2048 能提供較多高頻重建空間，但會增加記憶體與耗時。",
+        antiAliasingStrength: "細節保留優先時使用 0；提高會平滑鋸齒，也可能把皮膚高頻紋理一起柔化。",
+        maskBlur: "tile 混合遮罩的模糊程度。細節保留優先使用 0；提高可柔化接縫但也可能降低局部清晰度。",
+        blendingMethod: {
+            multiband: "以多頻段混合 tile，通常最能兼顧接縫與高頻細節；皮膚細節建議。",
+            linear: "線性混合重疊區，速度與行為較單純，但複雜材質可能較容易看出接縫。",
+            gaussian: "以高斯權重柔和混合 tile，接縫自然但可能比 Multiband 更柔。",
+        },
+        tilingStrategy: {
+            chess: "棋盤式分批處理相鄰 tile，降低邊界互相干擾；細節模式建議。",
+            grid: "依規則網格逐塊處理，行為直觀，但接縫控制更依賴 padding 與 blending。",
+        },
+        errors: {
+            inputNoiseScale: "Input Noise Scale 必須介於 0 到 0.2。",
+            latentNoiseScale: "Latent Noise Scale 必須介於 0 到 0.2。",
+            tileWidth: "Tile Width 必須是 256 到 2048 之間且為 64 的倍數。",
+            tileHeight: "Tile Height 必須是 256 到 2048 之間且為 64 的倍數。",
+            tilePadding: "Tile Padding 必須是 0 到 256 的整數。",
+            tileUpscaleResolution: "Tile Upscale Resolution 必須是 512 到 4096 之間且為 64 的倍數。",
+            antiAliasingStrength: "Anti-aliasing Strength 必須介於 0 到 1。",
+            maskBlur: "Mask Blur 必須介於 0 到 64。",
+        },
+    },
 };
 
 const EN_HELP: SeedVR2HelpCopy = {
@@ -65,11 +139,12 @@ const EN_HELP: SeedVR2HelpCopy = {
         lanczos: "High-quality, sharper resampling that preserves edges and detail well; a strong default for upscaling.",
         bicubic: "Balances detail and smoothness and is usually softer than Lanczos.",
         bilinear: "Simple, smooth resampling that can soften fine detail; useful when sharp edges are undesirable.",
-        nearest: "Uses the nearest pixel without smoothing, producing hard pixel edges; best suited to pixel-art-like sources.",
+        "nearest-exact": "Uses the nearest pixel without smoothing, producing hard pixel edges; best suited to pixel-art-like sources.",
         area: "Area-averaged resampling that is stable for downscaling and usually softer when enlarging.",
     },
     colorCorrection: {
         wavelet: "Multi-scale color correction that usually balances source color with the restored result; currently recommended.",
+        lab: "Matches source and output in LAB color space, generally preserving luminance detail while keeping color close to the source.",
         adain: "Aligns feature statistics for color and contrast more aggressively and may alter some local tones.",
         none: "Disables extra color matching; keeps the model output untouched but may allow color drift from the source.",
     },
@@ -90,6 +165,45 @@ const EN_HELP: SeedVR2HelpCopy = {
         sgm_uniform: "Distributes steps uniformly in SGM time/noise coordinates; mainly useful for multi-step comparisons.",
         ddim_uniform: "Uses a DDIM-style uniform step schedule with regular spacing, mainly for multi-step or compatibility experiments.",
         beta: "Distributes noise steps with a beta schedule so density favors selected regions; an advanced experimental option.",
+    },
+    detail: {
+        sectionTitle: "Detail reconstruction / Tiled detail",
+        sectionSummaryDefault: "Detail enhancement off by default",
+        sectionSummarySkin: "Skin detail · 0.035 noise · 1024 tile",
+        presetLabel: "Detail preset",
+        reset: "Reset detail settings",
+        experimentalWarning: "These controls are not part of the current native SeedVR2 workflow. They take effect after the backend detail/tiled workflow is connected. More noise or larger tile reconstruction can also increase drift, memory use, and runtime.",
+        preset: {
+            default: "Default (preserve current workflow)",
+            skin_detail: "Skin detail (pores / hair / material)",
+        },
+        inputNoiseScale: "Adds a small amount of noise before reconstruction so the model has room to rebuild pores and other high-frequency detail. For people, start around 0.02–0.06.",
+        latentNoiseScale: "Adds noise in latent space. Skin detail defaults to 0; increasing it commonly softens the result or adds variation.",
+        tileWidth: "Width of each detail reconstruction tile. 1024 is a strong quality starting point; larger values use more memory.",
+        tileHeight: "Height of each detail reconstruction tile. Usually keep it aligned with Tile Width.",
+        tilePadding: "Extra overlap around each tile to reduce seams. 64 is a common high-quality starting point.",
+        tileUpscaleResolution: "Target reconstruction resolution for each tile. 2048 gives the model more high-frequency reconstruction space at higher memory and runtime cost.",
+        antiAliasingStrength: "Use 0 when fine detail preservation is the priority. Higher values smooth jagged edges but may also soften skin texture.",
+        maskBlur: "Controls tile blend-mask blur. Use 0 for maximum detail; higher values can hide seams while softening local detail.",
+        blendingMethod: {
+            multiband: "Blends tiles across frequency bands and usually preserves fine detail while hiding seams; recommended for skin detail.",
+            linear: "Linearly blends overlap regions. It is simple and predictable, but complex textures can reveal seams more easily.",
+            gaussian: "Uses Gaussian weighting for softer transitions; seams can look natural but results may be softer than Multiband.",
+        },
+        tilingStrategy: {
+            chess: "Processes neighboring tiles in a chess pattern to reduce boundary interference; recommended for detail reconstruction.",
+            grid: "Processes a regular grid; straightforward, but seam quality depends more heavily on padding and blending.",
+        },
+        errors: {
+            inputNoiseScale: "Input Noise Scale must be between 0 and 0.2.",
+            latentNoiseScale: "Latent Noise Scale must be between 0 and 0.2.",
+            tileWidth: "Tile Width must be 256–2048 and a multiple of 64.",
+            tileHeight: "Tile Height must be 256–2048 and a multiple of 64.",
+            tilePadding: "Tile Padding must be an integer from 0 to 256.",
+            tileUpscaleResolution: "Tile Upscale Resolution must be 512–4096 and a multiple of 64.",
+            antiAliasingStrength: "Anti-aliasing Strength must be between 0 and 1.",
+            maskBlur: "Mask Blur must be between 0 and 64.",
+        },
     },
 };
 
