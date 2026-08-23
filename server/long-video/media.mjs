@@ -157,6 +157,28 @@ export async function extractTailFrame({ inputPath, outputPath, tools = {}, run 
   return { outputPath, response };
 }
 
+export async function trimLeadingOverlap({ inputPath, outputPath, frames = 1, fps = 24, tools = {}, run = runCommand, logger = null }) {
+  if (!inputPath || !outputPath) throw new LongVideoError("MEDIA_INPUT_REQUIRED", "Input and output paths are required.");
+  const trimFrames = Math.max(0, Math.floor(Number(frames) || 0));
+  if (!trimFrames) return { outputPath: inputPath, trimmedFrames: 0 };
+  const executables = tools.executables || mediaExecutables();
+  const seconds = trimFrames / Number(fps);
+  const args = [
+    "-y", "-i", inputPath,
+    "-vf", `trim=start_frame=${trimFrames},setpts=PTS-STARTPTS`,
+    "-af", `atrim=start=${seconds.toFixed(9)},asetpts=PTS-STARTPTS`,
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", outputPath,
+  ];
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await logger?.({ event: "media.overlap_trim.start", executable: executables.ffmpeg, args, inputPath, outputPath, trimFrames, fps });
+  const response = await run(executables.ffmpeg, args).catch((error) => {
+    throw new LongVideoError("FFMPEG_UNAVAILABLE", `Unable to execute ffmpeg: ${error.message}`, 503, { executable: executables.ffmpeg, error: error.message });
+  });
+  if (response.exitCode !== 0) throw new LongVideoError("FFMPEG_OVERLAP_TRIM_FAILED", "ffmpeg failed while trimming the continuity overlap.", 502, { exitCode: response.exitCode, stderrTail: tail(response.stderr) });
+  await logger?.({ event: "media.overlap_trim.success", outputPath, trimFrames, seconds });
+  return { outputPath, trimmedFrames: trimFrames, seconds };
+}
+
 /**
  * Keep a short, normalized visual reference for the next H3 storyboard shot.
  * Audio is excluded by default so an independent shot cannot accidentally
@@ -194,3 +216,4 @@ export { tail as stderrTail };
 export const normalizeSegment = normalizeVideo;
 export const extractNormalizedTail = extractTailFrame;
 export const extractNormalizedTailAvContext = extractTailAvContext;
+export const trimNormalizedOverlap = trimLeadingOverlap;

@@ -19,6 +19,7 @@ export function summarizeJobRecord(job) {
   for (const key of [
     "id", "status", "mode", "title", "sourceName", "displayName", "slug", "family",
     "model", "modelProfile", "width", "height", "duration", "steps", "seed", "attempt",
+    "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "shotCount", "continuityMode", "effectiveContinuityMode", "continuityFallback", "continuityWarning", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize",
     "stage", "progress", "segmentProgress", "progressSource", "connectionState",
     "comfyNode", "comfyNodeId", "comfyNodeTitle", "nativeCurrent", "nativeMaximum",
     "etaMs", "etaLowerMs", "etaUpperMs", "etaSource", "etaConfidence", "timingSampleCount",

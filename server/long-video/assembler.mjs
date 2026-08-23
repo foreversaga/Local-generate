@@ -9,14 +9,26 @@ function concatLine(filePath, baseDir = process.cwd()) {
   return `file '${normalized}'`;
 }
 
-export async function assembleSegments({ segmentPaths, outputFolder, assemblyDir, revision = 1, duration, width, height, tools = {}, run = runCommand, logger = null }) {
-  if (!Array.isArray(segmentPaths) || segmentPaths.length < 2) throw new LongVideoError("ASSEMBLY_SEGMENTS_REQUIRED", "At least two normalized segments are required.");
+export async function assembleSegments({ segmentPaths, outputFolder, assemblyDir, revision = 1, duration, width, height, masterNormalize = "off", allowSingleSegment = false, tools = {}, run = runCommand, logger = null }) {
+  const minimumSegments = allowSingleSegment ? 1 : 2;
+  if (!Array.isArray(segmentPaths) || segmentPaths.length < minimumSegments) throw new LongVideoError("ASSEMBLY_SEGMENTS_REQUIRED", `At least ${minimumSegments} normalized segment${minimumSegments === 1 ? " is" : "s are"} required.`);
   const concatPath = path.join(assemblyDir || outputFolder, "concat.txt");
   await fs.mkdir(path.dirname(concatPath), { recursive: true });
   await fs.writeFile(concatPath, segmentPaths.map((segmentPath) => concatLine(segmentPath, path.dirname(concatPath))).join("\n") + "\n", "utf8");
   const outputPath = sequenceOutputFile(outputFolder, `final-r${String(revision).padStart(3, "0")}.mp4`);
   const executables = tools.executables || mediaExecutables();
-  const args = ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", outputPath];
+  if (!["off", "luma", "luma+contrast"].includes(masterNormalize)) throw new LongVideoError("MASTER_NORMALIZE_INVALID", "masterNormalize must be off, luma, or luma+contrast.", 400);
+  const args = ["-y", "-f", "concat", "-safe", "0", "-i", concatPath];
+  if (masterNormalize === "off") {
+    args.push("-c", "copy", outputPath);
+  } else {
+    // Temporal normalization runs only after assembly, never in the H3
+    // feedback loop. Luma keeps RGB linked; luma+contrast also balances
+    // channel steps to reduce warm/cold boundary shifts.
+    const contrastAndColor = masterNormalize === "luma+contrast";
+    const strength = contrastAndColor ? "0.55" : "0.35";
+    args.push("-vf", `normalize=independence=${contrastAndColor ? 1 : 0}:smoothing=48:strength=${strength}`, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", outputPath);
+  }
   await logger?.({ event: "assembly.start", executable: executables.ffmpeg, args, outputPath, segmentCount: segmentPaths.length });
   let response;
   try { response = await run(executables.ffmpeg, args); } catch (error) {
@@ -30,7 +42,7 @@ export async function assembleSegments({ segmentPaths, outputFolder, assemblyDir
   const probe = tools.probe ? await tools.probe(outputPath) : await probeMedia(outputPath, { executables, run, logger });
   validateNormalizedProbe(probe, { duration, width, height, fps: 24 });
   await logger?.({ event: "assembly.success", outputPath, exitCode: response.exitCode, duration: probe.format?.duration || null });
-  return { outputPath, concatPath, probe, response, revision };
+  return { outputPath, concatPath, probe, response, revision, masterNormalize };
 }
 
 export { concatLine };

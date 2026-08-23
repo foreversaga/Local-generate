@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-H3_ROOT = Path(r"C:\Users\forev\minimax-h3-local")
+H3_ROOT = Path(os.environ.get("MINIMAX_H3_ROOT", PROJECT_ROOT.parent / "minimax-workflow")).resolve()
 H3_SRC = H3_ROOT / "src"
 
 
@@ -18,6 +19,7 @@ def _wrapper_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--latent-clip-index", type=int, required=True)
     parser.add_argument("--latent-previous-clip-index", type=int)
     parser.add_argument("--latent-context-frames", type=int, default=39)
+    parser.add_argument("--latent-delivery-policy", choices=("nearest", "ceil"), default="nearest")
     return parser.parse_known_args(argv)
 
 
@@ -41,8 +43,10 @@ def _nearest_h3_frame_count(requested_frames: int) -> int:
     return min(candidates, key=lambda value: (abs(value - requested_frames), -value))
 
 
-def _continuation_frame_count(requested_frames: int) -> int:
-    """Nearest new-content length that stays phase-aligned after 39-frame trim."""
+def _continuation_frame_count(requested_frames: int, policy: str = "nearest") -> int:
+    """Phase-aligned new-content length after the protected-prefix trim."""
+    if policy == "ceil":
+        return max(17, ((requested_frames + 16) // 17) * 17)
     return max(17, int((requested_frames + 8) // 17) * 17)
 
 
@@ -54,6 +58,14 @@ def _node_id(graph: dict[str, dict], class_type: str) -> str:
     matches = [node_id for node_id, node in graph.items() if node.get("class_type") == class_type]
     if len(matches) != 1:
         raise RuntimeError(f"Expected one {class_type} node, found {len(matches)}")
+    return matches[0]
+
+
+def _h3_conditioning_node_id(graph: dict[str, dict]) -> str:
+    matches = [node_id for node_id, node in graph.items()
+               if node.get("class_type") in {"MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"}]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one MiniMax H3 conditioning node, found {len(matches)}")
     return matches[0]
 
 
@@ -80,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     if options.latent_clip_index == 1:
         raw_frames = _nearest_h3_frame_count(delivered_frames)
     else:
-        raw_frames = _continuation_frame_count(delivered_frames) + options.latent_context_frames
+        raw_frames = _continuation_frame_count(delivered_frames, options.latent_delivery_policy) + options.latent_context_frames
     if raw_frames < 5 or raw_frames % 17 != 5:
         raise ValueError("latent duration does not land on the H3 17k+5 frame grid")
     raw_duration = raw_frames / 24.0
@@ -95,42 +107,45 @@ def main(argv: list[str] | None = None) -> int:
     def build_latent_prompt(*args, **kwargs):
         graph = original_build(*args, **kwargs)
         sampler_id = _node_id(graph, "SamplerCustomAdvanced")
+        guider_id = _node_id(graph, "BasicGuider")
+        conditioning_id = _h3_conditioning_node_id(graph)
         video_decode_id = _node_id(graph, "VAEDecode")
         audio_decode_id = _node_id(graph, "VAEDecodeAudio")
         create_video_id = _node_id(graph, "CreateVideo")
+        video_vae_link = graph[video_decode_id]["inputs"]["vae"]
 
         save_id = _next_node_id(graph)
         graph[save_id] = {
-            "class_type": "MiniMaxH3CheckpointSave",
+            "class_type": "MiniMaxH3MotionContextSaveLatent",
             "inputs": {
                 "latent": [sampler_id, 0],
                 "filename_prefix": options.latent_checkpoint_prefix,
                 "clip_index": options.latent_clip_index,
             },
         }
-        graph[video_decode_id]["inputs"]["samples"] = [save_id, 0]
-        graph[audio_decode_id]["inputs"]["samples"] = [save_id, 0]
 
         if options.latent_clip_index > 1:
             load_id = _next_node_id(graph)
             graph[load_id] = {
-                "class_type": "MiniMaxH3CheckpointLoad",
+                "class_type": "MiniMaxH3MotionContextLoadLatent",
                 "inputs": {
-                    "checkpoint_path": options.latent_checkpoint_prefix,
+                    "latent_path": options.latent_checkpoint_prefix,
                     "clip_index": options.latent_previous_clip_index,
                 },
             }
             context_id = _next_node_id(graph)
-            conditioning_id = _node_id(graph, "MiniMaxH3ReferenceToVideo")
             graph[context_id] = {
-                "class_type": "MiniMaxH3GeneratedAVMaskedContext",
+                "class_type": "MiniMaxH3MotionContext",
                 "inputs": {
+                    "conditioning": [conditioning_id, 0],
+                    "vae": video_vae_link,
                     "latent": [conditioning_id, 1],
-                    "source_latent": [load_id, 0],
-                    "context_length": options.latent_context_frames,
+                    "context_length": str(options.latent_context_frames),
+                    "audio_context_length": 24,
+                    "context_latent": [load_id, 0],
                 },
             }
-            graph[sampler_id]["inputs"]["latent_image"] = [context_id, 0]
+            graph[guider_id]["inputs"]["conditioning"] = [context_id, 0]
 
             trim_id = _next_node_id(graph)
             graph[trim_id] = {

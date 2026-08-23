@@ -78,6 +78,65 @@ test("direct long plan uses every script verbatim without an AI planner", () => 
   assert.equal(plan.duration, 10);
 });
 
+test("multishot direct plan derives native H3 windows and continuous prompts", () => {
+  const plan = buildLongDirectPlan({
+    title: "One take",
+    inputType: "text",
+    inputText: "An adult walks through the same rainy station.",
+    scripts: [],
+    referenceMode: "continuity",
+    longVideoEnabled: true,
+    targetDurationSeconds: 60,
+    framesPerShot: 243,
+    continuityMode: "first_frame",
+    promptMode: "auto_extend",
+    identityAnchor: true,
+    voiceContinuity: true,
+    contextFrames: 22,
+    chainGainControl: "flatten",
+    masterNormalize: "luma",
+  });
+  assert.equal(plan.shotCount, 6);
+  assert.equal(plan.segments.length, 6);
+  assert.equal(plan.segments[0].duration, 10.125);
+  assert.equal(plan.segments.at(-1).end, 60);
+  assert.match(plan.segments[1].prompt, /Continue naturally from the previous moment/);
+  assert.equal(plan.chainGainControl, "flatten");
+  assert.equal(plan.masterNormalize, "luma");
+});
+
+test("multishot UI contract validates prompt mode and wires persisted settings", () => {
+  const base = {
+    inputType: "text",
+    inputText: "One continuous scene",
+    scripts: [],
+    longVideoEnabled: true,
+    targetDurationSeconds: 30,
+    framesPerShot: 243,
+    continuityMode: "context_pin",
+    promptMode: "auto_extend",
+    identityAnchor: true,
+    voiceContinuity: true,
+    contextFrames: 22,
+    chainGainControl: "off",
+    masterNormalize: "off",
+    width: 736,
+    height: 416,
+    steps: 20,
+    seed: 12345,
+  };
+  assert.deepEqual(validateLongCreate(base), []);
+  assert.equal(validateLongCreate({ ...base, inputText: "" })[0].field, "inputText");
+  assert.equal(validateLongCreate({ ...base, framesPerShot: 244 })[0].field, "framesPerShot");
+  const plan = buildLongDirectPlan({ ...base, title: "Persist", referenceMode: "continuity", referenceAssets: [] });
+  const payload = buildLongSaveRequest({ ...base, plan, title: "Persist", referenceMode: "continuity", referenceAssets: [], outputFolder: "persist", modelProfile: "nvfp4_blackwell", negativePrompt: "", seam: "keep_duplicate_frame" });
+  assert.equal(payload.longVideoEnabled, true);
+  assert.equal(payload.continuationMode, "context_pin");
+  assert.equal(payload.targetDurationSeconds, 30);
+  assert.equal(payload.contextFrames, 22);
+  assert.equal(payload.segments.length, 3);
+});
+
 test("Long save request keeps persisted shape and canonical timeline duration", () => {
   const plan = { title: "Story", segments: [
     { start: 0, end: 5, description: "A", prompt: "P1" },

@@ -7,6 +7,47 @@ export const H3_REALISM_PEOPLE_TRIGGER = "r34l1sm";
 export const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
 export const H3_REALISM_PEOPLE_LORA_NAME = H3_REALISM_PEOPLE_PRESET;
 export const H3_REALISM_PEOPLE_LORA_TRIGGER = H3_REALISM_PEOPLE_TRIGGER;
+export const MULTISHOT_FPS = 24;
+export const MULTISHOT_FRAME_OPTIONS = Object.freeze([243, 362]);
+
+function multishotFields(input) {
+  if (input.longVideoEnabled !== true) return { longVideoEnabled: false };
+  const targetDurationSeconds = Number(input.targetDurationSeconds);
+  const framesPerShot = Number(input.framesPerShot);
+  const secondsPerShot = framesPerShot / MULTISHOT_FPS;
+  return {
+    longVideoEnabled: true,
+    targetDurationSeconds,
+    framesPerShot,
+    fps: MULTISHOT_FPS,
+    secondsPerShot,
+    shotCount: Math.max(1, Math.ceil(targetDurationSeconds / secondsPerShot)),
+    continuityMode: input.continuityMode || "first_frame",
+    promptMode: input.promptMode || "auto_extend",
+    identityAnchor: input.identityAnchor !== false,
+    voiceContinuity: input.voiceContinuity !== false,
+    contextFrames: Number(input.contextFrames ?? 22),
+    chainGainControl: input.chainGainControl || "off",
+    masterNormalize: input.masterNormalize || "off",
+  };
+}
+
+function multishotWindows(settings) {
+  const windows = [];
+  let start = 0;
+  for (let index = 0; index < settings.shotCount; index += 1) {
+    const end = Math.min(settings.targetDurationSeconds, start + settings.secondsPerShot);
+    windows.push({ start: Number(start.toFixed(3)), end: Number(end.toFixed(3)), duration: Number((end - start).toFixed(3)) });
+    start = end;
+  }
+  return windows;
+}
+
+function autoExtendPrompt(premise, index) {
+  const boundary = "End this window on a stable readable face and continuing action. Avoid fast turns, full face occlusion, back-to-camera poses, heavy motion blur, abrupt camera motion, scene transitions, or cutting dialogue mid-word.";
+  if (index === 0) return `${premise}\n\n${boundary}`;
+  return `Continue naturally from the previous moment. Preserve the same people, identity, clothing, environment, time, camera, lens, lighting, action direction, and dialogue continuity. Do not introduce a new scene, new shot, cut, or camera cut unless explicitly requested.\n\nContinue this same take: ${premise}\n\n${boundary}`;
+}
 
 /** Keep the long-video contract aligned with the bridge admission rules. */
 export function normalizeCharacterLoraName(value) {
@@ -151,6 +192,42 @@ export function composeLongScriptText(value) {
 
 export function buildLongDirectPlan(input) {
   const scripts = normalizeLongScripts(input.scripts);
+  const multishot = multishotFields(input);
+  if (multishot.longVideoEnabled) {
+    const premise = String(input.inputText || "").trim();
+    const windows = multishotWindows(multishot);
+    const prompts = multishot.promptMode === "auto_extend"
+      ? windows.map((_, index) => autoExtendPrompt(premise, index))
+      : scripts.map((script) => script.content);
+    const referenceMode = input.inputType === "image" ? input.referenceMode : "continuity";
+    const segments = windows.map((window, index) => ({
+      id: `segment-${String(index + 1).padStart(3, "0")}`,
+      ...window,
+      description: multishot.promptMode === "manual_shots" ? scripts[index]?.description || prompts[index] : `Continuous take window ${index + 1}`,
+      prompt: prompts[index],
+      negativePrompt: multishot.promptMode === "manual_shots" ? scripts[index]?.negativePrompt || "" : "",
+      promptSource: multishot.promptMode,
+      mode: referenceMode === "multi_reference" || index > 0 && input.inputType === "image" && multishot.identityAnchor ? "ref2v" : index === 0 && input.inputType === "text" || index > 0 && multishot.continuityMode === "context_pin" ? "t2v" : "i2v",
+      status: "pending",
+    }));
+    return {
+      title: input.title || "Untitled long video",
+      inputType: input.inputType,
+      inputText: premise || composeLongScriptText(scripts),
+      ...(multishot.promptMode === "manual_shots" ? { scripts } : {}),
+      referenceMode,
+      continuationMode: multishot.continuityMode,
+      referenceAssets: input.referenceAssets || [],
+      duration: multishot.targetDurationSeconds,
+      negativePrompt: String(input.negativePrompt || ""),
+      continuityBible: {},
+      ...multishot,
+      segments,
+      timeline: segments,
+      planningSettings: { timelineMode: "manual", targetDuration: multishot.targetDurationSeconds, segmentDurationHint: multishot.secondsPerShot, segmentCount: multishot.shotCount },
+      planMeta: { source: "author", timelineSource: "author", promptSource: multishot.promptMode, generatedAt: new Date().toISOString() },
+    };
+  }
   const timeline = longScriptsToTimeline(scripts);
   const referenceMode = input.inputType === "image" ? input.referenceMode : "continuity";
   const segments = timeline.map((segment, index) => ({
@@ -199,6 +276,7 @@ export function buildLongPlanRequest(input) {
     imagePurpose: input.inputType === "image" ? "first_frame" : undefined,
     referenceMode: input.inputType === "image" ? input.referenceMode : "continuity",
     continuationMode: input.continuationMode || "motion_context",
+    ...multishotFields(input),
     motionContextSeconds: 2,
     referenceAssets: input.inputType === "image" && input.referenceMode === "multi_reference" ? refs.slice(1) : [],
     timelineMode: scriptedTimeline ? "manual" : input.timelineMode,
@@ -229,7 +307,10 @@ export function buildLongSaveRequest(input) {
   const h3LoraEnabled = input.h3LoraEnabled === true;
   const explicitH3Disabled = input.h3LoraEnabled === false && !characterLoraName && !characterLoraId;
   const scripts = normalizeLongScripts(input.scripts);
-  const parsed = scripts.length
+  const multishot = multishotFields(input);
+  const parsed = multishot.longVideoEnabled
+    ? input.plan.segments || []
+    : scripts.length
     ? longScriptsToTimeline(scripts).map((segment, index) => ({ ...segment, description: scripts[index].description || scripts[index].content }))
     : parseLongTimelineDraft(input.timelineText, input.plan.segments || []);
   const segments = parsed.map((segment, index) => ({
@@ -251,6 +332,8 @@ export function buildLongSaveRequest(input) {
     imagePurpose: input.inputType === "image" ? "first_frame" : undefined,
     referenceMode: input.inputType === "image" ? input.referenceMode : "continuity",
     continuationMode: input.continuationMode || "motion_context",
+    ...multishot,
+    ...(multishot.longVideoEnabled ? { continuationMode: multishot.continuityMode } : {}),
     motionContextSeconds: 2,
     referenceAssets: input.inputType === "image" && input.referenceMode === "multi_reference" ? refs.slice(1) : [],
     continuityBible: input.plan.continuityBible,
@@ -286,18 +369,35 @@ export function validateLongCreate(input) {
   const loraIssue = characterLoraIssue(input);
   if (loraIssue) issues.push(loraIssue);
   const scripts = normalizeLongScripts(input.scripts);
-  if (input.scripts !== undefined) {
-    if (scripts.length < 2) issues.push({ field: "scripts", message: "長影片至少需要兩個劇本。" });
+  const multishot = input.longVideoEnabled === true;
+  const target = Number(input.targetDurationSeconds);
+  const framesPerShot = Number(input.framesPerShot);
+  const shotCount = Number.isFinite(target) && MULTISHOT_FRAME_OPTIONS.includes(framesPerShot) ? Math.max(1, Math.ceil(target / (framesPerShot / MULTISHOT_FPS))) : 0;
+  if (multishot) {
+    issues.push(...numberIssue(input.targetDurationSeconds, "targetDurationSeconds", "目標總長", 1, 600, false));
+    if (!MULTISHOT_FRAME_OPTIONS.includes(framesPerShot)) issues.push({ field: "framesPerShot", message: "每段幀數必須是 243 或 362。" });
+    if (!["first_frame", "context_pin"].includes(input.continuityMode)) issues.push({ field: "continuityMode", message: "Continuity 必須是 first_frame 或 context_pin。" });
+    if (!["manual_shots", "auto_extend"].includes(input.promptMode)) issues.push({ field: "promptMode", message: "Prompt Mode 必須是 manual_shots 或 auto_extend。" });
+    if (![5, 22, 39, 56].includes(Number(input.contextFrames))) issues.push({ field: "contextFrames", message: "Context frames 必須是 5、22、39 或 56。" });
+    if (!["off", "flatten"].includes(input.chainGainControl)) issues.push({ field: "chainGainControl", message: "Chain gain control 設定無效。" });
+    if (!["off", "luma", "luma+contrast"].includes(input.masterNormalize)) issues.push({ field: "masterNormalize", message: "Master normalize 設定無效。" });
+    if (input.promptMode === "auto_extend" && !String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "Auto extend 需要一段完整場景描述。" });
+    if (input.promptMode === "manual_shots" && scripts.length !== shotCount) issues.push({ field: "scripts", message: `Manual shots 需要 ${shotCount} 個劇本。` });
+  }
+  if (input.scripts !== undefined && (!multishot || input.promptMode === "manual_shots")) {
+    if (scripts.length < (multishot ? 1 : 2)) issues.push({ field: "scripts", message: multishot ? "至少需要一個劇本。" : "長影片至少需要兩個劇本。" });
     scripts.forEach((script, index) => {
       if (!script.name) issues.push({ field: `script-${index}-name`, message: `請輸入劇本 ${index + 1} 的名稱。` });
       if (!script.content) issues.push({ field: `script-${index}-content`, message: `請輸入劇本 ${index + 1} 的內容。` });
       issues.push(...numberIssue(script.duration, `script-${index}-duration`, `劇本 ${index + 1} 長度`, 0.5, 60, false));
       if (script.content.length > 7000) issues.push({ field: `script-${index}-content`, message: `劇本 ${index + 1} 的提示詞不可超過 7000 字元。` });
     });
-  } else if (!String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
+  } else if (!multishot && !String(input.inputText || "").trim()) issues.push({ field: "inputText", message: "請先輸入長影片的整體提示詞／故事描述。" });
   if (input.continuationMode === "latent_context" && input.inputType !== "image") issues.push({ field: "continuationMode", message: "Latent 影音銜接目前需要選擇「從圖片開始」，讓後續 Ref2VA 保有固定視覺參考。" });
   if (input.inputType === "image" && !(input.referenceAssets || []).length) issues.push({ field: "referenceAssets", message: "從圖片開始時需要至少一張起始參考圖片。" });
-  if (input.scripts !== undefined) {
+  if (multishot) {
+    // Multishot windows are derived from targetDurationSeconds.
+  } else if (input.scripts !== undefined) {
     // Script cards are the authoritative timeline.
   } else if (input.timelineMode === "manual") {
     if (!String(input.timelineText || "").trim()) issues.push({ field: "timelineText", message: "手動時間軸模式需要至少兩段分鏡。" });

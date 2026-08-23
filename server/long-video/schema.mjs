@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { normalizeRef2VCameraPlan } from "../../app/lib/ref2v-camera-plan.mjs";
+import { normalizeMultishotSettings } from "./multishot.mjs";
 
 export const SEQUENCE_STATES = [
   "draft",
@@ -30,7 +31,7 @@ export const SEGMENT_STATES = [
 ];
 
 export const REFERENCE_MODES = ["continuity", "multi_reference"];
-export const CONTINUATION_MODES = ["legacy_tail", "motion_context", "latent_context"];
+export const CONTINUATION_MODES = ["legacy_tail", "motion_context", "latent_context", "first_frame", "context_pin"];
 export const DEFAULT_MOTION_CONTEXT_SECONDS = 2;
 export const MAX_REFERENCE_ASSETS = 8;
 export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
@@ -257,8 +258,8 @@ export function validateSegment(value, index = 0) {
   };
 }
 
-export function validateTimeline(segments, allowedDuration = undefined) {
-  if (!Array.isArray(segments) || segments.length < 2) fail("TIMELINE_TOO_SHORT", "At least two segments are required.");
+export function validateTimeline(segments, allowedDuration = undefined, { minSegments = 2 } = {}) {
+  if (!Array.isArray(segments) || segments.length < minSegments) fail("TIMELINE_TOO_SHORT", `At least ${minSegments} segment${minSegments === 1 ? "" : "s"} are required.`);
   const normalized = segments.map((segment, index) => validateSegment(segment, index));
   const epsilon = 0.001;
   if (normalized[0].start > epsilon) fail("TIMELINE_START_GAP", "Timeline must start at 0.00 seconds.");
@@ -283,10 +284,22 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   const inputType = value.inputType === "image" ? "image" : "text";
   const referenceMode = value.referenceMode === undefined ? "continuity" : value.referenceMode;
   if (!REFERENCE_MODES.includes(referenceMode)) fail("REFERENCE_MODE_INVALID", "referenceMode must be continuity or multi_reference.");
-  // Missing means an older saved job.  Keep that job on the historical
-  // frame-only path; the current create form opts new jobs into motion_context.
-  const continuationMode = value.continuationMode === undefined ? "legacy_tail" : value.continuationMode;
-  if (!CONTINUATION_MODES.includes(continuationMode)) fail("CONTINUATION_MODE_INVALID", "continuationMode must be legacy_tail, motion_context, or latent_context.");
+  let multishot;
+  try {
+    multishot = normalizeMultishotSettings(value.longVideoEnabled === true ? {
+      ...value,
+      continuityMode: value.continuityMode || (value.continuationMode === "context_pin" ? "context_pin" : "first_frame"),
+    } : { longVideoEnabled: false });
+  } catch (error) {
+    if (error?.code && error?.status === 400) fail(error.code, error.message, 400);
+    throw error;
+  }
+  // Missing means an older saved job. Keep historical jobs on their original
+  // path; only an explicitly enabled multishot request uses the new modes.
+  const continuationMode = multishot.longVideoEnabled
+    ? multishot.continuityMode
+    : value.continuationMode === undefined ? "legacy_tail" : value.continuationMode;
+  if (!CONTINUATION_MODES.includes(continuationMode)) fail("CONTINUATION_MODE_INVALID", "continuationMode must be legacy_tail, motion_context, latent_context, first_frame, or context_pin.");
   if (continuationMode === "latent_context" && inputType !== "image") {
     fail("LATENT_CONTEXT_IMAGE_REQUIRED", "latent_context currently requires an image-origin sequence so later Ref2VA segments retain a fixed visual reference.", 400);
   }
@@ -348,9 +361,13 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
   if (duration !== undefined && (duration <= 0 || duration > 3600)) fail("DURATION_INVALID", "Duration must be greater than 0 and no more than 3600 seconds.");
   let timeline;
   const timelineSource = value.timeline !== undefined ? value.timeline : value.segments;
-  if (timelineSource !== undefined || requireTimeline) timeline = validateTimeline(timelineSource, duration);
+  if (timelineSource !== undefined || requireTimeline) timeline = validateTimeline(timelineSource, duration, { minSegments: multishot.longVideoEnabled ? 1 : 2 });
+  if (timeline && multishot.longVideoEnabled && timeline.length !== multishot.shotCount) {
+    fail("MULTISHOT_COUNT_MISMATCH", `Multishot timeline requires exactly ${multishot.shotCount} generation windows.`, 400);
+  }
   if (timeline && referenceMode === "multi_reference") timeline = timeline.map((segment) => ({ ...segment, mode: "ref2v" }));
-  if (timeline && ["motion_context", "latent_context"].includes(continuationMode)) {
+  const hasIdentityReference = Boolean(inputAsset?.name || referenceAssets.length);
+  if (timeline && (["motion_context", "latent_context"].includes(continuationMode) || ["context_pin", "first_frame"].includes(continuationMode) && hasIdentityReference)) {
     timeline = timeline.map((segment, index) => ({
       ...segment,
       mode: index === 0 ? segment.mode : "ref2v",
@@ -366,6 +383,7 @@ export function validateSequenceInput(value, { requireTimeline = false } = {}) {
     title,
     inputType,
     referenceMode,
+    ...multishot,
     continuationMode,
     motionContextSeconds: Number(motionContextSeconds.toFixed(3)),
     referenceAssets,
@@ -413,6 +431,19 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     inputType: payload.inputType,
     referenceMode: payload.referenceMode,
     continuationMode: payload.continuationMode,
+    longVideoEnabled: payload.longVideoEnabled,
+    targetDurationSeconds: payload.targetDurationSeconds,
+    framesPerShot: payload.framesPerShot,
+    fps: payload.fps,
+    secondsPerShot: payload.secondsPerShot,
+    shotCount: payload.shotCount,
+    continuityMode: payload.continuityMode,
+    promptMode: payload.promptMode,
+    identityAnchor: payload.identityAnchor,
+    voiceContinuity: payload.voiceContinuity,
+    contextFrames: payload.contextFrames,
+    chainGainControl: payload.chainGainControl,
+    masterNormalize: payload.masterNormalize,
     motionContextSeconds: payload.motionContextSeconds,
     referenceAssets: payload.referenceAssets.map((reference) => sanitizeAssetRef(reference)),
     ...(payload.imagePurpose ? { imagePurpose: payload.imagePurpose } : {}),

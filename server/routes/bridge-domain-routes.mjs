@@ -1,4 +1,5 @@
 import { createDomainRouter } from "../runtime/domain-router.mjs";
+import { evaluateMotionContextCapability, MOTION_CONTEXT_NODE_CONTRACT } from "../long-video/multishot.mjs";
 
 const POSE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
 const POSE_PREVIEW_TIMEOUT_MS = 60_000;
@@ -216,6 +217,15 @@ export function createBridgeDomainRouter({
   withAssetLifecycleLock,
   withRuntimeOperation,
 } = {}) {
+  async function motionContextCapability() {
+    try {
+      const response = await fetch(`${String(runtimeContext.comfyUrl).replace(/\/$/, "")}/object_info`, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return evaluateMotionContextCapability(await response.json());
+    } catch (error) {
+      return { available: false, missingNodes: Object.keys(MOTION_CONTEXT_NODE_CONTRACT), missingInputs: [], error: error?.message || String(error) };
+    }
+  }
   const required = {
     getSeedVR2Controller,
     getImg2ImgController,
@@ -264,7 +274,9 @@ export function createBridgeDomainRouter({
             ...deps,
             finalizePrompt: deps.finalizePrompt || continuationPromptFinalizer,
             generate: startSequenceGeneration,
+            motionContextCapability,
           }),
+          capabilities: motionContextCapability,
         });
         return req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
       },

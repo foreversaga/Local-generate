@@ -41,6 +41,8 @@ type PromptProvider = "ollama" | "codex";
 type InputType = "text" | "image";
 type ReferenceMode = "continuity" | "multi_reference";
 type ContinuationMode = "legacy_tail" | "motion_context" | "latent_context";
+type MultishotContinuityMode = "first_frame" | "context_pin";
+type MultishotPromptMode = "manual_shots" | "auto_extend";
 type TimelineMode = "auto" | "manual";
 type ResolutionStatus = "default" | "loading" | "auto" | "adjusted" | "manual" | "error";
 type ResolutionInfo = {
@@ -87,6 +89,18 @@ type LongPlan = {
   referenceAssets?: Asset[];
   continuationMode?: ContinuationMode;
   motionContextSeconds?: number;
+  longVideoEnabled?: boolean;
+  targetDurationSeconds?: number;
+  framesPerShot?: 243 | 362;
+  continuityMode?: MultishotContinuityMode;
+  promptMode?: MultishotPromptMode;
+  identityAnchor?: boolean;
+  voiceContinuity?: boolean;
+  contextFrames?: 5 | 22 | 39 | 56;
+  chainGainControl?: "off" | "flatten";
+  masterNormalize?: "off" | "luma" | "luma+contrast";
+  effectiveContinuityMode?: MultishotContinuityMode;
+  continuityWarning?: string | null;
   duration?: number;
   promptProvider?: PromptProvider;
   ollamaModel?: string;
@@ -131,6 +145,7 @@ type Health = {
   codex?: { online?: boolean; skill?: boolean; models?: Array<{ value: string; label?: string; note?: string; reasoningEfforts?: string[] }> };
   comfy?: { online?: boolean };
 };
+type MultishotHealth = { continuity?: { contextPin?: { available?: boolean; missingNodes?: string[]; missingInputs?: string[]; error?: string } } };
 type ApiError = { error?: string | { code?: string; message?: string } };
 type ValidationIssue = { field: string; message: string };
 
@@ -148,6 +163,18 @@ export function LongCreateForm() {
   const [inputType, setInputType] = useState<InputType>("text");
   const [referenceMode, setReferenceMode] = useState<ReferenceMode>("continuity");
   const [continuationMode, setContinuationMode] = useState<ContinuationMode>("motion_context");
+  const [longVideoEnabled, setLongVideoEnabled] = useState(false);
+  const [targetDurationSeconds, setTargetDurationSeconds] = useState<NumberDraft>(30);
+  const [framesPerShot, setFramesPerShot] = useState<243 | 362>(243);
+  const [continuityMode, setContinuityMode] = useState<MultishotContinuityMode>("first_frame");
+  const [promptMode, setPromptMode] = useState<MultishotPromptMode>("auto_extend");
+  const [autoExtendPrompt, setAutoExtendPrompt] = useState("");
+  const [identityAnchor, setIdentityAnchor] = useState(true);
+  const [voiceContinuity, setVoiceContinuity] = useState(true);
+  const [contextFrames, setContextFrames] = useState<5 | 22 | 39 | 56>(22);
+  const [chainGainControl, setChainGainControl] = useState<"off" | "flatten">("off");
+  const [masterNormalize, setMasterNormalize] = useState<"off" | "luma" | "luma+contrast">("off");
+  const [multishotHealth, setMultishotHealth] = useState<MultishotHealth | null>(null);
   const [motionContextSeconds, setMotionContextSeconds] = useState<NumberDraft>(2);
   const [references, setReferences] = useState<Asset[]>([]);
   const [scripts, setScripts] = useState<LongScriptDraft[]>([createLongScript(0), createLongScript(1)]);
@@ -272,11 +299,23 @@ export function LongCreateForm() {
     : continuationMode === "motion_context"
       ? "每個故事分鏡獨立生成"
       : "尾幀作為下一段起點";
+  const multishotCount = useMemo(() => Math.max(1, Math.ceil(Number(targetDurationSeconds || 0) / (framesPerShot / 24))), [framesPerShot, targetDurationSeconds]);
   const baseIssues = useMemo(() => validateLongCreate({
     scripts,
+    inputText: autoExtendPrompt,
     inputType,
     referenceAssets: references,
     continuationMode,
+    longVideoEnabled,
+    targetDurationSeconds,
+    framesPerShot,
+    continuityMode,
+    promptMode,
+    identityAnchor,
+    voiceContinuity,
+    contextFrames,
+    chainGainControl,
+    masterNormalize,
     motionContextSeconds,
     modelProfile,
     timelineMode,
@@ -293,12 +332,23 @@ export function LongCreateForm() {
     characterLoraId,
     characterLoraStrength,
     requireSavedPlan: false,
-  }) as ValidationIssue[], [characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, scripts, seed, segmentDurationHint, steps, timeline, timelineMode, width]);
+  }) as ValidationIssue[], [autoExtendPrompt, chainGainControl, characterLoraId, characterLoraName, characterLoraStrength, contextFrames, continuityMode, continuationMode, duration, framesPerShot, h3LoraSelection, height, identityAnchor, inputType, longVideoEnabled, masterNormalize, modelProfile, motionContextSeconds, promptMode, references, scripts, seed, segmentDurationHint, steps, targetDurationSeconds, timeline, timelineMode, voiceContinuity, width]);
   const submitIssues = useMemo(() => validateLongCreate({
     scripts,
+    inputText: autoExtendPrompt,
     inputType,
     referenceAssets: references,
     continuationMode,
+    longVideoEnabled,
+    targetDurationSeconds,
+    framesPerShot,
+    continuityMode,
+    promptMode,
+    identityAnchor,
+    voiceContinuity,
+    contextFrames,
+    chainGainControl,
+    masterNormalize,
     motionContextSeconds,
     modelProfile,
     timelineMode,
@@ -318,7 +368,7 @@ export function LongCreateForm() {
     plan,
     planDirty,
     outputFolder,
-  }) as ValidationIssue[], [characterLoraId, characterLoraName, characterLoraStrength, continuationMode, duration, h3LoraSelection, height, inputType, modelProfile, motionContextSeconds, references, scripts, seed, segmentDurationHint, steps, timeline, timelineMode, width, outputFolder, plan, planDirty]);
+  }) as ValidationIssue[], [autoExtendPrompt, chainGainControl, characterLoraId, characterLoraName, characterLoraStrength, contextFrames, continuityMode, continuationMode, duration, framesPerShot, h3LoraSelection, height, identityAnchor, inputType, longVideoEnabled, masterNormalize, modelProfile, motionContextSeconds, outputFolder, plan, planDirty, promptMode, references, scripts, seed, segmentDurationHint, steps, targetDurationSeconds, timeline, timelineMode, voiceContinuity, width]);
   const issuesByField = useMemo(() => new Map(submitIssues.map((issue) => [issue.field, issue.message])), [submitIssues]);
   const activeJob = Boolean(job && longJobIsActive(job.status));
   const canPlan = baseIssues.length === 0 && !planning && !saving && !uploading;
@@ -340,7 +390,11 @@ export function LongCreateForm() {
 
   async function refreshHealth(): Promise<Health | null> {
     try {
-      const response = await fetch(`${BRIDGE_URL}/api/health`);
+      const [response, multishotResponse] = await Promise.all([
+        fetch(`${BRIDGE_URL}/api/health`),
+        fetch(`${BRIDGE_URL}/api/sequences/health`),
+      ]);
+      if (multishotResponse.ok) setMultishotHealth((await multishotResponse.json()) as MultishotHealth);
       if (!response.ok) return null;
       const next = (await response.json()) as Health;
       return next;
@@ -350,7 +404,7 @@ export function LongCreateForm() {
   }
 
   function hydrateFromJob(next: LongJob, assetList: Asset[]) {
-    if (!Array.isArray(next.scripts) || next.scripts.length < 2 || next.planMeta?.source !== "author" || next.planMeta?.promptSource !== "manual") return;
+    if (next.longVideoEnabled !== true && (!Array.isArray(next.scripts) || next.scripts.length < 2 || next.planMeta?.source !== "author" || next.planMeta?.promptSource !== "manual")) return;
     const byKey = new Map(assetList.map((asset) => [assetKey(asset), asset]));
     const hydrateAsset = (candidate?: Asset) => {
       if (!candidate) return null;
@@ -368,9 +422,20 @@ export function LongCreateForm() {
     setSegmentDurationDrafts({});
     setTitle(next.title || "");
     setInputType(next.inputType || "text");
-    setScripts(next.scripts);
+    if (Array.isArray(next.scripts) && next.scripts.length) setScripts(next.scripts);
     setReferenceMode(next.referenceMode === "multi_reference" ? "multi_reference" : "continuity");
     setContinuationMode(next.continuationMode === "latent_context" && next.inputType === "image" ? "latent_context" : next.continuationMode === "legacy_tail" ? "legacy_tail" : "motion_context");
+    setLongVideoEnabled(next.longVideoEnabled === true);
+    setTargetDurationSeconds(next.targetDurationSeconds ?? next.duration ?? 30);
+    setFramesPerShot(next.framesPerShot === 362 ? 362 : 243);
+    setContinuityMode(next.continuityMode === "context_pin" ? "context_pin" : "first_frame");
+    setPromptMode(next.promptMode === "manual_shots" ? "manual_shots" : "auto_extend");
+    setAutoExtendPrompt(next.promptMode === "auto_extend" ? next.inputText || "" : "");
+    setIdentityAnchor(next.identityAnchor !== false);
+    setVoiceContinuity(next.voiceContinuity !== false);
+    setContextFrames([5, 22, 39, 56].includes(Number(next.contextFrames)) ? Number(next.contextFrames) as 5 | 22 | 39 | 56 : 22);
+    setChainGainControl(next.chainGainControl === "flatten" ? "flatten" : "off");
+    setMasterNormalize(next.masterNormalize === "luma" || next.masterNormalize === "luma+contrast" ? next.masterNormalize : "off");
     setMotionContextSeconds(next.motionContextSeconds || 2);
     setReferences(nextRefs);
     setOutputFolder(next.outputFolder || "");
@@ -539,10 +604,14 @@ export function LongCreateForm() {
     if (baseIssues.length) throw new Error(baseIssues[0].message);
     setPlanning(true);
     try {
-      const directPlan = buildLongDirectPlan({ title, inputType, scripts, referenceMode, referenceAssets: references, negativePrompt }) as LongPlan;
+      const directPlan = buildLongDirectPlan({
+        title, inputType, inputText: autoExtendPrompt, scripts, referenceMode, referenceAssets: references, negativePrompt,
+        longVideoEnabled, targetDurationSeconds: Number(targetDurationSeconds), framesPerShot, continuityMode, promptMode,
+        identityAnchor, voiceContinuity, contextFrames, chainGainControl, masterNormalize,
+      }) as LongPlan;
       const nextPlan = {
         ...directPlan,
-        continuationMode,
+        continuationMode: longVideoEnabled ? continuityMode : continuationMode,
         motionContextSeconds: Number(motionContextSeconds),
         segments: directPlan.segments,
         ...(h3LoraEnabled
@@ -558,7 +627,9 @@ export function LongCreateForm() {
       setPlanDirty(false);
       setTimeline((nextPlan.segments || []).map((segment) => `[${segment.start.toFixed(3)} - ${segment.end.toFixed(3)}] ${segment.description}`).join("\n"));
       if (nextPlan.duration) setDuration(nextPlan.duration);
-      setNotice(`已直接套用 ${nextPlan.segments.length} 個劇本提示詞，未經 AI 改寫。`);
+      setNotice(longVideoEnabled
+        ? `已建立 ${nextPlan.segments.length} 個 H3 generation windows（${framesPerShot} frames @ 24 FPS）。`
+        : `已直接套用 ${nextPlan.segments.length} 個劇本提示詞，未經 AI 改寫。`);
       return nextPlan;
     } finally {
       setPlanning(false);
@@ -570,9 +641,20 @@ export function LongCreateForm() {
     if (!selectedPlan) throw new Error("請先產生分鏡與 H3 提示詞。");
     const issues = validateLongCreate({
       scripts,
+      inputText: autoExtendPrompt,
       inputType,
       referenceAssets: references,
       continuationMode,
+      longVideoEnabled,
+      targetDurationSeconds,
+      framesPerShot,
+      continuityMode,
+      promptMode,
+      identityAnchor,
+      voiceContinuity,
+      contextFrames,
+      chainGainControl,
+      masterNormalize,
       motionContextSeconds,
       modelProfile,
       timelineMode,
@@ -602,12 +684,22 @@ export function LongCreateForm() {
         plan: selectedPlan,
         title,
         inputType,
-        inputText: combinedScriptText,
+        inputText: longVideoEnabled && promptMode === "auto_extend" ? autoExtendPrompt : combinedScriptText,
         scripts,
           referenceMode,
           referenceAssets: references,
-          continuationMode,
+          continuationMode: longVideoEnabled ? continuityMode : continuationMode,
           motionContextSeconds: Number(motionContextSeconds),
+        longVideoEnabled,
+        targetDurationSeconds: Number(targetDurationSeconds),
+        framesPerShot,
+        continuityMode,
+        promptMode,
+        identityAnchor,
+        voiceContinuity,
+        contextFrames,
+        chainGainControl,
+        masterNormalize,
         timelineText: timeline,
         outputFolder,
         modelProfile,
@@ -897,6 +989,7 @@ export function LongCreateForm() {
   function clearEditor() {
     if (activeJob || saving || planning) return;
     setTitle(""); setOutputFolder(""); setInputType("text"); setReferenceMode("continuity"); setContinuationMode("motion_context"); setMotionContextSeconds(2); setReferences([]);
+    setLongVideoEnabled(false); setTargetDurationSeconds(30); setFramesPerShot(243); setContinuityMode("first_frame"); setPromptMode("auto_extend"); setAutoExtendPrompt(""); setIdentityAnchor(true); setVoiceContinuity(true); setContextFrames(22); setChainGainControl("off"); setMasterNormalize("off");
     setScripts([createLongScript(0), createLongScript(1)]); setNegativePrompt(""); setTimelineMode("manual"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); resetResolutionToDefault(); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
     setH3LoraEnabled(false); setCharacterLoraName(""); setCharacterLoraId(""); setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
@@ -945,15 +1038,48 @@ export function LongCreateForm() {
               <InlineError message={attempted ? issuesByField.get("referenceAssets") : ""} />
             </div>
           )}
-          <Field label="連續生成模式" error={attempted ? issuesByField.get("continuationMode") : ""}>
+          <div className={styles.multishotPanel}>
+            <div className={styles.multishotHeader}>
+              <div><strong>Long Video / Multishot Mode</strong><span>將同一個 take 拆成 H3 原生 generation windows。</span></div>
+              <div className={styles.segmented} role="group" aria-label="Long Video Multishot Mode">
+                <button type="button" className={!longVideoEnabled ? styles.active : ""} aria-pressed={!longVideoEnabled} disabled={!canInteract} onClick={() => { setLongVideoEnabled(false); markPlanDirty(); }}>OFF</button>
+                <button type="button" className={longVideoEnabled ? styles.active : ""} aria-pressed={longVideoEnabled} disabled={!canInteract} onClick={() => { setLongVideoEnabled(true); markPlanDirty(); }}>ON</button>
+              </div>
+            </div>
+            {longVideoEnabled && <div className={styles.stack}>
+              <div className={styles.twoColumns}>
+                <Field label="Target Duration" error={attempted ? issuesByField.get("targetDurationSeconds") : ""}><input id="long-target-duration" className={styles.input} type="number" min={1} max={600} step={1} value={targetDurationSeconds} disabled={!canInteract} onChange={(event) => { setTargetDurationSeconds(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
+                <Field label="Frames Per Shot" error={attempted ? issuesByField.get("framesPerShot") : ""}><select id="long-frames-per-shot" className={styles.select} value={framesPerShot} disabled={!canInteract} onChange={(event) => { setFramesPerShot(Number(event.target.value) as 243 | 362); markPlanDirty(); }}><option value={243}>243 frames · 10.125s</option><option value={362}>362 frames · 15.083s</option></select></Field>
+              </div>
+              <div className={styles.twoColumns}>
+                <Field label="Continuity" error={attempted ? issuesByField.get("continuityMode") : ""}><select id="long-multishot-continuity" className={styles.select} value={continuityMode} disabled={!canInteract} onChange={(event) => { setContinuityMode(event.target.value as MultishotContinuityMode); markPlanDirty(); }}><option value="first_frame">first_frame · H3 native</option><option value="context_pin">context_pin · raw latent</option></select></Field>
+                <Field label="Prompt Mode" error={attempted ? issuesByField.get("promptMode") : ""}><select id="long-prompt-mode" className={styles.select} value={promptMode} disabled={!canInteract} onChange={(event) => { setPromptMode(event.target.value as MultishotPromptMode); markPlanDirty(); }}><option value="auto_extend">auto_extend</option><option value="manual_shots">manual_shots</option></select></Field>
+              </div>
+              <p className={styles.helper}>將建立 {multishotCount} 個 generation windows；不會嘗試單次 sampling 生成整支長片。{continuityMode === "context_pin" && !multishotHealth?.continuity?.contextPin?.available ? " 本機 Motion Context nodes 不可用，提交後會明確記錄並自動 fallback 到 first_frame。" : ""}</p>
+              {promptMode === "auto_extend" && <Field label="完整場景描述" error={attempted ? issuesByField.get("inputText") : ""} helper="每段會加入同人物、服裝、環境、攝影機、光線、動作與對話延續約束。"><textarea id="long-auto-extend-prompt" className={styles.textarea} value={autoExtendPrompt} disabled={!canInteract} onChange={(event) => { setAutoExtendPrompt(event.target.value); markPlanDirty(); }} placeholder="描述一個連續 take；除非明確要求，系統不會加入 cut 或 new scene。" /></Field>}
+              <div className={styles.toggleGrid}>
+                <label><input type="checkbox" checked={identityAnchor} disabled={!canInteract} onChange={(event) => { setIdentityAnchor(event.target.checked); markPlanDirty(); }} /><span>Identity Anchor</span></label>
+                <label><input type="checkbox" checked={voiceContinuity} disabled={!canInteract} onChange={(event) => { setVoiceContinuity(event.target.checked); markPlanDirty(); }} /><span>Voice Continuity</span></label>
+              </div>
+              <p className={styles.helper}>Identity Anchor 會讓每個 Ref2VA window 重用原始 reference；上一段尾端只負責 motion continuity。Voice Continuity 在 context_pin 可沿用 raw audio latent，first_frame 僅保留提示詞層級的聲線約束。</p>
+              <details className={styles.advancedPanel}>
+                <summary>Advanced</summary>
+                <div className={styles.advancedBody}>
+                  <div className={styles.twoColumns}><Field label="Context Frames"><select className={styles.select} value={contextFrames} disabled={!canInteract || continuityMode !== "context_pin"} onChange={(event) => { setContextFrames(Number(event.target.value) as 5 | 22 | 39 | 56); markPlanDirty(); }}>{[5, 22, 39, 56].map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Chain Gain Control"><select className={styles.select} value={chainGainControl} disabled={!canInteract} onChange={(event) => { setChainGainControl(event.target.value as "off" | "flatten"); markPlanDirty(); }}><option value="off">off</option><option value="flatten">flatten</option></select></Field></div>
+                  <Field label="Master Normalize"><select className={styles.select} value={masterNormalize} disabled={!canInteract} onChange={(event) => { setMasterNormalize(event.target.value as "off" | "luma" | "luma+contrast"); markPlanDirty(); }}><option value="off">off</option><option value="luma">luma</option><option value="luma+contrast">luma+contrast</option></select></Field>
+                </div>
+              </details>
+            </div>}
+          </div>
+          {!longVideoEnabled && <Field label="連續生成模式" error={attempted ? issuesByField.get("continuationMode") : ""}>
             <select id="long-continuation-mode" className={styles.select} value={continuationMode} onChange={(event) => updateContinuationMode(event.target.value as ContinuationMode)}>
               <option value="latent_context" disabled={inputType !== "image"}>Latent 連續生成（推薦，需圖片起點）</option>
               <option value="motion_context">參考延續（Ref2VA）</option>
               <option value="legacy_tail">尾幀延續（相容舊版）</option>
             </select>
             <span className={styles.helper}>{continuationMode === "latent_context" ? "前段尾端 39 幀原生影音 latent 直接帶入下一段，保留動作、構圖與聲音連續性；輸出時同步移除重複前綴。" : continuationMode === "motion_context" ? "將前段最後 2 秒影片作為下一分鏡的 Ref2VA 弱視覺參考；各分鏡仍是獨立生成，這不是 Motion Context / context pin。" : "以前一分鏡尾幀作為下一段起點；只為舊工作與 I2VA 流程保留。"}</span>
-          </Field>
-          <LongScriptComposer value={scripts} disabled={!canInteract} error={attempted ? issuesByField.get("scripts") : ""} onChange={(next) => { setScripts(next); markPlanDirty(); }} />
+          </Field>}
+          {(!longVideoEnabled || promptMode === "manual_shots") && <LongScriptComposer value={scripts} minimumShots={longVideoEnabled ? 1 : 2} disabled={!canInteract} error={attempted ? issuesByField.get("scripts") : ""} onChange={(next) => { setScripts(next); markPlanDirty(); }} />}
           <Field label="負面提示詞／限制" helper="空白時 planner 可自行補齊。">
             <textarea className={`${styles.textarea} ${styles.compactTextarea}`} value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="角色漂移、服裝改變、閃爍、文字、浮水印…" />
           </Field>
@@ -966,12 +1092,12 @@ export function LongCreateForm() {
               <span className={styles.flowBadge}>自動</span>
             </div>
             <ol className={styles.flowSteps}>
-              <li>每張劇本卡只定義故事分鏡、描述與故事長度；它不是 H3 底層 sampling window。</li>
-              <li>{continuationMode === "latent_context" ? "上一分鏡尾端 39 幀原生影音 latent 會成為下一段受保護的 continuity 前綴，讓動作、構圖與聲音沿同一時間線延續。" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒影片只作為 Ref2VA 弱參考，用來維持角色、場景、光線與狀態；下一分鏡仍獨立生成。" : "上一分鏡尾幀會作為下一分鏡的起點參考。"}</li>
-              <li>{continuationMode === "latent_context" ? "每個分鏡的實際生成幀會依 H3 原生幀網格微調；後續段的 continuity 重複前綴會在合併前同步裁掉畫面與音訊。" : "非 latent 模式不共享原生影音 latent；完成後再依故事分鏡順序合併。"}</li>
+              <li>{longVideoEnabled ? "每個 window 使用 H3 原生生成長度，系統自動建立所需段數。" : "每張劇本卡只定義故事分鏡、描述與故事長度；它不是 H3 底層 sampling window。"}</li>
+              <li>{longVideoEnabled ? continuityMode === "context_pin" ? `上一個 window 的最後 ${contextFrames} 幀 raw AV latent 會傳給下一段；node 不可用時自動 fallback first_frame。` : "上一個 window 的最後一幀會透過 H3 原生 frame-0 guide 接到下一段。" : continuationMode === "latent_context" ? "上一分鏡最後 39 幀的原生影音 latent 會成為下一段受保護的開頭，讓動作、構圖與聲音沿同一時間線延續。" : continuationMode === "motion_context" ? "上一分鏡最後 2 秒會自動作為下一分鏡的弱視覺參考，只維持角色、場景、光線與狀態一致。" : "上一分鏡尾幀會作為下一分鏡首幀參考。"}</li>
+              <li>{longVideoEnabled ? "每段先在 base resolution 保存 continuity state，再同步裁掉重複畫面與音訊、組裝 master；upscale 不會回餵 H3。" : continuationMode === "latent_context" ? "輸出前同步裁掉重複的 39 幀畫面與音訊，再依分鏡順序合併；每段 latent 會保存供失敗重試。" : "各段不共享原生影音 latent；最後依分鏡順序合併。"}</li>
             </ol>
           </div>
-          <p className={styles.helper}>目前故事總長 {totalScriptDuration.toFixed(1)} 秒、{scripts.length} 個故事分鏡；H3 實際幀數由執行器在生成時處理，不需要在主畫面手動設定 frames。</p>
+          <p className={styles.helper}>{longVideoEnabled ? `時間軸由目標長度自動建立，目前 ${Number(targetDurationSeconds || 0).toFixed(1)} 秒、${multishotCount} 個 windows。` : `時間軸由上方劇本卡的影片長度自動累加，目前共 ${totalScriptDuration.toFixed(1)} 秒、${scripts.length} 支影片。`}</p>
           <button type="button" className={styles.planButton} disabled={!canPlan} onClick={() => void requestPlan().catch((planError) => setError(planError instanceof Error ? planError.message : "套用失敗。"))}>{planning ? "套用中…" : "直接套用劇本提示詞"}</button>
           {planDirty && plan && <p className={styles.stale} role="status">劇本已變更；保存或開始前會重新直接套用。</p>}
         </LongSection>
@@ -979,8 +1105,8 @@ export function LongCreateForm() {
         <LongSection id="long-segments" code="03 / 分鏡檢查" title={`分鏡檢查 · ${plan?.segments.length || 0} 段`}>
           {!plan && <div className={styles.empty}>尚未套用劇本。套用後可在此確認每個故事分鏡使用的原始提示詞。</div>}
           {plan?.segments.map((segment, index) => <article className={styles.segmentCard} key={segment.id || index}>
-            <div className={styles.segmentHeading}><div><span>故事分鏡 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || ((continuationMode === "motion_context" || continuationMode === "latent_context") && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
-            <Field label="故事分鏡長度（秒）" helper={continuationMode === "latent_context" ? "這是故事時間；實際生成幀會在執行時自動對齊 H3 原生幀網格。" : "這是故事段落長度，不是底層 frame 數。"}><input className={styles.input} type="number" min={0.5} max={60} step={0.5} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
+            <div className={styles.segmentHeading}><div><span>故事分鏡 {index + 1}</span><strong>{segment.start.toFixed(2)}–{segment.end.toFixed(2)} 秒</strong></div><span className={styles.modeBadge}>{(segment.mode || (longVideoEnabled ? referenceMode === "multi_reference" || continuityMode === "context_pin" && index > 0 ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v" : (continuationMode === "motion_context" || continuationMode === "latent_context") && index > 0 || referenceMode === "multi_reference" ? "ref2v" : index === 0 && inputType === "text" ? "t2v" : "i2v")).toUpperCase()}</span></div>
+            <Field label="故事分鏡長度（秒）" helper={longVideoEnabled ? "由 Multishot 的 frames per shot 自動決定。" : continuationMode === "latent_context" ? "這是故事時間；實際生成幀會在執行時自動對齊 H3 原生幀網格。" : "這是故事段落長度，不是底層 frame 數。"}><input className={styles.input} type="number" min={0.5} max={60} step={0.5} disabled={longVideoEnabled} value={segmentDurationDrafts[segment.id || String(index)] ?? (segment.end - segment.start).toFixed(3)} onChange={(event) => updateSegmentDuration(index, event.target.value)} onBlur={() => commitSegmentDuration(index)} /></Field>
             <div className={styles.twoColumns}><Field label="分鏡描述"><textarea className={styles.compactTextarea} value={segment.description} onChange={(event) => updateSegment(index, { description: event.target.value })} /></Field><Field label="段尾狀態"><textarea className={styles.compactTextarea} value={segment.endingState || ""} onChange={(event) => updateSegment(index, { endingState: event.target.value })} /></Field></div>
             <Field label="H3 提示詞（劇本原文）"><textarea className={styles.textarea} value={segment.prompt || ""} onChange={(event) => updateSegment(index, { prompt: event.target.value, promptSource: "manual" })} /></Field>
             <Field label="此段負面提示詞" helper="空白則使用全片設定。"><textarea className={styles.compactTextarea} value={segment.negativePrompt || ""} onChange={(event) => updateSegment(index, { negativePrompt: event.target.value })} /></Field>
@@ -1045,7 +1171,7 @@ export function LongCreateForm() {
       <aside id="long-review" className={styles.summary} aria-label="長影片生成摘要">
         <section className={styles.summaryCard}>
           <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
-          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="故事總長" value={`${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="故事分鏡" value={`${scripts.length} 個`} /><Summary label="連續模式" value={continuationLabel} /><Summary label="連續上下文" value={continuityContextLabel} /><Summary label="H3 幀處理" value={h3FrameHandlingLabel} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /></div>
+          <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="故事總長" value={longVideoEnabled ? `${Number(targetDurationSeconds || 0).toFixed(1)} 秒` : `${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="故事分鏡" value={longVideoEnabled ? `${multishotCount} windows` : `${scripts.length} 個`} /><Summary label="連續模式" value={longVideoEnabled ? continuityMode : continuationLabel} /><Summary label="連續上下文" value={longVideoEnabled ? continuityMode === "context_pin" ? `${contextFrames} 幀 raw AV latent` : "H3 原生尾幀續接" : continuityContextLabel} /><Summary label="H3 幀處理" value={longVideoEnabled ? `${framesPerShot} frames / window` : h3FrameHandlingLabel} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /></div>
           {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>

@@ -3782,6 +3782,7 @@ async function startGeneration(payload, internal = {}) {
   await fs.mkdir(LOG_ROOT, { recursive: true });
 
   let inputImagePath = null;
+  let continuationImagePath = null;
   let referenceImagePaths = [];
   let lastImagePath = null;
   let inputVideoPath = null;
@@ -3809,6 +3810,14 @@ async function startGeneration(payload, internal = {}) {
     inputImagePath = await resolveInputMedia(payload.referenceImageName, "image", payload.referenceImageRoot);
   }
   if (mode === "ref2v") {
+    if (internal.continuationFramePath) {
+      const candidate = path.resolve(String(internal.continuationFramePath));
+      const inputRoot = path.resolve(INPUT_ROOT);
+      if (candidate !== inputRoot && !candidate.startsWith(inputRoot + path.sep)) throw new Error("Ref2VA continuation frame is outside ComfyUI/input.");
+      const stat = await fs.stat(candidate).catch(() => null);
+      if (!stat?.isFile() || classifyFile(candidate) !== "image") throw new Error("Ref2VA continuation frame is invalid.");
+      continuationImagePath = candidate;
+    }
     if (Array.isArray(internal.referenceImagePaths)) {
       if (internal.referenceImagePaths.length !== referenceImageNames.length) {
         throw new Error("Ref2VA reference image count does not match staged assets.");
@@ -3954,6 +3963,7 @@ async function startGeneration(payload, internal = {}) {
       latentContextFrames: Number(payload.latentContextFrames || internal.latentContextFrames || 39),
       latentCheckpointPrefix: String(payload.latentCheckpointPrefix || internal.latentCheckpointPrefix || ""),
       latentClipIndex: Number(payload.latentClipIndex || internal.latentClipIndex || 1),
+      latentDeliveryPolicy: String(payload.latentDeliveryPolicy || internal.latentDeliveryPolicy || "nearest"),
       ...(Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) > 0
         ? { latentPreviousClipIndex: Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) }
         : {}),
@@ -4081,6 +4091,7 @@ async function startGeneration(payload, internal = {}) {
         "--latent-checkpoint-prefix", String(payload.latentCheckpointPrefix || internal.latentCheckpointPrefix || ""),
         "--latent-clip-index", String(payload.latentClipIndex || internal.latentClipIndex || 1),
         "--latent-context-frames", String(payload.latentContextFrames || internal.latentContextFrames || 39),
+        "--latent-delivery-policy", String(payload.latentDeliveryPolicy || internal.latentDeliveryPolicy || "nearest"),
         ...(Number(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex) > 0
           ? ["--latent-previous-clip-index", String(payload.latentPreviousClipIndex || internal.latentPreviousClipIndex)]
           : []),
@@ -4120,6 +4131,7 @@ async function startGeneration(payload, internal = {}) {
     if (mode === "ref2v") {
       args.push("--task", "ref2v");
       args.push(...referenceImageArgs(referenceImagePaths));
+      if (continuationImagePath) args.push("--continuation-frame", continuationImagePath);
       if (inputVideoPath) args.push("--reference-video", inputVideoPath);
     }
   }
@@ -5010,6 +5022,9 @@ async function startSequenceGeneration(payload) {
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
     : null;
+  const stagedContinuation = payload.mode === "ref2v" && payload.continuationFramePath
+    ? await stageSequenceInputImage({ ...payload, inputImagePath: payload.continuationFramePath })
+    : null;
   const stagedVideo = payload.mode === "ref2v" && payload.inputVideoPath
     ? await stageSequenceInputVideo(payload)
     : null;
@@ -5048,6 +5063,7 @@ async function startSequenceGeneration(payload) {
       prompt: payload.prompt,
       negativePrompt: payload.negativePrompt,
       inputImageName: stagedInput?.name || "",
+      continuationFrameName: stagedContinuation?.name || "",
       ...sequenceGenerationReferenceFields(payload, stagedReferences),
       inputVideoName: stagedVideo?.name || payload.inputVideoName || "",
       inputVideoRoot: stagedVideo ? "input" : payload.inputVideoRoot,
@@ -5075,9 +5091,11 @@ async function startSequenceGeneration(payload) {
         latentCheckpointPrefix: payload.latentCheckpointPrefix,
         latentClipIndex: payload.latentClipIndex,
         latentPreviousClipIndex: payload.latentPreviousClipIndex,
+        latentDeliveryPolicy: payload.latentDeliveryPolicy,
       } : {}),
     }, {
       inputImagePath: stagedInput?.path,
+      continuationFramePath: stagedContinuation?.path,
       referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
       workloadType: "long-video-segment",
       ollamaPromptReceipt: payload.ollamaPromptReceipt,
@@ -5088,6 +5106,7 @@ async function startSequenceGeneration(payload) {
         latentCheckpointPrefix: payload.latentCheckpointPrefix,
         latentClipIndex: payload.latentClipIndex,
         latentPreviousClipIndex: payload.latentPreviousClipIndex,
+        latentDeliveryPolicy: payload.latentDeliveryPolicy,
       } : {}),
     });
     return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
@@ -5114,6 +5133,7 @@ async function startSequenceGeneration(payload) {
       });
     }
     await removeStagedSequenceInput(stagedInput);
+    await removeStagedSequenceInput(stagedContinuation);
     await removeStagedSequenceInput(stagedVideo);
     await Promise.all(stagedReferences.map((reference) => removeStagedSequenceInput(reference)));
   }

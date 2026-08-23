@@ -45,7 +45,7 @@ function segmentFromPath(pathname) {
 }
 
 const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
-const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
+const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "continuityMode", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
 function removeServerOwnedSequenceFields(patch) {
@@ -109,6 +109,20 @@ export async function handleLongVideoRoute(req, res, context = {}) {
   if (!pathname.startsWith("/api/sequences")) return false;
   await recoverOnce();
   try {
+    if (req.method === "GET" && pathname === "/api/sequences/health") {
+      const motionContext = typeof context.capabilities === "function"
+        ? await context.capabilities()
+        : { available: false, missingNodes: [], missingInputs: [], error: "Capability probe is unavailable." };
+      return json(res, 200, {
+        ready: true,
+        fps: 24,
+        framesPerShot: [243, 362],
+        continuity: {
+          firstFrame: { available: true, native: true },
+          contextPin: motionContext,
+        },
+      });
+    }
     if (req.method === "POST" && pathname === "/api/sequences/plan") {
       const input = await body(req);
       console.info("[long-video] plan.request", JSON.stringify({
@@ -208,9 +222,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       // and timeline invariants cannot be bypassed by partial updates.
       const normalized = validateSequenceInput(candidate, { requireTimeline: true });
       assertLongLoraSupported(normalized);
-      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
+      const criticalFields = ["inputType", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "continuityMode", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       const generationCriticalChanged = criticalFields.some((field) => JSON.stringify(current[field] ?? null) !== JSON.stringify(normalized[field] ?? null));
-      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
+      const editableMetadata = ["title", "inputType", "inputText", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "continuityMode", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "continuityBible", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"];
       for (const field of editableMetadata) {
         if (Object.prototype.hasOwnProperty.call(normalized, field)) patch[field] = normalized[field];
       }

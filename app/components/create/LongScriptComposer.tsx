@@ -65,7 +65,7 @@ function errorMessage(payload: unknown) {
   return "長影片劇本操作失敗，請稍後再試。";
 }
 
-export function LongScriptComposer({ value, disabled, error, onChange }: { value: LongScriptDraft[]; disabled?: boolean; error?: string; onChange: (value: LongScriptDraft[]) => void }) {
+export function LongScriptComposer({ value, disabled, error, minimumShots = 2, onChange }: { value: LongScriptDraft[]; disabled?: boolean; error?: string; minimumShots?: number; onChange: (value: LongScriptDraft[]) => void }) {
   const [library, setLibrary] = useState<SavedLongScript[]>([]);
   const [generalLibrary, setGeneralLibrary] = useState<GeneralScript[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -137,7 +137,7 @@ export function LongScriptComposer({ value, disabled, error, onChange }: { value
   }
 
   function removeShot(index: number) {
-    if (value.length <= 2 || disabled) return;
+    if (value.length <= minimumShots || disabled) return;
     if (!window.confirm(`確定刪除分鏡 ${index + 1}？此變更只會影響目前編輯內容。`)) return;
     onChange(value.filter((_, itemIndex) => itemIndex !== index));
     setMessage("");
@@ -156,8 +156,8 @@ export function LongScriptComposer({ value, disabled, error, onChange }: { value
   function startNew() {
     setSelectedId("");
     setLibraryName("");
-    onChange([createLongScript(0), createLongScript(1)]);
-    setMessage("已建立兩個空白分鏡，填寫後可保存為長影片劇本。" );
+    onChange(Array.from({ length: minimumShots }, (_, index) => createLongScript(index)));
+    setMessage(`已建立 ${minimumShots} 個空白分鏡，填寫後可保存為長影片劇本。` );
     setLibraryError("");
   }
 
@@ -173,8 +173,8 @@ export function LongScriptComposer({ value, disabled, error, onChange }: { value
   async function saveScript() {
     if (busy || disabled) return;
     if (!libraryName.trim()) { setLibraryError("請先輸入長影片劇本名稱。" ); return; }
-    if (value.length < 2 || value.some((script) => !script.content.trim() || !script.description.trim() || !Number.isFinite(Number(script.duration)))) {
-      setLibraryError("至少需要兩個完整分鏡，且每格都要有秒數、提示詞與分鏡描述。" );
+    if (value.length < minimumShots || value.some((script) => !script.content.trim() || !script.description.trim() || !Number.isFinite(Number(script.duration)))) {
+      setLibraryError(`至少需要 ${minimumShots} 個完整分鏡，且每格都要有秒數、提示詞與分鏡描述。` );
       return;
     }
     setBusy(true);
@@ -240,7 +240,7 @@ export function LongScriptComposer({ value, disabled, error, onChange }: { value
     <div className={styles.scriptSummary} aria-live="polite"><strong>{value.length} 個分鏡</strong><span>總長 {totalDuration.toFixed(1)} 秒</span>{loading && <span>劇本庫載入中…</span>}</div>
     {(libraryError || message) && <p className={libraryError ? styles.inlineError : styles.scriptSuccess} role={libraryError ? "alert" : "status"} aria-live="polite">{libraryError || message}</p>}
     {value.map((script, index) => <article className={styles.scriptCard} key={script.id}>
-      <div className={styles.scriptCardHeading}><strong>分鏡 {index + 1}</strong><div><button type="button" aria-label={`上移分鏡 ${index + 1}`} onClick={() => move(index, -1)} disabled={disabled || busy || index === 0}>↑</button><button type="button" aria-label={`下移分鏡 ${index + 1}`} onClick={() => move(index, 1)} disabled={disabled || busy || index === value.length - 1}>↓</button><button type="button" onClick={() => removeShot(index)} disabled={disabled || busy || value.length <= 2}>刪除</button></div></div>
+      <div className={styles.scriptCardHeading}><strong>分鏡 {index + 1}</strong><div><button type="button" aria-label={`上移分鏡 ${index + 1}`} onClick={() => move(index, -1)} disabled={disabled || busy || index === 0}>↑</button><button type="button" aria-label={`下移分鏡 ${index + 1}`} onClick={() => move(index, 1)} disabled={disabled || busy || index === value.length - 1}>↓</button><button type="button" onClick={() => removeShot(index)} disabled={disabled || busy || value.length <= minimumShots}>刪除</button></div></div>
       <div className={styles.scriptMeta}><label><span>分鏡標題</span><input id={`long-script-${index}-name`} value={script.name} maxLength={80} onChange={(event) => patch(index, { name: event.target.value })} disabled={disabled || busy} /></label><label><span>影片長度（秒）</span><input id={`long-script-${index}-duration`} type="number" min={0.5} max={60} step={0.5} value={script.duration} onChange={(event) => patch(index, { duration: event.target.value === "" ? "" : Number(event.target.value) })} disabled={disabled || busy} /></label></div>
       <label><span>分鏡描述</span><textarea id={`long-script-${index}-description`} value={script.description} onChange={(event) => patch(index, { description: event.target.value })} placeholder="描述這一格的場景、動作、構圖與鏡頭…" disabled={disabled || busy} /></label>
       <label><span>提示詞</span><textarea id={`long-script-${index}-content`} value={script.content} onChange={(event) => patch(index, { content: event.target.value })} placeholder="寫角色、場景、事件、對話、聲音與想要的鏡頭效果…" disabled={disabled || busy} /></label>
