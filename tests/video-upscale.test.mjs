@@ -14,12 +14,19 @@ import {
   H3_LATENT_VAE_NAME,
   SEEDVR2_REQUIRED_NODES,
   SEEDVR2_IMAGE_REQUIRED_NODES,
+  SEEDVR2_DETAIL_REQUIRED_NODES,
+  SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES,
+  SEEDVR2_DETAIL_NODE,
+  SEEDVR2_DETAIL_NODE_INPUTS,
+  SEEDVR2_DETAIL_NODE_INPUT_TYPES,
+  SEEDVR2_DEFAULT_DETAIL,
   SEEDVR2_FP16_PROFILE,
   SEEDVR2_FP16_UNET_NAME,
   SEEDVR2_UNET_NAME,
   SEEDVR2_VAE_NAME,
   buildSeedVR2Prompt,
   buildSeedVR2ImagePrompt,
+  buildSeedVR2DetailPrompt,
   buildH3LatentPrompt,
   createSeedVR2Controller,
   evaluateH3LatentReadiness,
@@ -61,6 +68,26 @@ function imageObjectInfo(unetName = SEEDVR2_UNET_NAME) {
   const info = Object.fromEntries(SEEDVR2_IMAGE_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   info.UNETLoader.input.required.unet_name = [[unetName], {}];
   info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
+  return info;
+}
+
+function detailObjectInfo({ sourceKind = "video", unetName = SEEDVR2_UNET_NAME, omitInput = "", blending = ["multiband", "linear", "gaussian"], tiling = ["chess", "grid"] } = {}) {
+  const requiredNodes = sourceKind === "image" ? SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES : SEEDVR2_DETAIL_REQUIRED_NODES;
+  const info = Object.fromEntries(requiredNodes.map((name) => [name, { input: { required: {} } }]));
+  const inputs = Object.fromEntries(SEEDVR2_DETAIL_NODE_INPUTS.filter((name) => name !== omitInput).map((name) => [
+    name,
+    SEEDVR2_DETAIL_NODE_INPUT_TYPES[name] === "COMBO" ? [["placeholder"], {}] : [SEEDVR2_DETAIL_NODE_INPUT_TYPES[name], {}],
+  ]));
+  inputs.unet_name = [[unetName], {}];
+  inputs.vae_name = [[SEEDVR2_VAE_NAME], {}];
+  inputs.resize_method = [["lanczos", "bicubic", "bilinear", "area", "nearest-exact"], {}];
+  inputs.color_correction = [["wavelet", "lab", "adain", "none"], {}];
+  inputs.sampler_name = [["euler", "heun", "dpmpp_2m"], {}];
+  inputs.scheduler = [["simple", "normal", "karras"], {}];
+  inputs.blending_method = [blending, {}];
+  inputs.tiling_strategy = [tiling, {}];
+  inputs.detail_preset = [["default", "skin_detail"], {}];
+  info[SEEDVR2_DETAIL_NODE].input.required = inputs;
   return info;
 }
 
@@ -132,11 +159,100 @@ test("validates SeedVR2 adjustable settings while keeping H3 fixed at 2x", () =>
     samplerName: "euler",
     scheduler: "simple",
     denoise: 1,
+    ...SEEDVR2_DEFAULT_DETAIL,
   });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 4.25 }), { code: "SCALE_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 2, resizeMethod: "invented" }), { code: "RESIZE_METHOD_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 2, colorCorrection: "invented" }), { code: "COLOR_CORRECTION_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 3 }, H3_LATENT_PROFILE), { code: "SCALE_INVALID" });
+});
+
+test("default detail settings preserve the legacy image and video graphs exactly", () => {
+  const video = buildSeedVR2Prompt({ sourceName: "clips/source.mp4", seed: 7 });
+  const image = buildSeedVR2ImagePrompt({ sourceName: "images/source.png", seed: 9 });
+  assert.deepEqual(buildSeedVR2Prompt({ sourceName: "clips/source.mp4", seed: 7, ...SEEDVR2_DEFAULT_DETAIL }), video);
+  assert.deepEqual(buildSeedVR2ImagePrompt({ sourceName: "images/source.png", seed: 9, ...SEEDVR2_DEFAULT_DETAIL }), image);
+  assert.equal(Object.values(video).some((node) => node.class_type === SEEDVR2_DETAIL_NODE), false);
+  assert.equal(Object.values(image).some((node) => node.class_type === SEEDVR2_DETAIL_NODE), false);
+});
+
+test("detail graph receives every normalized SeedVR2 detail field for images and videos", () => {
+  const settings = {
+    detailPreset: "skin_detail",
+    scale: 2,
+    resizeMethod: "lanczos",
+    colorCorrection: "wavelet",
+    steps: 1,
+    cfg: 1,
+    samplerName: "euler",
+    scheduler: "simple",
+    denoise: 1,
+    inputNoiseScale: 0.035,
+    latentNoiseScale: 0.015,
+    tileWidth: 768,
+    tileHeight: 1024,
+    tilePadding: 96,
+    tileUpscaleResolution: 2560,
+    blendingMethod: "gaussian",
+    antiAliasingStrength: 0.25,
+    maskBlur: 2.5,
+    tilingStrategy: "grid",
+  };
+  const video = buildSeedVR2DetailPrompt({ sourceName: "clips/source.mp4", seed: 7, ...settings });
+  const image = buildSeedVR2DetailPrompt({ sourceName: "images/source.png", seed: 9, ...settings });
+  const expected = {
+    unet_name: SEEDVR2_UNET_NAME,
+    vae_name: SEEDVR2_VAE_NAME,
+    scale: 2,
+    resize_method: "lanczos",
+    color_correction: "wavelet",
+    steps: 1,
+    cfg: 1,
+    sampler_name: "euler",
+    scheduler: "simple",
+    denoise: 1,
+    input_noise_scale: 0.035,
+    latent_noise_scale: 0.015,
+    tile_width: 768,
+    tile_height: 1024,
+    tile_padding: 96,
+    tile_upscale_resolution: 2560,
+    blending_method: "gaussian",
+    anti_aliasing_strength: 0.25,
+    mask_blur: 2.5,
+    tiling_strategy: "grid",
+    detail_preset: "skin_detail",
+  };
+  assert.equal(video["3"].class_type, SEEDVR2_DETAIL_NODE);
+  assert.equal(image["2"].class_type, SEEDVR2_DETAIL_NODE);
+  for (const [key, value] of Object.entries(expected)) {
+    assert.deepEqual(video["3"].inputs[key], value, key);
+    assert.deepEqual(image["2"].inputs[key], value, key);
+  }
+  assert.deepEqual(video["3"].inputs.image, ["2", 0]);
+  assert.deepEqual(image["2"].inputs.image, ["1", 0]);
+});
+
+test("detail readiness requires the complete node input contract and requested enum support", () => {
+  const settings = normalizeSeedVR2Settings({ detailPreset: "skin_detail" });
+  const ready = evaluateSeedVR2Readiness(detailObjectInfo(), { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  assert.equal(ready.ready, true);
+  assert.equal(ready.detail.available, true);
+  const missing = evaluateSeedVR2Readiness(detailObjectInfo({ omitInput: "latent_noise_scale" }), { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  assert.equal(missing.ready, false);
+  assert.deepEqual(missing.detail.missingInputs, ["latent_noise_scale"]);
+  const wrongType = detailObjectInfo();
+  wrongType[SEEDVR2_DETAIL_NODE].input.required.tile_width = ["FLOAT", {}];
+  const invalid = evaluateSeedVR2Readiness(wrongType, { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  assert.equal(invalid.ready, false);
+  assert.deepEqual(invalid.detail.invalidInputs, ["tile_width"]);
+  const unsupported = evaluateSeedVR2Readiness(detailObjectInfo({ blending: ["multiband", "linear"] }), {
+    modelFiles: { unet: true, vae: true },
+    detailMode: true,
+    detailSettings: { ...settings, blendingMethod: "gaussian" },
+  });
+  assert.equal(unsupported.ready, false);
+  assert.deepEqual(unsupported.detail.unsupported.blendingMethod, ["gaussian"]);
 });
 
 test("readiness requires native nodes and exact model combos", () => {
@@ -509,6 +625,27 @@ test("controller route reports 503 when ComfyUI readiness is false", async () =>
   assert.equal(res.body.health.ready, false);
 });
 
+test("controller rejects detail submissions when the detail node contract is unavailable", async () => {
+  const controller = createSeedVR2Controller({
+    inputRoot: path.join(os.tmpdir(), "h3-seedvr2-input-detail-missing"),
+    outputRoot: path.join(os.tmpdir(), "h3-seedvr2-output-detail-missing"),
+    fetchImpl: async (url) => {
+      if (url.endsWith("/system_stats")) return response({ devices: [] });
+      if (url.endsWith("/object_info")) return response(objectInfo());
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+  });
+  const res = apiResponse();
+  await controller.handleRoute({ method: "POST", url: "/api/upscale" }, res, {
+    readJson: async () => ({ sourceName: "clip.mp4", sourceRoot: "input", scale: 2, detailPreset: "skin_detail" }),
+  });
+  assert.equal(res.status, 503);
+  assert.equal(res.body.code, "SEEDVR2_DETAIL_NOT_READY");
+  assert.equal(res.body.health.detail.requested, true);
+  assert.equal(res.body.health.detail.available, false);
+  assert.equal(res.body.health.nodes[SEEDVR2_DETAIL_NODE], false);
+});
+
 test("SeedVR2 advanced sampling overrides reach both KSampler graphs", () => {
   const settings = {
     steps: 7,
@@ -553,9 +690,88 @@ test("SeedVR2 advanced sampling validation uses stable 400-series error codes", 
     samplerName: "euler",
     scheduler: "simple",
     denoise: 0.67,
+    ...SEEDVR2_DEFAULT_DETAIL,
   });
   assert.throws(
     () => normalizeSeedVR2Settings({ scale: 2, steps: 2 }, H3_LATENT_PROFILE),
     { code: "SEEDVR2_SETTINGS_UNSUPPORTED", status: 400 },
   );
+});
+
+test("SeedVR2 detail validation uses stable 400-series error codes for every field", () => {
+  const invalid = [
+    [{ inputNoiseScale: -0.001 }, "INPUT_NOISE_SCALE_INVALID"],
+    [{ inputNoiseScale: 0.201 }, "INPUT_NOISE_SCALE_INVALID"],
+    [{ latentNoiseScale: -0.001 }, "LATENT_NOISE_SCALE_INVALID"],
+    [{ latentNoiseScale: 0.201 }, "LATENT_NOISE_SCALE_INVALID"],
+    [{ tileWidth: 255 }, "TILE_WIDTH_INVALID"],
+    [{ tileWidth: 257 }, "TILE_WIDTH_INVALID"],
+    [{ tileWidth: 2112 }, "TILE_WIDTH_INVALID"],
+    [{ tileHeight: 255 }, "TILE_HEIGHT_INVALID"],
+    [{ tileHeight: 2112 }, "TILE_HEIGHT_INVALID"],
+    [{ tileHeight: 1000 }, "TILE_HEIGHT_INVALID"],
+    [{ tilePadding: -1 }, "TILE_PADDING_INVALID"],
+    [{ tilePadding: 257 }, "TILE_PADDING_INVALID"],
+    [{ tilePadding: 1.5 }, "TILE_PADDING_INVALID"],
+    [{ tileUpscaleResolution: 511 }, "TILE_UPSCALE_RESOLUTION_INVALID"],
+    [{ tileUpscaleResolution: 513 }, "TILE_UPSCALE_RESOLUTION_INVALID"],
+    [{ tileUpscaleResolution: 4160 }, "TILE_UPSCALE_RESOLUTION_INVALID"],
+    [{ blendingMethod: "invented" }, "BLENDING_METHOD_INVALID"],
+    [{ blendingMethod: 0 }, "BLENDING_METHOD_INVALID"],
+    [{ antiAliasingStrength: -0.001 }, "ANTI_ALIASING_STRENGTH_INVALID"],
+    [{ antiAliasingStrength: 1.001 }, "ANTI_ALIASING_STRENGTH_INVALID"],
+    [{ maskBlur: -0.001 }, "MASK_BLUR_INVALID"],
+    [{ maskBlur: 64.001 }, "MASK_BLUR_INVALID"],
+    [{ tilingStrategy: "invented" }, "TILING_STRATEGY_INVALID"],
+    [{ detailPreset: "invented" }, "DETAIL_PRESET_INVALID"],
+  ];
+  for (const [input, code] of invalid) {
+    assert.throws(() => normalizeSeedVR2Settings(input), { code, status: 400 }, code);
+  }
+  assert.deepEqual(normalizeSeedVR2Settings({ detailPreset: "skin_detail" }), {
+    scale: 2,
+    resizeMethod: "lanczos",
+    colorCorrection: "wavelet",
+    steps: 1,
+    cfg: 1,
+    samplerName: "euler",
+    scheduler: "simple",
+    denoise: 1,
+    ...SEEDVR2_DEFAULT_DETAIL,
+    detailPreset: "skin_detail",
+    inputNoiseScale: 0.035,
+  });
+  assert.throws(
+    () => normalizeSeedVR2Settings({ detailPreset: "skin_detail" }, H3_LATENT_PROFILE),
+    { code: "SEEDVR2_SETTINGS_UNSUPPORTED", status: 400 },
+  );
+});
+
+test("detail validation codes are preserved by the public POST API", async () => {
+  const controller = createSeedVR2Controller({
+    inputRoot: path.join(os.tmpdir(), "h3-seedvr2-validation-input"),
+    outputRoot: path.join(os.tmpdir(), "h3-seedvr2-validation-output"),
+    fetchImpl: async () => { throw new Error("validation must run before ComfyUI readiness"); },
+  });
+  const invalid = [
+    ["inputNoiseScale", 0.3, "INPUT_NOISE_SCALE_INVALID"],
+    ["latentNoiseScale", -1, "LATENT_NOISE_SCALE_INVALID"],
+    ["tileWidth", 1000, "TILE_WIDTH_INVALID"],
+    ["tileHeight", 1000, "TILE_HEIGHT_INVALID"],
+    ["tilePadding", 1.5, "TILE_PADDING_INVALID"],
+    ["tileUpscaleResolution", 513, "TILE_UPSCALE_RESOLUTION_INVALID"],
+    ["blendingMethod", "bad", "BLENDING_METHOD_INVALID"],
+    ["antiAliasingStrength", 2, "ANTI_ALIASING_STRENGTH_INVALID"],
+    ["maskBlur", 65, "MASK_BLUR_INVALID"],
+    ["tilingStrategy", "bad", "TILING_STRATEGY_INVALID"],
+    ["detailPreset", "bad", "DETAIL_PRESET_INVALID"],
+  ];
+  for (const [field, value, code] of invalid) {
+    const res = apiResponse();
+    await controller.handleRoute({ method: "POST", url: "/api/upscale" }, res, {
+      readJson: async () => ({ sourceName: "clip.mp4", sourceRoot: "input", scale: 2, [field]: value }),
+    });
+    assert.equal(res.status, 400, field);
+    assert.equal(res.body.code, code, field);
+  }
 });

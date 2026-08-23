@@ -216,6 +216,21 @@ export type UpscaleHealth = {
     sourceKind?: "image" | "video";
     models: Record<string, { name?: string; available?: boolean }>;
     nodes: Record<string, boolean>;
+    detail?: {
+        requested: boolean;
+        node: string;
+        available: boolean;
+        missingInputs: string[];
+        invalidInputs: string[];
+        unsupported: Record<string, string[]>;
+    };
+};
+
+export type UpscaleHealthOptions = {
+    detailMode?: boolean;
+    detailPreset?: SeedVR2DetailPreset;
+    blendingMethod?: SeedVR2BlendingMethod;
+    tilingStrategy?: SeedVR2TilingStrategy;
 };
 
 export class UpscaleApiError extends Error {
@@ -255,8 +270,18 @@ async function readJson<T extends object>(response: Response): Promise<T> {
     return payload;
 }
 
-export async function fetchUpscaleHealth(profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE, kind: "image" | "video" = "video"): Promise<UpscaleHealth> {
+export async function fetchUpscaleHealth(
+    profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE,
+    kind: "image" | "video" = "video",
+    options: UpscaleHealthOptions = {},
+): Promise<UpscaleHealth> {
     const query = new URLSearchParams({ profile, kind });
+    if (options.detailMode) {
+        query.set("detail", "1");
+        if (options.detailPreset) query.set("detailPreset", options.detailPreset);
+        if (options.blendingMethod) query.set("blendingMethod", options.blendingMethod);
+        if (options.tilingStrategy) query.set("tilingStrategy", options.tilingStrategy);
+    }
     const response = await fetch(`${BRIDGE_URL}/api/upscale/health?${query.toString()}`, { cache: "no-store" });
     return (await readJson<{ ready?: boolean; comfyUi?: boolean; models?: UpscaleHealth["models"]; nodes?: UpscaleHealth["nodes"] }>(response)) as UpscaleHealth;
 }

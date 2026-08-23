@@ -49,11 +49,13 @@ test("SeedVR2 advanced sampling UI stays collapsed and preserves string editing 
 });
 
 test("SeedVR2 detail reconstruction controls expose the complete backend contract", async () => {
-  const [workspace, client, controls, detailModel] = await Promise.all([
+  const [workspace, client, controls, detailModel, dictionaries, styles] = await Promise.all([
     readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/SeedVR2DetailControls.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/seedvr2-detail.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/i18n/dictionaries.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.module.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(workspace, /<SeedVR2DetailControls/);
@@ -63,6 +65,10 @@ test("SeedVR2 detail reconstruction controls expose the complete backend contrac
   assert.match(workspace, /SEEDVR2_SKIN_DETAIL_PRESET/);
   assert.match(workspace, /createSkinDetailSeedVR2Draft/);
   assert.match(workspace, /createDefaultSeedVR2DetailDraft/);
+  assert.match(workspace, /isSeedVR2DetailDraftDefault\(detailDraft\)/);
+  assert.match(workspace, /fetchUpscaleHealth\(profile, sourceKind, \{/);
+  assert.match(workspace, /detailMode,/);
+  assert.match(workspace, /health\?\.detail\?\.available === false/);
 
   for (const field of [
     "detailPreset",
@@ -112,6 +118,16 @@ test("SeedVR2 detail reconstruction controls expose the complete backend contrac
   assert.match(controls, /Mask Blur/);
   assert.match(controls, /Tiling Strategy/);
   assert.doesNotMatch(controls, /<details className=\{styles\.advancedSampling\} open/);
+  assert.match(controls, /upscale\.seedvr2\.detail\.preset\.skin/);
+  assert.match(controls, /upscale\.seedvr2\.detail\.reset/);
+  assert.match(controls, /upscale\.seedvr2\.detail\.warning/);
+  assert.match(dictionaries, /"upscale\.seedvr2\.detail\.title": "細節重建 \/ Tiled detail"/);
+  assert.match(dictionaries, /"upscale\.seedvr2\.detailUnavailable"/);
+  assert.match(styles, /\.detailUnavailable\{/);
+  assert.match(workspace, /setScale\(String\(SEEDVR2_SKIN_DETAIL_PRESET\.scale\)\)/);
+  assert.match(workspace, /setDetailDraft\(createSkinDetailSeedVR2Draft\(\)\)/);
+  assert.match(workspace, /setDetailDraft\(createDefaultSeedVR2DetailDraft\(\)\)/);
+  assert.match(client, /const parameters = isSeedVR2Profile \? settings : \{ scale: UPSCALE_SCALE \}/);
 });
 
 test("SeedVR2 controls explain what each setting and option does", async () => {

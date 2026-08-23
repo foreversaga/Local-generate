@@ -94,7 +94,7 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
         sectionSummarySkin: "皮膚細節 · 0.035 noise · 1024 tile",
         presetLabel: "細節預設",
         reset: "重設細節參數",
-        experimentalWarning: "細節重建參數不是目前原生 SeedVR2 workflow 的預設；後端接上 tiled/detail workflow 後才會實際生效。提高 noise 或 tile 解析度也會增加偏離原圖、記憶體與耗時風險。",
+        experimentalWarning: "實驗性細節重建可能改變局部紋理；提高 noise 或 tile 解析度也會增加偏離原圖、記憶體與耗時風險。",
         preset: {
             default: "預設（維持原工作流）",
             skin_detail: "皮膚細節（毛孔／髮絲／材質）",
@@ -172,7 +172,7 @@ const EN_HELP: SeedVR2HelpCopy = {
         sectionSummarySkin: "Skin detail · 0.035 noise · 1024 tile",
         presetLabel: "Detail preset",
         reset: "Reset detail settings",
-        experimentalWarning: "These controls are not part of the current native SeedVR2 workflow. They take effect after the backend detail/tiled workflow is connected. More noise or larger tile reconstruction can also increase drift, memory use, and runtime.",
+        experimentalWarning: "Experimental detail reconstruction may alter local texture. More noise or larger tile reconstruction can also increase drift, memory use, and runtime.",
         preset: {
             default: "Default (preserve current workflow)",
             skin_detail: "Skin detail (pores / hair / material)",

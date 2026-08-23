@@ -37,6 +37,7 @@ import { SeedVR2DetailControls } from "./SeedVR2DetailControls";
 import {
     createDefaultSeedVR2DetailDraft,
     createSkinDetailSeedVR2Draft,
+    isSeedVR2DetailDraftDefault,
     parseSeedVR2DetailDraft,
 } from "./seedvr2-detail";
 import { getSeedVR2Help } from "./seedvr2-help";
@@ -69,6 +70,7 @@ export function UpscaleWorkspace() {
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
     const sourceKind = source?.kind || "video";
     const isSeedVR2 = profile === "seedvr2_7b_sharp_fp16" || profile === "seedvr2_7b_sharp_nvfp4";
+    const detailMode = isSeedVR2 && !isSeedVR2DetailDraftDefault(detailDraft);
     const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
     const samplingIsDefault = steps.trim() !== ""
         && Number(steps) === SEEDVR2_DEFAULT_SAMPLING.steps
@@ -82,7 +84,12 @@ export function UpscaleWorkspace() {
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
         try {
-            const next = await fetchUpscaleHealth(profile, sourceKind);
+            const next = await fetchUpscaleHealth(profile, sourceKind, {
+                detailMode,
+                detailPreset: detailDraft.detailPreset,
+                blendingMethod: detailDraft.blendingMethod,
+                tilingStrategy: detailDraft.tilingStrategy,
+            });
             setHealth(next);
             setHealthError("");
         } catch (reason) {
@@ -91,7 +98,7 @@ export function UpscaleWorkspace() {
         } finally {
             setHealthLoading(false);
         }
-    }, [profile, sourceKind]);
+    }, [detailDraft.blendingMethod, detailDraft.detailPreset, detailDraft.tilingStrategy, detailMode, profile, sourceKind]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => void refreshHealth(), 0);
@@ -482,6 +489,9 @@ export function UpscaleWorkspace() {
                                 onPresetChange={handleSeedVR2DetailPreset}
                                 onReset={resetSeedVR2Detail}
                             />
+                            {detailMode && health?.detail?.available === false && (
+                                <p className={styles.detailUnavailable} role="status">{t("upscale.seedvr2.detailUnavailable")}</p>
+                            )}
                         </div>
                     )}
                     <div id="upscale-readiness" className={styles.readiness} tabIndex={-1} aria-live="polite">

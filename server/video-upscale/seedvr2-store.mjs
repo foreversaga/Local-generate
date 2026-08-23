@@ -8,6 +8,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const PERSISTED_STATUSES = new Set(["queued", "running", "cancelling", "completed", "failed", "cancelled", "interrupted"]);
 const DEFAULT_PROFILE = "seedvr2_7b_sharp_nvfp4";
+const FP16_PROFILE = "seedvr2_7b_sharp_fp16";
 const H3_LATENT_PROFILE = "h3_latent_2x";
 const DEFAULT_RESIZE_METHOD = "lanczos";
 const DEFAULT_COLOR_CORRECTION = "wavelet";
@@ -18,6 +19,22 @@ const DEFAULT_CFG = 1;
 const DEFAULT_SAMPLER_NAME = "euler";
 const DEFAULT_SCHEDULER = "simple";
 const DEFAULT_DENOISE = 1;
+const DETAIL_PRESETS = new Set(["default", "skin_detail"]);
+const BLENDING_METHODS = new Set(["multiband", "linear", "gaussian"]);
+const TILING_STRATEGIES = new Set(["chess", "grid"]);
+const DEFAULT_DETAIL = Object.freeze({
+  detailPreset: "default",
+  inputNoiseScale: 0,
+  latentNoiseScale: 0,
+  tileWidth: 1024,
+  tileHeight: 1024,
+  tilePadding: 64,
+  tileUpscaleResolution: 2048,
+  blendingMethod: "multiband",
+  antiAliasingStrength: 0,
+  maskBlur: 0,
+  tilingStrategy: "chess",
+});
 const SAMPLER_NAMES = new Set([
   "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2",
   "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral",
@@ -102,10 +119,39 @@ function safeSteps(value) {
   return steps >= 1 && steps <= 20 ? steps : DEFAULT_STEPS;
 }
 
-function safeRoundedNumber(value, fallback, min, max) {
+function safeRoundedNumber(value, fallback, min, max, precision = 2) {
   const numeric = safeNumber(value, fallback);
   if (numeric < min || numeric > max) return fallback;
-  return Math.round(numeric * 100) / 100;
+  const factor = 10 ** precision;
+  return Math.round(numeric * factor) / factor;
+}
+
+function isSeedVR2Profile(profile) {
+  return profile === DEFAULT_PROFILE || profile === FP16_PROFILE;
+}
+
+function safeBoundedInteger(value, fallback, min, max, multipleOf = 0) {
+  const numeric = safeInteger(value, fallback);
+  return numeric >= min && numeric <= max && (!multipleOf || numeric % multipleOf === 0) ? numeric : fallback;
+}
+
+function safeDetailSettings(input = {}, profile = DEFAULT_PROFILE) {
+  if (!isSeedVR2Profile(profile)) return {};
+  const detailPreset = safeChoice(input.detailPreset, DETAIL_PRESETS, DEFAULT_DETAIL.detailPreset);
+  const defaults = detailPreset === "skin_detail" ? { ...DEFAULT_DETAIL, detailPreset, inputNoiseScale: 0.035 } : DEFAULT_DETAIL;
+  return {
+    detailPreset,
+    inputNoiseScale: safeRoundedNumber(input.inputNoiseScale, defaults.inputNoiseScale, 0, 0.2, 3),
+    latentNoiseScale: safeRoundedNumber(input.latentNoiseScale, defaults.latentNoiseScale, 0, 0.2, 3),
+    tileWidth: safeBoundedInteger(input.tileWidth, defaults.tileWidth, 256, 2048, 64),
+    tileHeight: safeBoundedInteger(input.tileHeight, defaults.tileHeight, 256, 2048, 64),
+    tilePadding: safeBoundedInteger(input.tilePadding, defaults.tilePadding, 0, 256),
+    tileUpscaleResolution: safeBoundedInteger(input.tileUpscaleResolution, defaults.tileUpscaleResolution, 512, 4096, 64),
+    blendingMethod: safeChoice(input.blendingMethod, BLENDING_METHODS, defaults.blendingMethod),
+    antiAliasingStrength: safeRoundedNumber(input.antiAliasingStrength, defaults.antiAliasingStrength, 0, 1, 3),
+    maskBlur: safeRoundedNumber(input.maskBlur, defaults.maskBlur, 0, 64, 3),
+    tilingStrategy: safeChoice(input.tilingStrategy, TILING_STRATEGIES, defaults.tilingStrategy),
+  };
 }
 
 function safePrompt(value, depth = 0) {
@@ -144,13 +190,26 @@ function safeProvenance(value, job) {
   const request = source.request && typeof source.request === "object" ? source.request : {};
   const requestSeed = safeInteger(request.seed ?? job.seed, 0);
   const profile = safeText(request.profile || job.profile, DEFAULT_PROFILE, 80);
-  const sampling = profile === DEFAULT_PROFILE ? {
+  const sampling = isSeedVR2Profile(profile) ? {
     steps: safeSteps(request.steps ?? job.steps),
     cfg: safeRoundedNumber(request.cfg ?? job.cfg, DEFAULT_CFG, 0, 20),
     samplerName: safeChoice(request.samplerName ?? job.samplerName, SAMPLER_NAMES, DEFAULT_SAMPLER_NAME),
     scheduler: safeChoice(request.scheduler ?? job.scheduler, SCHEDULERS, DEFAULT_SCHEDULER),
     denoise: safeRoundedNumber(request.denoise ?? job.denoise, DEFAULT_DENOISE, 0, 1),
   } : {};
+  const detail = safeDetailSettings({
+    detailPreset: request.detailPreset ?? job.detailPreset,
+    inputNoiseScale: request.inputNoiseScale ?? job.inputNoiseScale,
+    latentNoiseScale: request.latentNoiseScale ?? job.latentNoiseScale,
+    tileWidth: request.tileWidth ?? job.tileWidth,
+    tileHeight: request.tileHeight ?? job.tileHeight,
+    tilePadding: request.tilePadding ?? job.tilePadding,
+    tileUpscaleResolution: request.tileUpscaleResolution ?? job.tileUpscaleResolution,
+    blendingMethod: request.blendingMethod ?? job.blendingMethod,
+    antiAliasingStrength: request.antiAliasingStrength ?? job.antiAliasingStrength,
+    maskBlur: request.maskBlur ?? job.maskBlur,
+    tilingStrategy: request.tilingStrategy ?? job.tilingStrategy,
+  }, profile);
   return {
     request: {
       sourceName: safeRelative(request.sourceName || job.sourceName),
@@ -161,6 +220,7 @@ function safeProvenance(value, job) {
       resizeMethod: safeChoice(request.resizeMethod ?? job.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
       colorCorrection: safeChoice(request.colorCorrection ?? job.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
       ...sampling,
+      ...detail,
     },
     attempt: Math.max(1, Math.floor(safeNumber(source.attempt ?? job.attempt, 1))),
     ...(safeIdOptional(source.retryOf || job.retryOf) ? { retryOf: safeIdOptional(source.retryOf || job.retryOf) } : {}),
@@ -194,13 +254,26 @@ export function canonicalSeedVR2Job(input = {}) {
   const updatedAt = safeTimestamp(input.updatedAt || input.timestamps?.updatedAt) || createdAt;
   const seed = safeInteger(input.seed ?? input.provenance?.request?.seed, 0);
   const profile = safeText(input.profile, DEFAULT_PROFILE, 80);
-  const sampling = profile === DEFAULT_PROFILE ? {
+  const sampling = isSeedVR2Profile(profile) ? {
     steps: safeSteps(input.steps ?? input.provenance?.request?.steps),
     cfg: safeRoundedNumber(input.cfg ?? input.provenance?.request?.cfg, DEFAULT_CFG, 0, 20),
     samplerName: safeChoice(input.samplerName ?? input.provenance?.request?.samplerName, SAMPLER_NAMES, DEFAULT_SAMPLER_NAME),
     scheduler: safeChoice(input.scheduler ?? input.provenance?.request?.scheduler, SCHEDULERS, DEFAULT_SCHEDULER),
     denoise: safeRoundedNumber(input.denoise ?? input.provenance?.request?.denoise, DEFAULT_DENOISE, 0, 1),
   } : {};
+  const detail = safeDetailSettings({
+    detailPreset: input.detailPreset ?? input.provenance?.request?.detailPreset,
+    inputNoiseScale: input.inputNoiseScale ?? input.provenance?.request?.inputNoiseScale,
+    latentNoiseScale: input.latentNoiseScale ?? input.provenance?.request?.latentNoiseScale,
+    tileWidth: input.tileWidth ?? input.provenance?.request?.tileWidth,
+    tileHeight: input.tileHeight ?? input.provenance?.request?.tileHeight,
+    tilePadding: input.tilePadding ?? input.provenance?.request?.tilePadding,
+    tileUpscaleResolution: input.tileUpscaleResolution ?? input.provenance?.request?.tileUpscaleResolution,
+    blendingMethod: input.blendingMethod ?? input.provenance?.request?.blendingMethod,
+    antiAliasingStrength: input.antiAliasingStrength ?? input.provenance?.request?.antiAliasingStrength,
+    maskBlur: input.maskBlur ?? input.provenance?.request?.maskBlur,
+    tilingStrategy: input.tilingStrategy ?? input.provenance?.request?.tilingStrategy,
+  }, profile);
   const job = {
     id,
     status: PERSISTED_STATUSES.has(String(input.status || "")) ? String(input.status) : "queued",
@@ -215,6 +288,7 @@ export function canonicalSeedVR2Job(input = {}) {
     resizeMethod: safeChoice(input.resizeMethod ?? input.provenance?.request?.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
     colorCorrection: safeChoice(input.colorCorrection ?? input.provenance?.request?.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
     ...sampling,
+    ...detail,
     prompt: safePrompt(input.prompt),
     output: safeOutput(input.output),
     error: safeText(input.error, "", 1200),

@@ -34,6 +34,62 @@ export const SEEDVR2_DEFAULT_CFG = 1;
 export const SEEDVR2_DEFAULT_SAMPLER_NAME = "euler";
 export const SEEDVR2_DEFAULT_SCHEDULER = "simple";
 export const SEEDVR2_DEFAULT_DENOISE = 1;
+export const SEEDVR2_DETAIL_NODE = "SeedVR2DetailUpscaler";
+export const SEEDVR2_DEFAULT_DETAIL = Object.freeze({
+  detailPreset: "default",
+  inputNoiseScale: 0,
+  latentNoiseScale: 0,
+  tileWidth: 1024,
+  tileHeight: 1024,
+  tilePadding: 64,
+  tileUpscaleResolution: 2048,
+  blendingMethod: "multiband",
+  antiAliasingStrength: 0,
+  maskBlur: 0,
+  tilingStrategy: "chess",
+});
+export const SEEDVR2_SKIN_DETAIL_SETTINGS = Object.freeze({
+  scale: 2,
+  resizeMethod: "lanczos",
+  colorCorrection: "wavelet",
+  steps: 1,
+  cfg: 1,
+  samplerName: "euler",
+  scheduler: "simple",
+  denoise: 1,
+  ...SEEDVR2_DEFAULT_DETAIL,
+  detailPreset: "skin_detail",
+  inputNoiseScale: 0.035,
+});
+export const SEEDVR2_BLENDING_METHODS = Object.freeze(["multiband", "linear", "gaussian"]);
+export const SEEDVR2_TILING_STRATEGIES = Object.freeze(["chess", "grid"]);
+export const SEEDVR2_DETAIL_PRESETS = Object.freeze(["default", "skin_detail"]);
+export const SEEDVR2_DETAIL_NODE_INPUT_TYPES = Object.freeze({
+  image: "IMAGE",
+  unet_name: "COMBO",
+  vae_name: "COMBO",
+  seed: "INT",
+  scale: "FLOAT",
+  resize_method: "COMBO",
+  color_correction: "COMBO",
+  steps: "INT",
+  cfg: "FLOAT",
+  sampler_name: "COMBO",
+  scheduler: "COMBO",
+  denoise: "FLOAT",
+  input_noise_scale: "FLOAT",
+  latent_noise_scale: "FLOAT",
+  tile_width: "INT",
+  tile_height: "INT",
+  tile_padding: "INT",
+  tile_upscale_resolution: "INT",
+  blending_method: "COMBO",
+  anti_aliasing_strength: "FLOAT",
+  mask_blur: "FLOAT",
+  tiling_strategy: "COMBO",
+  detail_preset: "COMBO",
+});
+export const SEEDVR2_DETAIL_NODE_INPUTS = Object.freeze(Object.keys(SEEDVR2_DETAIL_NODE_INPUT_TYPES));
 export const SEEDVR2_SAMPLER_NAMES = Object.freeze([
   "euler",
   "euler_cfg_pp",
@@ -130,6 +186,20 @@ export const SEEDVR2_IMAGE_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
+export const SEEDVR2_DETAIL_REQUIRED_NODES = Object.freeze([
+  "LoadVideo",
+  "GetVideoComponents",
+  SEEDVR2_DETAIL_NODE,
+  "CreateVideo",
+  "SaveVideo",
+]);
+
+export const SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES = Object.freeze([
+  "LoadImage",
+  SEEDVR2_DETAIL_NODE,
+  "SaveImage",
+]);
+
 export const H3_LATENT_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
   "GetVideoComponents",
@@ -191,6 +261,7 @@ const SEEDVR2_NODE_PROGRESS = Object.freeze({
   SeedVR2TemporalMerge: 72,
   VAEDecodeTiled: 84,
   SeedVR2PostProcessing: 88,
+  SeedVR2DetailUpscaler: 58,
   CreateVideo: 90,
   SaveVideo: 90,
   SaveImage: 90,
@@ -516,8 +587,12 @@ function sourceKindFromName(value) {
   return IMAGE_EXTENSIONS.has(path.posix.extname(String(value || "")).toLowerCase()) ? "image" : "video";
 }
 
+function nodeInputSpec(nodeInfo, key) {
+  return nodeInfo?.input?.required?.[key] ?? nodeInfo?.input?.optional?.[key];
+}
+
 function comboValues(nodeInfo, key) {
-  const spec = nodeInfo?.input?.required?.[key];
+  const spec = nodeInputSpec(nodeInfo, key);
   if (!Array.isArray(spec)) return [];
   if (Array.isArray(spec[0])) return spec[0].map((value) => String(value));
   // ComfyUI V3 schemas expose a combo as ["COMBO", { options: [...] }].
@@ -529,25 +604,68 @@ function comboValues(nodeInfo, key) {
   return [];
 }
 
+function nodeInputType(nodeInfo, key) {
+  const spec = nodeInputSpec(nodeInfo, key);
+  if (!Array.isArray(spec)) return "";
+  if (Array.isArray(spec[0]) || spec[0] === "COMBO") return "COMBO";
+  return String(spec[0] || "").toUpperCase();
+}
+
 export function evaluateSeedVR2Readiness(objectInfo, {
   unetName = SEEDVR2_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   modelFiles = {},
   comfyUi = true,
   sourceKind = "video",
+  detailMode = false,
+  detailSettings = SEEDVR2_DEFAULT_DETAIL,
 } = {}) {
-  const requiredNodes = sourceKind === "image" ? SEEDVR2_IMAGE_REQUIRED_NODES : SEEDVR2_REQUIRED_NODES;
+  const requiredNodes = detailMode
+    ? sourceKind === "image" ? SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES : SEEDVR2_DETAIL_REQUIRED_NODES
+    : sourceKind === "image" ? SEEDVR2_IMAGE_REQUIRED_NODES : SEEDVR2_REQUIRED_NODES;
   const nodes = Object.fromEntries(requiredNodes.map((name) => [name, Boolean(objectInfo?.[name])]));
-  const unetListed = comboValues(objectInfo?.UNETLoader, "unet_name").includes(unetName);
-  const vaeListed = comboValues(objectInfo?.VAELoader, "vae_name").includes(vaeName);
+  const modelNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_NODE] : objectInfo?.UNETLoader;
+  const vaeNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_NODE] : objectInfo?.VAELoader;
+  const unetListed = comboValues(modelNode, "unet_name").includes(unetName);
+  const vaeListed = comboValues(vaeNode, "vae_name").includes(vaeName);
   const unetFile = modelFiles.unet === undefined ? true : Boolean(modelFiles.unet);
   const vaeFile = modelFiles.vae === undefined ? true : Boolean(modelFiles.vae);
   const models = {
     unet: { name: unetName, available: unetListed && unetFile },
     vae: { name: vaeName, available: vaeListed && vaeFile },
   };
-  const ready = Boolean(comfyUi) && Object.values(nodes).every(Boolean) && models.unet.available && models.vae.available;
-  return { ready, comfyUi: Boolean(comfyUi), models, nodes };
+  let detail;
+  if (detailMode) {
+    const nodeInfo = objectInfo?.[SEEDVR2_DETAIL_NODE];
+    const missingInputs = SEEDVR2_DETAIL_NODE_INPUTS.filter((key) => !nodeInputSpec(nodeInfo, key));
+    const invalidInputs = SEEDVR2_DETAIL_NODE_INPUTS.filter((key) => (
+      nodeInputSpec(nodeInfo, key) && nodeInputType(nodeInfo, key) !== SEEDVR2_DETAIL_NODE_INPUT_TYPES[key]
+    ));
+    const unsupported = {
+      resizeMethod: comboValues(nodeInfo, "resize_method").includes(detailSettings.resizeMethod) ? [] : [detailSettings.resizeMethod],
+      colorCorrection: comboValues(nodeInfo, "color_correction").includes(detailSettings.colorCorrection) ? [] : [detailSettings.colorCorrection],
+      samplerName: comboValues(nodeInfo, "sampler_name").includes(detailSettings.samplerName) ? [] : [detailSettings.samplerName],
+      scheduler: comboValues(nodeInfo, "scheduler").includes(detailSettings.scheduler) ? [] : [detailSettings.scheduler],
+      blendingMethod: comboValues(nodeInfo, "blending_method").includes(detailSettings.blendingMethod) ? [] : [detailSettings.blendingMethod],
+      tilingStrategy: comboValues(nodeInfo, "tiling_strategy").includes(detailSettings.tilingStrategy) ? [] : [detailSettings.tilingStrategy],
+      detailPreset: comboValues(nodeInfo, "detail_preset").includes(detailSettings.detailPreset) ? [] : [detailSettings.detailPreset],
+    };
+    const schemaReady = missingInputs.length === 0 && invalidInputs.length === 0 && Object.values(unsupported).every((values) => values.length === 0);
+    detail = {
+      requested: true,
+      node: SEEDVR2_DETAIL_NODE,
+      available: Boolean(nodeInfo) && schemaReady,
+      missingInputs,
+      invalidInputs,
+      unsupported,
+    };
+  }
+  const ready = Boolean(comfyUi)
+    && Object.values(nodes).every(Boolean)
+    && models.unet.available
+    && models.vae.available
+    && (!detailMode || detail?.available);
+  return { ready, comfyUi: Boolean(comfyUi), models, nodes, ...(detail ? { detail } : {}) };
 }
 
 export function evaluateH3LatentReadiness(objectInfo, {
@@ -743,6 +861,73 @@ export function buildSeedVR2ImagePrompt({
     },
     "10": { class_type: "SeedVR2PostProcessing", inputs: { images: link(9), original_resized_images: link(2), color_correction_method: settings.colorCorrection } },
     "11": { class_type: "SaveImage", inputs: { images: link(10), filename_prefix: safePrefix } },
+  };
+}
+
+export function buildSeedVR2DetailPrompt({
+  sourceName,
+  filenamePrefix = "seedvr2_detail_upscaled",
+  unetName = SEEDVR2_UNET_NAME,
+  vaeName = SEEDVR2_VAE_NAME,
+  seed,
+  ...input
+} = {}) {
+  const file = normalizeUpscaleAssetName(sourceName);
+  const sourceKind = sourceKindFromName(file);
+  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
+  const settings = normalizeSeedVR2Settings(input);
+  if (!usesSeedVR2Detail(settings)) {
+    throw makeError("SeedVR2 detail graph requires non-default detail settings.", 400, "DETAIL_SETTINGS_REQUIRED");
+  }
+  const detailInputs = {
+    image: sourceKind === "image" ? link(1) : link(2),
+    unet_name: unetName,
+    vae_name: vaeName,
+    seed: samplerSeed,
+    scale: settings.scale,
+    resize_method: settings.resizeMethod,
+    color_correction: settings.colorCorrection,
+    steps: settings.steps,
+    cfg: settings.cfg,
+    sampler_name: settings.samplerName,
+    scheduler: settings.scheduler,
+    denoise: settings.denoise,
+    input_noise_scale: settings.inputNoiseScale,
+    latent_noise_scale: settings.latentNoiseScale,
+    tile_width: settings.tileWidth,
+    tile_height: settings.tileHeight,
+    tile_padding: settings.tilePadding,
+    tile_upscale_resolution: settings.tileUpscaleResolution,
+    blending_method: settings.blendingMethod,
+    anti_aliasing_strength: settings.antiAliasingStrength,
+    mask_blur: settings.maskBlur,
+    tiling_strategy: settings.tilingStrategy,
+    detail_preset: settings.detailPreset,
+  };
+  if (sourceKind === "image") {
+    return {
+      "1": { class_type: "LoadImage", inputs: { image: file } },
+      "2": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs },
+      "3": { class_type: "SaveImage", inputs: { images: link(2), filename_prefix: safePrefix } },
+    };
+  }
+  return {
+    "1": { class_type: "LoadVideo", inputs: { file } },
+    "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
+    "3": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs },
+    "4": { class_type: "CreateVideo", inputs: { images: link(3), fps: link(2, 2), audio: link(2, 1) } },
+    "5": {
+      class_type: "SaveVideo",
+      inputs: {
+        video: link(4),
+        filename_prefix: safePrefix,
+        format: "mp4",
+        codec: "h264",
+        "codec.encoding": "re-encode",
+        "codec.encoding.crf": 18,
+      },
+    },
   };
 }
 
@@ -1020,6 +1205,17 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
       samplerName: job.samplerName || SEEDVR2_DEFAULT_SAMPLER_NAME,
       scheduler: job.scheduler || SEEDVR2_DEFAULT_SCHEDULER,
       denoise: job.denoise ?? SEEDVR2_DEFAULT_DENOISE,
+      detailPreset: job.detailPreset || SEEDVR2_DEFAULT_DETAIL.detailPreset,
+      inputNoiseScale: job.inputNoiseScale ?? SEEDVR2_DEFAULT_DETAIL.inputNoiseScale,
+      latentNoiseScale: job.latentNoiseScale ?? SEEDVR2_DEFAULT_DETAIL.latentNoiseScale,
+      tileWidth: job.tileWidth ?? SEEDVR2_DEFAULT_DETAIL.tileWidth,
+      tileHeight: job.tileHeight ?? SEEDVR2_DEFAULT_DETAIL.tileHeight,
+      tilePadding: job.tilePadding ?? SEEDVR2_DEFAULT_DETAIL.tilePadding,
+      tileUpscaleResolution: job.tileUpscaleResolution ?? SEEDVR2_DEFAULT_DETAIL.tileUpscaleResolution,
+      blendingMethod: job.blendingMethod || SEEDVR2_DEFAULT_DETAIL.blendingMethod,
+      antiAliasingStrength: job.antiAliasingStrength ?? SEEDVR2_DEFAULT_DETAIL.antiAliasingStrength,
+      maskBlur: job.maskBlur ?? SEEDVR2_DEFAULT_DETAIL.maskBlur,
+      tilingStrategy: job.tilingStrategy || SEEDVR2_DEFAULT_DETAIL.tilingStrategy,
     } : {}),
     prompt: cloneValue(job.prompt),
     ...(job.promptId ? { promptId: job.promptId } : {}),
@@ -1072,25 +1268,28 @@ function normalizeSeedVR2Scale(value, profile = SEEDVR2_PROFILE) {
 }
 
 function normalizeSeedVR2Choice(value, choices, fallback, field, code) {
-  const normalized = String(value || fallback).trim().toLowerCase();
+  const candidate = value === undefined || value === null || value === "" ? fallback : value;
+  const normalized = String(candidate).trim().toLowerCase();
   if (!choices.includes(normalized)) throw makeError(`SeedVR2 ${field} is invalid.`, 400, code);
   return normalized;
 }
 
-function normalizeSeedVR2Integer(value, fallback, min, max, field, code) {
+function normalizeSeedVR2Integer(value, fallback, min, max, field, code, multipleOf = 0) {
   const normalized = value === undefined || value === null || value === "" ? fallback : Number(value);
-  if (!Number.isSafeInteger(normalized) || normalized < min || normalized > max) {
-    throw makeError(`SeedVR2 ${field} must be an integer between ${min} and ${max}.`, 400, code);
+  if (!Number.isSafeInteger(normalized) || normalized < min || normalized > max || (multipleOf && normalized % multipleOf !== 0)) {
+    const suffix = multipleOf ? ` and a multiple of ${multipleOf}` : "";
+    throw makeError(`SeedVR2 ${field} must be an integer between ${min} and ${max}${suffix}.`, 400, code);
   }
   return normalized;
 }
 
-function normalizeSeedVR2Decimal(value, fallback, min, max, field, code) {
+function normalizeSeedVR2Decimal(value, fallback, min, max, field, code, precision = 2) {
   const numeric = value === undefined || value === null || value === "" ? fallback : Number(value);
   if (!Number.isFinite(numeric) || numeric < min || numeric > max) {
     throw makeError(`SeedVR2 ${field} must be between ${min} and ${max}.`, 400, code);
   }
-  return Math.round(numeric * 100) / 100;
+  const factor = 10 ** precision;
+  return Math.round(numeric * factor) / factor;
 }
 
 function hasSeedVR2SamplingOverride(input = {}) {
@@ -1098,26 +1297,70 @@ function hasSeedVR2SamplingOverride(input = {}) {
     .some((key) => Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined);
 }
 
+const SEEDVR2_DETAIL_KEYS = Object.freeze([
+  "inputNoiseScale", "latentNoiseScale", "tileWidth", "tileHeight", "tilePadding",
+  "tileUpscaleResolution", "blendingMethod", "antiAliasingStrength", "maskBlur",
+  "tilingStrategy", "detailPreset",
+]);
+
+function hasSeedVR2DetailOverride(input = {}) {
+  return SEEDVR2_DETAIL_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined);
+}
+
+export function usesSeedVR2Detail(settings = {}) {
+  return settings.detailPreset !== SEEDVR2_DEFAULT_DETAIL.detailPreset
+    || SEEDVR2_DETAIL_KEYS.some((key) => key !== "detailPreset" && settings[key] !== SEEDVR2_DEFAULT_DETAIL[key]);
+}
+
 export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) {
   const normalizedProfile = normalizeProfile(profile);
+  const detailPreset = normalizeSeedVR2Choice(
+    input.detailPreset,
+    SEEDVR2_DETAIL_PRESETS,
+    SEEDVR2_DEFAULT_DETAIL.detailPreset,
+    "detail preset",
+    "DETAIL_PRESET_INVALID",
+  );
+  const defaults = detailPreset === "skin_detail" ? SEEDVR2_SKIN_DETAIL_SETTINGS : {
+    scale: SEEDVR2_DEFAULT_SCALE,
+    resizeMethod: SEEDVR2_DEFAULT_RESIZE_METHOD,
+    colorCorrection: SEEDVR2_DEFAULT_COLOR_CORRECTION,
+    steps: SEEDVR2_DEFAULT_STEPS,
+    cfg: SEEDVR2_DEFAULT_CFG,
+    samplerName: SEEDVR2_DEFAULT_SAMPLER_NAME,
+    scheduler: SEEDVR2_DEFAULT_SCHEDULER,
+    denoise: SEEDVR2_DEFAULT_DENOISE,
+    ...SEEDVR2_DEFAULT_DETAIL,
+  };
   const base = {
-    scale: normalizeSeedVR2Scale(input.scale, normalizedProfile),
-    resizeMethod: normalizeSeedVR2Choice(input.resizeMethod, SEEDVR2_RESIZE_METHODS, SEEDVR2_DEFAULT_RESIZE_METHOD, "resize method", "RESIZE_METHOD_INVALID"),
-    colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, SEEDVR2_DEFAULT_COLOR_CORRECTION, "color correction", "COLOR_CORRECTION_INVALID"),
+    scale: normalizeSeedVR2Scale(input.scale ?? defaults.scale, normalizedProfile),
+    resizeMethod: normalizeSeedVR2Choice(input.resizeMethod, SEEDVR2_RESIZE_METHODS, defaults.resizeMethod, "resize method", "RESIZE_METHOD_INVALID"),
+    colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, defaults.colorCorrection, "color correction", "COLOR_CORRECTION_INVALID"),
   };
   if (normalizedProfile === H3_LATENT_PROFILE) {
-    if (hasSeedVR2SamplingOverride(input)) {
-      throw makeError("SeedVR2 advanced sampling settings are not supported by MiniMax H3 Latent.", 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
+    if (hasSeedVR2SamplingOverride(input) || hasSeedVR2DetailOverride(input)) {
+      throw makeError("SeedVR2 sampling and detail settings are not supported by MiniMax H3 Latent.", 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
     }
     return base;
   }
   return {
     ...base,
-    steps: normalizeSeedVR2Integer(input.steps, SEEDVR2_DEFAULT_STEPS, SEEDVR2_MIN_STEPS, SEEDVR2_MAX_STEPS, "steps", "STEPS_INVALID"),
-    cfg: normalizeSeedVR2Decimal(input.cfg, SEEDVR2_DEFAULT_CFG, SEEDVR2_MIN_CFG, SEEDVR2_MAX_CFG, "cfg", "CFG_INVALID"),
-    samplerName: normalizeSeedVR2Choice(input.samplerName, SEEDVR2_SAMPLER_NAMES, SEEDVR2_DEFAULT_SAMPLER_NAME, "sampler", "SAMPLER_INVALID"),
-    scheduler: normalizeSeedVR2Choice(input.scheduler, SEEDVR2_SCHEDULERS, SEEDVR2_DEFAULT_SCHEDULER, "scheduler", "SCHEDULER_INVALID"),
-    denoise: normalizeSeedVR2Decimal(input.denoise, SEEDVR2_DEFAULT_DENOISE, SEEDVR2_MIN_DENOISE, SEEDVR2_MAX_DENOISE, "denoise", "DENOISE_INVALID"),
+    steps: normalizeSeedVR2Integer(input.steps, defaults.steps, SEEDVR2_MIN_STEPS, SEEDVR2_MAX_STEPS, "steps", "STEPS_INVALID"),
+    cfg: normalizeSeedVR2Decimal(input.cfg, defaults.cfg, SEEDVR2_MIN_CFG, SEEDVR2_MAX_CFG, "cfg", "CFG_INVALID"),
+    samplerName: normalizeSeedVR2Choice(input.samplerName, SEEDVR2_SAMPLER_NAMES, defaults.samplerName, "sampler", "SAMPLER_INVALID"),
+    scheduler: normalizeSeedVR2Choice(input.scheduler, SEEDVR2_SCHEDULERS, defaults.scheduler, "scheduler", "SCHEDULER_INVALID"),
+    denoise: normalizeSeedVR2Decimal(input.denoise, defaults.denoise, SEEDVR2_MIN_DENOISE, SEEDVR2_MAX_DENOISE, "denoise", "DENOISE_INVALID"),
+    detailPreset,
+    inputNoiseScale: normalizeSeedVR2Decimal(input.inputNoiseScale, defaults.inputNoiseScale, 0, 0.2, "input noise scale", "INPUT_NOISE_SCALE_INVALID", 3),
+    latentNoiseScale: normalizeSeedVR2Decimal(input.latentNoiseScale, defaults.latentNoiseScale, 0, 0.2, "latent noise scale", "LATENT_NOISE_SCALE_INVALID", 3),
+    tileWidth: normalizeSeedVR2Integer(input.tileWidth, defaults.tileWidth, 256, 2048, "tile width", "TILE_WIDTH_INVALID", 64),
+    tileHeight: normalizeSeedVR2Integer(input.tileHeight, defaults.tileHeight, 256, 2048, "tile height", "TILE_HEIGHT_INVALID", 64),
+    tilePadding: normalizeSeedVR2Integer(input.tilePadding, defaults.tilePadding, 0, 256, "tile padding", "TILE_PADDING_INVALID"),
+    tileUpscaleResolution: normalizeSeedVR2Integer(input.tileUpscaleResolution, defaults.tileUpscaleResolution, 512, 4096, "tile upscale resolution", "TILE_UPSCALE_RESOLUTION_INVALID", 64),
+    blendingMethod: normalizeSeedVR2Choice(input.blendingMethod, SEEDVR2_BLENDING_METHODS, defaults.blendingMethod, "blending method", "BLENDING_METHOD_INVALID"),
+    antiAliasingStrength: normalizeSeedVR2Decimal(input.antiAliasingStrength, defaults.antiAliasingStrength, 0, 1, "anti-aliasing strength", "ANTI_ALIASING_STRENGTH_INVALID", 3),
+    maskBlur: normalizeSeedVR2Decimal(input.maskBlur, defaults.maskBlur, 0, 64, "mask blur", "MASK_BLUR_INVALID", 3),
+    tilingStrategy: normalizeSeedVR2Choice(input.tilingStrategy, SEEDVR2_TILING_STRATEGIES, defaults.tilingStrategy, "tiling strategy", "TILING_STRATEGY_INVALID"),
   };
 }
 
@@ -1329,9 +1572,11 @@ export function createSeedVR2Controller({
     return payload;
   }
 
-  async function checkReadiness(requestedProfile = SEEDVR2_PROFILE, sourceKind = "video") {
+  async function checkReadiness(requestedProfile = SEEDVR2_PROFILE, sourceKind = "video", input = {}) {
     const profile = normalizeProfile(requestedProfile);
     const config = profileReadinessConfig(profile);
+    const detailSettings = isSeedVR2Profile(profile) ? normalizeSeedVR2Settings(input, profile) : null;
+    const detailMode = isSeedVR2Profile(profile) && (input.detailMode === true || usesSeedVR2Detail(detailSettings));
     const [statsResult, objectResult, modelFiles] = await Promise.all([
       requestJson("/system_stats").then(() => true).catch(() => false),
       requestJson("/object_info").catch(() => null),
@@ -1353,7 +1598,7 @@ export function createSeedVR2Controller({
       })).then((entries) => Object.fromEntries(entries)),
     ]);
     return {
-      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult, sourceKind, ...config.evaluateOptions }),
+      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult, sourceKind, detailMode, detailSettings, ...config.evaluateOptions }),
       profile,
       profileLabel: profileLabel(profile),
       sourceKind,
@@ -1555,13 +1800,13 @@ export function createSeedVR2Controller({
         progress: 5,
         stage: `Checking ${label} readiness`,
       });
-      const readiness = await checkReadiness(profile, sourceKind);
+      const readiness = await checkReadiness(profile, sourceKind, job);
       assertNotCancelled(job);
       if (!readiness.ready) {
         throw makeError(
           `${label} is unavailable: required ComfyUI nodes or model files are missing.`,
           503,
-          profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : "SEEDVR2_NOT_READY",
+          profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
         );
       }
 
@@ -1588,6 +1833,14 @@ export function createSeedVR2Controller({
           encoderName: readiness.models?.encoder?.name,
           vaeName: readiness.models?.videoVae?.name,
           audioVaeName: readiness.models?.audioVae?.name,
+          seed: job.seed,
+        })
+        : usesSeedVR2Detail(job) ? buildSeedVR2DetailPrompt({
+          ...job,
+          sourceName: loadName,
+          filenamePrefix: outputPrefix(job),
+          unetName: readiness.models?.unet?.name,
+          vaeName: readiness.models?.vae?.name,
           seed: job.seed,
         })
         : sourceKind === "image" ? buildSeedVR2ImagePrompt({
@@ -1721,13 +1974,41 @@ export function createSeedVR2Controller({
     samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
     scheduler = SEEDVR2_DEFAULT_SCHEDULER,
     denoise = SEEDVR2_DEFAULT_DENOISE,
+    detailPreset = SEEDVR2_DEFAULT_DETAIL.detailPreset,
+    inputNoiseScale = SEEDVR2_DEFAULT_DETAIL.inputNoiseScale,
+    latentNoiseScale = SEEDVR2_DEFAULT_DETAIL.latentNoiseScale,
+    tileWidth = SEEDVR2_DEFAULT_DETAIL.tileWidth,
+    tileHeight = SEEDVR2_DEFAULT_DETAIL.tileHeight,
+    tilePadding = SEEDVR2_DEFAULT_DETAIL.tilePadding,
+    tileUpscaleResolution = SEEDVR2_DEFAULT_DETAIL.tileUpscaleResolution,
+    blendingMethod = SEEDVR2_DEFAULT_DETAIL.blendingMethod,
+    antiAliasingStrength = SEEDVR2_DEFAULT_DETAIL.antiAliasingStrength,
+    maskBlur = SEEDVR2_DEFAULT_DETAIL.maskBlur,
+    tilingStrategy = SEEDVR2_DEFAULT_DETAIL.tilingStrategy,
     attempt = 1,
     retryOf = "",
     provenance = null,
   } = {}) {
     const id = String(idFactory());
     const createdAt = isoNow(now());
-    const sampling = isSeedVR2Profile(profile) ? { steps, cfg, samplerName, scheduler, denoise } : {};
+    const seedvr2Settings = isSeedVR2Profile(profile) ? {
+      steps,
+      cfg,
+      samplerName,
+      scheduler,
+      denoise,
+      detailPreset,
+      inputNoiseScale,
+      latentNoiseScale,
+      tileWidth,
+      tileHeight,
+      tilePadding,
+      tileUpscaleResolution,
+      blendingMethod,
+      antiAliasingStrength,
+      maskBlur,
+      tilingStrategy,
+    } : {};
     const request = {
       sourceName,
       sourceRoot,
@@ -1736,7 +2017,7 @@ export function createSeedVR2Controller({
       seed,
       resizeMethod,
       colorCorrection,
-      ...sampling,
+      ...seedvr2Settings,
     };
     return {
       id,
@@ -1751,7 +2032,7 @@ export function createSeedVR2Controller({
       seed,
       resizeMethod,
       colorCorrection,
-      ...sampling,
+      ...seedvr2Settings,
       prompt: null,
       output: null,
       error: "",
@@ -1893,6 +2174,17 @@ export function createSeedVR2Controller({
         samplerName: source.samplerName,
         scheduler: source.scheduler,
         denoise: source.denoise,
+        detailPreset: source.detailPreset,
+        inputNoiseScale: source.inputNoiseScale,
+        latentNoiseScale: source.latentNoiseScale,
+        tileWidth: source.tileWidth,
+        tileHeight: source.tileHeight,
+        tilePadding: source.tilePadding,
+        tileUpscaleResolution: source.tileUpscaleResolution,
+        blendingMethod: source.blendingMethod,
+        antiAliasingStrength: source.antiAliasingStrength,
+        maskBlur: source.maskBlur,
+        tilingStrategy: source.tilingStrategy,
       } : {}),
     };
     const profile = request.profile || source.profile || SEEDVR2_PROFILE;
@@ -1940,7 +2232,14 @@ export function createSeedVR2Controller({
         const url = new URL(req.url || "/api/upscale/health", "http://localhost");
         const profile = normalizeProfile(url.searchParams.get("profile") || SEEDVR2_PROFILE);
         const sourceKind = url.searchParams.get("kind") === "image" ? "image" : "video";
-        respond(res, 200, await checkReadiness(profile, sourceKind));
+        const detailMode = url.searchParams.get("detail") === "1";
+        const detailSettings = detailMode ? {
+          detailMode: true,
+          detailPreset: url.searchParams.get("detailPreset") || "skin_detail",
+          blendingMethod: url.searchParams.get("blendingMethod") || SEEDVR2_DEFAULT_DETAIL.blendingMethod,
+          tilingStrategy: url.searchParams.get("tilingStrategy") || SEEDVR2_DEFAULT_DETAIL.tilingStrategy,
+        } : {};
+        respond(res, 200, await checkReadiness(profile, sourceKind, detailSettings));
       } catch (error) {
         fail(res, Number.isInteger(error?.status) ? error.status : 503, asErrorMessage(error, "Unable to check upscale readiness."), error?.code);
       }
@@ -1950,17 +2249,17 @@ export function createSeedVR2Controller({
       try {
         const body = typeof readJson === "function" ? await readJson(req) : {};
         const profile = normalizeProfile(body?.profile);
-        normalizeSeedVR2Settings(body, profile);
+        const settings = normalizeSeedVR2Settings(body, profile);
         const cleanName = normalizeUpscaleAssetName(body?.sourceName);
         const sourceKind = sourceKindFromName(cleanName);
         if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
           throw makeError("MiniMax H3 Latent 2x accepts video assets only; use SeedVR2 7B for images.", 415, "SOURCE_KIND_INVALID");
         }
-        const readiness = await checkReadiness(profile, sourceKind);
+        const readiness = await checkReadiness(profile, sourceKind, settings);
         if (!readiness.ready) {
           respond(res, 503, {
             error: `${profileLabel(profile)} is not ready.`,
-            code: profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : "SEEDVR2_NOT_READY",
+            code: profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
             health: readiness,
           });
           return true;

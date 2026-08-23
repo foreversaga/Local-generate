@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent } from "react";
+import { useI18n } from "../../i18n/I18nProvider";
 import {
     SEEDVR2_BLENDING_METHODS,
     SEEDVR2_DETAIL_PRESETS,
@@ -23,9 +24,14 @@ type Props = {
 };
 
 export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPresetChange, onReset }: Props) {
+    const { t } = useI18n();
     const help = getSeedVR2Help(locale).detail;
     const isDefault = isSeedVR2DetailDraftDefault(value);
-    const summary = value.detailPreset === "skin_detail" ? help.sectionSummarySkin : help.sectionSummaryDefault;
+    const summary = isDefault
+        ? t("upscale.seedvr2.detail.summaryDefault")
+        : value.detailPreset === "skin_detail"
+            ? t("upscale.seedvr2.detail.summarySkin")
+            : t("upscale.seedvr2.detail.summaryCustom");
 
     function update<Key extends keyof SeedVR2DetailDraft>(key: Key, nextValue: SeedVR2DetailDraft[Key]) {
         onChange({ ...value, [key]: nextValue });
@@ -38,20 +44,20 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
     return (
         <details className={styles.advancedSampling}>
             <summary>
-                <span>{help.sectionTitle}</span>
+                <span>{t("upscale.seedvr2.detail.title")}</span>
                 <small>{summary}</small>
             </summary>
             <div className={styles.advancedSamplingBody}>
                 <div className={styles.parameterGrid}>
                     <label className={styles.profileField}>
-                        <span>{help.presetLabel}</span>
+                        <span>{t("upscale.seedvr2.detail.preset")}</span>
                         <select
                             value={value.detailPreset}
                             onChange={(event) => onPresetChange(event.target.value as SeedVR2DetailPreset)}
                             disabled={disabled}
                         >
                             {SEEDVR2_DETAIL_PRESETS.map((item) => (
-                                <option key={item.id} value={item.id}>{help.preset[item.id]}</option>
+                                <option key={item.id} value={item.id}>{t(item.id === "skin_detail" ? "upscale.seedvr2.detail.preset.skin" : "upscale.seedvr2.detail.preset.default")}</option>
                             ))}
                         </select>
                     </label>
@@ -111,8 +117,8 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                     </label>
                 </div>
                 <div className={styles.advancedSamplingFooter}>
-                    <button type="button" className={styles.textButton} onClick={onReset} disabled={disabled}>{help.reset}</button>
-                    {!isDefault && <p className={styles.samplingWarning} role="status">{help.experimentalWarning}</p>}
+                    <button type="button" className={styles.textButton} onClick={onReset} disabled={disabled}>{t("upscale.seedvr2.detail.reset")}</button>
+                    {!isDefault && <p className={styles.samplingWarning} role="status">{t("upscale.seedvr2.detail.warning")}</p>}
                 </div>
             </div>
         </details>
