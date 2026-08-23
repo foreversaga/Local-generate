@@ -31,6 +31,7 @@ import {
     type SeedVR2SamplerName,
     type SeedVR2Scheduler,
 } from "./upscale-client";
+import { getSeedVR2Help } from "./seedvr2-help";
 import styles from "./UpscaleWorkspace.module.css";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -92,6 +93,7 @@ export function UpscaleWorkspace() {
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
     const sourceKey = source ? assetKey(source) : "";
     const selectedProfile = UPSCALE_PROFILES.find((item) => item.id === profile) || UPSCALE_PROFILES[0];
+    const seedVR2Help = getSeedVR2Help(locale);
     const missingNodes = useMemo(
         () => Object.entries(health?.nodes || {}).filter(([, available]) => !available).map(([name]) => name),
         [health?.nodes],
@@ -366,22 +368,26 @@ export function UpscaleWorkspace() {
                                 <label className={styles.profileField}>
                                     <span>放大倍數</span>
                                     <input type="number" min={SEEDVR2_SCALE_MIN} max={SEEDVR2_SCALE_MAX} step="0.25" value={scale} onChange={(event) => setScale(event.target.value)} disabled={active || Boolean(busy)} />
+                                    <small className={styles.fieldHelp}>{seedVR2Help.scale}</small>
                                 </label>
                                 <label className={styles.profileField}>
                                     <span>隨機種子</span>
                                     <input type="number" min="0" max="2147483647" step="1" value={seed} placeholder="留空為隨機" onChange={(event) => setSeed(event.target.value)} disabled={active || Boolean(busy)} />
+                                    <small className={styles.fieldHelp}>{seedVR2Help.seed}</small>
                                 </label>
                                 <label className={styles.profileField}>
                                     <span>縮放演算法</span>
                                     <select value={resizeMethod} onChange={(event) => setResizeMethod(event.target.value as SeedVR2ResizeMethod)} disabled={active || Boolean(busy)}>
                                         {SEEDVR2_RESIZE_METHODS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                     </select>
+                                    <small className={styles.fieldHelp}>{seedVR2Help.resize[resizeMethod]}</small>
                                 </label>
                                 <label className={styles.profileField}>
                                     <span>色彩校正</span>
                                     <select value={colorCorrection} onChange={(event) => setColorCorrection(event.target.value as SeedVR2ColorCorrection)} disabled={active || Boolean(busy)}>
                                         {SEEDVR2_COLOR_CORRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                     </select>
+                                    <small className={styles.fieldHelp}>{seedVR2Help.colorCorrection[colorCorrection]}</small>
                                 </label>
                             </div>
                             <p className={styles.helper}>1–4× 可調；倍數越高會明顯增加統一記憶體用量與處理時間。</p>
@@ -395,26 +401,31 @@ export function UpscaleWorkspace() {
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.steps")}</span>
                                             <input type="number" min="1" max="20" step="1" value={steps} onChange={(event) => setSteps(event.target.value)} disabled={active || Boolean(busy)} />
+                                            <small className={styles.fieldHelp}>{seedVR2Help.steps}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.cfg")}</span>
                                             <input type="number" min="0" max="20" step="0.05" value={cfg} onChange={(event) => setCfg(event.target.value)} disabled={active || Boolean(busy)} />
+                                            <small className={styles.fieldHelp}>{seedVR2Help.cfg}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.sampler")}</span>
                                             <select value={samplerName} onChange={(event) => setSamplerName(event.target.value as SeedVR2SamplerName)} disabled={active || Boolean(busy)}>
                                                 {SEEDVR2_SAMPLERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                             </select>
+                                            <small className={styles.fieldHelp}>{seedVR2Help.sampler[samplerName]}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.scheduler")}</span>
                                             <select value={scheduler} onChange={(event) => setScheduler(event.target.value as SeedVR2Scheduler)} disabled={active || Boolean(busy)}>
                                                 {SEEDVR2_SCHEDULERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                             </select>
+                                            <small className={styles.fieldHelp}>{seedVR2Help.scheduler[scheduler]}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.denoise")}</span>
                                             <input type="number" min="0" max="1" step="0.05" value={denoise} onChange={(event) => setDenoise(event.target.value)} disabled={active || Boolean(busy)} />
+                                            <small className={styles.fieldHelp}>{seedVR2Help.denoise}</small>
                                         </label>
                                     </div>
                                     <div className={styles.advancedSamplingFooter}>

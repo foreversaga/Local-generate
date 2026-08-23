@@ -47,3 +47,37 @@ test("SeedVR2 advanced sampling UI stays collapsed and preserves string editing 
   assert.match(client, /scheduler\?: SeedVR2Scheduler/);
   assert.match(client, /denoise\?: number/);
 });
+
+
+test("SeedVR2 controls explain what each setting and option does", async () => {
+  const [workspace, helpCopy, styles] = await Promise.all([
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/seedvr2-help.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.module.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(workspace, /getSeedVR2Help\(locale\)/);
+  assert.match(workspace, /seedVR2Help\.scale/);
+  assert.match(workspace, /seedVR2Help\.seed/);
+  assert.match(workspace, /seedVR2Help\.resize\[resizeMethod\]/);
+  assert.match(workspace, /seedVR2Help\.colorCorrection\[colorCorrection\]/);
+  assert.match(workspace, /seedVR2Help\.steps/);
+  assert.match(workspace, /seedVR2Help\.cfg/);
+  assert.match(workspace, /seedVR2Help\.sampler\[samplerName\]/);
+  assert.match(workspace, /seedVR2Help\.scheduler\[scheduler\]/);
+  assert.match(workspace, /seedVR2Help\.denoise/);
+  assert.match(workspace, /styles\.fieldHelp/);
+  assert.match(styles, /\.fieldHelp\{/);
+
+  for (const option of [
+    "lanczos", "bicubic", "bilinear", "nearest", "area",
+    "wavelet", "adain", "none",
+    "euler", "euler_ancestral", "heun", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "res_multistep",
+    "simple", "normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta",
+  ]) {
+    assert.match(helpCopy, new RegExp(`${option}:`));
+  }
+  assert.match(helpCopy, /官方預設為 1/);
+  assert.match(helpCopy, /留空會自動隨機/);
+  assert.match(helpCopy, /官方預設，最適合官方 1 Step 配置/);
+});
