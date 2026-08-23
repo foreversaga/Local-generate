@@ -151,7 +151,7 @@ test("SeedVR2 controls explain what each setting and option does", async () => {
   assert.match(helpCopy, /0\.02–0\.06/);
 });
 
-test("SeedVR2 FP16 appears as the high-quality UI default without enabling backend submission", async () => {
+test("SeedVR2 FP16 is the connected high-quality default", async () => {
   const [workspace, client] = await Promise.all([
     readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
@@ -162,11 +162,10 @@ test("SeedVR2 FP16 appears as the high-quality UI default without enabling backe
   assert.match(client, /DEFAULT_UPSCALE_UI_PROFILE: UpscaleProfile = "seedvr2_7b_sharp_fp16"/);
   assert.match(client, /DEFAULT_UPSCALE_PROFILE: UpscaleProfile = "h3_latent_2x"/);
   assert.match(workspace, /useState<UpscaleProfile>\(DEFAULT_UPSCALE_UI_PROFILE\)/);
-  assert.match(workspace, /backendPending = profile === "seedvr2_7b_sharp_fp16"/);
   assert.match(workspace, /profile === "seedvr2_7b_sharp_fp16" \|\| profile === "seedvr2_7b_sharp_nvfp4"/);
   assert.match(workspace, /if \(uploaded\.kind === "image"\) setProfile\(DEFAULT_UPSCALE_UI_PROFILE\)/);
   assert.match(workspace, /if \(selected\.kind === "image"\) setProfile\(DEFAULT_UPSCALE_UI_PROFILE\)/);
-  assert.match(workspace, /FP16 後端尚未啟用/);
-  assert.match(workspace, /disabled=\{backendPending \|\| active \|\| Boolean\(busy\)\}/);
-  assert.match(workspace, /if \(backendPending\) \{/);
+  assert.doesNotMatch(workspace, /backendPending/);
+  assert.doesNotMatch(workspace, /FP16 後端尚未啟用/);
+  assert.match(client, /profile === "seedvr2_7b_sharp_fp16" \|\| profile === "seedvr2_7b_sharp_nvfp4"/);
 });

@@ -131,7 +131,7 @@ export const UPSCALE_PROFILES = [
     {
         id: "seedvr2_7b_sharp_fp16",
         label: "SeedVR2 7B Sharp FP16 · 高品質預設",
-        description: "最高品質的 SeedVR2 7B Sharp FP16；適合追求肌膚、髮絲與材質細節。目前僅完成 UI，後端模型與 workflow 尚未啟用。",
+        description: "最高品質的 SeedVR2 7B Sharp FP16；適合追求肌膚、髮絲與材質細節。",
         supportsImages: true,
     },
     {
@@ -266,7 +266,7 @@ export async function submitUpscale(
     profile: UpscaleProfile = DEFAULT_UPSCALE_PROFILE,
     settings?: SeedVR2Settings,
 ): Promise<UpscaleJob> {
-    const isSeedVR2Profile = profile === "seedvr2_7b_sharp_nvfp4" || profile === "seedvr2_7b_sharp_fp16";
+    const isSeedVR2Profile = profile === "seedvr2_7b_sharp_fp16" || profile === "seedvr2_7b_sharp_nvfp4";
     const parameters = isSeedVR2Profile ? settings : { scale: UPSCALE_SCALE };
     const response = await fetch(`${BRIDGE_URL}/api/upscale`, {
         method: "POST",

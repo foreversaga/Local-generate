@@ -21,7 +21,7 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
   assert.match(manifest.bootstrapVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.remote.comfyPort, 18188);
   assert.equal(manifest.remote.ollamaPort, 11434);
-  assert.equal(manifest.models.length, 20);
+  assert.equal(manifest.models.length, 21);
   assert.ok(manifest.nativeNodes.includes("MiniMaxH3ImageToVideo"));
   assert.ok(manifest.nativeNodes.includes("SaveVideo"));
   assert.ok(manifest.nativeNodes.includes("H3LatentUpscalerLoader"));
@@ -44,6 +44,18 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
       targetPath: "/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors",
       size: 4759694792,
       sha256: "80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397",
+    },
+  );
+  assert.deepEqual(
+    manifest.models.find((model) => model.id === "seedvr2_7b_sharp_fp16"),
+    {
+      id: "seedvr2_7b_sharp_fp16",
+      repository: "Comfy-Org/SeedVR2",
+      revision: "a457bf495efbd40ea92f699f7d2b5d2febeca176",
+      remotePath: "diffusion_models/seedvr2_7b_sharp_fp16.safetensors",
+      targetPath: "/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_fp16.safetensors",
+      size: 16480583960,
+      sha256: "70823bca54b9c24eeb56e1c452697c7c2a430867e58db0e376c6e260f3a4489d",
     },
   );
   assert.deepEqual(

@@ -10,9 +10,12 @@ import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib
  * similarly named checkpoint cannot accidentally be used for an upscale.
  */
 export const SEEDVR2_UNET_NAME = "seedvr2_7b_sharp_nvfp4.safetensors";
+export const SEEDVR2_FP16_UNET_NAME = "seedvr2_7b_sharp_fp16.safetensors";
 export const SEEDVR2_VAE_NAME = "seedvr2_ema_vae_fp16.safetensors";
 export const SEEDVR2_PROFILE = "seedvr2_7b_sharp_nvfp4";
 export const SEEDVR2_PROFILE_LABEL = "SeedVR2 7B Sharp NVFP4";
+export const SEEDVR2_FP16_PROFILE = "seedvr2_7b_sharp_fp16";
+export const SEEDVR2_FP16_PROFILE_LABEL = "SeedVR2 7B Sharp FP16";
 export const SEEDVR2_MIN_SCALE = 1;
 export const SEEDVR2_MAX_SCALE = 4;
 export const SEEDVR2_DEFAULT_SCALE = 2;
@@ -361,7 +364,16 @@ function seedvr2NodeBaseline(classType) {
 }
 
 function profileLabel(profile) {
-  return profile === H3_LATENT_PROFILE ? H3_LATENT_PROFILE_LABEL : SEEDVR2_PROFILE_LABEL;
+  if (profile === H3_LATENT_PROFILE) return H3_LATENT_PROFILE_LABEL;
+  return profile === SEEDVR2_FP16_PROFILE ? SEEDVR2_FP16_PROFILE_LABEL : SEEDVR2_PROFILE_LABEL;
+}
+
+function isSeedVR2Profile(profile) {
+  return profile === SEEDVR2_PROFILE || profile === SEEDVR2_FP16_PROFILE;
+}
+
+function seedVR2UnetName(profile) {
+  return profile === SEEDVR2_FP16_PROFILE ? SEEDVR2_FP16_UNET_NAME : SEEDVR2_UNET_NAME;
 }
 
 function profileShortName(profile) {
@@ -1002,7 +1014,7 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
     seed: job.seed,
     resizeMethod: job.resizeMethod,
     colorCorrection: job.colorCorrection,
-    ...(job.profile === SEEDVR2_PROFILE ? {
+    ...(isSeedVR2Profile(job.profile) ? {
       steps: job.steps ?? SEEDVR2_DEFAULT_STEPS,
       cfg: job.cfg ?? SEEDVR2_DEFAULT_CFG,
       samplerName: job.samplerName || SEEDVR2_DEFAULT_SAMPLER_NAME,
@@ -1114,6 +1126,9 @@ function normalizeProfile(value) {
   if ([SEEDVR2_PROFILE, SEEDVR2_PROFILE_LABEL].includes(profile)) {
     return SEEDVR2_PROFILE;
   }
+  if ([SEEDVR2_FP16_PROFILE, SEEDVR2_FP16_PROFILE_LABEL].includes(profile)) {
+    return SEEDVR2_FP16_PROFILE;
+  }
   if ([H3_LATENT_PROFILE, H3_LATENT_PROFILE_LABEL].includes(profile)) {
     return H3_LATENT_PROFILE;
   }
@@ -1135,10 +1150,11 @@ function profileReadinessConfig(profile) {
   }
   return {
     modelPaths: {
-      unet: ["diffusion_models", SEEDVR2_UNET_NAME],
+      unet: ["diffusion_models", seedVR2UnetName(profile)],
       vae: ["vae", SEEDVR2_VAE_NAME],
     },
     evaluate: evaluateSeedVR2Readiness,
+    evaluateOptions: { unetName: seedVR2UnetName(profile), vaeName: SEEDVR2_VAE_NAME },
     modelFiles: ["unet", "vae"],
   };
 }
@@ -1167,7 +1183,10 @@ export function createSeedVR2Controller({
   if (!inputRoot || !outputRoot) throw new Error("SeedVR2 controller requires inputRoot and outputRoot.");
   const comfyRootPath = path.resolve(comfyRoot || path.dirname(inputRoot));
   const modelPaths = {
-    unet: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_UNET_NAME),
+    seedvr2Unet: {
+      [SEEDVR2_PROFILE]: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_UNET_NAME),
+      [SEEDVR2_FP16_PROFILE]: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME),
+    },
     vae: path.join(comfyRootPath, "models", "vae", SEEDVR2_VAE_NAME),
     h3Upscaler: path.join(comfyRootPath, "models", "h3_latent_upscalers", H3_LATENT_UPSCALER_NAME),
     h3Diffusion: Object.fromEntries(H3_LATENT_DIFFUSION_NAMES.map((name) => [
@@ -1327,14 +1346,14 @@ export function createSeedVR2Controller({
               : key === "videoVae"
                 ? [modelPaths.h3Vae]
                 : [modelPaths.h3AudioVae]
-          : [key === "unet" ? modelPaths.unet : modelPaths.vae];
+          : [key === "unet" ? modelPaths.seedvr2Unet[profile] : modelPaths.vae];
         return Promise.all(candidates.map((candidate, index) => (
           fileExists(candidate, fsApi).then((available) => [names[index], available])
         ))).then((entries) => [key, key === "diffusion" ? Object.fromEntries(entries) : Boolean(entries[0]?.[1])]);
       })).then((entries) => Object.fromEntries(entries)),
     ]);
     return {
-      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult, sourceKind }),
+      ...config.evaluate(objectResult, { modelFiles, comfyUi: statsResult, sourceKind, ...config.evaluateOptions }),
       profile,
       profileLabel: profileLabel(profile),
       sourceKind,
@@ -1574,7 +1593,7 @@ export function createSeedVR2Controller({
         : sourceKind === "image" ? buildSeedVR2ImagePrompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
-          unetName: SEEDVR2_UNET_NAME,
+          unetName: readiness.models?.unet?.name,
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
           scale: job.scale,
@@ -1588,7 +1607,7 @@ export function createSeedVR2Controller({
         }) : buildSeedVR2Prompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
-          unetName: SEEDVR2_UNET_NAME,
+          unetName: readiness.models?.unet?.name,
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
           scale: job.scale,
@@ -1708,7 +1727,7 @@ export function createSeedVR2Controller({
   } = {}) {
     const id = String(idFactory());
     const createdAt = isoNow(now());
-    const sampling = profile === SEEDVR2_PROFILE ? { steps, cfg, samplerName, scheduler, denoise } : {};
+    const sampling = isSeedVR2Profile(profile) ? { steps, cfg, samplerName, scheduler, denoise } : {};
     const request = {
       sourceName,
       sourceRoot,
@@ -1868,7 +1887,7 @@ export function createSeedVR2Controller({
       seed: source.seed,
       resizeMethod: source.resizeMethod,
       colorCorrection: source.colorCorrection,
-      ...(source.profile === SEEDVR2_PROFILE ? {
+      ...(isSeedVR2Profile(source.profile) ? {
         steps: source.steps,
         cfg: source.cfg,
         samplerName: source.samplerName,

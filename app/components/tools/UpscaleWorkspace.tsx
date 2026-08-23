@@ -68,7 +68,6 @@ export function UpscaleWorkspace() {
     const [busy, setBusy] = useState<"upload" | "submit" | "cancel" | "retry" | "">("");
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
     const sourceKind = source?.kind || "video";
-    const backendPending = profile === "seedvr2_7b_sharp_fp16";
     const isSeedVR2 = profile === "seedvr2_7b_sharp_fp16" || profile === "seedvr2_7b_sharp_nvfp4";
     const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
     const samplingIsDefault = steps.trim() !== ""
@@ -82,12 +81,6 @@ export function UpscaleWorkspace() {
 
     const refreshHealth = useCallback(async () => {
         setHealthLoading(true);
-        if (backendPending) {
-            setHealth(null);
-            setHealthError("");
-            setHealthLoading(false);
-            return;
-        }
         try {
             const next = await fetchUpscaleHealth(profile, sourceKind);
             setHealth(next);
@@ -98,7 +91,7 @@ export function UpscaleWorkspace() {
         } finally {
             setHealthLoading(false);
         }
-    }, [backendPending, profile, sourceKind]);
+    }, [profile, sourceKind]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => void refreshHealth(), 0);
@@ -159,13 +152,6 @@ export function UpscaleWorkspace() {
             return;
         }
         if (active || busy) return;
-        if (backendPending) {
-            setError(locale === "en"
-                ? "SeedVR2 7B Sharp FP16 is the high-quality UI default, but its backend model and workflow are not enabled yet."
-                : "SeedVR2 7B Sharp FP16 已設為高品質預設，但後端模型與 workflow 尚未啟用。");
-            document.getElementById("upscale-readiness")?.focus();
-            return;
-        }
         if (health?.ready === false) {
             setError(readinessLabel);
             document.getElementById("upscale-readiness")?.focus();
@@ -302,12 +288,8 @@ export function UpscaleWorkspace() {
 
     const statusLabel = job
         ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale", locale)}${job.stage ? ` · ${job.stage}` : ""}`
-        : backendPending
-            ? (locale === "en" ? "FP16 high-quality UI ready · backend pending" : "FP16 高品質 UI 已就緒 · 等待後端支援")
-            : "已就緒，可開始升頻";
-    const readinessLabel = backendPending
-        ? (locale === "en" ? "Backend support pending" : "等待後端支援")
-        : healthLoading
+        : "已就緒，可開始升頻";
+    const readinessLabel = healthLoading
             ? localizedReadinessLabel("checking", locale)
             : health?.ready
                 ? localizedReadinessLabel("ready", locale)
@@ -506,18 +488,16 @@ export function UpscaleWorkspace() {
                         <span className={`${styles.statusDot} ${health?.ready ? styles.online : ""}`} />
                         <div>
                             <strong>{readinessLabel}</strong>
-                            <span>{backendPending
-                                ? (locale === "en" ? "FP16 is available in the UI only; generation remains disabled until the backend model and workflow are connected." : "FP16 高品質模式目前只加入 UI；後端模型與 workflow 接好前不會送出生成工作。")
-                                : health?.comfyUi === false
+                            <span>{health?.comfyUi === false
                                     ? "ComfyUI 未連線。"
                                     : `${availableModels}/${modelTotal || 0} 個模型檔案可用 · ${missingNodes.length ? `${missingNodes.length} 個節點缺失` : "原生節點可用"}`}</span>
                         </div>
-                        <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={backendPending || healthLoading || Boolean(busy)}>{ACTION_LABELS.refresh}</button>
+                        <button type="button" className={styles.textButton} onClick={() => void refreshHealth()} disabled={healthLoading || Boolean(busy)}>{ACTION_LABELS.refresh}</button>
                     </div>
                     {healthError && <p className={styles.inlineError} role="alert">{healthError}</p>}
                     {missingNodes.length > 0 && <p className={styles.helper}>缺少節點：{missingNodes.join(", ")}</p>}
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={backendPending || active || Boolean(busy)} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
-                        {backendPending ? (locale === "en" ? "FP16 backend not enabled" : "FP16 後端尚未啟用") : busy === "submit" ? "建立工作中…" : active ? "升頻中…" : `開始 ${activeScale}× 升頻`}
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={active || Boolean(busy)} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
+                        {busy === "submit" ? "建立工作中…" : active ? "升頻中…" : `開始 ${activeScale}× 升頻`}
                     </button>
                     <div className={styles.status} aria-live="polite">
                         <div className={styles.statusLine}>

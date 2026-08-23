@@ -14,6 +14,8 @@ import {
   H3_LATENT_VAE_NAME,
   SEEDVR2_REQUIRED_NODES,
   SEEDVR2_IMAGE_REQUIRED_NODES,
+  SEEDVR2_FP16_PROFILE,
+  SEEDVR2_FP16_UNET_NAME,
   SEEDVR2_UNET_NAME,
   SEEDVR2_VAE_NAME,
   buildSeedVR2Prompt,
@@ -48,16 +50,16 @@ function binaryResponse(bytes, status = 200) {
   };
 }
 
-function objectInfo() {
+function objectInfo(unetName = SEEDVR2_UNET_NAME) {
   const info = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
-  info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
+  info.UNETLoader.input.required.unet_name = [[unetName], {}];
   info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
   return info;
 }
 
-function imageObjectInfo() {
+function imageObjectInfo(unetName = SEEDVR2_UNET_NAME) {
   const info = Object.fromEntries(SEEDVR2_IMAGE_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
-  info.UNETLoader.input.required.unet_name = [[SEEDVR2_UNET_NAME], {}];
+  info.UNETLoader.input.required.unet_name = [[unetName], {}];
   info.VAELoader.input.required.vae_name = [[SEEDVR2_VAE_NAME], {}];
   return info;
 }
@@ -146,6 +148,39 @@ test("readiness requires native nodes and exact model combos", () => {
   assert.equal(missing.ready, false);
   assert.equal(missing.models.unet.available, false);
   assert.equal(evaluateSeedVR2Readiness(imageObjectInfo(), { modelFiles: { unet: true, vae: true }, sourceKind: "image" }).ready, true);
+  const fp16 = evaluateSeedVR2Readiness(imageObjectInfo(SEEDVR2_FP16_UNET_NAME), {
+    unetName: SEEDVR2_FP16_UNET_NAME,
+    modelFiles: { unet: true, vae: true },
+    sourceKind: "image",
+  });
+  assert.equal(fp16.ready, true);
+  assert.equal(fp16.models.unet.name, SEEDVR2_FP16_UNET_NAME);
+});
+
+test("controller resolves the FP16 profile to the exact FP16 model", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-fp16-"));
+  const inputRoot = path.join(root, "input");
+  const outputRoot = path.join(root, "output");
+  await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
+  await fs.mkdir(inputRoot, { recursive: true });
+  await fs.mkdir(outputRoot, { recursive: true });
+  await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME), "model");
+  await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
+  const controller = createSeedVR2Controller({
+    comfyRoot: root,
+    inputRoot,
+    outputRoot,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/system_stats")) return response({ devices: [] });
+      if (url.endsWith("/object_info")) return response(imageObjectInfo(SEEDVR2_FP16_UNET_NAME));
+      throw new Error(`unexpected endpoint ${url}`);
+    },
+  });
+  const health = await controller.checkReadiness(SEEDVR2_FP16_PROFILE, "image");
+  assert.equal(health.ready, true);
+  assert.equal(health.profile, SEEDVR2_FP16_PROFILE);
+  assert.equal(health.models.unet.name, SEEDVR2_FP16_UNET_NAME);
 });
 
 test("builds the community H3 latent 2x two-pass graph", () => {

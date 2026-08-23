@@ -6,6 +6,7 @@ readonly MODEL_ROOT="$COMFY_ROOT/models"
 readonly STAGING_ROOT=/workspace/.seedvr2-model-staging
 readonly SEEDVR2_REPO=Comfy-Org/SeedVR2
 readonly SEEDVR2_REVISION=10f035adc869a5b3ffc466360b869641511c0610
+readonly SEEDVR2_FP16_REVISION=a457bf495efbd40ea92f699f7d2b5d2febeca176
 readonly SEEDVR2_VAE_REVISION=0bb1f83c716d1cad6dfa730b643a4f603bc2b70b
 
 log() {
@@ -68,6 +69,14 @@ download_model \
   "$MODEL_ROOT/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors" \
   4759694792 \
   80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397
+
+download_model \
+  seedvr2_7b_sharp_fp16 \
+  diffusion_models/seedvr2_7b_sharp_fp16.safetensors \
+  "$MODEL_ROOT/diffusion_models/seedvr2_7b_sharp_fp16.safetensors" \
+  16480583960 \
+  70823bca54b9c24eeb56e1c452697c7c2a430867e58db0e376c6e260f3a4489d \
+  "$SEEDVR2_FP16_REVISION"
 
 download_model \
   seedvr2_ema_vae \
