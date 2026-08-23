@@ -1,9 +1,9 @@
 name: UI Library Job Description Apply
 
 on:
-  push:
+  pull_request:
     branches:
-      - codex/ui-library-job-description-fixes
+      - main
 
 permissions:
   contents: write
