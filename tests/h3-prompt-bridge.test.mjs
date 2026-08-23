@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -7,6 +7,15 @@ import test, { after } from "node:test";
 
 const bridgeLogRoot = await mkdtemp(path.join(os.tmpdir(), "h3-prompt-bridge-logs-"));
 process.env.MINIMAX_H3_LOGS_ROOT = bridgeLogRoot;
+const originalOllamaCliPath = process.env.OLLAMA_CLI_PATH;
+const fakeOllamaCliPath = path.join(bridgeLogRoot, process.platform === "win32" ? "ollama-stop.cmd" : "ollama-stop");
+await writeFile(
+  fakeOllamaCliPath,
+  process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+  "utf8",
+);
+if (process.platform !== "win32") await chmod(fakeOllamaCliPath, 0o755);
+process.env.OLLAMA_CLI_PATH = fakeOllamaCliPath;
 const {
   route,
   normalizeCharacterLoraName,
@@ -19,6 +28,8 @@ const {
 } = await import("../local-bridge.mjs");
 
 after(async () => {
+  if (originalOllamaCliPath === undefined) delete process.env.OLLAMA_CLI_PATH;
+  else process.env.OLLAMA_CLI_PATH = originalOllamaCliPath;
   await rm(bridgeLogRoot, { recursive: true, force: true });
 });
 
@@ -458,8 +469,8 @@ test("Ollama img2img prompt generation returns structured positive and negative 
     assert.equal(generationCalls[0].model, "qwen3-vl");
     assert.deepEqual(generationCalls[0].images, ["aGVsbG8="]);
     assert.match(generationCalls[0].system, /exactly these two keys: prompt and negativePrompt/);
-    assert.match(generationCalls[0].system, /anatomically correct hands/);
-    assert.match(generationCalls[0].system, /plastic skin/);
+    assert.match(generationCalls[0].system, /finger count, joints, overlaps, grip/);
+    assert.match(generationCalls[0].system, /plastic or uniformly smooth skin/);
     assert.equal(calls.filter((body) => body.prompt === "").length, 0);
   } finally {
     globalThis.fetch = originalFetch;
