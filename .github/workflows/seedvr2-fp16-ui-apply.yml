@@ -1,5 +1,6 @@
 name: Apply SeedVR2 FP16 UI
 
+# Temporary feature-branch workflow for applying and verifying the UI-only patch.
 on:
   push:
     branches:
