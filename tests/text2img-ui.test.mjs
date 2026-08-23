@@ -27,8 +27,6 @@ test("exposes FLUX through the existing Studio text-to-image route and API", asy
   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
   assert.match(workspace, /nature-camera/);
   assert.match(workspace, /flux2-dev/);
-  assert.doesNotMatch(workspace, /krea2-turbo/);
-  assert.doesNotMatch(workspace, /text2img\.model\.krea\.name/);
   assert.doesNotMatch(workspace, /1152, height: 2048, steps: 10/);
   assert.doesNotMatch(workspace, /2048, height: 1152/);
   assert.doesNotMatch(workspace, /flux2-klein-[49]b/);
@@ -81,7 +79,6 @@ test("exposes FLUX through the existing Studio text-to-image route and API", asy
   assert.match(dictionaries, /"text2img\.description\.copy\.copied"/);
   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
-  assert.match(dictionaries, /"text2img\.size\.realisticPortrait"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.[49]b\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.juggernaut\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.adultMode\.on\.name"/);

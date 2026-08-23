@@ -43,7 +43,7 @@ export type Text2ImgModelHealth = {
   reason?: string;
   models: Text2ImgHealth["models"];
   encoders: Record<string, Text2ImgEncoderHealth>;
-  architecture: "flux2" | "krea2";
+  architecture: "flux2";
   defaultSteps: number;
   maxSteps: number;
   cfg: number;

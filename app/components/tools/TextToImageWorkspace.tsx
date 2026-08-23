@@ -18,7 +18,7 @@ type SizePreset = {
   width: number;
   height: number;
   steps?: number;
-  label: "text2img.size.square" | "text2img.size.portrait" | "text2img.size.portraitWide" | "text2img.size.landscape" | "text2img.size.landscapeWide" | "text2img.size.realisticPortrait";
+  label: "text2img.size.square" | "text2img.size.portrait" | "text2img.size.portraitWide" | "text2img.size.landscape" | "text2img.size.landscapeWide";
 };
 
 const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
