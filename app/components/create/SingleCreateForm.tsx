@@ -902,7 +902,7 @@ export function SingleCreateForm() {
       </nav>
 
       <div className={styles.formColumn}>
-        <FormSection id="single-source-section" code="01 / SOURCE" title="來源與模式" icon="layers">
+        <FormSection id="single-source-section" code="01 / SOURCE" title="來源與模式" icon="layers" action={<button type="button" className={styles.clearDraftButton} disabled={!canInteract} onClick={clearSingleCreateDraft}>清除設定</button>}>
           <div className={styles.fieldStack}>
             <div>
               <div className={styles.fieldLabel}>生成模式</div>
@@ -1393,7 +1393,6 @@ export function SingleCreateForm() {
               <Icon name={draftStatus === "error" ? "close" : "check"} />
               <span>{draftStatusLabel(draftStatus)}</span>
             </div>
-            <button type="button" className={styles.clearDraftButton} disabled={!canInteract} onClick={clearSingleCreateDraft}>清除草稿</button>
           </div>
           {submitError && <div className={styles.submitError} role="alert">{submitError}</div>}
           <div className={styles.desktopGenerate}>
@@ -1409,7 +1408,7 @@ export function SingleCreateForm() {
   );
 }
 
-function FormSection({ id, code, title, icon, children }: { id?: string; code: string; title: string; icon: IconName; children: ReactNode }) {
+function FormSection({ id, code, title, icon, action, children }: { id?: string; code: string; title: string; icon: IconName; action?: ReactNode; children: ReactNode }) {
   return (
     <fieldset id={id} className={styles.section}>
       <legend className="sr-only">{title}</legend>
@@ -1418,7 +1417,7 @@ function FormSection({ id, code, title, icon, children }: { id?: string; code: s
           <div className={styles.sectionCode}>{code}</div>
           <h2 className={styles.sectionTitle}>{title}</h2>
         </div>
-        <span className={styles.sectionIcon} aria-hidden="true"><Icon name={icon} /></span>
+        <div className={styles.sectionHeaderActions}>{action}<span className={styles.sectionIcon} aria-hidden="true"><Icon name={icon} /></span></div>
       </div>
       {children}
     </fieldset>

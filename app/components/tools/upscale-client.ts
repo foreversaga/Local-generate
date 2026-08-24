@@ -146,6 +146,12 @@ export const UPSCALE_PROFILES = [
         description: "完整跑 H3 Ref2VA 低解析度採樣 → latent 2× → 重加噪 → 高解析度第二次採樣，保留來源影片與音訊。",
         supportsImages: false,
     },
+    {
+        id: "h3_ultimate_tiled_2x",
+        label: "MiniMax H3 Ultimate Tiled 2× · 實驗",
+        description: "獨立實驗流程：H3 首次採樣後，以 85 幀時間分段與 512px 空間切片重採樣，再拼接成 2× 影片；免裝額外 upscale 模型，適合長影片降低峰值記憶體。",
+        supportsImages: false,
+    },
 ] as const;
 
 export type UpscaleProfile = typeof UPSCALE_PROFILES[number]["id"];

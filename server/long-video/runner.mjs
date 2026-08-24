@@ -5,7 +5,8 @@ import { resolveMultishotContinuity } from "./multishot.mjs";
 import { extractTailAvContext as defaultExtractContext, extractTailFrame as defaultExtractTail, normalizeVideo as defaultNormalize, trimLeadingOverlap as defaultTrimOverlap } from "./media.mjs";
 import { outputRoot, sequenceAssemblyDir, sequenceOutputFile } from "./paths.mjs";
 import { appendEvent, getJob, updateJob, updateSegment, writeAttempt, writeAssemblyJson, writeSequenceManifest } from "./store.mjs";
-import { H3_REALISM_PEOPLE_PRESET, LongVideoError, assertLongLoraSupported } from "./schema.mjs";
+import { H3_REALISM_PEOPLE_PRESET, LongVideoError, assertLongLoraSupported, newId } from "./schema.mjs";
+import { acquireSequenceLease, assertSequenceLease, releaseSequenceLease, renewSequenceLease } from "./lease.mjs";
 import { buildSegmentPrompt } from "./prompt-builder.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
 import { buildDeterministicContinuationPrompt, ensureRef2vaLatentContinuationPrompt, ensureRef2vaVisualContextPrompt } from "./continuation-finalizer.mjs";
@@ -173,6 +174,7 @@ function isOllamaUnloadFailure(error) {
 }
 
 async function setJob(job, patch, deps) {
+  if (deps.lease) await assertSequenceLease(job.id, deps.lease);
   Object.assign(job, patch, { updatedAt: new Date().toISOString() });
   if (deps.updateJob) return deps.updateJob(job, patch);
   if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(job.id || ""))) {
@@ -182,6 +184,7 @@ async function setJob(job, patch, deps) {
 }
 
 async function setSegment(job, index, patch, deps) {
+  if (deps.lease) await assertSequenceLease(job.id, deps.lease);
   Object.assign(job.segments[index], patch);
   if (deps.updateSegment) return deps.updateSegment(job, index, patch);
   if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(job.id || ""))) return updateSegment(job.id, index, patch);
@@ -254,6 +257,8 @@ export async function runSequence(sequenceOrId, deps = {}) {
   const minimumSegments = job?.longVideoEnabled === true ? 1 : 2;
   if (!job || !Array.isArray(job.segments) || job.segments.length < minimumSegments) throw new LongVideoError("SEQUENCE_INVALID", `A sequence with at least ${minimumSegments} segment${minimumSegments === 1 ? "" : "s"} is required.`);
   const id = job.id;
+  let releaseLeaseOnExit = Boolean(deps.lease);
+  let leaseHeartbeat = null;
   const folder = job.outputPath || (job.outputFolder ? path.join(outputRoot(), job.outputFolder) : null);
   if (!folder) throw new LongVideoError("OUTPUT_PATH_REQUIRED", "Sequence output folder is not allocated.");
   const generate = deps.generate || deps.generation || deps.generateSegment;
@@ -280,6 +285,19 @@ export async function runSequence(sequenceOrId, deps = {}) {
   const assemble = deps.assemble || deps.media?.assemble || defaultAssemble;
   const verifyCompletedSegment = deps.verifyCompletedSegment || defaultVerifyCompletedSegment;
   const writeManifest = deps.writeManifest || writeSequenceManifest;
+  if (id && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id)) && (deps.enforceLease || deps.ownerId) && !deps.lease) {
+    deps.lease = await acquireSequenceLease(id, { ownerId: deps.ownerId || `h3-studio-runner-${process.pid}`, ttlMs: deps.leaseTtlMs });
+    releaseLeaseOnExit = true;
+  }
+  if (deps.lease) {
+    const heartbeatMs = Math.max(2_000, Math.floor(Number(deps.leaseTtlMs || 30_000) / 3));
+    leaseHeartbeat = setInterval(() => {
+      renewSequenceLease(id, deps.lease, { ttlMs: deps.leaseTtlMs }).then((renewed) => {
+        deps.lease = renewed;
+      }).catch(() => {});
+    }, heartbeatMs);
+    leaseHeartbeat.unref?.();
+  }
   const repairedPrompts = repairLegacyAutoExtendPrompts(job);
   if (repairedPrompts) {
     for (let index = 0; index < repairedPrompts.length; index += 1) {
@@ -323,8 +341,8 @@ export async function runSequence(sequenceOrId, deps = {}) {
   try {
     for (let index = 0; index < job.segments.length; index += 1) {
       activeSegmentIndex = index;
-      if (deps.shouldCancel?.(job)) throw new LongVideoError("SEQUENCE_CANCELLED", "Sequence was cancelled.", 409);
-      while (deps.shouldPause?.(job)) await new Promise((resolve) => setTimeout(resolve, 100));
+      if (deps.shouldCancel?.(job) || job.controlIntent === "cancel_requested") throw new LongVideoError("SEQUENCE_CANCELLED", "Sequence was cancelled.", 409);
+      while (deps.shouldPause?.(job) || job.controlIntent === "pause_requested") await new Promise((resolve) => setTimeout(resolve, 100));
       const segment = job.segments[index];
       activeAttemptRecord = null;
       if (segment.status === "completed") {
@@ -366,7 +384,9 @@ export async function runSequence(sequenceOrId, deps = {}) {
         await logEvent(id, { level: "warn", event: "runner.resume.artifact_missing", segmentIndex: index, segmentId: segment.id, stage: "rerender" }, deps);
         await setSegment(job, index, { status: "pending", recoverable: true, error: { code: "COMPLETED_ARTIFACT_MISSING", message: "Completed segment artifact is missing; rerendering." } }, deps);
       }
-      const attempt = Math.max(1, Number(segment.attempt || 0) + 1);
+      const reattachAttempt = Boolean(segment.attemptId && segment.childJobId && deps.recoverChild);
+      const attempt = reattachAttempt ? Math.max(1, Number(segment.attempt || 1)) : Math.max(1, Number(segment.attempt || 0) + 1);
+      const attemptId = reattachAttempt ? String(segment.attemptId) : newId("attempt");
       const prefix = `segment-${String(index + 1).padStart(3, "0")}-attempt-${String(attempt).padStart(3, "0")}`;
       const rawPath = fileFor(folder, `${prefix}-raw.mp4`);
       const normalizedPath = fileFor(folder, `${prefix}.mp4`);
@@ -502,9 +522,14 @@ export async function runSequence(sequenceOrId, deps = {}) {
           : latentContext ? latentRenderedDuration(segment.duration, index) : segment.duration;
       const startedAt = new Date().toISOString();
       activeAttemptRecord = {
+        sequenceId: id,
+        segmentId: segment.id,
         attempt,
+        attemptId,
         segmentIndex: index,
-        status: "queued",
+        status: reattachAttempt ? "child_running" : "queued",
+        checkpoint: reattachAttempt ? "child_running" : "submission_prepared",
+        childJobId: reattachAttempt ? String(segment.childJobId) : null,
         mode,
         prompt: persistedAttemptPrompt(prompt),
         startedAt,
@@ -518,10 +543,39 @@ export async function runSequence(sequenceOrId, deps = {}) {
         ...loraPayload,
         ...(promptFinalization ? { promptFinalization } : {}),
       };
-      await setSegment(job, index, { status: "queued", attempt, prompt, error: null, ...(promptFinalization ? { promptFinalization } : {}) }, deps);
+      await setSegment(job, index, {
+        status: "queued",
+        attempt,
+        attemptId,
+        childJobId: reattachAttempt ? segment.childJobId : null,
+        childJobProvenance: {
+          sequenceId: id,
+          segmentId: segment.id,
+          segmentIndex: index,
+          attempt,
+          attemptId,
+          ...(reattachAttempt ? { childJobId: segment.childJobId } : {}),
+        },
+        checkpoint: reattachAttempt ? "child_running" : "submission_prepared",
+        prompt,
+        error: null,
+        ...(promptFinalization ? { promptFinalization } : {}),
+      }, deps);
+      await setJob(job, {
+        activeAttempt: {
+          sequenceId: id,
+          segmentId: segment.id,
+          segmentIndex: index,
+          attempt,
+          attemptId,
+          ...(reattachAttempt ? { childJobId: segment.childJobId } : {}),
+          checkpoint: reattachAttempt ? "child_running" : "submission_prepared",
+        },
+        executionPhase: reattachAttempt ? "waiting_child" : "submission_prepared",
+      }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
       await logEvent(id, { event: "generation.start", segmentIndex: index, segmentId: segment.id, attempt, mode, stage: "queued", outputRelative: path.relative(folder, rawPath) }, deps);
-      await setSegment(job, index, { status: "rendering" }, deps);
+      await setSegment(job, index, { status: "rendering", checkpoint: reattachAttempt ? "child_running" : "child_queued" }, deps);
       await setJob(job, {
         stage: "segment.rendering",
         activeSegmentIndex: index,
@@ -532,11 +586,17 @@ export async function runSequence(sequenceOrId, deps = {}) {
       let lastReportedProgress = -1;
       let lastReportedStage = "";
       let lastLoggedProgressBucket = -1;
-      const generated = await generate({
+      const generated = reattachAttempt && typeof deps.recoverChild === "function"
+        ? await deps.recoverChild({ sequenceId: id, segment, segmentIndex: index, attempt, attemptId, childJobId: segment.childJobId, onProgress: async (snapshot) => {
+          await setJob(job, { generationJobId: snapshot?.id || segment.childJobId, executionPhase: "waiting_child", segmentProgress: snapshot?.progress, segmentStage: snapshot?.stage }, deps);
+        } })
+        : await generate({
         sequenceId: id,
+        segmentId: segment.id,
         segment,
         segmentIndex: index,
         attempt,
+        attemptId,
         mode,
         prompt,
         ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
@@ -570,6 +630,22 @@ export async function runSequence(sequenceOrId, deps = {}) {
         } : {}),
         tailImagePath: previousTail,
         outputPath: rawPath,
+        onChildSubmitted: async (child = {}) => {
+          const childJobId = String(child.id || child.jobId || child.generationJobId || "").trim();
+          if (!childJobId) throw new LongVideoError("CHILD_BINDING_MISSING", "Generation dependency did not return a child job id.", 502);
+          await setSegment(job, index, {
+            childJobId,
+            childJobProvenance: { sequenceId: id, segmentId: segment.id, segmentIndex: index, attempt, attemptId, childJobId },
+            checkpoint: "child_queued",
+          }, deps);
+          await setJob(job, {
+            generationJobId: childJobId,
+            activeAttempt: { sequenceId: id, segmentId: segment.id, segmentIndex: index, attempt, attemptId, childJobId, checkpoint: "child_queued" },
+            executionPhase: "waiting_child",
+          }, deps);
+          activeAttemptRecord = { ...activeAttemptRecord, childJobId, checkpoint: "child_queued" };
+          if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
+        },
         outputRelative: path.relative(outputRoot(), rawPath).replaceAll("\\", "/"),
         onInputStage: async (inputStage = {}) => {
           await logEvent(id, {
@@ -625,12 +701,15 @@ export async function runSequence(sequenceOrId, deps = {}) {
       activeAttemptRecord = {
         ...activeAttemptRecord,
         status: "generated",
+        checkpoint: "raw_verified",
         generationJobId,
+        childJobId: generationJobId || activeAttemptRecord?.childJobId || segment.childJobId,
         rawAsset: outputAssetRef(producedRawPath),
       };
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, activeAttemptRecord).catch(() => {});
       await logEvent(id, { event: "generation.success", segmentIndex: index, segmentId: segment.id, attempt, generationJobId, stage: "rendering", outputRelative: path.relative(outputRoot(), producedRawPath).replaceAll("\\", "/") }, deps);
-      await setSegment(job, index, { status: "normalizing", rawAsset: outputAssetRef(producedRawPath) }, deps);
+      await setSegment(job, index, { status: "generated", checkpoint: "raw_verified", childJobId: generationJobId || activeAttemptRecord?.childJobId || segment.childJobId, rawAsset: outputAssetRef(producedRawPath) }, deps);
+      await setSegment(job, index, { status: "normalizing", checkpoint: "raw_verified", rawAsset: outputAssetRef(producedRawPath) }, deps);
       await setJob(job, {
         progress: sequenceProgressForSegment(index, job.segments.length, 100),
         stage: "segment.normalizing",
@@ -644,6 +723,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         : renderedDuration;
       await logEvent(id, { event: "media.normalize.start", segmentIndex: index, segmentId: segment.id, attempt, stage: "normalizing", duration: normalizedDuration, renderedDuration, requestedDuration: segment.duration }, deps);
       await normalize({ inputPath: producedRawPath, outputPath: normalizedPath, duration: normalizedDuration, fps: 24, width: job.width, height: job.height, seam: job.seam, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
+      await setSegment(job, index, { status: "normalized", checkpoint: "normalized_verified", normalizedAsset: outputAssetRef(normalizedPath) }, deps);
       let completedPath = normalizedPath;
       let overlapTrimFrames = 0;
       if (firstFrame && index > 0) {
@@ -662,7 +742,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         await extractContext({ inputPath: normalizedPath, outputPath: contextPath, duration: h3MotionContextDuration(2, segment.duration), fps: 24, includeAudio: false, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
         previousContext = contextPath;
       }
-      await setSegment(job, index, { status: "extracting_tail", normalizedAsset: outputAssetRef(completedPath) }, deps);
+      await setSegment(job, index, { status: "extracting_tail", checkpoint: "normalized_verified", normalizedAsset: outputAssetRef(completedPath) }, deps);
       await setJob(job, {
         stage: "segment.extracting_tail",
         activeSegmentIndex: index,
@@ -670,12 +750,15 @@ export async function runSequence(sequenceOrId, deps = {}) {
         segmentStage: "擷取段尾銜接影格…",
       }, deps);
       await extractTail({ inputPath: completedPath, outputPath: tailPath, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
+      await setSegment(job, index, { checkpoint: "tail_verified", tailAsset: outputAssetRef(tailPath) }, deps);
       previousTail = tailPath;
       normalizedPaths.push(completedPath);
-      await setSegment(job, index, { status: "completed", renderedDuration, overlapTrimFrames, normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), completedPath).replaceAll("\\", "/") }, deps);
+      await setSegment(job, index, { status: "completed", checkpoint: "segment_completed", renderedDuration, overlapTrimFrames, normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), completedPath).replaceAll("\\", "/") }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, previousContext, producedRawPath, completedPath, tailPath, contextPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), overlapTrimFrames, ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), generationJobId, finishedAt: new Date().toISOString() }).catch(() => {});
       activeAttemptRecord = null;
       await setJob(job, {
+        activeAttempt: null,
+        executionPhase: "segment_completed",
         progress: sequenceProgressForSegment(index, job.segments.length, 100),
         stage: "segment.completed",
         activeSegmentIndex: index,
@@ -684,22 +767,36 @@ export async function runSequence(sequenceOrId, deps = {}) {
       }, deps);
       await logEvent(id, { event: "segment.completed", segmentIndex: index, segmentId: segment.id, attempt, stage: "completed", duration: renderedDuration, requestedDuration: segment.duration, outputRelative: path.relative(outputRoot(), normalizedPath).replaceAll("\\", "/") }, deps);
     }
-    if (deps.shouldCancel?.(job)) throw new LongVideoError("SEQUENCE_CANCELLED", "Sequence was cancelled.", 409);
+    if (deps.shouldCancel?.(job) || job.controlIntent === "cancel_requested") throw new LongVideoError("SEQUENCE_CANCELLED", "Sequence was cancelled.", 409);
     activeSegmentIndex = -1;
-    await setJob(job, { status: "assembling", progress: 90, stage: "assembly.start", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "合併所有片段…" }, deps);
+    await setJob(job, { status: "assembling", executionPhase: "assembling", progress: 90, stage: "assembly.start", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "合併所有片段…" }, deps);
+    if (id && deps.lease) await assertSequenceLease(id, deps.lease);
     const assemblyRevision = Number(job.assembly?.revision || 0) + 1;
     const assemblyDirectory = deps.assemblyDir || (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || "")) ? sequenceAssemblyDir(id) : path.join(folder, "assembly"));
     const renderedMasterDuration = job.segments.reduce((sum, segment) => sum + Number(segment.renderedDuration ?? segment.duration ?? (segment.end - segment.start)), 0);
     const assembledDuration = Number(renderedMasterDuration.toFixed(6));
     const assembly = await assemble({ segmentPaths: normalizedPaths, outputFolder: folder, assemblyDir: assemblyDirectory, revision: assemblyRevision, duration: assembledDuration, width: job.width, height: job.height, masterNormalize: job.masterNormalize || "off", allowSingleSegment: job.longVideoEnabled === true, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, event, deps) });
     const finalAsset = outputAssetRef(assembly.outputPath);
-    if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt: new Date().toISOString() });
-    await setJob(job, { status: "completed", progress: 100, stage: "assembly.completed", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "長影片已完成", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe } }, deps);
+    if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, checkpoint: "assembly_verified", finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt: new Date().toISOString() });
+    await setJob(job, { status: "completed", executionPhase: "completed", progress: 100, stage: "assembly.completed", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "長影片已完成", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe }, controlIntent: "run" }, deps);
     await writeManifest(folder, job);
     await logEvent(id, { event: "runner.success", from: "assembling", to: "completed", stage: "assembly.completed", outputRelative: finalAsset.name }, deps);
+    if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+    if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
     return { ...job, finalAsset, finalPath: assembly.outputPath, status: "completed" };
   } catch (error) {
-    const cancelled = error?.code === "SEQUENCE_CANCELLED";
+    if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+    const leaseLost = error?.code === "SEQUENCE_LEASE_LOST" || error?.code === "SEQUENCE_LEASE_HELD";
+    if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
+    if (leaseLost) throw error;
+    const durableJob = id && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id))
+      ? await getJob(id).catch(() => null)
+      : null;
+    const cancelled = error?.code === "SEQUENCE_CANCELLED"
+      || Boolean(deps.shouldCancel?.(job))
+      || job.controlIntent === "cancel_requested"
+      || durableJob?.status === "cancelled"
+      || durableJob?.controlIntent === "cancel_requested";
     if (activeSegmentIndex >= 0 && job.segments?.[activeSegmentIndex]) {
       const failedAttempt = Number(job.segments[activeSegmentIndex].attempt || 0);
       await setSegment(job, activeSegmentIndex, {

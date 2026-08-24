@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createSeedVR2JobStore } from "./seedvr2-store.mjs";
+import {
+  MMH3_ULTIMATE_PROFILE,
+  MMH3_ULTIMATE_PROFILE_LABEL,
+  MMH3_ULTIMATE_SCALE,
+  buildMMH3UltimatePrompt,
+  evaluateMMH3UltimateReadiness,
+} from "./mmh3-ultimate.mjs";
 import { jobListLimit, summarizeJobRecord, wantsJobSummary } from "../../app/lib/job-list-query.mjs";
 
 /**
@@ -439,12 +446,17 @@ function seedvr2NodeBaseline(classType) {
 }
 
 function profileLabel(profile) {
+  if (profile === MMH3_ULTIMATE_PROFILE) return MMH3_ULTIMATE_PROFILE_LABEL;
   if (profile === H3_LATENT_PROFILE) return H3_LATENT_PROFILE_LABEL;
   return profile === SEEDVR2_FP16_PROFILE ? SEEDVR2_FP16_PROFILE_LABEL : SEEDVR2_PROFILE_LABEL;
 }
 
 function isSeedVR2Profile(profile) {
   return profile === SEEDVR2_PROFILE || profile === SEEDVR2_FP16_PROFILE;
+}
+
+function isH3VideoProfile(profile) {
+  return profile === H3_LATENT_PROFILE || profile === MMH3_ULTIMATE_PROFILE;
 }
 
 function seedVR2UnetName(profile) {
@@ -456,6 +468,7 @@ function seedVR2DetailUnetName(unetName) {
 }
 
 function profileShortName(profile) {
+  if (profile === MMH3_ULTIMATE_PROFILE) return "h3ultimate";
   return profile === H3_LATENT_PROFILE ? "h3latent" : "seedvr2";
 }
 
@@ -1304,9 +1317,10 @@ function boundedSeed(value, fallback = null) {
 function normalizeSeedVR2Scale(value, profile = SEEDVR2_PROFILE) {
   const scale = Number(value ?? SEEDVR2_DEFAULT_SCALE);
   if (!Number.isFinite(scale)) throw makeError("Upscale scale must be a number.", 400, "SCALE_INVALID");
-  if (profile === H3_LATENT_PROFILE) {
-    if (scale !== H3_LATENT_SCALE) throw makeError("MiniMax H3 Latent supports scale=2 only.", 400, "SCALE_INVALID");
-    return H3_LATENT_SCALE;
+  if (isH3VideoProfile(profile)) {
+    const h3Scale = profile === MMH3_ULTIMATE_PROFILE ? MMH3_ULTIMATE_SCALE : H3_LATENT_SCALE;
+    if (scale !== h3Scale) throw makeError(`${profileLabel(profile)} supports scale=2 only.`, 400, "SCALE_INVALID");
+    return h3Scale;
   }
   if (scale < SEEDVR2_MIN_SCALE || scale > SEEDVR2_MAX_SCALE) {
     throw makeError(`SeedVR2 scale must be between ${SEEDVR2_MIN_SCALE} and ${SEEDVR2_MAX_SCALE}.`, 400, "SCALE_INVALID");
@@ -1384,9 +1398,9 @@ export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) 
     resizeMethod: normalizeSeedVR2Choice(input.resizeMethod, SEEDVR2_RESIZE_METHODS, defaults.resizeMethod, "resize method", "RESIZE_METHOD_INVALID"),
     colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, defaults.colorCorrection, "color correction", "COLOR_CORRECTION_INVALID"),
   };
-  if (normalizedProfile === H3_LATENT_PROFILE) {
+  if (isH3VideoProfile(normalizedProfile)) {
     if (hasSeedVR2SamplingOverride(input) || hasSeedVR2DetailOverride(input)) {
-      throw makeError("SeedVR2 sampling and detail settings are not supported by MiniMax H3 Latent.", 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
+      throw makeError(`SeedVR2 sampling and detail settings are not supported by ${profileLabel(normalizedProfile)}.`, 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
     }
     return base;
   }
@@ -1422,11 +1436,14 @@ function normalizeProfile(value) {
   if ([H3_LATENT_PROFILE, H3_LATENT_PROFILE_LABEL].includes(profile)) {
     return H3_LATENT_PROFILE;
   }
+  if ([MMH3_ULTIMATE_PROFILE, MMH3_ULTIMATE_PROFILE_LABEL].includes(profile)) {
+    return MMH3_ULTIMATE_PROFILE;
+  }
   throw makeError("Upscale profile is invalid.", 400, "PROFILE_INVALID");
 }
 
 function profileReadinessConfig(profile) {
-  if (profile === H3_LATENT_PROFILE) {
+  if (isH3VideoProfile(profile)) {
     return {
       modelPaths: {
         diffusion: ["diffusion_models", H3_LATENT_DIFFUSION_NAMES],
@@ -1434,7 +1451,15 @@ function profileReadinessConfig(profile) {
         videoVae: ["vae", H3_LATENT_VAE_NAME],
         audioVae: ["vae", H3_LATENT_AUDIO_VAE_NAME],
       },
-      evaluate: evaluateH3LatentReadiness,
+      evaluate: profile === MMH3_ULTIMATE_PROFILE ? evaluateMMH3UltimateReadiness : evaluateH3LatentReadiness,
+      ...(profile === MMH3_ULTIMATE_PROFILE ? {
+        evaluateOptions: {
+          diffusionNames: H3_LATENT_DIFFUSION_NAMES,
+          encoderName: H3_LATENT_ENCODER_NAME,
+          vaeName: H3_LATENT_VAE_NAME,
+          audioVaeName: H3_LATENT_AUDIO_VAE_NAME,
+        },
+      } : {}),
       modelFiles: ["diffusion", "encoder", "videoVae", "audioVae"],
     };
   }
@@ -1630,7 +1655,7 @@ export function createSeedVR2Controller({
       Promise.all(config.modelFiles.map((key) => {
         const [, configuredNames] = config.modelPaths[key];
         const names = Array.isArray(configuredNames) ? configuredNames : [configuredNames];
-        const candidates = profile === H3_LATENT_PROFILE
+        const candidates = isH3VideoProfile(profile)
           ? key === "diffusion"
             ? names.map((name) => modelPaths.h3Diffusion[name])
             : key === "encoder"
@@ -1853,7 +1878,11 @@ export function createSeedVR2Controller({
         throw makeError(
           `${label} is unavailable: required ComfyUI nodes or model files are missing.`,
           503,
-          profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
+          profile === MMH3_ULTIMATE_PROFILE
+            ? "MMH3_ULTIMATE_NOT_READY"
+            : profile === H3_LATENT_PROFILE
+              ? "H3_LATENT_NOT_READY"
+              : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
         );
       }
 
@@ -1872,7 +1901,17 @@ export function createSeedVR2Controller({
       }
       assertNotCancelled(job);
 
-      const prompt = profile === H3_LATENT_PROFILE
+      const prompt = profile === MMH3_ULTIMATE_PROFILE
+        ? buildMMH3UltimatePrompt({
+          sourceName: loadName,
+          filenamePrefix: outputPrefix(job),
+          diffusionName: readiness.models?.diffusion?.name,
+          encoderName: readiness.models?.encoder?.name,
+          vaeName: readiness.models?.videoVae?.name,
+          audioVaeName: readiness.models?.audioVae?.name,
+          seed: job.seed,
+        })
+        : profile === H3_LATENT_PROFILE
         ? buildH3LatentPrompt({
           sourceName: loadName,
           filenamePrefix: outputPrefix(job),
@@ -2112,8 +2151,8 @@ export function createSeedVR2Controller({
     const settings = normalizeSeedVR2Settings(input, profile);
     const cleanName = normalizeUpscaleAssetName(input.sourceName);
     const sourceKind = sourceKindFromName(cleanName);
-    if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
-      throw makeError("MiniMax H3 Latent 2x accepts video assets only; use SeedVR2 7B for images.", 415, "SOURCE_KIND_INVALID");
+    if (sourceKind === "image" && isH3VideoProfile(profile)) {
+      throw makeError(`${profileLabel(profile)} accepts video assets only; use SeedVR2 7B for images.`, 415, "SOURCE_KIND_INVALID");
     }
     const seed = boundedSeed(input.seed, Math.floor(Math.random() * 2_147_483_648));
     await resolveAsset(sourceRoot, cleanName);
@@ -2299,14 +2338,18 @@ export function createSeedVR2Controller({
         const settings = normalizeSeedVR2Settings(body, profile);
         const cleanName = normalizeUpscaleAssetName(body?.sourceName);
         const sourceKind = sourceKindFromName(cleanName);
-        if (sourceKind === "image" && profile === H3_LATENT_PROFILE) {
-          throw makeError("MiniMax H3 Latent 2x accepts video assets only; use SeedVR2 7B for images.", 415, "SOURCE_KIND_INVALID");
+        if (sourceKind === "image" && isH3VideoProfile(profile)) {
+          throw makeError(`${profileLabel(profile)} accepts video assets only; use SeedVR2 7B for images.`, 415, "SOURCE_KIND_INVALID");
         }
         const readiness = await checkReadiness(profile, sourceKind, settings);
         if (!readiness.ready) {
           respond(res, 503, {
             error: `${profileLabel(profile)} is not ready.`,
-            code: profile === H3_LATENT_PROFILE ? "H3_LATENT_NOT_READY" : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
+            code: profile === MMH3_ULTIMATE_PROFILE
+              ? "MMH3_ULTIMATE_NOT_READY"
+              : profile === H3_LATENT_PROFILE
+                ? "H3_LATENT_NOT_READY"
+                : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
             health: readiness,
           });
           return true;

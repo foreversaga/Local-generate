@@ -180,6 +180,6 @@ test("Single Create exposes a confirmed manual draft clear action", async () => 
   assert.match(form, /function clearSingleCreateDraft\(\)/);
   assert.match(form, /window\.confirm\("確定清除目前 Single 草稿/);
   assert.match(form, /clearDraft\(\{ suppressNextSave: true \}\)/);
-  assert.match(form, />清除草稿<\/button>/);
+  assert.match(form, />清除設定<\/button>/);
   assert.match(hook, /skipNextSaveRef\.current = suppressNextSave/);
 });

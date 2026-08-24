@@ -141,7 +141,7 @@ function safeRequest(value) {
     "referenceImageName", "referenceImageNames", "referenceImageRoots", "referenceImageRoles", "ref2vWorkflow",
     "clothingMode", "clothingDescription", "referenceVideoStart", "referenceVideoEnd", "referenceVideoMaxDimension", "characterLoraName", "characterLoraId",
     "characterLoraStrength", "h3LoraEnabled", "h3LoraPreset", "characterLoraTrigger",
-    "outputName", "batchId", "batchIndex", "batchTotal", "inputRefs",
+    "outputName", "batchId", "batchIndex", "batchTotal", "inputRefs", "sequenceId", "segmentId", "segmentIndex", "attemptId", "childJobId",
   ];
   const result = {};
   for (const key of allowed) {
@@ -166,7 +166,7 @@ function safeRequest(value) {
       if (text) result[key] = text;
     } else if (key === "initialDescription" || key === "prompt" || key === "negativePrompt") {
       result[key] = safePrompt(child);
-    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "characterLoraId" || key === "batchId" || key === "h3LoraPreset" || key === "characterLoraTrigger" || key === "ref2vWorkflow" || key === "clothingMode") {
+    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "characterLoraId" || key === "batchId" || key === "h3LoraPreset" || key === "characterLoraTrigger" || key === "ref2vWorkflow" || key === "clothingMode" || key === "sequenceId" || key === "segmentId" || key === "attemptId" || key === "childJobId") {
       result[key] = safeText(child);
     } else if (key === "clothingDescription") {
       result[key] = safePrompt(child);
@@ -176,7 +176,7 @@ function safeRequest(value) {
       result[key] = { width: integerOrNull(child.width), height: integerOrNull(child.height) };
     } else if (key === "characterLoraStrength") {
       result[key] = numberOrNull(child);
-    } else if (["width", "height", "duration", "steps", "seed", "timeoutSeconds", "batchIndex", "batchTotal", "referenceVideoStart", "referenceVideoEnd", "referenceVideoMaxDimension"].includes(key)) {
+    } else if (["width", "height", "duration", "steps", "seed", "timeoutSeconds", "batchIndex", "batchTotal", "segmentIndex", "referenceVideoStart", "referenceVideoEnd", "referenceVideoMaxDimension"].includes(key)) {
       result[key] = numberOrNull(child);
     }
   }
@@ -194,6 +194,17 @@ function safeProvenance(value, fallbackRequest = {}) {
     if (text) result[key] = text;
   }
   if (input.submittedAt) result.submittedAt = safeTimestamp(input.submittedAt);
+  const binding = input.binding || input.sequenceBinding || input.request?.sequenceBinding;
+  if (binding && typeof binding === "object") {
+    result.binding = {
+      sequenceId: safeIdOptional(binding.sequenceId) || null,
+      segmentId: safeIdOptional(binding.segmentId) || null,
+      segmentIndex: integerOrNull(binding.segmentIndex),
+      attempt: integerOrNull(binding.attempt),
+      attemptId: safeIdOptional(binding.attemptId) || null,
+      childJobId: safeIdOptional(binding.childJobId) || null,
+    };
+  }
   return result;
 }
 
@@ -415,15 +426,16 @@ export function createSingleVideoJobStore({
     const interrupted = [];
     for (const job of all) {
       if (["running", "cancelling"].includes(job.status)) {
+        const boundToSequence = Boolean(job.provenance?.binding?.sequenceId);
         const next = await update(job.id, {
-          status: "interrupted",
-          stage: "interrupted",
+          status: boundToSequence ? "recovering" : "interrupted",
+          stage: boundToSequence ? "recovering" : "interrupted",
           recoverable: true,
-          error: job.error || "Generation was interrupted by a bridge restart; retry is available.",
+          error: boundToSequence ? null : (job.error || "Generation was interrupted by a bridge restart; retry is available."),
           interruptedAt: recoveredAt,
           finishedAt: recoveredAt,
           recovery: {
-            reason: "bridge_restart",
+            reason: boundToSequence ? "bridge_restart_bound_sequence" : "bridge_restart",
             previousStatus: job.status,
             recoveredBy: ownerId,
             recoveredAt,

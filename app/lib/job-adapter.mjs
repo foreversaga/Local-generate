@@ -9,6 +9,7 @@ const STATUS_MAP = new Map([
   ["caption_failed", "error"],
   ["error", "error"],
   ["interrupted", "error"],
+  ["recovery_needs_operator", "error"],
   ["cancelled", "cancelled"],
   ["canceled", "cancelled"],
   ["running", "running"],
@@ -17,6 +18,7 @@ const STATUS_MAP = new Map([
   ["paused", "running"],
   ["assembling", "running"],
   ["planning", "running"],
+  ["recovering", "running"],
   ["rendering", "running"],
   ["normalizing", "running"],
   ["extracting_tail", "running"],
@@ -85,6 +87,10 @@ export function adaptJob(raw, source = "video") {
     comfyNodeTitle: typeof raw?.comfyNodeTitle === "string" ? raw.comfyNodeTitle : "",
     nativeCurrent: numericOrNull(raw?.nativeCurrent),
     nativeMaximum: numericOrNull(raw?.nativeMaximum),
+    activeSegmentIndex: numericOrNull(raw?.activeSegmentIndex),
+    segmentProgress: numericOrNull(raw?.segmentProgress),
+    segmentStage: typeof raw?.segmentStage === "string" ? raw.segmentStage : "",
+    segments: Array.isArray(raw?.segments) ? raw.segments : [],
     comfyQueueRemaining: numericOrNull(raw?.comfyQueueRemaining),
     createdAt,
     updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
@@ -263,7 +269,7 @@ export function outputAvailability(output, availableKeys = null) {
 function canCancel(raw, source) {
   const status = String(raw?.status || "").toLowerCase();
   if (source === "video") return ["queued", "running", "cancelling"].includes(status);
-  if (source === "long") return ["queued", "running", "paused", "assembling"].includes(status);
+  if (source === "long") return ["queued", "running", "paused", "assembling", "recovering"].includes(status);
   if (source === "upscale") return ["queued", "running", "cancelling"].includes(status);
   if (source === "img2img") return ["queued", "running", "cancelling"].includes(status);
   if (source === "lora") return ["captioning", "queued", "training", "installing"].includes(status);

@@ -1,3 +1,4 @@
+import "./test-isolation.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -635,6 +636,35 @@ test("sequence draft ignores allocation injection and locks an allocated folder"
   assert.equal(paused.status, "paused");
 });
 
+test("cancelling a running sequence also cancels its active generation job", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-sequence-cancel-"));
+  const previousDataRoot = process.env.H3_SEQUENCE_DATA_ROOT;
+  try {
+    process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+    const created = await createJob({
+      title: "cancel-parent",
+      inputType: "text",
+      inputText: "brief",
+      outputFolder: "cancel-parent",
+      duration: 10,
+      timeline: [{ start: 0, end: 5, description: "first" }, { start: 5, end: 10, description: "second" }],
+    });
+    await updateJob(created.id, { status: "running", generationJobId: "child-generation-1" });
+    const cancelledChildren = [];
+    const response = apiResponse();
+    await handleLongVideoRoute(apiRequest("POST", `/api/sequences/${created.id}/cancel`), response, {
+      cancelGeneration: async (id) => { cancelledChildren.push(id); },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.job.status, "cancelled");
+    assert.deepEqual(cancelledChildren, ["child-generation-1"]);
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.H3_SEQUENCE_DATA_ROOT;
+    else process.env.H3_SEQUENCE_DATA_ROOT = previousDataRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("retry and prompt edits stale dependent segments", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-retry-api-"));
   process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
@@ -656,7 +686,7 @@ test("retry and prompt edits stale dependent segments", async () => {
 });
 
 test("long-video polling is source-limited to active statuses", async () => {
-  for (const status of ["queued", "running", "paused", "assembling", "planning"]) {
+  for (const status of ["queued", "running", "paused", "assembling", "planning", "recovering"]) {
     assert.equal(longJobIsActive(status), true);
   }
   for (const status of ["draft", "ready", "completed", "failed", "cancelled", "interrupted", ""]) {
@@ -806,6 +836,50 @@ test("runner strictly sequences fake generation and uses prior tail", async () =
   assert.equal(calls[0].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint`);
   assert.equal(calls[1].negativePrompt, `${DEFAULT_NEGATIVE_PROMPT}, global blur constraint, hand distortion`);
   assert.ok(calls[1].tailImagePath);
+});
+
+test("runner preserves cancelled status when the active child reports cancellation as a generation failure", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-runner-cancel-"));
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  try {
+    process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+    let cancelRequested = false;
+    const job = {
+      id: "runner-cancel-job",
+      inputType: "text",
+      outputPath: path.join(root, "output", "runner-cancel"),
+      outputFolder: "runner-cancel",
+      status: "ready",
+      revision: 1,
+      duration: 10,
+      width: 736,
+      height: 416,
+      steps: 2,
+      seed: 1,
+      continuityBible: {},
+      segments: [
+        { id: "s1", start: 0, end: 5, duration: 5, description: "a" },
+        { id: "s2", start: 5, end: 10, duration: 5, description: "b" },
+      ],
+    };
+    await assert.rejects(() => runSequence(job, {
+      generate: async () => {
+        cancelRequested = true;
+        throw Object.assign(new Error("Legacy generation ended with cancelled."), { code: "GENERATION_FAILED" });
+      },
+      shouldCancel: () => cancelRequested,
+      updateJob: async (target, patch) => Object.assign(target, patch),
+      updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
+      writeManifest: async () => {},
+      logEvent: async () => {},
+    }), { code: "GENERATION_FAILED" });
+    assert.equal(job.status, "cancelled");
+    assert.equal(job.segments[0].status, "stale");
+  } finally {
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("storyboard runner sends only the previous silent visual excerpt to Ref2VA", async () => {

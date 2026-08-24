@@ -32,6 +32,7 @@ import {
 import { useI18n } from "../../i18n/I18nProvider";
 import { createLongScript, LongScriptComposer, type LongScriptDraft } from "./LongScriptComposer";
 import styles from "./LongCreateForm.module.css";
+import progressStyles from "../jobs/ProgressDetails.module.css";
 
 const BRIDGE_URL = "/app";
 const MAX_LONG_REFERENCE_IMAGES = 8;
@@ -77,6 +78,9 @@ type LongSegment = {
   promptSource?: string;
   status?: string;
   progress?: number;
+  stage?: string;
+  nativeCurrent?: number;
+  nativeMaximum?: number;
   error?: string | { code?: string; message?: string };
 };
 type LongPlan = {
@@ -137,6 +141,12 @@ type LongJob = LongPlan & {
   seam?: "keep_duplicate_frame" | "drop_next_first_frame";
   progress?: number;
   stage?: string;
+  activeSegmentIndex?: number;
+  segmentProgress?: number;
+  segmentStage?: string;
+  progressSource?: string;
+  nativeCurrent?: number;
+  nativeMaximum?: number;
   updatedAt?: string;
   error?: string | { code?: string; message?: string };
 };
@@ -252,6 +262,9 @@ export function LongCreateForm() {
   const [notice, setNotice] = useState("");
   const [segmentPromptBusy, setSegmentPromptBusy] = useState<number | null>(null);
   const [segmentScriptBusy, setSegmentScriptBusy] = useState<number | null>(null);
+  const [sceneScriptName, setSceneScriptName] = useState("");
+  const [sceneScriptBusy, setSceneScriptBusy] = useState(false);
+  const [sceneScriptStatus, setSceneScriptStatus] = useState<{ kind: "success" | "error"; message: string } | null>(null);
   const [segmentScriptNames, setSegmentScriptNames] = useState<Record<string, string>>({});
   const [segmentActionStatus, setSegmentActionStatus] = useState<Record<string, { kind: "success" | "error"; message: string }>>({});
 
@@ -924,6 +937,35 @@ export function LongCreateForm() {
     }
   }
 
+  async function saveSceneAsScript() {
+    const name = sceneScriptName.trim();
+    const prompt = autoExtendPrompt.trim();
+    if (!name) {
+      setSceneScriptStatus({ kind: "error", message: "請先輸入劇本名稱。" });
+      return;
+    }
+    if (!prompt) {
+      setSceneScriptStatus({ kind: "error", message: "請先輸入完整場景描述。" });
+      return;
+    }
+    setSceneScriptBusy(true);
+    setSceneScriptStatus(null);
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/scripts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, prompt, negativePrompt }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as ApiError & { script?: { name?: string } };
+      if (!response.ok || !payload.script) throw new Error(apiError(payload, "無法儲存完整場景劇本。"));
+      setSceneScriptStatus({ kind: "success", message: `已將「${payload.script.name || name}」儲存至一般劇本庫。` });
+    } catch (scriptError) {
+      setSceneScriptStatus({ kind: "error", message: scriptError instanceof Error ? scriptError.message : "無法儲存完整場景劇本。" });
+    } finally {
+      setSceneScriptBusy(false);
+    }
+  }
+
   function updateInputType(value: InputType) {
     if (value === inputType) return;
     resetResolutionToDefault();
@@ -1027,7 +1069,7 @@ export function LongCreateForm() {
     setScripts([createLongScript(0), createLongScript(1)]); setNegativePrompt(""); setTimelineMode("manual"); setDuration(10); setSegmentDurationHint(5); setTimeline("");
     setModelProfile("nvfp4_blackwell"); resetResolutionToDefault(); setSteps(20); setSeed(12345); setSeam("keep_duplicate_frame");
     setH3LoraEnabled(false); setCharacterLoraName(""); setCharacterLoraId(""); setCharacterLoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
-    setPlan(null); setSegmentDurationDrafts({}); setSegmentActionStatus({}); setSegmentScriptNames({}); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
+    setPlan(null); setSegmentDurationDrafts({}); setSegmentActionStatus({}); setSegmentScriptNames({}); setSceneScriptName(""); setSceneScriptStatus(null); setPlanDirty(false); setJob(null); setError(""); setNotice("已清除目前長影片編輯狀態；已保存工作未刪除。" );
   }
 
   const visibleIssues = attempted ? submitIssues : [];
@@ -1039,7 +1081,7 @@ export function LongCreateForm() {
       </nav>
 
       <div className={styles.formColumn}>
-        <LongSection id="long-story" code="01 / 故事與來源" title="故事與來源">
+        <LongSection id="long-story" code="01 / 故事與來源" title="故事與來源" action={<button type="button" className={styles.clearSettingsButton} disabled={activeJob || saving || planning} onClick={clearEditor}>清除設定</button>}>
           <div className={styles.twoColumns}>
             <Field label="標題"><input className={styles.input} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="兩段式故事" /></Field>
             <Field label="輸出資料夾" error={attempted ? issuesByField.get("outputFolder") : ""}><input id="long-output-folder" className={styles.input} value={outputFolder} onChange={(event) => setOutputFolder(event.target.value)} placeholder="my-sequence-001" /></Field>
@@ -1090,7 +1132,14 @@ export function LongCreateForm() {
                 <Field label="Prompt Mode" error={attempted ? issuesByField.get("promptMode") : ""} helper={MULTISHOT_PROMPT_HELP[promptMode]}><select id="long-prompt-mode" className={styles.select} value={promptMode} disabled={!canInteract} onChange={(event) => { setPromptMode(event.target.value as MultishotPromptMode); markPlanDirty(); }}><option value="auto_extend">auto_extend</option><option value="manual_shots">manual_shots</option></select></Field>
               </div>
               <p className={styles.helper}>將建立 {multishotCount} 個 generation windows；不會嘗試單次 sampling 生成整支長片。{continuityMode === "context_pin" && !multishotHealth?.continuity?.contextPin?.available ? " 本機 Motion Context nodes 不可用，提交後會明確記錄並自動 fallback 到 first_frame。" : ""}</p>
-              {promptMode === "auto_extend" && <Field label="完整場景描述" error={attempted ? issuesByField.get("inputText") : ""} helper="每段會加入同人物、服裝、環境、攝影機、光線、動作與對話延續約束。"><textarea id="long-auto-extend-prompt" className={styles.textarea} value={autoExtendPrompt} disabled={!canInteract} onChange={(event) => { setAutoExtendPrompt(event.target.value); markPlanDirty(); }} placeholder="描述一個連續 take；除非明確要求，系統不會加入 cut 或 new scene。" /></Field>}
+              {promptMode === "auto_extend" && <>
+                <Field label="完整場景描述" error={attempted ? issuesByField.get("inputText") : ""} helper="每段會加入同人物、服裝、環境、攝影機、光線、動作與對話延續約束。"><textarea id="long-auto-extend-prompt" className={styles.textarea} value={autoExtendPrompt} disabled={!canInteract} onChange={(event) => { setAutoExtendPrompt(event.target.value); setSceneScriptStatus(null); markPlanDirty(); }} placeholder="描述一個連續 take；除非明確要求，系統不會加入 cut 或 new scene。" /></Field>
+                <div className={styles.sceneScriptSave}>
+                  <label><span>存成一般劇本</span><input value={sceneScriptName} maxLength={80} disabled={!canInteract || sceneScriptBusy} onChange={(event) => { setSceneScriptName(event.target.value); setSceneScriptStatus(null); }} placeholder={title.trim() || "例如：雨夜車站完整場景"} /></label>
+                  <button type="button" disabled={!canInteract || sceneScriptBusy || !autoExtendPrompt.trim()} onClick={() => void saveSceneAsScript()}>{sceneScriptBusy ? "儲存中…" : "存成劇本"}</button>
+                </div>
+                {sceneScriptStatus && <p className={sceneScriptStatus.kind === "success" ? styles.scriptSuccess : styles.segmentActionError} role="status">{sceneScriptStatus.message}</p>}
+              </>}
               <div className={styles.toggleGrid}>
                 <label><input type="checkbox" checked={identityAnchor} disabled={!canInteract} onChange={(event) => { setIdentityAnchor(event.target.checked); markPlanDirty(); }} /><span>Identity Anchor</span></label>
                 <label><input type="checkbox" checked={voiceContinuity} disabled={!canInteract} onChange={(event) => { setVoiceContinuity(event.target.checked); markPlanDirty(); }} /><span>Voice Continuity</span></label>
@@ -1210,14 +1259,14 @@ export function LongCreateForm() {
         <section className={styles.summaryCard}>
           <span className={styles.eyebrow}>生成摘要</span><h2>長影片</h2>
           <div className={styles.summaryRows}><Summary label="來源素材" value={inputType === "text" ? "文字" : `${references.length} 張圖片`} /><Summary label="故事總長" value={longVideoEnabled ? `${Number(targetDurationSeconds || 0).toFixed(1)} 秒` : `${totalScriptDuration.toFixed(1)} 秒`} /><Summary label="故事分鏡" value={longVideoEnabled ? `${multishotCount} windows` : `${scripts.length} 個`} /><Summary label="連續模式" value={longVideoEnabled ? continuityMode : continuationLabel} /><Summary label="連續上下文" value={longVideoEnabled ? continuityMode === "context_pin" ? `${contextFrames} 幀 raw AV latent` : "H3 原生尾幀續接" : continuityContextLabel} /><Summary label="H3 幀處理" value={longVideoEnabled ? `${framesPerShot} frames / window` : h3FrameHandlingLabel} /><Summary label="尺寸" value={`${width || "—"} × ${height || "—"}`} /></div>
-          {job && <div className={styles.jobSummary}><span className={styles.statusDot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{Math.round(Number(job.progress) || 0)}% · {job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>}
+          {job && <LongJobProgress job={job} locale={locale} />}
         </section>
         <section id="long-validation-summary" className={styles.summaryCard}>
           <span className={styles.eyebrow}>檢查結果</span>
           <ul className={styles.validation}>{visibleIssues.length ? visibleIssues.map((issue) => <li key={`${issue.field}:${issue.message}`} className={styles.invalid}><button type="button" className={styles.validationLink} onClick={() => focusLongValidationField(issue.field)}>× {issue.message}</button></li>) : <li className={styles.valid}>✓ 劇本提示詞將直接使用，不經 AI 規劃。</li>}</ul>
           {error && <p className={styles.errorBox} role="alert">{error}</p>}{notice && <p className={styles.notice} role="status">{notice}</p>}
           <button type="button" className={styles.primaryButton} disabled={!canInteract} onClick={() => void startLongVideo()} aria-describedby="long-validation-summary">{activeJob ? "生成中…" : saving ? "處理中…" : !plan || planDirty ? "套用劇本並開始生成" : "開始長影片生成"}<span>→</span></button>
-          <div className={styles.secondaryActions}><button type="button" disabled={!canSave} onClick={() => void saveDraft()}>{saving ? "保存中…" : "保存草稿"}</button><button type="button" disabled={activeJob || saving || planning} onClick={clearEditor}>清除設定</button></div>
+          <div className={`${styles.secondaryActions} ${styles.singleSecondaryAction}`}><button type="button" disabled={!canSave} onClick={() => void saveDraft()}>{saving ? "保存中…" : "保存草稿"}</button></div>
         </section>
       </aside>
 
@@ -1226,8 +1275,29 @@ export function LongCreateForm() {
   );
 }
 
-function LongSection({ id, code, title, children }: { id: string; code: string; title: string; children: ReactNode }) {
-  return <section id={id} className={styles.section}><div className={styles.sectionHeader}><div><span className={styles.eyebrow}>{code}</span><h2>{title}</h2></div></div><div className={styles.stack}>{children}</div></section>;
+function LongJobProgress({ job, locale }: { job: LongJob; locale: string }) {
+  const total = job.segments.length;
+  const activeIndex = Number.isInteger(Number(job.activeSegmentIndex))
+    ? Number(job.activeSegmentIndex)
+    : job.segments.findIndex((segment) => ["queued", "rendering", "normalizing", "extracting_tail", "extracting_context", "finalizing_prompt"].includes(String(segment.status || "")));
+  const activeSegment = activeIndex >= 0 ? job.segments[activeIndex] : null;
+  const completed = job.segments.filter((segment) => segment.status === "completed").length;
+  const overallProgress = Math.round(Number(job.progress) || 0);
+  const segmentProgress = Math.round(Number(job.segmentProgress ?? activeSegment?.progress) || 0);
+  const nativeCurrent = Number(job.nativeCurrent ?? activeSegment?.nativeCurrent);
+  const nativeMaximum = Number(job.nativeMaximum ?? activeSegment?.nativeMaximum);
+  const hasNative = Number.isFinite(nativeCurrent) && Number.isFinite(nativeMaximum) && nativeMaximum > 0;
+  const segmentLabel = activeIndex >= 0 ? `第 ${activeIndex + 1} / ${total} 段` : `${completed} / ${total} 段完成`;
+  return <div className={progressStyles.panel}>
+    <div className={progressStyles.heading}><span className={progressStyles.dot} /><div><strong>{jobStatusLabel(job.status, "long", locale)}</strong><small>{job.segmentStage || job.stage || "—"}</small></div><a href={`/app/jobs/${encodeURIComponent(job.id)}`}>查看工作</a></div>
+    <div className={progressStyles.grid}><span><small>全片進度</small><strong>{overallProgress}%</strong></span><span><small>目前段落</small><strong>{segmentLabel}</strong></span><span><small>段落進度</small><strong>{segmentProgress}%</strong></span><span><small>採樣步驟</small><strong>{hasNative ? `${nativeCurrent}/${nativeMaximum}` : "等待原生回報"}</strong></span></div>
+    <div className={progressStyles.track} role="progressbar" aria-label="長影片總進度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={overallProgress}><span style={{ width: `${Math.min(100, Math.max(0, overallProgress))}%` }} /></div>
+    <small className={progressStyles.source}>進度來源：{job.progressSource === "native" ? "ComfyUI 原生回報" : "階段估算"}{job.updatedAt ? ` · 更新 ${new Date(job.updatedAt).toLocaleTimeString(locale)}` : ""}</small>
+  </div>;
+}
+
+function LongSection({ id, code, title, action, children }: { id: string; code: string; title: string; action?: ReactNode; children: ReactNode }) {
+  return <section id={id} className={styles.section}><div className={styles.sectionHeader}><div><span className={styles.eyebrow}>{code}</span><h2>{title}</h2></div>{action}</div><div className={styles.stack}>{children}</div></section>;
 }
 
 function AdvancedSection({ id, code, title, summary, children }: { id: string; code: string; title: string; summary: string; children: ReactNode }) {

@@ -12,9 +12,9 @@
     "restart:web:dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1 -Mode development",
     "build": "vinext build",
     "start": "node --env-file-if-exists=.env.local server/production-web.mjs",
-    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
-    "test:unit": "node --test --test-concurrency=1 tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern data/lora-training/runtime",
+    "test": "node --import ./tests/test-isolation.mjs --test --test-concurrency=1 tests/*.test.mjs",
+    "test:unit": "node --import ./tests/test-isolation.mjs --test --test-concurrency=1 tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .gitnexus --ignore-pattern data/lora-training/runtime",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

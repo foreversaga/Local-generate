@@ -1,3 +1,4 @@
+import "./test-isolation.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import path from "node:path";

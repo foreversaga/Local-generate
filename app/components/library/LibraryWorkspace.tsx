@@ -434,6 +434,17 @@ export function LibraryWorkspace() {
                                             </span>
                                             {!selectionMode && <span className={styles.folderArrow} aria-hidden="true">→</span>}
                                         </button>
+                                        {!selectionMode && folder.count === 0 && folderRoots.length > 0 && (
+                                            <button
+                                                type="button"
+                                                className={styles.delete}
+                                                aria-label={`刪除空資料夾 ${folder.path.join("/")}`}
+                                                disabled={busy}
+                                                onClick={() => requestDelete([], folderRoots.map((root) => ({ root, path: folder.path.join("/") })))}
+                                            >
+                                                刪除
+                                            </button>
+                                        )}
                                     </div>
                                 </article>
                             );
@@ -501,7 +512,11 @@ export function LibraryWorkspace() {
                                 {error && <p className={styles.error} role="alert">{error}</p>}
                                 <div className={styles.previewActions}>
                                     <button type="button" onClick={() => setPendingDelete(null)} disabled={busy}>取消</button>
-                                    <button type="button" onClick={() => void executeDelete()} disabled={busy}>刪除 {pendingDelete.assets.length} 個檔案</button>
+                                    <button type="button" onClick={() => void executeDelete()} disabled={busy}>
+                                        {pendingDelete.assets.length > 0
+                                            ? `刪除 ${pendingDelete.assets.length} 個檔案`
+                                            : `刪除 ${pendingDelete.folders.length} 個資料夾`}
+                                    </button>
                                 </div>
                             </div>
                         </div>

@@ -21,6 +21,8 @@
 # misc
 .DS_Store
 *.pem
+__pycache__/
+*.pyc
 /AGENTS.md
 
 # debug

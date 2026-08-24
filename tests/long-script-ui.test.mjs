@@ -41,3 +41,12 @@ test("long segment cards can generate Ollama continuation prompts and save them 
   assert.match(form, /\/api\/scripts/);
   assert.match(form, /存成一般劇本/);
 });
+
+test("complete scene descriptions can be saved and restored from long-video drafts", async () => {
+  const form = await readFile(new URL("../app/components/create/LongCreateForm.tsx", import.meta.url), "utf8");
+  assert.match(form, /async function saveSceneAsScript/);
+  assert.match(form, /const prompt = autoExtendPrompt\.trim\(\)/);
+  assert.match(form, /setAutoExtendPrompt\(next\.promptMode === "auto_extend" \? next\.inputText \|\| "" : ""\)/);
+  assert.match(form, /存成劇本/);
+  assert.match(form, /title="故事與來源" action=\{<button[^>]+>清除設定<\/button>\}/);
+});

@@ -9,6 +9,7 @@ import { fetchUnifiedJob, jobOutputHref, performJobAction, type JobSourceError, 
 import { StatusBadge } from "./JobsWorkspace";
 import { SaveJobAsScript } from "./SaveJobAsScript";
 import styles from "./JobsWorkspace.module.css";
+import progressStyles from "./ProgressDetails.module.css";
 
 export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourceHint?: string }) {
   const { locale, t } = useI18n();
@@ -139,6 +140,9 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         ? t("jobs.eta", { duration: formatEtaDuration(Number(job.etaMs), t) })
         : t("jobs.etaEstimating")
     : "";
+  const longTotalSegments = job.source === "long" ? job.segments.length : 0;
+  const longActiveIndex = job.source === "long" && Number.isInteger(Number(job.activeSegmentIndex)) ? Number(job.activeSegmentIndex) : -1;
+  const longSegmentProgress = Math.min(100, Math.max(0, Math.round(Number(job.segmentProgress) || 0)));
 
   return (
     <div className={styles.detailLayout}>
@@ -174,6 +178,15 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             </div>
           )}
         </section>
+
+        {job.source === "long" && longTotalSegments > 0 && <section className={`${progressStyles.panel} ${progressStyles.grid}`} aria-label="長影片分段進度">
+          <div><span>目前段落</span><strong>{longActiveIndex >= 0 ? `第 ${longActiveIndex + 1} / ${longTotalSegments} 段` : `${job.segments.filter((segment: { status?: string }) => segment.status === "completed").length} / ${longTotalSegments} 段完成`}</strong></div>
+          <div><span>段落進度</span><strong>{longSegmentProgress}%</strong></div>
+          <div><span>目前階段</span><strong>{job.segmentStage || job.stage || "—"}</strong></div>
+          <div><span>採樣步驟</span><strong>{job.nativeCurrent !== null && job.nativeMaximum !== null ? `${job.nativeCurrent}/${job.nativeMaximum}` : "等待原生回報"}</strong></div>
+          <div><span>進度來源</span><strong>{job.progressSource === "native" ? "ComfyUI 原生回報" : "階段估算"}</strong></div>
+          <div><span>最後更新</span><strong>{job.updatedAt ? formatDate(job.updatedAt, locale) : "—"}</strong></div>
+        </section>}
 
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
         {error && <div ref={actionErrorRef} className={styles.error} role="alert" tabIndex={-1}>{error}</div>}

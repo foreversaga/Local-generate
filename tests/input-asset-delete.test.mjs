@@ -109,6 +109,14 @@ test("deletes a nested media folder recursively and reports its contents", async
   await assert.rejects(() => fs.stat(path.join(root, "characters")), { code: "ENOENT" });
 });
 
+test("deletes an empty media folder", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-empty-folder-delete-"));
+  await fs.mkdir(path.join(root, "empty"), { recursive: true });
+  const deleted = await deleteMediaFolder("input", "empty", { rootPath: root });
+  assert.deepEqual(deleted, { name: "empty", root: "input", kind: "folder", deletedCount: 0, deletedFolderCount: 1 });
+  await assert.rejects(() => fs.stat(path.join(root, "empty")), { code: "ENOENT" });
+});
+
 test("refuses recursive deletion when an unsupported file is present", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-unsupported-"));
   await fs.mkdir(path.join(root, "characters"), { recursive: true });

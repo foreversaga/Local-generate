@@ -19,6 +19,22 @@ test("Long Create hydration restores the latest non-completed persisted sequence
   assert.equal(selectHydratableLongJob([{ id: "done", status: "completed" }]), null);
 });
 
+test("auto-extend draft preserves the complete scene description", () => {
+  const saved = buildLongSaveRequest({
+    plan: { duration: 10, segments: [{ start: 0, end: 10, description: "window" }] },
+    title: "Continuous take",
+    inputType: "text",
+    inputText: "The exact complete scene description from the editor.",
+    scripts: [{ id: "unused", name: "default", content: "must not replace the scene", duration: 5 }],
+    longVideoEnabled: true,
+    targetDurationSeconds: 10,
+    framesPerShot: 243,
+    continuityMode: "first_frame",
+    promptMode: "auto_extend",
+  });
+  assert.equal(saved.inputText, "The exact complete scene description from the editor.");
+});
+
 test("Long plan request fixes the storyboard visual reference to two seconds", () => {
   const payload = buildLongPlanRequest({
     title: "Story",

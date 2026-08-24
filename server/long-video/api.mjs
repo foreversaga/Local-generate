@@ -4,11 +4,10 @@ import { allocateSequenceOutputPath, outputRoot, validateOutputFolderName } from
 import { appendEvent, createJob, getJob, listJobs, readEvents, saveJob, writeSequenceManifest } from "./store.mjs";
 import { LongVideoError, assertLongLoraSupported, validateSequenceInput, validateTimeline } from "./schema.mjs";
 import { validatePrompt } from "./prompt-validator.mjs";
-import { recoverInterruptedJobs } from "./recovery.mjs";
 import { runSequence } from "./runner.mjs";
+import { acquireSequenceLease, releaseSequenceLease } from "./lease.mjs";
 
 const controls = new Map();
-let recoveryReady;
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -25,14 +24,6 @@ async function body(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw new LongVideoError("JSON_INVALID", "Request body must be valid JSON.", 400); }
 }
 
-async function recoverOnce() {
-  if (!recoveryReady) recoveryReady = recoverInterruptedJobs().catch((error) => {
-    console.error("[long-video] recovery failure", error);
-    return [];
-  });
-  return recoveryReady;
-}
-
 function errorPayload(error) {
   if (error instanceof LongVideoError) return { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } };
   return { error: { code: "LONG_VIDEO_INTERNAL", message: error?.message || String(error) } };
@@ -44,7 +35,7 @@ function segmentFromPath(pathname) {
   return { id: decodeURIComponent(match[1]), index: Number(match[2]), suffix: pathname.endsWith("/prompt") ? "prompt" : pathname.endsWith("/retry") ? "retry" : "" };
 }
 
-const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance"]);
+const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance", "controlIntent", "executionPhase", "activeAttempt", "recovery"]);
 const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "continuityMode", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
@@ -107,8 +98,9 @@ function mergeCanonicalTimeline(current, canonicalTimeline, incomingSegments) {
 export async function handleLongVideoRoute(req, res, context = {}) {
   const pathname = new URL(req.url || "/", "http://localhost").pathname.replace(/^\/app(?=\/)/, "") || "/";
   if (!pathname.startsWith("/api/sequences")) return false;
-  await recoverOnce();
   try {
+    const readOnly = req.method === "GET";
+    if (!readOnly && context.recoveryCoordinator) await context.recoveryCoordinator.waitForReady();
     if (req.method === "GET" && pathname === "/api/sequences/health") {
       const motionContext = typeof context.capabilities === "function"
         ? await context.capabilities()
@@ -312,24 +304,27 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       const operation = action[2];
       const current = await getJob(id);
       if (operation === "start") {
-        if (["planning", "running", "queued", "paused", "assembling"].includes(current.status)) throw new LongVideoError("SEQUENCE_ALREADY_RUNNING", "Sequence is already running.", 409);
+        if (["planning", "running", "queued", "paused", "assembling", "recovering", "recovery_needs_operator"].includes(current.status)) throw new LongVideoError("SEQUENCE_ALREADY_RUNNING", "Sequence is already running or awaiting recovery.", 409);
         assertLongLoraSupported(current);
+        const ownerId = context.ownerId || `h3-studio-api-${process.pid}`;
+        const lease = await acquireSequenceLease(id, { ownerId, ttlMs: context.leaseTtlMs });
         const control = controls.get(id) || { cancel: false, pause: false };
         control.cancel = false;
         control.pause = false;
         controls.set(id, control);
-        if (context.preflight) {
-          try {
-            const preflightResult = await context.preflight({ job: current });
-            await appendEvent(id, { event: "preflight.media.success", stage: "preflight", tools: preflightResult });
-          } catch (error) {
-            const preflightError = error instanceof LongVideoError
-              ? error
-              : new LongVideoError("MEDIA_TOOLS_UNAVAILABLE", `Long-video media preflight failed: ${error?.message || String(error)}`, 503, { error: error?.message || String(error) });
-            await appendEvent(id, { level: "error", event: "preflight.media.failure", stage: "preflight", errorCode: preflightError.code, errorMessage: preflightError.message, executables: preflightError.details }).catch(() => {});
-            throw preflightError;
+        try {
+          if (context.preflight) {
+            try {
+              const preflightResult = await context.preflight({ job: current });
+              await appendEvent(id, { event: "preflight.media.success", stage: "preflight", tools: preflightResult });
+            } catch (error) {
+              const preflightError = error instanceof LongVideoError
+                ? error
+                : new LongVideoError("MEDIA_TOOLS_UNAVAILABLE", `Long-video media preflight failed: ${error?.message || String(error)}`, 503, { error: error?.message || String(error) });
+              await appendEvent(id, { level: "error", event: "preflight.media.failure", stage: "preflight", errorCode: preflightError.code, errorMessage: preflightError.message, executables: preflightError.details }).catch(() => {});
+              throw preflightError;
+            }
           }
-        }
         let startJob = current;
         let allocatedPath = null;
         if (!current.outputAllocated && !current.outputPath) {
@@ -345,35 +340,100 @@ export async function handleLongVideoRoute(req, res, context = {}) {
         if (allocatedPath) await writeSequenceManifest(allocatedPath, queued);
         await appendEvent(id, { event: "api.start", from: current.status, to: "queued", stage: "queue" });
         const runJob = context.runJob || ((job, deps) => runSequence(job, deps));
-        Promise.resolve().then(() => runJob(queued, {
+        const runnerPromise = Promise.resolve().then(() => runJob(queued, {
           ...context.runnerDeps,
+          lease,
+          ownerId,
+          enforceLease: true,
           shouldCancel: () => controls.get(id)?.cancel,
           shouldPause: () => controls.get(id)?.pause,
-        })).catch((error) => console.error("[long-video] background start failure", id, error));
+          recoverChild: context.recoverChild,
+        })).catch((error) => console.error("[long-video] background start failure", id, error)).finally(() => {
+          const currentControl = controls.get(id);
+          if (currentControl?.runnerPromise === runnerPromise) {
+            currentControl.runnerPromise = null;
+            controls.set(id, currentControl);
+          }
+        });
+        control.runnerPromise = runnerPromise;
+        control.lease = lease;
+        controls.set(id, control);
         return json(res, 202, { job: queued });
+        } catch (error) {
+          await releaseSequenceLease(id, lease).catch(() => {});
+          throw error;
+        }
       }
       if (operation === "pause") {
         if (!["running", "queued"].includes(current.status)) throw new LongVideoError("INVALID_STATE", `Cannot pause from ${current.status}.`, 409);
         const control = controls.get(id) || { cancel: false, pause: false };
         control.pause = true; controls.set(id, control);
-        const next = await saveJob({ ...current, status: "paused", stage: "sequence.paused" }, { expectedRevision: current.revision });
+        const next = await saveJob({ ...current, status: "paused", controlIntent: "pause_requested", executionPhase: "pausing", stage: "sequence.paused" }, { expectedRevision: current.revision });
         await appendEvent(id, { event: "api.pause", from: current.status, to: next.status });
         return json(res, 200, { job: next });
       }
       if (operation === "resume") {
-        if (current.status !== "paused") throw new LongVideoError("INVALID_STATE", `Cannot resume from ${current.status}.`, 409);
+        if (!["paused", "interrupted", "recovering"].includes(current.status)) throw new LongVideoError("INVALID_STATE", `Cannot resume from ${current.status}.`, 409);
         const control = controls.get(id) || { cancel: false, pause: false };
         control.pause = false; controls.set(id, control);
-        const next = await saveJob({ ...current, status: "running", stage: "sequence.resumed" }, { expectedRevision: current.revision });
+        const ownerId = context.ownerId || `h3-studio-api-${process.pid}`;
+        const lease = await acquireSequenceLease(id, { ownerId, ttlMs: context.leaseTtlMs });
+        if (context.reconcileSequence) {
+          const reconciled = await context.reconcileSequence(current, { lease });
+          if (reconciled?.action === "operator") {
+            await releaseSequenceLease(id, lease).catch(() => {});
+            throw new LongVideoError("RECOVERY_NEEDS_OPERATOR", "Sequence recovery requires operator confirmation.", 409, reconciled);
+          }
+        }
+        const next = await saveJob({ ...current, status: "running", executionPhase: "resuming", controlIntent: "run", stage: "sequence.resumed" }, { expectedRevision: current.revision });
         await appendEvent(id, { event: "api.resume", from: current.status, to: next.status });
+        if (!control.runnerPromise) {
+          const runJob = context.runJob || ((job, deps) => runSequence(job, deps));
+          const runnerPromise = Promise.resolve().then(() => runJob(next, {
+            ...context.runnerDeps,
+            lease,
+            ownerId,
+            enforceLease: true,
+            shouldCancel: () => controls.get(id)?.cancel,
+            shouldPause: () => controls.get(id)?.pause,
+            recoverChild: context.recoverChild,
+          })).catch((error) => console.error("[long-video] background resume failure", id, error)).finally(() => {
+            const currentControl = controls.get(id);
+            if (currentControl?.runnerPromise === runnerPromise) {
+              currentControl.runnerPromise = null;
+              controls.set(id, currentControl);
+            }
+          });
+          control.runnerPromise = runnerPromise;
+          control.lease = lease;
+        }
+        controls.set(id, control);
         return json(res, 200, { job: next });
       }
       if (operation === "cancel") {
         if (["completed", "cancelled", "failed"].includes(current.status)) throw new LongVideoError("INVALID_STATE", `Cannot cancel from ${current.status}.`, 409);
         const control = controls.get(id) || { cancel: false, pause: false };
+        const ownerId = context.ownerId || `h3-studio-api-${process.pid}`;
+        const cancelLease = control.lease || await acquireSequenceLease(id, { ownerId, ttlMs: context.leaseTtlMs });
+        control.lease = cancelLease;
         control.cancel = true; control.pause = false; controls.set(id, control);
-        const next = await saveJob({ ...current, status: "cancelled", stage: "sequence.cancelled" }, { expectedRevision: current.revision });
-        await appendEvent(id, { event: "api.cancel", from: current.status, to: next.status });
+        const generationJobId = String(current.generationJobId || current.activeAttempt?.childJobId || current.segments?.[current.activeSegmentIndex]?.childJobId || "").trim();
+        if (generationJobId && typeof context.cancelGeneration === "function") {
+          try {
+            await context.cancelGeneration(generationJobId);
+          } catch (error) {
+            if (!["SINGLE_VIDEO_JOB_NOT_FOUND", "SINGLE_VIDEO_JOB_NOT_CANCELLABLE"].includes(error?.code)) throw error;
+          }
+        }
+        const latest = await getJob(id);
+        if (latest.status === "cancelled") return json(res, 200, { job: latest });
+        const next = await saveJob({ ...latest, status: "cancelled", controlIntent: "cancel_requested", executionPhase: "cancelled", stage: "sequence.cancelled" }, { expectedRevision: latest.revision });
+        await appendEvent(id, { event: "api.cancel", from: latest.status, to: next.status });
+        if (!generationJobId && !control.runnerPromise) {
+          await releaseSequenceLease(id, cancelLease).catch(() => {});
+          control.lease = null;
+          controls.set(id, control);
+        }
         return json(res, 200, { job: next });
       }
       if (operation === "assemble") throw new LongVideoError("ASSEMBLY_NOT_READY", "Assembly is performed by the runner after all segments complete.", 409);

@@ -1,7 +1,7 @@
 import { buildWindowedAutoExtendPrompts } from "./multishot-prompt-windows.mjs";
 
 const MAX_LONG_REFERENCE_IMAGES = 8;
-const ACTIVE_STATUSES = new Set(["queued", "running", "paused", "assembling", "planning"]);
+const ACTIVE_STATUSES = new Set(["queued", "running", "paused", "assembling", "planning", "recovering"]);
 export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
 export const CHARACTER_LORA_MAX_NAME_LENGTH = 512;
 export const H3_REALISM_PEOPLE_PRESET = "h3-realism-people-t2v-i2v-r2v.safetensors";
@@ -322,7 +322,9 @@ export function buildLongSaveRequest(input) {
   return {
     title: input.title || input.plan.title || "Untitled long video",
     inputType: input.inputType,
-    inputText: scripts.length ? composeLongScriptText(scripts) : input.inputText,
+    inputText: multishot.longVideoEnabled && multishot.promptMode === "auto_extend"
+      ? String(input.inputText || "")
+      : scripts.length ? composeLongScriptText(scripts) : input.inputText,
     ...(scripts.length ? { scripts } : {}),
     inputAsset: input.inputType === "image" ? refs[0] : undefined,
     imagePurpose: input.inputType === "image" ? "first_frame" : undefined,

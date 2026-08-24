@@ -92,6 +92,8 @@ const STATUS_LABELS = Object.freeze({
   needs_attention: "需要處理",
   cancelling: "取消中",
   interrupted: "已中斷",
+  recovering: "恢復中",
+  recovery_needs_operator: "需要人工確認",
   draft: "草稿",
   captioning: "產生圖片描述中",
   caption_review: "等待確認",
@@ -103,7 +105,7 @@ const STATUS_LABELS = Object.freeze({
   blocked: "需要處理",
 });
 
-const EN_STATUS_LABELS = Object.freeze({ all: "All", queued: "Queued", running: "Running", processing: "Processing", complete: "Complete", completed: "Complete", partial: "Partially complete", failed: "Failed", error: "Failed", cancelled: "Cancelled", canceled: "Cancelled", paused: "Paused", checking: "Checking", ready: "Ready", unavailable: "Unavailable", needs_attention: "Needs attention", cancelling: "Cancelling", interrupted: "Interrupted", draft: "Draft", captioning: "Captioning", caption_review: "Caption review", caption_failed: "Caption failed", preflight_failed: "Preflight failed", training: "Training", installing: "Installing", warning: "Needs attention", blocked: "Needs attention" });
+const EN_STATUS_LABELS = Object.freeze({ all: "All", queued: "Queued", running: "Running", processing: "Processing", complete: "Complete", completed: "Complete", partial: "Partially complete", failed: "Failed", error: "Failed", cancelled: "Cancelled", canceled: "Cancelled", paused: "Paused", checking: "Checking", ready: "Ready", unavailable: "Unavailable", needs_attention: "Needs attention", cancelling: "Cancelling", interrupted: "Interrupted", recovering: "Recovering", recovery_needs_operator: "Operator review required", draft: "Draft", captioning: "Captioning", caption_review: "Caption review", caption_failed: "Caption failed", preflight_failed: "Preflight failed", training: "Training", installing: "Installing", warning: "Needs attention", blocked: "Needs attention" });
 
 const DOMAIN_RUNNING_LABELS = Object.freeze({
   video: "生成中",

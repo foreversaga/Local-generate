@@ -6,6 +6,8 @@ test("job adapter normalizes backend statuses into five UI states", () => {
   assert.equal(normalizeJobStatus("queued"), "queued");
   assert.equal(normalizeJobStatus("planning"), "running");
   assert.equal(normalizeJobStatus("paused"), "running");
+  assert.equal(normalizeJobStatus("recovering"), "running");
+  assert.equal(normalizeJobStatus("recovery_needs_operator"), "error");
   assert.equal(normalizeJobStatus("completed"), "complete");
   assert.equal(normalizeJobStatus("failed"), "error");
   assert.equal(normalizeJobStatus("cancelled"), "cancelled");
@@ -48,6 +50,17 @@ test("failed long jobs distinguish completed segment files from the unassembled 
   assert.match(job.error, /第 2\/6 段失敗/);
   assert.match(job.error, /約 10\.1 秒/);
   assert.match(job.error, /尚未合併成最終影片/);
+});
+
+test("long job adapter preserves detailed segment and native progress", () => {
+  const segments = [{ status: "rendering", progress: 42 }, { status: "pending" }];
+  const job = adaptJob({ id: "long-progress", status: "running", progress: 21, activeSegmentIndex: 0, segmentProgress: 42, segmentStage: "採樣生成影格", progressSource: "native", nativeCurrent: 6, nativeMaximum: 20, segments }, "long");
+  assert.equal(job.activeSegmentIndex, 0);
+  assert.equal(job.segmentProgress, 42);
+  assert.equal(job.segmentStage, "採樣生成影格");
+  assert.equal(job.nativeCurrent, 6);
+  assert.equal(job.nativeMaximum, 20);
+  assert.deepEqual(job.segments, segments);
 });
 
 test("job adapter names every image generation and upscale function distinctly", () => {

@@ -8,8 +8,11 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { handleLongVideoRoute } from "./server/long-video/api.mjs";
+import { createRecoveryCoordinator } from "./server/long-video/recovery-coordinator.mjs";
+import { acquireSequenceLease, releaseSequenceLease } from "./server/long-video/lease.mjs";
 import { planSequence as defaultPlanSequence } from "./server/long-video/planner.mjs";
 import { runSequence } from "./server/long-video/runner.mjs";
+import { evaluateMotionContextCapability, MOTION_CONTEXT_NODE_CONTRACT } from "./server/long-video/multishot.mjs";
 import { createContinuationPromptFinalizer, ensureRef2vaLatentContinuationPrompt } from "./server/long-video/continuation-finalizer.mjs";
 import { mergeLongVideoNegativePrompt } from "./server/long-video/quality-defaults.mjs";
 import {
@@ -3911,6 +3914,17 @@ async function startGeneration(payload, internal = {}) {
     referenceImage: String(payload.referenceImageName || "").trim(),
     referenceImages: referenceImageNames,
   };
+  const sequenceBinding = payload.sequenceBinding || internal.sequenceBinding || (
+    payload.sequenceId && payload.attemptId
+      ? {
+        sequenceId: payload.sequenceId,
+        segmentId: payload.segmentId,
+        segmentIndex: payload.segmentIndex,
+        attempt: payload.attempt,
+        attemptId: payload.attemptId,
+      }
+      : null
+  );
   const requestProvenance = {
     mode,
     initialDescription,
@@ -3964,6 +3978,7 @@ async function startGeneration(payload, internal = {}) {
     batchIndex,
     batchTotal,
     inputRefs,
+    ...(sequenceBinding ? { sequenceBinding } : {}),
     ...(ollamaPromptReceipt ? { ollamaPromptReceipt } : {}),
     ...(latentContinuation ? {
       latentContinuation: true,
@@ -4040,11 +4055,13 @@ async function startGeneration(payload, internal = {}) {
     provenance: {
       request: requestProvenance,
       attempt,
+      ...(sequenceBinding ? { binding: sequenceBinding } : {}),
       ...(internal.retryOf ? { retryOf: internal.retryOf, originalId: existingJob?.provenance?.originalId || internal.retryOf } : {}),
       ...(existingJob?.provenance?.reason ? { reason: existingJob.provenance.reason } : {}),
       submittedAt: existingJob?.provenance?.submittedAt || createdAt,
     },
   };
+  if (sequenceBinding) job.provenance.binding = { ...sequenceBinding, childJobId: job.id };
   try {
     await singleVideoJobStore.create(job, { id: job.id, createdAt });
   } catch (error) {
@@ -4342,6 +4359,64 @@ async function updateRecoveredSingleVideoJob(job, patch) {
   const runtimeJob = { ...updated, persistent: true };
   jobs.set(runtimeJob.id, runtimeJob);
   return runtimeJob;
+}
+
+async function cancelSingleVideoJob(id) {
+  await ensureSingleVideoStore();
+  const job = jobs.get(id) || await singleVideoJobStore.read(id);
+  const child = jobProcesses.get(id);
+  if (!job) throw makeRuntimeError("SINGLE_VIDEO_JOB_NOT_FOUND", "這個工作目前不在執行中。", 404);
+  if (job.status === "cancelled" && !job.promptId) return publicJob(job);
+  if (!["queued", "running", "cancelling", "interrupted", "cancelled"].includes(job.status)) {
+    throw makeRuntimeError("SINGLE_VIDEO_JOB_NOT_CANCELLABLE", "Only an active or queued generation can be cancelled.", 409);
+  }
+
+  const previousStatus = job.status;
+  const previousStage = job.stage;
+  job.cancelRequested = true;
+  job.status = "cancelling";
+  job.stage = "正在停止…";
+  touchJob(job);
+  jobs.set(id, job);
+  await persistSingleJob(job);
+  try {
+    const comfyCancellation = await cancelSingleVideoComfyPrompt(job);
+    child?.kill();
+    if (!child) {
+      if (comfyCancellation.attempted && !comfyCancellation.confirmed && !comfyCancellation.terminal) {
+        monitorRecoveredSingleVideoPrompt(job);
+        return publicJob(job);
+      }
+      const cancelled = await updateRecoveredSingleVideoJob(job, {
+        status: "cancelled",
+        stage: "cancelled",
+        error: "",
+        output: null,
+        exitCode: null,
+        elapsedMs: job.executionStartedAt ? elapsedMilliseconds(job) : 0,
+        recoverable: false,
+        finishedAt: now(),
+        recovery: {
+          reason: comfyCancellation.attempted
+            ? "recovered_comfy_prompt_cancelled"
+            : "recovered_queued_job_cancelled",
+          previousStatus,
+          recoveredBy: SINGLE_VIDEO_OWNER_ID,
+          recoveredAt: now(),
+        },
+      });
+      return publicJob(cancelled);
+    }
+    return publicJob(job);
+  } catch (error) {
+    job.cancelRequested = false;
+    job.status = previousStatus;
+    job.stage = previousStage;
+    job.error = error instanceof Error ? error.message : String(error);
+    touchJob(job);
+    await persistSingleJob(job).catch(() => {});
+    throw error;
+  }
 }
 
 function recoveredTimingPatch(snapshot) {
@@ -4968,7 +5043,15 @@ async function reportSequenceInputStage(payload, event) {
   }
 }
 
-async function waitForLegacyGeneration(id, timeoutMs = 30 * 60 * 1000, onProgress = null) {
+export function longVideoSegmentTimeoutSeconds(value = process.env.H3_LONG_VIDEO_SEGMENT_TIMEOUT_SECONDS) {
+  return Math.round(clampNumber(value, 6 * 60 * 60, 60 * 60, 24 * 60 * 60));
+}
+
+export function longVideoWaitTimeoutMs(timeoutSeconds) {
+  return longVideoSegmentTimeoutSeconds(timeoutSeconds) * 1000 + 2 * 60 * 1000;
+}
+
+async function waitForLegacyGeneration(id, timeoutMs, onProgress = null) {
   const started = Date.now();
   let lastProgressSignature = "";
   const publishProgress = async (job, force = false) => {
@@ -5025,6 +5108,7 @@ export function sequenceGenerationReferenceFields(payload = {}, stagedReferences
 }
 
 async function startSequenceGeneration(payload) {
+  const timeoutSeconds = longVideoSegmentTimeoutSeconds(payload.timeoutSeconds);
   const sequenceH3Selection = resolveH3LoraSelection(payload, payload.mode);
   const stagedInput = payload.mode === "i2v"
     ? await stageSequenceInputImage(payload)
@@ -5067,6 +5151,18 @@ async function startSequenceGeneration(payload) {
     const sequenceOutputPath = sequenceMediaName(payload.outputPath, OUTPUT_ROOT);
     const legacy = await startGeneration({
       mode: payload.mode,
+      sequenceId: payload.sequenceId,
+      segmentId: payload.segmentId,
+      segmentIndex: payload.segmentIndex,
+      attempt: payload.attempt,
+      attemptId: payload.attemptId,
+      sequenceBinding: {
+        sequenceId: payload.sequenceId,
+        segmentId: payload.segmentId,
+        segmentIndex: payload.segmentIndex,
+        attempt: payload.attempt,
+        attemptId: payload.attemptId,
+      },
       prompt: payload.prompt,
       negativePrompt: payload.negativePrompt,
       inputImageName: stagedInput?.name || "",
@@ -5079,6 +5175,7 @@ async function startSequenceGeneration(payload) {
       height: payload.height,
       steps: payload.steps,
       seed: payload.seed,
+      timeoutSeconds,
       modelProfile: payload.modelProfile || "nvfp4_blackwell",
       ...(sequenceH3Selection.selected ? {
         characterLoraName: sequenceH3Selection.name,
@@ -5105,6 +5202,13 @@ async function startSequenceGeneration(payload) {
       continuationFramePath: stagedContinuation?.path,
       referenceImagePaths: stagedReferences.length ? stagedReferences.map((reference) => reference.path) : undefined,
       workloadType: "long-video-segment",
+      sequenceBinding: {
+        sequenceId: payload.sequenceId,
+        segmentId: payload.segmentId,
+        segmentIndex: payload.segmentIndex,
+        attempt: payload.attempt,
+        attemptId: payload.attemptId,
+      },
       ollamaPromptReceipt: payload.ollamaPromptReceipt,
       ollamaPromptBarrier: payload.ollamaPromptBarrier,
       ...(payload.latentContinuation ? {
@@ -5116,7 +5220,8 @@ async function startSequenceGeneration(payload) {
         latentDeliveryPolicy: payload.latentDeliveryPolicy,
       } : {}),
     });
-    return await waitForLegacyGeneration(legacy.id, 30 * 60 * 1000, payload.onProgress);
+    await payload.onChildSubmitted?.({ id: legacy.id, job: legacy });
+    return await waitForLegacyGeneration(legacy.id, longVideoWaitTimeoutMs(legacy.timeoutSeconds || timeoutSeconds), payload.onProgress);
   } finally {
     if (stagedInput) {
       await reportSequenceInputStage(payload, {
@@ -5544,6 +5649,131 @@ let seedvr2Controller = createSeedVR2ControllerForRuntime();
 let img2imgController = createImg2ImgControllerForRuntime();
 let text2imgController = createText2ImgControllerForRuntime();
 
+function longVideoChildOutputPath(child) {
+  const relative = String(child?.outputRelativeName || child?.outputName || child?.output?.name || "").replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!relative || relative.split("/").some((part) => !part || part === "." || part === "..")) return null;
+  const candidate = path.resolve(OUTPUT_ROOT, relative);
+  const root = path.resolve(OUTPUT_ROOT);
+  return candidate === root || candidate.startsWith(root + path.sep) ? candidate : null;
+}
+
+async function inspectLongVideoChild(binding) {
+  await ensureSingleVideoStore();
+  if (binding?.childJobId) return jobs.get(binding.childJobId) || await singleVideoJobStore.read(binding.childJobId);
+  if (!binding?.sequenceId || !binding?.attemptId) return null;
+  const candidates = (await singleVideoJobStore.list()).filter((job) => {
+    const source = job?.provenance?.binding || job?.provenance?.request?.sequenceBinding;
+    return String(source?.sequenceId || "") === String(binding.sequenceId)
+      && String(source?.attemptId || "") === String(binding.attemptId)
+      && (!binding.segmentId || String(source?.segmentId || "") === String(binding.segmentId));
+  });
+  if (candidates.length > 1) {
+    throw makeRuntimeError("CHILD_BINDING_AMBIGUOUS", "More than one child generation matches this sequence attempt.", 409, {
+      sequenceId: binding.sequenceId,
+      attemptId: binding.attemptId,
+      childJobIds: candidates.map((job) => job.id),
+    });
+  }
+  return candidates[0] || null;
+}
+
+async function verifyLongVideoChildArtifact(binding, sequence, child = null) {
+  const current = child || await inspectLongVideoChild(binding);
+  const outputPath = longVideoChildOutputPath(current);
+  const stat = outputPath ? await fs.stat(outputPath).catch(() => null) : null;
+  if (!stat?.isFile()) return { exists: false, path: outputPath, asset: current?.output || null };
+  return { exists: true, path: outputPath, asset: current?.output || { root: "output", name: path.relative(OUTPUT_ROOT, outputPath).replaceAll("\\", "/"), kind: "video" }, sequenceId: sequence?.id };
+}
+
+async function recoverLongVideoChild({ childJobId, onProgress }) {
+  if (!childJobId) throw makeRuntimeError("CHILD_BINDING_MISSING", "Recovered sequence has no child job id.", 409);
+  await ensureSingleVideoStore();
+  let child = await inspectLongVideoChild({ childJobId });
+  if (!child) throw makeRuntimeError("CHILD_JOB_MISSING", "Recovered child generation job was not found.", 409, { childJobId });
+  if (["running", "recovering", "queued", "pending"].includes(child.status)) {
+    if (child.promptId) monitorRecoveredSingleVideoPrompt(child);
+    const timeoutMs = Math.max(60_000, Math.min(86_400_000, Number(child.timeoutSeconds || 3600) * 1000 + 120_000));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      child = await inspectLongVideoChild({ childJobId });
+      await onProgress?.(child);
+      if (child?.status === "completed") break;
+      if (["failed", "cancelled", "interrupted"].includes(child?.status)) {
+        const error = new Error(child.error || `Recovered child generation ended with ${child.status}.`);
+        error.code = child.status === "cancelled" ? "GENERATION_CANCELLED" : "GENERATION_FAILED";
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  const artifact = await verifyLongVideoChildArtifact({ childJobId }, null, child);
+  if (child?.status !== "completed" || !artifact.exists) {
+    throw makeRuntimeError("RECOVERED_CHILD_ARTIFACT_MISSING", "Recovered child generation did not produce a usable video artifact.", 409, { childJobId });
+  }
+  return { id: childJobId, outputPath: artifact.path, job: child };
+}
+
+async function longVideoComfyAvailable() {
+  try {
+    const response = await fetch(`${String(runtimeContext.comfyUrl).replace(/\/$/, "")}/system_stats`, { signal: AbortSignal.timeout(5000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function longVideoMotionContextCapability() {
+  try {
+    const response = await fetch(`${String(runtimeContext.comfyUrl).replace(/\/$/, "")}/object_info`, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return evaluateMotionContextCapability(await response.json());
+  } catch (error) {
+    return {
+      available: false,
+      missingNodes: Object.keys(MOTION_CONTEXT_NODE_CONTRACT),
+      missingInputs: [],
+      error: error?.message || String(error),
+    };
+  }
+}
+
+const LONG_VIDEO_OWNER_ID = `h3-studio-long-video-${process.pid}-${randomUUID()}`;
+const recoveredSequenceRunners = new Map();
+
+async function resumeRecoveredSequence(job) {
+  if (recoveredSequenceRunners.has(job.id)) return false;
+  const lease = await acquireSequenceLease(job.id, { ownerId: LONG_VIDEO_OWNER_ID });
+  const runnerPromise = Promise.resolve().then(() => runSequence(job, {
+    lease,
+    ownerId: LONG_VIDEO_OWNER_ID,
+    enforceLease: true,
+    finalizePrompt: continuationPromptFinalizer,
+    generate: startSequenceGeneration,
+    motionContextCapability: longVideoMotionContextCapability,
+    recoverChild: recoverLongVideoChild,
+  })).catch((error) => {
+    console.error("[long-video] recovered runner failure", job.id, error?.message || error);
+  }).finally(() => {
+    recoveredSequenceRunners.delete(job.id);
+  });
+  recoveredSequenceRunners.set(job.id, runnerPromise);
+  return true;
+}
+
+const longVideoRecoveryCoordinator = createRecoveryCoordinator({
+  ownerId: LONG_VIDEO_OWNER_ID,
+  waitForSingleRecovery: () => singleVideoStoreReady,
+  inspectChild: inspectLongVideoChild,
+  verifyArtifact: verifyLongVideoChildArtifact,
+  comfyAvailable: longVideoComfyAvailable,
+  claimLease: (sequenceId) => acquireSequenceLease(sequenceId, { ownerId: LONG_VIDEO_OWNER_ID }),
+  releaseLease: releaseSequenceLease,
+  resumeRecovered: resumeRecoveredSequence,
+});
+void longVideoRecoveryCoordinator.start().catch((error) => {
+  console.error("[long-video] startup recovery failed", error?.message || error);
+});
+
 const domainRouter = createBridgeDomainRouter({
   getSeedVR2Controller: () => seedvr2Controller,
   getImg2ImgController: () => img2imgController,
@@ -5553,6 +5783,11 @@ const domainRouter = createBridgeDomainRouter({
   planSequence: planSequenceWithPromptProvider,
   runSequence,
   startSequenceGeneration,
+  cancelSingleVideoJob,
+  recoveryCoordinator: longVideoRecoveryCoordinator,
+  ownerId: LONG_VIDEO_OWNER_ID,
+  reconcileSequence: (job, options) => longVideoRecoveryCoordinator.reconcile(job, options),
+  recoverChild: recoverLongVideoChild,
   checkMediaTools,
   outputRoot: OUTPUT_ROOT,
   ollamaCoordinator,
@@ -5800,69 +6035,11 @@ async function route(req, res) {
   }
   if (req.method === "POST" && pathname.startsWith("/api/jobs/") && pathname.endsWith("/cancel")) {
     const id = pathname.split("/")[3];
-    await ensureSingleVideoStore();
-    const job = jobs.get(id) || await singleVideoJobStore.read(id);
-    const child = jobProcesses.get(id);
-    if (!job) {
-      sendError(res, 404, "這個工作目前不在執行中。");
-      return;
-    }
-    if (job.status === "cancelled" && !job.promptId) {
-      sendJson(res, 200, { job: publicJob(job) });
-      return;
-    }
-    if (!["queued", "running", "cancelling", "interrupted", "cancelled"].includes(job.status)) {
-      sendError(res, 409, "Only an active or queued generation can be cancelled.", "SINGLE_VIDEO_JOB_NOT_CANCELLABLE");
-      return;
-    }
-    const previousStatus = job.status;
-    const previousStage = job.stage;
-    job.cancelRequested = true;
-    job.status = "cancelling";
-    job.stage = "正在停止…";
-    touchJob(job);
-    jobs.set(id, job);
-    await persistSingleJob(job);
     try {
-      const comfyCancellation = await cancelSingleVideoComfyPrompt(job);
-      child?.kill();
-      if (!child) {
-        if (comfyCancellation.attempted && !comfyCancellation.confirmed && !comfyCancellation.terminal) {
-          monitorRecoveredSingleVideoPrompt(job);
-          sendJson(res, 200, { job: publicJob(job) });
-          return;
-        }
-        const cancelled = await updateRecoveredSingleVideoJob(job, {
-          status: "cancelled",
-          stage: "cancelled",
-          error: "",
-          output: null,
-          exitCode: null,
-          elapsedMs: job.executionStartedAt ? elapsedMilliseconds(job) : 0,
-          recoverable: false,
-          finishedAt: now(),
-          recovery: {
-            reason: comfyCancellation.attempted
-              ? "recovered_comfy_prompt_cancelled"
-              : "recovered_queued_job_cancelled",
-            previousStatus,
-            recoveredBy: SINGLE_VIDEO_OWNER_ID,
-            recoveredAt: now(),
-          },
-        });
-        sendJson(res, 200, { job: publicJob(cancelled) });
-        return;
-      }
-      sendJson(res, 200, { job: publicJob(job) });
+      sendJson(res, 200, { job: await cancelSingleVideoJob(id) });
     } catch (error) {
-      job.cancelRequested = false;
-      job.status = previousStatus;
-      job.stage = previousStage;
-      job.error = error instanceof Error ? error.message : String(error);
-      touchJob(job);
-      await persistSingleJob(job).catch(() => {});
       const status = Number.isInteger(error?.status) ? error.status : 502;
-      sendError(res, status, job.error, error?.code || "SINGLE_VIDEO_CANCEL_FAILED");
+      sendError(res, status, error instanceof Error ? error.message : String(error), error?.code || "SINGLE_VIDEO_CANCEL_FAILED");
     }
     return;
   }

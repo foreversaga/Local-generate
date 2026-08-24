@@ -1,8 +1,9 @@
+import "./test-isolation.mjs";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { codexLongPlanModeInstruction, codexLongPlanReferences, normalizeReferenceImageNames, normalizeReferenceImageRoots, referenceImageArgs, sequenceGenerationReferenceFields } from "../local-bridge.mjs";
+import { codexLongPlanModeInstruction, codexLongPlanReferences, longVideoSegmentTimeoutSeconds, longVideoWaitTimeoutMs, normalizeReferenceImageNames, normalizeReferenceImageRoots, referenceImageArgs, sequenceGenerationReferenceFields } from "../local-bridge.mjs";
 import { buildRef2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { planSequence } from "../server/long-video/planner.mjs";
 import { appendMultiReferenceTail, runSequence } from "../server/long-video/runner.mjs";
@@ -55,6 +56,13 @@ test("long-video bridge only forwards plural references to Ref2V generation", ()
     ),
     { referenceImageNames: ["staged-first.png", "staged-second.png"] },
   );
+});
+
+test("long-video generation timeout outlasts the inner segment timeout", () => {
+  assert.equal(longVideoSegmentTimeoutSeconds(undefined), 21_600);
+  assert.equal(longVideoSegmentTimeoutSeconds(120), 3_600);
+  assert.equal(longVideoSegmentTimeoutSeconds(200_000), 86_400);
+  assert.equal(longVideoWaitTimeoutMs(21_600), 21_720_000);
 });
 
 test("multi_reference schema dedupes ordered image refs and enforces limits", () => {

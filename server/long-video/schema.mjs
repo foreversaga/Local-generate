@@ -10,6 +10,8 @@ export const SEQUENCE_STATES = [
   "running",
   "paused",
   "assembling",
+  "recovering",
+  "recovery_needs_operator",
   "completed",
   "failed",
   "cancelled",
@@ -22,7 +24,9 @@ export const SEGMENT_STATES = [
   "ready",
   "queued",
   "rendering",
+  "generated",
   "normalizing",
+  "normalized",
   "extracting_context",
   "extracting_tail",
   "completed",
@@ -44,6 +48,19 @@ export const H3_REALISM_PEOPLE_TRIGGER = "r34l1sm";
 export const H3_REALISM_PEOPLE_DEFAULT_STRENGTH = 0.8;
 export const H3_REALISM_PEOPLE_LORA_NAME = H3_REALISM_PEOPLE_PRESET;
 export const H3_REALISM_PEOPLE_LORA_TRIGGER = H3_REALISM_PEOPLE_TRIGGER;
+
+export const SEQUENCE_CHECKPOINTS = Object.freeze([
+  "pending",
+  "submission_prepared",
+  "child_queued",
+  "child_running",
+  "raw_verified",
+  "normalized_verified",
+  "tail_verified",
+  "segment_completed",
+  "assembly_started",
+  "assembly_verified",
+]);
 
 function normalizeCharacterLoraName(value) {
   if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return undefined;
@@ -252,6 +269,10 @@ export function validateSegment(value, index = 0) {
     mode: value.mode === "i2v" ? "i2v" : value.mode === "ref2v" ? "ref2v" : "t2v",
     status: SEGMENT_STATES.includes(value.status) ? value.status : "pending",
     attempt: Math.max(0, Math.floor(finite(value.attempt, 0))),
+    ...(value.attemptId ? { attemptId: text(value.attemptId) } : {}),
+    ...(value.childJobId ? { childJobId: text(value.childJobId) } : {}),
+    ...(value.childJobProvenance && typeof value.childJobProvenance === "object" ? { childJobProvenance: { ...value.childJobProvenance } } : {}),
+    checkpoint: SEQUENCE_CHECKPOINTS.includes(value.checkpoint) ? value.checkpoint : "pending",
     ...(value.firstFrame ? { firstFrame: value.firstFrame } : {}),
     ...(value.tailFrame ? { tailFrame: value.tailFrame } : {}),
     ...(value.error ? { error: String(value.error) } : {}),
@@ -415,6 +436,9 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     index,
     status: "pending",
     prompt: segment.prompt || "",
+    checkpoint: "pending",
+    attemptId: null,
+    childJobId: null,
   }));
   const rawSegmentDurationHint = finite(payload.planningSettings?.segmentDurationHint ?? payload.planMeta?.segmentDurationHint, 5);
   const normalizedSegmentDurationHint = Number(Math.min(60, Math.max(0.5, rawSegmentDurationHint)).toFixed(3));
@@ -425,6 +449,10 @@ export function createSequenceRecord(input, { id = newId("seq"), now = new Date(
     id,
     title: payload.title,
     status: "ready",
+    controlIntent: "run",
+    executionPhase: "ready",
+    activeAttempt: null,
+    recovery: null,
     revision: 1,
     createdAt: now,
     updatedAt: now,
