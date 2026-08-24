@@ -61,6 +61,15 @@ def _node_id(graph: dict[str, dict], class_type: str) -> str:
     return matches[0]
 
 
+def _latent_checkpoint_directory(prefix: str) -> str:
+    """Return the output-relative folder consumed by the latent load node."""
+    normalized = str(prefix).strip().rstrip("/\\").replace("\\", "/")
+    directory, separator, filename = normalized.rpartition("/")
+    if not separator or not directory or not filename:
+        raise ValueError("latent checkpoint prefix must include a folder and filename prefix")
+    return directory
+
+
 def _h3_conditioning_node_id(graph: dict[str, dict]) -> str:
     matches = [node_id for node_id, node in graph.items()
                if node.get("class_type") in {"MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"}]
@@ -129,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             graph[load_id] = {
                 "class_type": "MiniMaxH3MotionContextLoadLatent",
                 "inputs": {
-                    "latent_path": options.latent_checkpoint_prefix,
+                    "latent_path": _latent_checkpoint_directory(options.latent_checkpoint_prefix),
                     "clip_index": options.latent_previous_clip_index,
                 },
             }

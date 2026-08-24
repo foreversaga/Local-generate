@@ -8,7 +8,7 @@ import { parseTimeline } from "../server/long-video/timeline-parser.mjs";
 import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/long-video/prompt-builder.mjs";
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
-import { extractTailAvContext, extractTailFrame } from "../server/long-video/media.mjs";
+import { extractTailAvContext, extractTailFrame, validateNormalizedProbe } from "../server/long-video/media.mjs";
 import { latentRenderedDuration, latentRenderedFrameCount, runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
@@ -188,7 +188,17 @@ test("tail extraction selects the PNG encoder on FFmpeg 9", async () => {
     },
   });
   assert.equal(receivedArgs.includes("format=png"), false);
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf("-sseof"), receivedArgs.indexOf("-sseof") + 2), ["-sseof", "-1"]);
+  assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf("-vf"), receivedArgs.indexOf("-vf") + 2), ["-vf", "reverse"]);
   assert.deepEqual(receivedArgs.slice(receivedArgs.indexOf("-c:v"), receivedArgs.indexOf("-c:v") + 4), ["-c:v", "png", "-pix_fmt", "rgb24"]);
+});
+
+test("normalized validation uses encoded cadence for short concat-copy output", () => {
+  assert.equal(validateNormalizedProbe({
+    video: { codec_name: "h264", pix_fmt: "yuv420p", width: 384, height: 544, r_frame_rate: "24/1", avg_frame_rate: "165888/7039" },
+    audio: { codec_name: "aac", sample_rate: "48000", channels: 2 },
+    format: { duration: "2.354" },
+  }, { duration: 2.333, width: 384, height: 544, fps: 24 }), true);
 });
 
 test("runner maps native segment progress into overall long-video progress", async () => {
@@ -866,6 +876,7 @@ test("latent continuation sends checkpoint metadata and no MP4 context", async (
   const output = path.join(root, "output", "latent-context");
   const calls = [];
   const normalizeDurations = [];
+  let assemblyDuration;
   const job = {
     id: "latent-context-job",
     inputType: "image",
@@ -892,7 +903,7 @@ test("latent continuation sends checkpoint metadata and no MP4 context", async (
       normalize: async ({ outputPath, duration }) => { normalizeDurations.push(duration); return { outputPath }; },
       extractTail: async ({ outputPath }) => ({ outputPath }),
       extractContext: async () => { throw new Error("latent mode must not extract MP4 context"); },
-      assemble: async () => ({ outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }),
+      assemble: async ({ duration }) => { assemblyDuration = duration; return { outputPath: path.join(output, "final-r001.mp4"), revision: 1, probe: {} }; },
       updateJob: async (target, patch) => Object.assign(target, patch),
       updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
       writeManifest: async () => {},
@@ -910,6 +921,7 @@ test("latent continuation sends checkpoint metadata and no MP4 context", async (
     assert.deepEqual(normalizeDurations, [124 / 24, 119 / 24]);
     assert.equal(job.segments[0].renderedDuration, 124 / 24);
     assert.equal(job.segments[1].renderedDuration, 119 / 24);
+    assert.equal(assemblyDuration, Number(((124 + 119) / 24).toFixed(6)));
     assert.match(calls[1].prompt, /\[video continuation \+ reference generation\]/i);
     assert.doesNotMatch(calls[1].prompt, /<Video\s+1>/i);
   } finally {

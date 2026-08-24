@@ -20,7 +20,10 @@ function tail(value, limit = 4000) {
 }
 
 function frameRate(stream) {
-  const raw = String(stream?.avg_frame_rate || stream?.r_frame_rate || "");
+  // r_frame_rate describes the encoded cadence. avg_frame_rate can drift on
+  // concat-copy output because MP4 start timestamps and padded audio extend
+  // the measured duration, especially for sub-second test segments.
+  const raw = String(stream?.r_frame_rate || stream?.avg_frame_rate || "");
   const [numerator, denominator] = raw.split("/").map(Number);
   return Number.isFinite(numerator) && Number.isFinite(denominator) && denominator ? numerator / denominator : Number.NaN;
 }
@@ -139,7 +142,11 @@ export async function extractTailFrame({ inputPath, outputPath, tools = {}, run 
   // `format=png` is not a pixel format and is rejected by FFmpeg 9.  Select
   // the PNG encoder explicitly and let swscale convert the decoded frame to
   // RGB24 before writing the single image.
-  const args = ["-y", "-sseof", "-0.05", "-i", inputPath, "-map", "0:v:0", "-frames:v", "1", "-c:v", "png", "-pix_fmt", "rgb24", outputPath];
+  // Seeking 50 ms from the container EOF can land after the final video
+  // frame when the audio stream is slightly longer. Decode at most the last
+  // second, reverse that bounded video window, and emit its first frame so
+  // short clips and audio-padded clips still produce the actual tail frame.
+  const args = ["-y", "-sseof", "-1", "-i", inputPath, "-map", "0:v:0", "-vf", "reverse", "-frames:v", "1", "-c:v", "png", "-pix_fmt", "rgb24", outputPath];
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await logger?.({ event: "media.tail.start", executable: executables.ffmpeg, args, inputPath, outputPath });
   let response;

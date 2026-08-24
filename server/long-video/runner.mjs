@@ -662,8 +662,8 @@ export async function runSequence(sequenceOrId, deps = {}) {
     await setJob(job, { status: "assembling", progress: 90, stage: "assembly.start", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "合併所有片段…" }, deps);
     const assemblyRevision = Number(job.assembly?.revision || 0) + 1;
     const assemblyDirectory = deps.assemblyDir || (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || "")) ? sequenceAssemblyDir(id) : path.join(folder, "assembly"));
-    const requestedMasterDuration = job.segments.reduce((sum, segment) => sum + Number(segment.duration || (segment.end - segment.start)), 0);
-    const assembledDuration = Number(requestedMasterDuration.toFixed(6));
+    const renderedMasterDuration = job.segments.reduce((sum, segment) => sum + Number(segment.renderedDuration ?? segment.duration ?? (segment.end - segment.start)), 0);
+    const assembledDuration = Number(renderedMasterDuration.toFixed(6));
     const assembly = await assemble({ segmentPaths: normalizedPaths, outputFolder: folder, assemblyDir: assemblyDirectory, revision: assemblyRevision, duration: assembledDuration, width: job.width, height: job.height, masterNormalize: job.masterNormalize || "off", allowSingleSegment: job.longVideoEnabled === true, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, event, deps) });
     const finalAsset = outputAssetRef(assembly.outputPath);
     if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt: new Date().toISOString() });
