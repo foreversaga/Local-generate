@@ -23,13 +23,6 @@ type SizePreset = {
 };
 
 const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
-  "flux2-dev": [
-    { id: "square", width: 1024, height: 1024, label: "text2img.size.square" },
-    { id: "portrait", width: 768, height: 1024, label: "text2img.size.portrait" },
-    { id: "portraitWide", width: 896, height: 1152, label: "text2img.size.portraitWide" },
-    { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
-    { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
-  ],
   "flux2-klein-9b": [
     { id: "square", width: 1024, height: 1024, label: "text2img.size.square" },
     { id: "portrait", width: 768, height: 1024, label: "text2img.size.portrait" },
@@ -39,15 +32,15 @@ const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
   ],
 };
 
-const DEFAULT_STEPS = 20;
-const DEFAULT_GUIDANCE = 4;
+const DEFAULT_STEPS = 4;
+const DEFAULT_GUIDANCE = 1;
 const MIN_GUIDANCE = 1;
 const MAX_GUIDANCE = 8;
 const DEFAULT_SEED = 12345;
 const DEFAULT_WIDTH = 1024;
 const DEFAULT_HEIGHT = 1024;
 const CUSTOM_PRESET_ID = "custom";
-const DEFAULT_MODEL_ID = "flux2-dev";
+const DEFAULT_MODEL_ID = "flux2-klein-9b";
 const DEFAULT_ENCODER_ID = "official";
 const KLEIN_LORA_OPTIONS = [
   { id: "consistency-v2", nameKey: "text2img.lora.consistency.name", useKey: "text2img.lora.consistency.use", defaultStrength: 0.8 },
@@ -57,20 +50,6 @@ const KLEIN_LORA_OPTIONS = [
 const MODEL_OPTIONS = [
   {
     id: DEFAULT_MODEL_ID,
-    mark: "DEV",
-    nameKey: "text2img.model.dev.name",
-    noteKey: "text2img.model.dev.note",
-    defaultSteps: 20,
-    maxSteps: 50,
-    defaultGuidance: 4,
-    minDimension: 512,
-    maxDimension: 1536,
-    sizeHelpKey: "text2img.size.help.flux",
-    stepsHelpKey: "text2img.steps.help.flux",
-    negativeNoteKey: "text2img.negativeNote.flux",
-  },
-  {
-    id: "flux2-klein-9b",
     mark: "K9",
     nameKey: "text2img.model.klein9b.name",
     noteKey: "text2img.model.klein9b.note",

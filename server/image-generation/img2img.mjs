@@ -71,18 +71,19 @@ const IMG2IMG_PROFILE_DEFINITIONS = {
     requiredNodes: IMG2IMG_REQUIRED_NODES,
     defaults: { steps: 20, cfg: 7, denoise: 0.65 },
   },
-  "flux2_dev_fp8mixed.safetensors": {
-    model: "flux2_dev_fp8mixed.safetensors",
-    workflow: "flux2-dev-edit",
+  "flux-2-klein-9b-fp8.safetensors": {
+    model: "flux-2-klein-9b-fp8.safetensors",
+    workflow: "flux2-edit",
     loader: "UNETLoader",
+    loraLoader: "LoraLoaderModelOnly",
     localOnly: true,
     requiredNodes: IMG2IMG_FLUX2_REQUIRED_NODES,
     companions: {
-      textEncoder: "mistral_3_small_flux2_bf16.safetensors",
+      textEncoder: "qwen_3_8b_fp8mixed.safetensors",
       vae: "full_encoder_small_decoder.safetensors",
       clipType: "flux2",
     },
-    defaults: { steps: 20, cfg: 4, denoise: 1 },
+    defaults: { steps: 4, cfg: 1, denoise: 1 },
     sampling: { samplerName: "euler" },
   },
 };
@@ -783,7 +784,7 @@ export function buildImg2ImgPrompt({
   const cleanNegative = String(negativePrompt || "").trim();
   const cleanPrefix = String(filenamePrefix || "img2img/h3_img2img");
 
-  if (loraName && profile.workflow !== "checkpoint") {
+  if (loraName && !profile.loraLoader) {
     throw makeError(
       "Character LoRAs are not supported by the " + profile.workflow + " image workflow.",
       400,
@@ -880,9 +881,9 @@ export function buildImg2ImgPrompt({
     return graph;
   }
 
-  if (profile.workflow === "flux2-dev-edit") {
+  if (profile.workflow === "flux2-edit") {
     const sampling = profile.sampling || {};
-    return {
+    const graph = {
       "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
       "2": { class_type: "CLIPLoader", inputs: { clip_name: profile.companions.textEncoder, type: profile.companions.clipType, device: "default" } },
       "3": { class_type: "VAELoader", inputs: { vae_name: profile.companions.vae } },
@@ -901,6 +902,18 @@ export function buildImg2ImgPrompt({
       "16": { class_type: "VAEDecode", inputs: { samples: link(15), vae: link(3) } },
       "17": { class_type: "SaveImage", inputs: { images: link(16), filename_prefix: cleanPrefix } },
     };
+    if (loraName) {
+      graph["18"] = {
+        class_type: "LoraLoaderModelOnly",
+        inputs: {
+          model: link(1),
+          lora_name: loraLoaderName,
+          strength_model: loraStrength,
+        },
+      };
+      graph["10"].inputs.model = link(18);
+    }
+    return graph;
   }
 
   throw makeError(`Image model ${String(model)} has no workflow implementation.`, 500, "MODEL_WORKFLOW_UNSUPPORTED");
@@ -987,7 +1000,7 @@ function checkpointModelAvailability(objectInfo, profile) {
 
 function modelCompanionAvailability(objectInfo, profile) {
   if (profile.workflow === "checkpoint") return { model: checkpointModelAvailability(objectInfo, profile) };
-  if (profile.workflow === "flux2-dev-edit") {
+  if (profile.workflow === "flux2-edit") {
     return {
       model: comboValues(objectInfo?.UNETLoader, "unet_name").includes(profile.model),
       textEncoder: comboValues(objectInfo?.CLIPLoader, "clip_name").includes(profile.companions.textEncoder),

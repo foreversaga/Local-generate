@@ -142,7 +142,6 @@ export const SEEDVR2_SCHEDULERS = Object.freeze([
   "kl_optimal",
 ]);
 
-export const H3_LATENT_UPSCALER_NAME = "h3_clean_latent_upscaler_v1_mamad8.safetensors";
 export const H3_LATENT_VAE_NAME = "minimax_h3_video_vae_fp16.safetensors";
 export const H3_LATENT_AUDIO_VAE_NAME = "minimax_h3_audio_vae_fp32.safetensors";
 export const H3_LATENT_ENCODER_NAME = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
@@ -1433,12 +1432,6 @@ function normalizeProfile(value) {
   if ([SEEDVR2_FP16_PROFILE, SEEDVR2_FP16_PROFILE_LABEL].includes(profile)) {
     return SEEDVR2_FP16_PROFILE;
   }
-  if ([H3_LATENT_PROFILE, H3_LATENT_PROFILE_LABEL].includes(profile)) {
-    return H3_LATENT_PROFILE;
-  }
-  if ([MMH3_ULTIMATE_PROFILE, MMH3_ULTIMATE_PROFILE_LABEL].includes(profile)) {
-    return MMH3_ULTIMATE_PROFILE;
-  }
   throw makeError("Upscale profile is invalid.", 400, "PROFILE_INVALID");
 }
 
@@ -1503,7 +1496,6 @@ export function createSeedVR2Controller({
       [SEEDVR2_FP16_PROFILE]: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME),
     },
     vae: path.join(comfyRootPath, "models", "vae", SEEDVR2_VAE_NAME),
-    h3Upscaler: path.join(comfyRootPath, "models", "h3_latent_upscalers", H3_LATENT_UPSCALER_NAME),
     h3Diffusion: Object.fromEntries(H3_LATENT_DIFFUSION_NAMES.map((name) => [
       name,
       path.join(comfyRootPath, "models", "diffusion_models", name),

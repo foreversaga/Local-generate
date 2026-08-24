@@ -184,15 +184,6 @@
       "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
     },
     {
-      "id": "h3_latent_upscaler_2x",
-      "repository": "Mamad8/H3-Latent-Upscaler-2x",
-      "revision": "d2245ba2ccd4e209007a9f80f2bfd6405861a95f",
-      "remotePath": "h3_clean_latent_upscaler_v1_mamad8.safetensors",
-      "targetPath": "/workspace/ComfyUI/models/h3_latent_upscalers/h3_clean_latent_upscaler_v1_mamad8.safetensors",
-      "size": 59022848,
-      "sha256": "28005ed952a879f8e1d59903bf9c4440fa589d7a39280f960bb3dfb430219c71"
-    },
-    {
       "id": "h3_realism_people_lora",
       "repository": "fal/MiniMax-H3-Realism-People-LoRA",
       "revision": "039cc8579d7aa357a882d7f4111b25da4f72dccc",

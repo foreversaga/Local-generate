@@ -112,10 +112,9 @@ done
 | 組合 | bytes | 約略十進位 GB | 備註 |
 | --- | ---: | ---: | --- |
 | H3 五檔 | 46,557,479,455 | 46.56 | bootstrap 核心 |
-| SeedVR2 兩檔 | 5,261,019,606 | 5.26 | bootstrap 核心升頻 |
-| H3 Latent Upscaler 2x | 59,022,848 | 0.06 | bootstrap 核心升頻 |
-| H3＋SeedVR2＋Latent Upscaler | 51,877,521,909 | 51.88 | 尚未含 Ollama、media、cache、staging |
-| 再加選配 SDXL Turbo | 58,815,603,814 | 58.82 | 僅 remote img2img 需要 |
+| SeedVR2 三檔 | 21,741,603,566 | 21.74 | FP16、NVFP4 與共用 VAE |
+| H3＋SeedVR2 | 68,299,083,021 | 68.30 | 尚未含 Ollama、media、cache、staging |
+| 再加選配 SDXL Turbo | 75,237,164,926 | 75.24 | 僅 remote img2img 需要 |
 
 `150 GB+` 是包含 Ollama 模型、輸入／輸出影片、暫存下載與更新餘量的操作建議，不是模型檔的硬性需求；依實際保留 media 與 staging 的政策加大。
 
@@ -145,7 +144,7 @@ done
 
 ## 6. 精確模型 inventory
 
-表內 bytes 與 SHA-256 是安裝驗收值；下載一律使用固定 revision。完整 `runtime-manifest.json` 現在有 20 檔唯一模型／權重：H3 七檔、SeedVR2 兩檔、Wan2.2 Animate 六檔、SAM2 一檔、Wan Animate DWPose 兩檔、SCAIL-2 一檔與 SAM3.1 一檔。Wan UMT5 與 Wan VAE 由 Wan2.2／SCAIL-2 共用同一組已驗證檔案。若把 remote img2img 的選配 SDXL Turbo 算入完整 safetensors inventory，則再加 1 檔；SDXL 明確不屬 `h3-bootstrap.sh` 自動安裝。
+表內 bytes 與 SHA-256 是安裝驗收值；下載一律使用固定 revision。完整 `runtime-manifest.json` 現在有 20 檔唯一模型／權重：H3 六檔、SeedVR2 三檔、Wan2.2 Animate 六檔、SAM2 一檔、Wan Animate DWPose 兩檔、SCAIL-2 一檔與 SAM3.1 一檔。Wan UMT5 與 Wan VAE 由 Wan2.2／SCAIL-2 共用同一組已驗證檔案。若把 remote img2img 的選配 SDXL Turbo 算入完整 safetensors inventory，則再加 1 檔；SDXL 明確不屬 `h3-bootstrap.sh` 自動安裝。
 
 ### 6.1 H3 與 SeedVR2（bootstrap 核心）
 
@@ -156,36 +155,12 @@ done
 | H3 Qwen text encoder | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors) | `/workspace/ComfyUI/models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | 15687142551 | `35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6` |
 | H3 video VAE | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`vae/minimax_h3_video_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/vae/minimax_h3_video_vae_fp16.safetensors) | `/workspace/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors` | 5207808496 | `7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522` |
 | H3 audio VAE | `Comfy-Org/MiniMax-H3` @ `eb8a16107c595128b3a578f82d2ce2f75920c355` | [`vae/minimax_h3_audio_vae_fp32.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/eb8a16107c595128b3a578f82d2ce2f75920c355/vae/minimax_h3_audio_vae_fp32.safetensors) | `/workspace/ComfyUI/models/vae/minimax_h3_audio_vae_fp32.safetensors` | 605254808 | `8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48` |
-| H3 Latent Upscaler 2x | `Mamad8/H3-Latent-Upscaler-2x` @ `d2245ba2ccd4e209007a9f80f2bfd6405861a95f` | [`h3_clean_latent_upscaler_v1_mamad8.safetensors`](https://huggingface.co/Mamad8/H3-Latent-Upscaler-2x/resolve/d2245ba2ccd4e209007a9f80f2bfd6405861a95f/h3_clean_latent_upscaler_v1_mamad8.safetensors) | `/workspace/ComfyUI/models/h3_latent_upscalers/h3_clean_latent_upscaler_v1_mamad8.safetensors` | 59022848 | `28005ed952a879f8e1d59903bf9c4440fa589d7a39280f960bb3dfb430219c71` |
 | H3 Realism People LoRA | `fal/MiniMax-H3-Realism-People-LoRA` @ `039cc8579d7aa357a882d7f4111b25da4f72dccc` | [`h3-realism-people-t2v-i2v-r2v.safetensors`](https://huggingface.co/fal/MiniMax-H3-Realism-People-LoRA/resolve/039cc8579d7aa357a882d7f4111b25da4f72dccc/h3-realism-people-t2v-i2v-r2v.safetensors) | `/workspace/ComfyUI/models/loras/h3-realism-people-t2v-i2v-r2v.safetensors` | 131229656 | `acc529601d2da117fb81179e76c56e488a3beab1171659d305f04fa3655b787e` |
 | SeedVR2 7B Sharp NVFP4 diffusion | `Comfy-Org/SeedVR2` @ `10f035adc869a5b3ffc466360b869641511c0610` | [`diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/10f035adc869a5b3ffc466360b869641511c0610/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors) | `/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors` | 4759694792 | `80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397` |
 | SeedVR2 7B Sharp FP16 diffusion | `Comfy-Org/SeedVR2` @ `a457bf495efbd40ea92f699f7d2b5d2febeca176` | [`diffusion_models/seedvr2_7b_sharp_fp16.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/a457bf495efbd40ea92f699f7d2b5d2febeca176/diffusion_models/seedvr2_7b_sharp_fp16.safetensors) | `/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_fp16.safetensors` | 16480583960 | `70823bca54b9c24eeb56e1c452697c7c2a430867e58db0e376c6e260f3a4489d` |
 | SeedVR2 EMA VAE | `Comfy-Org/SeedVR2` @ `0bb1f83c716d1cad6dfa730b643a4f603bc2b70b` | [`vae/seedvr2_ema_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/SeedVR2/resolve/0bb1f83c716d1cad6dfa730b643a4f603bc2b70b/vae/seedvr2_ema_vae_fp16.safetensors) | `/workspace/ComfyUI/models/vae/seedvr2_ema_vae_fp16.safetensors` | 501324814 | `20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1` |
 
-### 6.1.1 H3 Latent Upscaler（選配 profile）
-
-custom node `ComfyUI-H3-Latent-Upscaler-Mamad8` 已由 `runtime-manifest.json` 固定至 `e98237773011523528353a8beb4863e65b099a38`。模型來源是 [`Mamad8/H3-Latent-Upscaler-2x`](https://huggingface.co/Mamad8/H3-Latent-Upscaler-2x) @ `d2245ba2ccd4e209007a9f80f2bfd6405861a95f`，現在已納入 `h3-bootstrap.sh` 自動下載；檔名必須是 `h3_clean_latent_upscaler_v1_mamad8.safetensors`，目的地為 `/workspace/ComfyUI/models/h3_latent_upscalers/`。
-
-若要在既有容器不重跑完整 bootstrap 的情況下補裝，可執行：
-
-```bash
-set -euo pipefail
-revision='d2245ba2ccd4e209007a9f80f2bfd6405861a95f'
-dest='/workspace/ComfyUI/models/h3_latent_upscalers/h3_clean_latent_upscaler_v1_mamad8.safetensors'
-mkdir -p /workspace/ComfyUI/models/h3_latent_upscalers
-/venv/main/bin/hf download Mamad8/H3-Latent-Upscaler-2x \
-  h3_clean_latent_upscaler_v1_mamad8.safetensors \
-  --revision "$revision" \
-  --local-dir /workspace/ComfyUI/models/h3_latent_upscalers
-test "$(stat -c '%s' "$dest")" = 59022848
-printf '%s  %s\n' '28005ed952a879f8e1d59903bf9c4440fa589d7a39280f960bb3dfb430219c71' "$dest" | sha256sum --check --status
-supervisorctl restart comfyui
-curl -fsS http://127.0.0.1:18188/system_stats >/dev/null
-```
-
-未安裝此模型時，SeedVR2 profile 仍可使用；H3 Latent profile 的 readiness 會保持未就緒，不會錯誤地退回 SeedVR2。
-
-### 6.1.2 Wan2.2 Animate replacement 與 SAM2 遮罩
+### 6.1.1 Wan2.2 Animate replacement 與 SAM2 遮罩
 
 `wan22_animate_fp8` 是獨立的 replacement profile，不會共用 H3 diffusion 權重。它需要 Wan2.2 Animate 的 6 檔生成依賴、`ComfyUI-segment-anything-2` 的 SAM2 base-plus checkpoint，以及 `comfyui_controlnet_aux` 使用的兩個 DWPose 權重；缺少其中任一檔時，replacement 應保持未就緒，而不是顯示模型可用後才在節點執行時失敗。
 
@@ -397,7 +372,6 @@ check_model 12528636800 c813c5eabd85e275daccbf45e6f8ac4d9d14a1827d425e5be5070c92
 check_model 15687142551 35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6 /workspace/ComfyUI/models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
 check_model 5207808496 7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522 /workspace/ComfyUI/models/vae/minimax_h3_video_vae_fp16.safetensors
 check_model 605254808 8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48 /workspace/ComfyUI/models/vae/minimax_h3_audio_vae_fp32.safetensors
-check_model 59022848 28005ed952a879f8e1d59903bf9c4440fa589d7a39280f960bb3dfb430219c71 /workspace/ComfyUI/models/h3_latent_upscalers/h3_clean_latent_upscaler_v1_mamad8.safetensors
 check_model 131229656 acc529601d2da117fb81179e76c56e488a3beab1171659d305f04fa3655b787e /workspace/ComfyUI/models/loras/h3-realism-people-t2v-i2v-r2v.safetensors
 check_model 4759694792 80d57af7722f5a5bd4c01d2ab2688f2bf05e552e59d3d3287257de709db10397 /workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_nvfp4.safetensors
 check_model 16480583960 70823bca54b9c24eeb56e1c452697c7c2a430867e58db0e376c6e260f3a4489d /workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_fp16.safetensors
@@ -456,12 +430,11 @@ Write-Host "runtime=$($health.runtime.mode) comfy=$($health.comfy.url) ollama=$(
 ## 12. 目前缺口／TODO
 
 1. 精確 Vast base image 名稱／ID、OS、CUDA driver/runtime、Python、Torch 尚未 pin；下次換容器前必須採集並決定可重建的 image digest。
-2. H3 Latent Upscaler checkpoint 已固定 revision、size 與 SHA-256，並納入核心 bootstrap；既有容器可依 6.1.1 的單檔命令補裝。
-3. supervisor 的 `comfyui` config／啟動參數仍由 base image 提供，未在 repo 固化；需把脫敏後設定納入未來 image/volume 規格。
-4. Ollama pull 尚無 digest／size pin；保留舊容器 `ollama list`／`ollama show`，並在 registry 穩定後補上可驗證 digest。
-5. SageAttention 目前只有 Windows cu130／Torch2.11／cp310 wheel pin；Linux Vast 需另找相容 build，不能直接沿用。
-6. 現行 Vast 沒有 persistent volume；若不補 volume，任何 recycle／destroy 都必須重新下載模型、Ollama 與設定。
-7. SDXL Turbo 仍是 remote img2img 選配；SAM3.1 已納入完整 runtime manifest，只有不使用 SCAIL／自動遮罩的本機部署才可省略。
+2. supervisor 的 `comfyui` config／啟動參數仍由 base image 提供，未在 repo 固化；需把脫敏後設定納入未來 image/volume 規格。
+3. Ollama pull 尚無 digest／size pin；保留舊容器 `ollama list`／`ollama show`，並在 registry 穩定後補上可驗證 digest。
+4. SageAttention 目前只有 Windows cu130／Torch2.11／cp310 wheel pin；Linux Vast 需另找相容 build，不能直接沿用。
+5. 現行 Vast 沒有 persistent volume；若不補 volume，任何 recycle／destroy 都必須重新下載模型、Ollama 與設定。
+6. SDXL Turbo 仍是 remote img2img 選配；SAM3.1 已納入完整 runtime manifest，只有不使用 SCAIL／自動遮罩的本機部署才可省略。
 
 ## 13. Sources of truth
 
@@ -470,5 +443,4 @@ Write-Host "runtime=$($health.runtime.mode) comfy=$($health.comfy.url) ollama=$(
 - [`scripts/vast/ollama.sh`](../scripts/vast/ollama.sh)／[`ollama.conf`](../scripts/vast/ollama.conf)：loopback、模型根目錄與 supervisor runtime 環境。
 - [`scripts/vast/start-tunnel.ps1`](../scripts/vast/start-tunnel.ps1)、[`start-vast-remote.ps1`](../scripts/vast/start-vast-remote.ps1)、[`status.ps1`](../scripts/vast/status.ps1)：SSH forward、Studio runtime 與健康檢查。
 - [`scripts/vast/inspect-safetensors.py`](../scripts/vast/inspect-safetensors.py)：需要檢視 safetensors header／tensor data／trailing bytes 時使用。
-- [`ComfyUI-H3-Latent-Upscaler-Mamad8`](https://github.com/mamad8c/ComfyUI-H3-Latent-Upscaler-Mamad8)：H3 clean-latent 2× custom node 上游。
 - [`README.md`](../README.md)、[`package.json`](../package.json)、[`tests/video-upscale.test.mjs`](../tests/video-upscale.test.mjs)、[`tests/img2img.test.mjs`](../tests/img2img.test.mjs)：本機啟動、Node engine、SeedVR2／img2img readiness 與測試契約。

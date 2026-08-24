@@ -68,17 +68,18 @@ const IMG2IMG_MODELS = [
         supportsPose: true,
     },
     {
-        value: "flux2_dev_fp8mixed.safetensors",
-        label: "FLUX.2 Dev · FP8 Mixed",
-        note: "官方 Image Edit · 20 steps / Guidance 4 · 僅限本機 · 非商用授權",
-        steps: "20",
-        cfg: "4",
+        value: "flux-2-klein-9b-fp8.safetensors",
+        label: "FLUX.2 Klein 9B · FP8",
+        note: "原生 Image Edit · 4 steps / Guidance 1 · 僅限本機 · 非商用授權",
+        steps: "4",
+        cfg: "1",
         denoise: 1,
-        loraFamily: "FLUX.2",
-        loraHint: "FLUX.2 Dev Image Edit 目前不提供角色 LoRA。",
+        loraFamily: "FLUX.2 Klein 9B",
+        loraHint: "僅顯示 Klein 9B 相容 LoRA；Consistency 建議先從 0.3–0.5 開始。",
         localOnly: true,
-        supportsLora: false,
+        supportsLora: true,
         supportsPose: false,
+        flux2Edit: true,
     },
 ] as const;
 
@@ -409,7 +410,7 @@ export function ImageToImageWorkspace() {
     useEffect(() => {
         const requestId = ++loraRequestIdRef.current;
         let active = true;
-        if (modelOption(model)?.supportsLora === false) {
+        if (!modelOption(model)?.supportsLora) {
             const timer = window.setTimeout(() => {
                 if (!active || loraRequestIdRef.current !== requestId) return;
                 setCharacterLoraRegistry({ model, values: [], status: "empty" });
@@ -549,7 +550,8 @@ export function ImageToImageWorkspace() {
         ? IMG2IMG_MODELS
         : IMG2IMG_MODELS.filter((item) => !item.localOnly);
     const selectedModel = modelOption(model);
-    const supportsLora = selectedModel?.supportsLora !== false;
+    const flux2Edit = selectedModel && "flux2Edit" in selectedModel && selectedModel.flux2Edit === true;
+    const supportsLora = Boolean(selectedModel?.supportsLora);
     const supportsPose = selectedModel?.supportsPose !== false;
     const characterLoraOptions = characterLoraRegistry.model === model ? characterLoraRegistry.values : [];
     const characterLoraDiscoveryStatus = characterLoraRegistry.model === model
@@ -675,6 +677,12 @@ export function ImageToImageWorkspace() {
         const next = modelOption(value) || DEFAULT_IMG2IMG_MODEL;
         if (next.value !== model) setCharacterLoraName("");
         if (next.supportsPose === false) setPoseReference(null);
+        if ("flux2Edit" in next && next.flux2Edit === true) {
+            setNegativePrompt("");
+            setCharacterLoraStrength("0.4");
+        } else {
+            setCharacterLoraStrength("0.75");
+        }
         setModel(next.value);
         setDenoise(next.denoise);
         setSteps(next.steps);
@@ -1062,8 +1070,8 @@ export function ImageToImageWorkspace() {
                     </label>
                     <label className={styles.fieldWide}>
                         <span>{FIELD_LABELS.negativePrompt}（選填）</span>
-                        <textarea id="img2img-negative-prompt" value={negativePrompt} rows={3} placeholder="模糊、低畫質、瑕疵" disabled={selectedModel?.value === "flux2_dev_fp8mixed.safetensors"} onChange={(event) => setNegativePrompt(event.target.value)} />
-                        {selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && <small>FLUX.2 Dev Image Edit 不使用 Negative Prompt。</small>}
+                        <textarea id="img2img-negative-prompt" value={negativePrompt} rows={3} placeholder="模糊、低畫質、瑕疵" disabled={flux2Edit} onChange={(event) => setNegativePrompt(event.target.value)} />
+                        {flux2Edit && <small>FLUX.2 Klein Image Edit 不使用 Negative Prompt。</small>}
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.model}</span>
@@ -1129,8 +1137,8 @@ export function ImageToImageWorkspace() {
                     </label>}
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.denoise} <strong>{denoise.toFixed(2)}</strong></span>
-                        <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active || selectedModel?.value === "flux2_dev_fp8mixed.safetensors"} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
-                        <small>{selectedModel?.value === "flux2_dev_fp8mixed.safetensors" ? "FLUX.2 Dev 使用 ReferenceLatent；重繪強度不適用。" : "越高越偏離原圖；0.45–0.70 通常較平衡。"}</small>
+                        <input id="img2img-denoise" type="range" min="0.01" max="1" step="0.01" value={denoise} disabled={active || flux2Edit} onChange={(event) => updateBaseValue("denoise", event.target.value)} />
+                        <small>{flux2Edit ? "FLUX.2 Klein 使用 ReferenceLatent；傳統重繪強度不適用。" : "越高越偏離原圖；0.45–0.70 通常較平衡。"}</small>
                     </label>
                     <label className={styles.field}>
                         <span>{FIELD_LABELS.steps}</span>
@@ -1190,7 +1198,7 @@ export function ImageToImageWorkspace() {
                                                 max={bounds.max}
                                                 step={bounds.step}
                                                 value={range.min}
-                                                disabled={active || (selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && key === "denoise")}
+                                                disabled={active || (flux2Edit && key === "denoise")}
                                                 aria-label={`${label}最小值`}
                                                 onChange={(event) => updateRandomRange(key, "min", event.target.value)}
                                             />
@@ -1205,7 +1213,7 @@ export function ImageToImageWorkspace() {
                                                 max={bounds.max}
                                                 step={bounds.step}
                                                 value={range.max}
-                                                disabled={active || (selectedModel?.value === "flux2_dev_fp8mixed.safetensors" && key === "denoise")}
+                                                disabled={active || (flux2Edit && key === "denoise")}
                                                 aria-label={`${label}最大值`}
                                                 onChange={(event) => updateRandomRange(key, "max", event.target.value)}
                                             />

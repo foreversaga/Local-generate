@@ -21,7 +21,7 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
   assert.match(manifest.bootstrapVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.remote.comfyPort, 18188);
   assert.equal(manifest.remote.ollamaPort, 11434);
-  assert.equal(manifest.models.length, 21);
+  assert.equal(manifest.models.length, 20);
   assert.ok(manifest.nativeNodes.includes("MiniMaxH3ImageToVideo"));
   assert.ok(manifest.nativeNodes.includes("SaveVideo"));
   assert.ok(manifest.nativeNodes.includes("H3LatentUpscalerLoader"));
@@ -56,18 +56,6 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
       targetPath: "/workspace/ComfyUI/models/diffusion_models/seedvr2_7b_sharp_fp16.safetensors",
       size: 16480583960,
       sha256: "70823bca54b9c24eeb56e1c452697c7c2a430867e58db0e376c6e260f3a4489d",
-    },
-  );
-  assert.deepEqual(
-    manifest.models.find((model) => model.id === "h3_latent_upscaler_2x"),
-    {
-      id: "h3_latent_upscaler_2x",
-      repository: "Mamad8/H3-Latent-Upscaler-2x",
-      revision: "d2245ba2ccd4e209007a9f80f2bfd6405861a95f",
-      remotePath: "h3_clean_latent_upscaler_v1_mamad8.safetensors",
-      targetPath: "/workspace/ComfyUI/models/h3_latent_upscalers/h3_clean_latent_upscaler_v1_mamad8.safetensors",
-      size: 59022848,
-      sha256: "28005ed952a879f8e1d59903bf9c4440fa589d7a39280f960bb3dfb430219c71",
     },
   );
   assert.deepEqual(
@@ -160,7 +148,6 @@ test("Vast runtime manifest pins the rebuild inventory", async () => {
     "qwen3vl_h3_nvfp4_awq",
     "h3_video_vae",
     "h3_audio_vae",
-    "h3_latent_upscaler_2x",
     "h3_realism_people_lora",
     "wan22_animate_diffusion",
     "wan_animate_text_encoder",

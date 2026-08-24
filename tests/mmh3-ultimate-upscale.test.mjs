@@ -94,7 +94,7 @@ test("requires only MMH3 tiled nodes and the existing H3 model set", () => {
   assert.equal(missing.nodes.MMH3UltimateUpscale, false);
 });
 
-test("controller exposes the isolated MMH3 profile as ready", async (t) => {
+test("controller rejects the removed MMH3 profile", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-ultimate-controller-"));
   t.after(async () => fs.rm(root, { recursive: true, force: true }));
   const inputRoot = path.join(root, "input");
@@ -121,8 +121,8 @@ test("controller exposes the isolated MMH3 profile as ready", async (t) => {
     },
   });
 
-  const health = await controller.checkReadiness(MMH3_ULTIMATE_PROFILE, "video");
-  assert.equal(health.ready, true);
-  assert.equal(health.profile, MMH3_ULTIMATE_PROFILE);
-  assert.equal(health.models.diffusion.name, H3_LATENT_DIFFUSION_NAMES[0]);
+  await assert.rejects(
+    controller.checkReadiness(MMH3_ULTIMATE_PROFILE, "video"),
+    { code: "PROFILE_INVALID", status: 400 },
+  );
 });

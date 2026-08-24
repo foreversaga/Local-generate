@@ -160,7 +160,7 @@ test("builds native 11-node SeedVR2 image graph with 7B Sharp and tiled VAE", ()
   assert.equal(graph["11"].class_type, "SaveImage");
 });
 
-test("validates SeedVR2 adjustable settings while keeping H3 fixed at 2x", () => {
+test("validates SeedVR2 adjustable settings and rejects removed upscale profiles", () => {
   assert.deepEqual(normalizeSeedVR2Settings({ scale: 1.25, resizeMethod: "area", colorCorrection: "none" }), {
     scale: 1.25,
     resizeMethod: "area",
@@ -175,7 +175,7 @@ test("validates SeedVR2 adjustable settings while keeping H3 fixed at 2x", () =>
   assert.throws(() => normalizeSeedVR2Settings({ scale: 4.25 }), { code: "SCALE_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 2, resizeMethod: "invented" }), { code: "RESIZE_METHOD_INVALID" });
   assert.throws(() => normalizeSeedVR2Settings({ scale: 2, colorCorrection: "invented" }), { code: "COLOR_CORRECTION_INVALID" });
-  assert.throws(() => normalizeSeedVR2Settings({ scale: 3 }, H3_LATENT_PROFILE), { code: "SCALE_INVALID" });
+  assert.throws(() => normalizeSeedVR2Settings({ scale: 2 }, H3_LATENT_PROFILE), { code: "PROFILE_INVALID" });
 });
 
 test("default detail settings preserve the legacy image and video graphs exactly", () => {
@@ -578,67 +578,22 @@ test("remote controller uploads source video and downloads the ComfyUI artifact"
   assert.equal(await fs.stat(path.join(inputRoot, "seedvr2_temp_remote-job.mp4")).catch(() => null), null);
 });
 
-test("controller runs the H3 latent profile with its own model paths and output namespace", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-latent-upscale-"));
-  const inputRoot = path.join(root, "input");
-  const outputRoot = path.join(root, "output");
-  await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
-  await fs.mkdir(path.join(root, "models", "text_encoders"), { recursive: true });
-  await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
-  await fs.mkdir(inputRoot, { recursive: true });
-  await fs.mkdir(outputRoot, { recursive: true });
-  await fs.writeFile(path.join(root, "models", "diffusion_models", H3_LATENT_DIFFUSION_NAMES[0]), "model");
-  await fs.writeFile(path.join(root, "models", "text_encoders", H3_LATENT_ENCODER_NAME), "encoder");
-  await fs.writeFile(path.join(root, "models", "vae", H3_LATENT_VAE_NAME), "vae");
-  await fs.writeFile(path.join(root, "models", "vae", H3_LATENT_AUDIO_VAE_NAME), "audio-vae");
-  await fs.writeFile(path.join(inputRoot, "source.mp4"), "source");
-  await fs.writeFile(path.join(outputRoot, "h3_result.mp4"), "result");
-  let promptSeen = null;
-  const fetchImpl = async (url, init = {}) => {
-    if (url.endsWith("/system_stats")) return response({ devices: [] });
-    if (url.endsWith("/object_info")) return response(h3ObjectInfo());
-    if (url.endsWith("/prompt")) {
-      promptSeen = JSON.parse(init.body);
-      return response({ prompt_id: "h3-prompt-test" });
-    }
-    if (url.includes("/history/h3-prompt-test")) {
-      return response({ "h3-prompt-test": { status: { completed: true }, outputs: { "29": { videos: [{ filename: "h3_result.mp4", subfolder: "", type: "output" }] } } } });
-    }
-    throw new Error(`unexpected endpoint ${url}`);
-  };
+test("controller rejects the removed H3 latent profile", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "removed-h3-upscale-"));
   const controller = createSeedVR2Controller({
-    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
-    comfyRoot: root,
-    inputRoot,
-    outputRoot,
-    fetchImpl,
-    pollIntervalMs: 1,
-    toAsset: async (_root, name) => ({ name, root: "output", kind: "video" }),
-    idFactory: () => "h3-latent-job",
+    jobStore: await temporarySeedJobStore(t, "removed-h3-profile"),
+    inputRoot: path.join(root, "input"),
+    outputRoot: path.join(root, "output"),
+    fetchImpl: async () => { throw new Error("removed profile must fail before ComfyUI readiness"); },
   });
   const health = apiResponse();
   assert.equal(await controller.handleRoute({ method: "GET", url: "/api/upscale/health?profile=h3_latent_2x" }, health), true);
-  assert.equal(health.status, 200);
-  assert.equal(health.body.profile, H3_LATENT_PROFILE);
-  assert.equal(health.body.ready, true);
-  const queued = await controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: H3_LATENT_PROFILE });
-  assert.equal(queued.profile, H3_LATENT_PROFILE);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const current = await controller.getJob("h3-latent-job");
-    if (current?.status === "completed") break;
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  const completed = await controller.getJob("h3-latent-job");
-  assert.equal(completed.status, "completed");
-  assert.equal(completed.output.name, "h3_result.mp4");
-  assert.equal(promptSeen.prompt["4"].class_type, "UNETLoader");
-  assert.equal(promptSeen.prompt["4"].inputs.unet_name, H3_LATENT_DIFFUSION_NAMES[0]);
-  assert.equal(promptSeen.prompt["6"].inputs.vae_name, H3_LATENT_VAE_NAME);
-  assert.equal(promptSeen.prompt["8"].class_type, "MiniMaxH3ReferenceToVideo");
-  assert.equal(promptSeen.prompt["15"].class_type, "MiniMaxH3LatentUpscale");
-  assert.equal(promptSeen.prompt["25"].class_type, "SamplerCustomAdvanced");
-  assert.equal(promptSeen.prompt["29"].class_type, "SaveVideo");
-  assert.match(completed.stage, /Completed/);
+  assert.equal(health.status, 400);
+  assert.equal(health.body.code, "PROFILE_INVALID");
+  await assert.rejects(
+    controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2, profile: H3_LATENT_PROFILE }),
+    { code: "PROFILE_INVALID", status: 400 },
+  );
 });
 
 test("controller route reports 503 when ComfyUI readiness is false", async (t) => {
@@ -727,7 +682,7 @@ test("SeedVR2 advanced sampling validation uses stable 400-series error codes", 
   });
   assert.throws(
     () => normalizeSeedVR2Settings({ scale: 2, steps: 2 }, H3_LATENT_PROFILE),
-    { code: "SEEDVR2_SETTINGS_UNSUPPORTED", status: 400 },
+    { code: "PROFILE_INVALID", status: 400 },
   );
 });
 
@@ -776,7 +731,7 @@ test("SeedVR2 detail validation uses stable 400-series error codes for every fie
   });
   assert.throws(
     () => normalizeSeedVR2Settings({ detailPreset: "skin_detail" }, H3_LATENT_PROFILE),
-    { code: "SEEDVR2_SETTINGS_UNSUPPORTED", status: 400 },
+    { code: "PROFILE_INVALID", status: 400 },
   );
 });
 

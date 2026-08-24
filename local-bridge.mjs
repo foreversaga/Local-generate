@@ -1623,13 +1623,13 @@ async function createImg2ImgPrompt(payload = {}) {
   if (imageModel && !imageProfile) {
     throw new LongVideoError("IMG2IMG_IMAGE_MODEL_UNSUPPORTED", `不支援的以圖生圖模型：${imageModel}`, 400);
   }
-  const flux2Edit = imageProfile?.workflow === "flux2-dev-edit";
+  const flux2Edit = imageProfile?.workflow === "flux2-edit";
   const textOnlyPromptProvider = provider === "sglang";
   const requestPrompt = provider === "sglang" ? requestSglangPrompt : requestOllamaPrompt;
   const natureCameraSkill = await loadNatureCameraSkillBundle();
   const system = flux2Edit
     ? [
-        "You write concise edit instructions for FLUX.2 Dev Image Edit, which directly receives the attached source image as reference conditioning.",
+        "You write concise edit instructions for FLUX.2 Image Edit, which directly receives the attached source image as reference conditioning.",
         natureCameraSkill,
         ...(textOnlyPromptProvider
           ? ["You do not receive or inspect the source image. The image generator receives it separately. Use only the user's transformation description, preserve unspecified source details generically, and do not invent visible attributes."]
@@ -2571,7 +2571,7 @@ function characterLoraOptions(objectInfo) {
 
 const LORA_CONSUMER_FAMILIES = Object.freeze({
   "single-replace": Object.freeze(["wan22-animate"]),
-  img2img: Object.freeze(["sdxl", "illustrious", "sd15"]),
+  img2img: Object.freeze(["sdxl", "illustrious", "sd15", "flux2-klein-9b"]),
 });
 
 const TRAINABLE_LORA_BASE_PROFILES = Object.freeze({
@@ -2583,6 +2583,7 @@ const IMG2IMG_LORA_PROFILES = Object.freeze({
   "sd_xl_base_1.0.safetensors": Object.freeze({ family: "sdxl", baseProfile: "sdxl-base-1.0" }),
   "v1-5-pruned-emaonly-fp16.safetensors": Object.freeze({ family: "sd15", baseProfile: "sd15" }),
   "waiIllustriousSDXL_v170.safetensors": Object.freeze({ family: "illustrious", baseProfile: "wai-illustrious" }),
+  "flux-2-klein-9b-fp8.safetensors": Object.freeze({ family: "flux2-klein-9b", baseProfile: "flux2-klein-9b" }),
   wan22_animate_fp8: Object.freeze({ family: "wan22-animate", baseProfile: "wan22-animate" }),
 });
 
@@ -2591,7 +2592,7 @@ function normalizeLoraFamilyFilter(value) {
   if (!family) return "";
   if (family === "wan") return "wan22-animate";
   if (family === "wai") return "illustrious";
-  if (!["sdxl", "illustrious", "sd15", "wan22-animate"].includes(family)) {
+  if (!["sdxl", "illustrious", "sd15", "wan22-animate", "flux2-klein-9b"].includes(family)) {
     throw makeRuntimeError("LORA_FAMILY_INVALID", "Unsupported LoRA family.", 400, { family });
   }
   return family;
@@ -2609,7 +2610,7 @@ function normalizeLoraConsumerFilter(value) {
 function registryConsumerMetadata(item) {
   const consumers = [];
   if (item.family === "wan22-animate") consumers.push("single-replace");
-  if (["sdxl", "illustrious", "sd15"].includes(item.family)) consumers.push("img2img");
+  if (["sdxl", "illustrious", "sd15", "flux2-klein-9b"].includes(item.family)) consumers.push("img2img");
   return consumers;
 }
 
@@ -2679,8 +2680,11 @@ async function listLoras({ family = "", profile = "", consumer = "" } = {}) {
       comfyLoaded: Boolean(loaderPath || loaded.has(registryPath.toLowerCase())),
     }); });
   const compatibleLoaded = items.filter((item) => item.comfyLoaded).map((item) => item.relativePath);
+  const compatibleLegacy = String(profile || "").trim() === "flux-2-klein-9b-fp8.safetensors"
+    ? legacyNames.filter((name) => name.toLowerCase().startsWith("flux2-klein-9b/"))
+    : [];
   const filteredRequest = Boolean(normalizedFamily || normalizedConsumer || String(profile || "").trim());
-  const names = [...(filteredRequest ? [] : legacyNames), ...compatibleLoaded].filter((value, index, values) =>
+  const names = [...(filteredRequest ? compatibleLegacy : legacyNames), ...compatibleLoaded].filter((value, index, values) =>
     values.findIndex((candidate) => candidate.toLowerCase() === value.toLowerCase()) === index);
   const structuredItems = filteredRequest ? items : [
     ...items,

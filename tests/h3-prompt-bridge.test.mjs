@@ -526,7 +526,7 @@ test("vLLM img2img uses the text-only OpenAI-compatible route while ComfyUI rece
     return new Response(JSON.stringify({
       choices: [{
         message: {
-          content: `{"prompt":"documentary portrait, available window light, natural skin texture","negativePrompt":"plastic skin, blur, watermark","negativePrompt":""}`,
+          content: `{"prompt":"preserve the person and make the lighting feel candid and natural","negativePrompt":""}`,
         },
       }],
     }), { status: 200 });
@@ -535,14 +535,14 @@ test("vLLM img2img uses the text-only OpenAI-compatible route while ComfyUI rece
     const result = await invoke("/api/prompt", {
       provider: "sglang",
       model: "qwen3.8-27b-uncensored-nvfp4",
-      imageModel: "flux2_dev_fp8mixed.safetensors",
+      imageModel: "flux-2-klein-9b-fp8.safetensors",
       mode: "img2img",
       brief: "Keep the person and make the photo feel candid.",
       images: [{ role: "source_image", data: "data:image/png;base64,aGVsbG8=" }],
     });
     assert.equal(result.status, 200);
-    assert.match(result.body.prompt, /documentary portrait/);
-    assert.match(result.body.negativePrompt, /plastic skin/);
+    assert.match(result.body.prompt, /preserve the person/);
+    assert.equal(result.body.negativePrompt, "");
     assert.equal(calls.length, 1);
     assert.match(calls[0].url, /\/v1\/chat\/completions$/);
     assert.equal(calls[0].body.model, "qwen3.8-27b-uncensored-nvfp4");
@@ -551,14 +551,13 @@ test("vLLM img2img uses the text-only OpenAI-compatible route while ComfyUI rece
     assert.match(calls[0].body.messages[0].content, /<nature-camera-skill>/);
     assert.match(calls[0].body.messages[0].content, /# Nature Camera/);
     assert.match(calls[0].body.messages[0].content, /# Camera Language Reference/);
-    assert.match(calls[0].body.messages[0].content, /FLUX\.2 Dev Image Edit/);
+    assert.match(calls[0].body.messages[0].content, /FLUX\.2 Image Edit/);
     assert.match(calls[0].body.messages[0].content, /You do not receive or inspect the source image/);
-    assert.match(calls[0].body.messages[0].content, /Do not redescribe or reconstruct the whole source image/);
     assert.match(calls[0].body.messages[0].content, /negativePrompt must be an empty string/);
     const userContent = calls[0].body.messages.find((message) => message.role === "user")?.content;
     assert.equal(typeof userContent, "string");
     assert.match(userContent, /The image generator will receive one source image separately/);
-    assert.match(userContent, /Direct edit request — highest priority/);
+    assert.match(userContent, /Direct edit request/);
     assert.match(userContent, /Keep the person and make the photo feel candid\./);
     assert.doesNotMatch(JSON.stringify(calls[0].body), /image_url/);
   } finally {

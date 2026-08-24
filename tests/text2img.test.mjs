@@ -5,9 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  FLUX2_VAE,
-  FLUX2_DEV_MODEL,
-  FLUX2_DEV_TEXT_ENCODER,
   FLUX2_CLIP_TYPE,
   FLUX2_KLEIN_9B_MODEL,
   FLUX2_KLEIN_9B_TEXT_ENCODER,
@@ -16,7 +13,6 @@ import {
   NATURE_CAMERA_PROFILE,
   NATURE_CAMERA_SYSTEM_PROMPT,
   TEXT2IMG_REQUIRED_NODES,
-  buildFlux2DevText2ImgPrompt,
   buildFlux2Klein9BText2ImgPrompt,
   buildText2ImgPrompt,
   createText2ImgController,
@@ -30,9 +26,9 @@ import { createText2ImgStore } from "../server/image-generation/text2img-store.m
 
 const OBJECT_INFO = {
   ...Object.fromEntries(TEXT2IMG_REQUIRED_NODES.map((name) => [name, {}])),
-  UNETLoader: { input: { required: { unet_name: [[FLUX2_DEV_MODEL, FLUX2_KLEIN_9B_MODEL]] } } },
-  CLIPLoader: { input: { required: { clip_name: [[FLUX2_DEV_TEXT_ENCODER, FLUX2_KLEIN_9B_TEXT_ENCODER]], type: [[FLUX2_CLIP_TYPE]] } } },
-  VAELoader: { input: { required: { vae_name: [[FLUX2_VAE, FLUX2_KLEIN_9B_VAE]] } } },
+  UNETLoader: { input: { required: { unet_name: [[FLUX2_KLEIN_9B_MODEL]] } } },
+  CLIPLoader: { input: { required: { clip_name: [[FLUX2_KLEIN_9B_TEXT_ENCODER]], type: [[FLUX2_CLIP_TYPE]] } } },
+  VAELoader: { input: { required: { vae_name: [[FLUX2_KLEIN_9B_VAE]] } } },
   LoraLoaderModelOnly: { input: { required: { lora_name: [FLUX2_KLEIN_9B_LORAS.map((lora) => lora.filename)] } } },
 };
 
@@ -52,47 +48,6 @@ async function waitForTerminal(controller, id) {
   }
   throw new Error("Timed out waiting for text-to-image test job.");
 }
-
-test("builds the eager thirteen-node FLUX.2 Dev graph", () => {
-  const graph = buildFlux2DevText2ImgPrompt({
-    prompt: "A candid portrait in soft window light",
-    width: 768,
-    height: 1024,
-    steps: 20,
-    cfg: 6.5,
-    seed: 42,
-  }, { filenamePrefix: "text2img/test" });
-
-  assert.equal(Object.keys(graph).length, 13);
-  assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
-  assert.deepEqual(graph["2"].inputs, { clip_name: FLUX2_DEV_TEXT_ENCODER, type: "flux2", device: "default" });
-  assert.equal(graph["4"].inputs.text, "A candid portrait in soft window light");
-  assert.equal(graph["5"].inputs.guidance, 6.5);
-  assert.deepEqual(graph["6"].inputs.conditioning, ["5", 0]);
-  assert.equal(graph["7"].inputs.noise_seed, 42);
-  assert.deepEqual(graph["9"].inputs, { steps: 20, width: 768, height: 1024 });
-  assert.deepEqual(graph["10"].inputs, { width: 768, height: 1024, batch_size: 1 });
-  assert.deepEqual(graph["13"].inputs.images, ["12", 0]);
-  assert.equal(Object.values(graph).some((node) => node.class_type === "TorchCompileModel"), false);
-  assert.deepEqual(graph["6"].inputs.model, ["1", 0]);
-});
-
-test("builds the official FLUX.2 Dev graph with Mistral guidance", () => {
-  const graph = buildText2ImgPrompt({
-    prompt: "A detailed documentary portrait",
-    modelId: "flux2-dev",
-    width: 1024,
-    height: 1024,
-    seed: 77,
-  });
-
-  assert.equal(Object.keys(graph).length, 13);
-  assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
-  assert.equal(graph["2"].inputs.clip_name, FLUX2_DEV_TEXT_ENCODER);
-  assert.deepEqual(graph["5"], { class_type: "FluxGuidance", inputs: { conditioning: ["4", 0], guidance: 4 } });
-  assert.deepEqual(graph["6"], { class_type: "BasicGuider", inputs: { model: ["1", 0], conditioning: ["5", 0] } });
-  assert.deepEqual(graph["9"].inputs, { steps: 20, width: 1024, height: 1024 });
-});
 
 test("builds the official FLUX.2 Klein 9B distilled graph", () => {
   const graph = buildFlux2Klein9BText2ImgPrompt({
@@ -130,12 +85,12 @@ test("chains selected Klein 9B LoRAs into the model input", () => {
 test("validates prompt, dimensions, steps, and seed at the workflow boundary", () => {
   assert.deepEqual(normalizeText2ImgInput({ prompt: " portrait " }), {
     prompt: "portrait",
-    modelId: "flux2-dev",
+    modelId: "flux2-klein-9b",
     encoderId: "official",
     width: 1024,
     height: 1024,
-    steps: 20,
-    cfg: 4,
+    steps: 4,
+    cfg: 1,
     seed: 12345,
     loras: [],
   });
@@ -149,11 +104,10 @@ test("validates prompt, dimensions, steps, and seed at the workflow boundary", (
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-32b" }), { code: "TEXT2IMG_MODEL_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-4b" }), { code: "TEXT2IMG_MODEL_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "krea2-turbo" }), { code: "TEXT2IMG_MODEL_INVALID" });
+  assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-dev" }), { code: "TEXT2IMG_MODEL_INVALID" });
   assert.throws(() => buildText2ImgPrompt({ prompt: "portrait", modelId: "krea2-turbo" }), { code: "TEXT2IMG_MODEL_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", encoderId: "uncensored" }), { code: "TEXT2IMG_ENCODER_INVALID" });
-  assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", loras: [{ id: "consistency-v2", strength: 0.8 }] }), { code: "TEXT2IMG_LORAS_MODEL_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b", loras: [{ id: "base-version", strength: 0.8 }] }), { code: "TEXT2IMG_LORA_INVALID" });
-  assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-dev" }).steps, 20);
   assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }).cfg, 1);
   assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }).steps, 4);
 });
@@ -221,10 +175,7 @@ test("reports exact FLUX model and node readiness", () => {
   const ready = evaluateText2ImgReadiness(OBJECT_INFO);
   assert.equal(ready.ready, true);
   assert.deepEqual(ready.models, { diffusion: true, textEncoder: true, clipType: true, vae: true });
-  assert.deepEqual(Object.keys(ready.profiles), ["flux2-dev", "flux2-klein-9b"]);
-  assert.equal(ready.profiles["flux2-dev"].ready, true);
-  assert.equal(ready.profiles["flux2-dev"].commercial, false);
-  assert.equal(ready.profiles["flux2-dev"].encoders.official.label, "Mistral 3 Small · BF16");
+  assert.deepEqual(Object.keys(ready.profiles), ["flux2-klein-9b"]);
   assert.equal(ready.profiles["flux2-klein-9b"].ready, true);
   assert.equal(ready.profiles["flux2-klein-9b"].encoders.official.label, "Qwen3 8B · FP8 Mixed");
   assert.equal(evaluateText2ImgReadiness(OBJECT_INFO, { modelId: "flux2-klein-9b" }).ready, true);
@@ -281,15 +232,15 @@ test("queues the graph, waits for ComfyUI, and registers the local output", asyn
     });
     const queued = await controller.enqueue({ prompt: "portrait", cfg: 5.5, seed: 7 });
     assert.equal(queued.status, "queued");
-    assert.equal(queued.modelId, "flux2-dev");
+    assert.equal(queued.modelId, "flux2-klein-9b");
     assert.equal(queued.encoderId, "official");
     assert.equal(queued.license, "FLUX Non-Commercial License");
     assert.equal(queued.cfg, 5.5);
     const completed = await waitForTerminal(controller, queued.id);
     assert.equal(completed.status, "completed");
     assert.equal(completed.output.name, "text2img/result.png");
-    assert.equal(submittedGraph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
-    assert.equal(submittedGraph["5"].inputs.guidance, 5.5);
+    assert.equal(submittedGraph["1"].inputs.unet_name, FLUX2_KLEIN_9B_MODEL);
+    assert.equal(submittedGraph["6"].inputs.cfg, 5.5);
     assert.equal(submittedGraph["7"].inputs.noise_seed, 7);
   } finally {
     await rm(outputRoot, { recursive: true, force: true });

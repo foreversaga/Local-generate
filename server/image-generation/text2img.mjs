@@ -3,14 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createText2ImgStore } from "./text2img-store.mjs";
 
-export const FLUX2_VAE = "flux2-vae.safetensors";
 export const FLUX2_CLIP_TYPE = "flux2";
-export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
-export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
 export const FLUX2_KLEIN_9B_MODEL = "flux-2-klein-9b-fp8.safetensors";
 export const FLUX2_KLEIN_9B_TEXT_ENCODER = "qwen_3_8b_fp8mixed.safetensors";
 export const FLUX2_KLEIN_9B_VAE = "full_encoder_small_decoder.safetensors";
-export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-dev";
+export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-klein-9b";
 export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
 
 export const FLUX2_KLEIN_9B_LORAS = Object.freeze([
@@ -39,28 +36,6 @@ const FLUX2_KLEIN_9B_LORA_BY_ID = Object.freeze(Object.fromEntries(FLUX2_KLEIN_9
 export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
   [DEFAULT_TEXT2IMG_MODEL_ID]: Object.freeze({
     id: DEFAULT_TEXT2IMG_MODEL_ID,
-    label: "FLUX.2 Dev · FP8 Mixed",
-    model: FLUX2_DEV_MODEL,
-    textEncoder: FLUX2_DEV_TEXT_ENCODER,
-    vae: FLUX2_VAE,
-    clipType: FLUX2_CLIP_TYPE,
-    precision: "FP8 Mixed + BF16 encoder",
-    license: "FLUX Non-Commercial License",
-    commercial: false,
-    architecture: "flux2",
-    encoderLabel: "Mistral 3 Small · BF16",
-    encoderPrecision: "BF16",
-    defaultSteps: 20,
-    maxSteps: 50,
-    cfg: 4,
-    sampler: "Euler",
-    scheduler: "Flux2",
-    minDimension: 512,
-    maxDimension: 1536,
-    dimensionStep: 16,
-  }),
-  "flux2-klein-9b": Object.freeze({
-    id: "flux2-klein-9b",
     label: "FLUX.2 Klein 9B · FP8",
     model: FLUX2_KLEIN_9B_MODEL,
     textEncoder: FLUX2_KLEIN_9B_TEXT_ENCODER,
@@ -83,22 +58,6 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
   }),
 });
 
-const FLUX_DEV_REQUIRED_NODES = Object.freeze([
-  "UNETLoader",
-  "CLIPLoader",
-  "VAELoader",
-  "CLIPTextEncode",
-  "BasicGuider",
-  "FluxGuidance",
-  "RandomNoise",
-  "KSamplerSelect",
-  "Flux2Scheduler",
-  "EmptyFlux2LatentImage",
-  "SamplerCustomAdvanced",
-  "VAEDecode",
-  "SaveImage",
-]);
-
 const FLUX2_KLEIN_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
   "CLIPLoader",
@@ -115,7 +74,7 @@ const FLUX2_KLEIN_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
-export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...new Set([...FLUX_DEV_REQUIRED_NODES, ...FLUX2_KLEIN_REQUIRED_NODES])]);
+export const TEXT2IMG_REQUIRED_NODES = FLUX2_KLEIN_REQUIRED_NODES;
 
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
@@ -282,31 +241,6 @@ export function parseNatureCameraPromptResponse(value) {
   return prompt;
 }
 
-/** Build the native ComfyUI API graph used by FLUX.2 Dev. */
-export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text2img/flux2_dev" } = {}) {
-  const request = normalizeText2ImgInput(input);
-  const profile = resolveText2ImgModel(request.modelId);
-  const encoder = resolveText2ImgEncoder(profile, request.encoderId);
-  return {
-    "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
-    "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
-    "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
-    "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
-    "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: request.cfg } },
-    "6": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(5) } },
-    "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
-    "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
-    "9": { class_type: "Flux2Scheduler", inputs: { steps: request.steps, width: request.width, height: request.height } },
-    "10": { class_type: "EmptyFlux2LatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
-    "11": {
-      class_type: "SamplerCustomAdvanced",
-      inputs: { noise: link(7), guider: link(6), sampler: link(8), sigmas: link(9), latent_image: link(10) },
-    },
-    "12": { class_type: "VAEDecode", inputs: { samples: link(11), vae: link(3) } },
-    "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/flux2_dev") } },
-  };
-}
-
 /** Build the official FLUX.2 Klein 9B distilled text-to-image graph. */
 export function buildFlux2Klein9BText2ImgPrompt(input = {}, { filenamePrefix = "text2img/flux2_klein_9b" } = {}) {
   const request = normalizeText2ImgInput({ ...input, modelId: "flux2-klein-9b" });
@@ -346,7 +280,7 @@ export function buildFlux2Klein9BText2ImgPrompt(input = {}, { filenamePrefix = "
 export function buildText2ImgPrompt(input = {}, options = {}) {
   const profile = resolveText2ImgModel(input.modelId);
   if (profile.id === "flux2-klein-9b") return buildFlux2Klein9BText2ImgPrompt(input, options);
-  return buildFlux2DevText2ImgPrompt(input, options);
+  throw makeError(`Unsupported text-to-image model: ${profile.id}`, 400, "TEXT2IMG_MODEL_INVALID");
 }
 
 function comboValues(nodeInfo, key) {
@@ -365,7 +299,7 @@ export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote =
   const vaes = comboValues(objectInfo?.VAELoader, "vae_name");
   const loraFiles = comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name");
   const profiles = Object.fromEntries(Object.values(TEXT2IMG_MODEL_PROFILES).map((profile) => {
-    const requiredNodes = profile.id === "flux2-klein-9b" ? FLUX2_KLEIN_REQUIRED_NODES : FLUX_DEV_REQUIRED_NODES;
+    const requiredNodes = FLUX2_KLEIN_REQUIRED_NODES;
     const profileNodesReady = requiredNodes.every((name) => Boolean(objectInfo?.[name]));
     const encoders = Object.fromEntries(Object.values(encoderProfilesFor(profile)).map((encoder) => {
       const available = textEncoders.includes(encoder.textEncoder);

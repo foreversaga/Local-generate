@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("exposes FLUX.2 Dev and Klein 9B through the existing Studio text-to-image route and API", async () => {
+test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image route and API", async () => {
   const [toolsPage, routePage, workspace, client, dictionaries, bridge, envExample, settings] = await Promise.all([
     readFile(new URL("../app/(studio)/tools/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/(studio)/tools/text-to-image/page.tsx", import.meta.url), "utf8"),
@@ -16,7 +16,7 @@ test("exposes FLUX.2 Dev and Klein 9B through the existing Studio text-to-image 
 
   assert.match(toolsPage, /href="\/app\/tools\/text-to-image"/);
   assert.match(routePage, /TextToImageWorkspace/);
-  assert.match(workspace, /text2img\.model\.dev\.name/);
+  assert.doesNotMatch(workspace, /text2img\.model\.dev\.name/);
   assert.match(workspace, /assetUrl\(job\.output\)/);
   assert.match(workspace, /generateText2ImgPrompt/);
   assert.match(workspace, /text2img\.description\.label/);
@@ -26,7 +26,7 @@ test("exposes FLUX.2 Dev and Klein 9B through the existing Studio text-to-image 
   assert.match(workspace, /document\.execCommand\("copy"\)/);
   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
   assert.match(workspace, /nature-camera/);
-  assert.match(workspace, /flux2-dev/);
+  assert.doesNotMatch(workspace, /flux2-dev/);
   assert.match(workspace, /flux2-klein-9b/);
   assert.match(workspace, /text2img\.model\.klein9b\.name/);
   assert.doesNotMatch(workspace, /krea2-turbo/);

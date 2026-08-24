@@ -18,3 +18,13 @@ test("img2img hides duplicate environment readiness and shows only actionable mo
   assert.match(workspace, /readiness: "img2img-model"/);
   assert.doesNotMatch(styles, /\.readinessList/);
 });
+
+test("img2img exposes Klein 9B native edit controls without SD denoise or pose", async () => {
+  const workspace = await readFile(new URL("../app/components/tools/ImageToImageWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /value: "flux-2-klein-9b-fp8\.safetensors"/);
+  assert.match(workspace, /label: "FLUX\.2 Klein 9B · FP8"/);
+  assert.match(workspace, /supportsLora: true/);
+  assert.match(workspace, /supportsPose: false/);
+  assert.match(workspace, /disabled=\{active \|\| flux2Edit\}/);
+  assert.match(workspace, /FLUX\.2 Klein 使用 ReferenceLatent/);
+});

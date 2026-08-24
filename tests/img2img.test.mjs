@@ -28,7 +28,8 @@ import { createImg2ImgStore } from "../server/image-generation/img2img-store.mjs
 
 const CHECKPOINT_MODELS = IMG2IMG_MODELS.filter((model) => IMG2IMG_MODEL_PROFILES[model].workflow === "checkpoint");
 const WAI_MODEL = "waiIllustriousSDXL_v170.safetensors";
-const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
+const KLEIN_MODEL = "flux-2-klein-9b-fp8.safetensors";
+const KLEIN_LORA = "flux2-klein-9b/Flux2-Klein-9B-consistency-V2.safetensors";
 
 function response(payload, status = 200) {
   return {
@@ -103,12 +104,12 @@ const loraObjectInfo = {
   LoraLoaderModelOnly: { input: { required: { model: ["MODEL"], lora_name: [{ value: ["characters/hero.safetensors"] }], strength_model: ["FLOAT"] } } },
 };
 
-const flux2ObjectInfo = {
+const kleinObjectInfo = {
   ...currentObjectInfo,
-  UNETLoader: { input: { required: { unet_name: [[FLUX2_DEV_MODEL]] } } },
-  TorchCompileModel: {},
-  CLIPLoader: { input: { required: { clip_name: [["mistral_3_small_flux2_bf16.safetensors"]], type: [["flux2"]] } } },
+  UNETLoader: { input: { required: { unet_name: [[KLEIN_MODEL]] } } },
+  CLIPLoader: { input: { required: { clip_name: [["qwen_3_8b_fp8mixed.safetensors"]], type: [["flux2"]] } } },
   VAELoader: { input: { required: { vae_name: [["full_encoder_small_decoder.safetensors"]] } } },
+  LoraLoaderModelOnly: { input: { required: { lora_name: [[KLEIN_LORA]] } } },
   GetImageSize: {},
   FluxGuidance: {},
   ReferenceLatent: {},
@@ -251,66 +252,58 @@ test("builds the WAI checkpoint workflow without changing the native graph", () 
   assert.equal(graph["6"].inputs.denoise, 0.42);
 });
 
-test("builds the eager FLUX.2 Dev Image Edit graph", () => {
+test("builds the native Klein 9B Image Edit graph with optional model-only LoRA", () => {
   const graph = buildImg2ImgPrompt({
     sourceName: "source.png",
-    prompt: "replace the background with a rainy Taipei street",
+    prompt: "keep the person and replace the background with a rainy Taipei street",
     negativePrompt: "ignored for flux2",
-    model: FLUX2_DEV_MODEL,
+    model: KLEIN_MODEL,
+    characterLoraName: KLEIN_LORA,
+    characterLoraStrength: 0.4,
     denoise: 0.2,
-    steps: 20,
-    cfg: 4,
+    steps: 4,
+    cfg: 1,
     seed: 99,
   });
-  assert.equal(Object.keys(graph).length, 17);
-  assert.equal(graph["1"].class_type, "UNETLoader");
-  assert.equal(graph["1"].inputs.unet_name, FLUX2_DEV_MODEL);
-  assert.deepEqual(graph["2"].inputs, { clip_name: "mistral_3_small_flux2_bf16.safetensors", type: "flux2", device: "default" });
+  assert.equal(Object.keys(graph).length, 18);
+  assert.deepEqual(graph["1"], { class_type: "UNETLoader", inputs: { unet_name: KLEIN_MODEL, weight_dtype: "default" } });
+  assert.deepEqual(graph["2"].inputs, { clip_name: "qwen_3_8b_fp8mixed.safetensors", type: "flux2", device: "default" });
   assert.equal(graph["3"].inputs.vae_name, "full_encoder_small_decoder.safetensors");
-  assert.equal(graph["4"].inputs.image, "source.png");
-  assert.deepEqual(graph["6"].inputs, { pixels: ["4", 0], vae: ["3", 0] });
   assert.deepEqual(graph["9"].inputs, { conditioning: ["8", 0], latent: ["6", 0] });
-  assert.deepEqual(graph["10"].inputs.conditioning, ["9", 0]);
-  assert.deepEqual(graph["13"].inputs, { steps: 20, width: ["5", 0], height: ["5", 1] });
-  assert.deepEqual(graph["14"].inputs, { width: ["5", 0], height: ["5", 1], batch_size: 1 });
-  assert.deepEqual(graph["17"].inputs.images, ["16", 0]);
-  assert.equal(Object.values(graph).some((node) => node.class_type === "TorchCompileModel"), false);
-  assert.deepEqual(graph["10"].inputs.model, ["1", 0]);
+  assert.deepEqual(graph["13"].inputs, { steps: 4, width: ["5", 0], height: ["5", 1] });
+  assert.deepEqual(graph["18"], {
+    class_type: "LoraLoaderModelOnly",
+    inputs: { model: ["1", 0], lora_name: KLEIN_LORA, strength_model: 0.4 },
+  });
+  assert.deepEqual(graph["10"].inputs.model, ["18", 0]);
   assert.equal(Object.values(graph).some((node) => node.class_type === "KSampler"), false);
 });
 
-test("FLUX.2 Dev readiness requires every edit node and companion file", () => {
-  const ready = evaluateImg2ImgReadiness(flux2ObjectInfo);
-  assert.deepEqual(Object.keys(ready.profiles[FLUX2_DEV_MODEL].nodes).sort(), [...IMG2IMG_FLUX2_REQUIRED_NODES].sort());
-  assert.equal(ready.models[FLUX2_DEV_MODEL], true);
-  assert.deepEqual(ready.profiles[FLUX2_DEV_MODEL].companions, { model: true, textEncoder: true, clipType: true, vae: true });
+test("Klein 9B readiness requires the native edit nodes and installed companions", () => {
+  const ready = evaluateImg2ImgReadiness(kleinObjectInfo);
+  assert.deepEqual(Object.keys(ready.profiles[KLEIN_MODEL].nodes).sort(), [...IMG2IMG_FLUX2_REQUIRED_NODES].sort());
+  assert.equal(ready.models[KLEIN_MODEL], true);
+  assert.equal(ready.profiles[KLEIN_MODEL].loraLoader, "LoraLoaderModelOnly");
+  assert.equal(ready.profiles[KLEIN_MODEL].loraAvailable, true);
+  assert.deepEqual(ready.profiles[KLEIN_MODEL].companions, { model: true, textEncoder: true, clipType: true, vae: true });
 
-  const missingVae = evaluateImg2ImgReadiness({
-    ...flux2ObjectInfo,
-    VAELoader: { input: { required: { vae_name: [["flux2-vae.safetensors"]] } } },
+  const missingEncoder = evaluateImg2ImgReadiness({
+    ...kleinObjectInfo,
+    CLIPLoader: { input: { required: { clip_name: [["other.safetensors"]], type: [["flux2"]] } } },
   });
-  assert.equal(missingVae.models[FLUX2_DEV_MODEL], false);
-  assert.equal(missingVae.profiles[FLUX2_DEV_MODEL].companions.vae, false);
+  assert.equal(missingEncoder.models[KLEIN_MODEL], false);
 });
 
-test("FLUX.2 Dev edit rejects unsupported pose and character LoRA branches", () => {
+test("Klein 9B edit rejects the SD checkpoint pose branch and remains local-only", () => {
   assert.throws(() => buildImg2ImgPrompt({
     sourceName: "source.png",
     poseName: "pose.png",
     poseControlNetName: "openpose.safetensors",
-    model: FLUX2_DEV_MODEL,
+    model: KLEIN_MODEL,
   }), { code: "IMG2IMG_POSE_UNSUPPORTED" });
-  assert.throws(() => buildImg2ImgPrompt({
-    sourceName: "source.png",
-    characterLoraName: "characters/hero.safetensors",
-    model: FLUX2_DEV_MODEL,
-  }), { code: "IMG2IMG_LORA_UNSUPPORTED" });
-});
-
-test("FLUX.2 Dev edit remains local-only", () => {
-  const readiness = evaluateImg2ImgReadiness(flux2ObjectInfo, { remote: true });
-  assert.equal(readiness.models[FLUX2_DEV_MODEL], false);
-  assert.equal(readiness.profiles[FLUX2_DEV_MODEL].reason, "LOCAL_ONLY_MODEL");
+  const readiness = evaluateImg2ImgReadiness(kleinObjectInfo, { remote: true });
+  assert.equal(readiness.models[KLEIN_MODEL], false);
+  assert.equal(readiness.profiles[KLEIN_MODEL].reason, "LOCAL_ONLY_MODEL");
 });
 
 test("readiness requires standard nodes and at least one approved checkpoint", () => {

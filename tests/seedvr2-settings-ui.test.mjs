@@ -184,7 +184,8 @@ test("SeedVR2 FP16 is the connected high-quality default", async () => {
   assert.match(client, /id: "seedvr2_7b_sharp_fp16"/);
   assert.match(client, /SeedVR2 7B Sharp FP16 · 高品質預設/);
   assert.match(client, /DEFAULT_UPSCALE_UI_PROFILE: UpscaleProfile = "seedvr2_7b_sharp_fp16"/);
-  assert.match(client, /DEFAULT_UPSCALE_PROFILE: UpscaleProfile = "h3_latent_2x"/);
+  assert.match(client, /DEFAULT_UPSCALE_PROFILE: UpscaleProfile = "seedvr2_7b_sharp_fp16"/);
+  assert.doesNotMatch(client, /h3_latent_2x|h3_ultimate_tiled_2x|ltx25_bf16_1_5x/);
   assert.match(workspace, /useState<UpscaleProfile>\(DEFAULT_UPSCALE_UI_PROFILE\)/);
   assert.match(workspace, /profile === "seedvr2_7b_sharp_fp16" \|\| profile === "seedvr2_7b_sharp_nvfp4"/);
   assert.match(workspace, /if \(uploaded\.kind === "image"\) setProfile\(DEFAULT_UPSCALE_UI_PROFILE\)/);
