@@ -150,8 +150,42 @@ type ApiError = { error?: string | { code?: string; message?: string } };
 type ValidationIssue = { field: string; message: string };
 
 const RENDER_MODELS = [
-  { value: "nvfp4_blackwell", label: "NVFP4 Blackwell" },
+  { value: "nvfp4_blackwell", label: "快速 NVFP4", description: "約 12.5 GB DiT；速度與記憶體優先，適合預覽與一般生成。" },
+  { value: "int8_convrot_quality", label: "高畫質 INT8 ConvRot", description: "約 21.0 GB DiT；動態與物體形狀通常較穩，但使用更多 UMA、生成稍慢。" },
 ] as const;
+
+const MULTISHOT_FRAMES_HELP: Record<243 | 362, string> = {
+  243: "每個 window 生成 243 幀（24 FPS 下約 10.125 秒）；段數較多，但每段較短。",
+  362: "每個 window 生成 362 幀（24 FPS 下約 15.083 秒）；接縫較少，但每段生成時間較長。",
+};
+
+const MULTISHOT_CONTINUITY_HELP: Record<MultishotContinuityMode, string> = {
+  first_frame: "將上一個 window 的最後一幀作為下一段的 H3 原生 frame-0 guide；畫面接續穩定，但不會傳遞原始音訊 latent。",
+  context_pin: "將上一個 window 尾端的原始影音 latent 傳給下一段，較能延續動作、運鏡與聲音；需要本機 Motion Context nodes。",
+};
+
+const MULTISHOT_PROMPT_HELP: Record<MultishotPromptMode, string> = {
+  auto_extend: "依時間標記（例如 00:10–00:20）把完整故事分配到對應 window；每段只生成自己的內容，再加入人物、場景與動作延續約束。沒有時間標記時會依段落順序分配。",
+  manual_shots: "每個 generation window 使用一張獨立劇本卡；劇本數量必須與系統計算的 windows 數量相同。",
+};
+
+const CONTEXT_FRAMES_HELP: Record<5 | 22 | 39 | 56, string> = {
+  5: "保留約 0.21 秒的原始影音 latent；約束最弱、下一段自由度最高。",
+  22: "保留約 0.92 秒的原始影音 latent；連續性與下一段自由度較平衡。",
+  39: "保留約 1.63 秒的原始影音 latent；動作與聲音延續較強。",
+  56: "保留約 2.33 秒的原始影音 latent；延續最強，但處理量較高且下一段較受前段約束。",
+};
+
+const CHAIN_GAIN_HELP: Record<"off" | "flatten", string> = {
+  off: "不加入紋理增益限制；後續 windows 完全依各段提示詞生成。",
+  flatten: "要求後續 windows 對齊第一段的紋理強度、銳利度與微對比，抑制細節逐段累積；這不是音量控制。",
+};
+
+const MASTER_NORMALIZE_HELP: Record<"off" | "luma" | "luma+contrast", string> = {
+  off: "直接合併片段、不重新編碼；速度最快並保留原始畫質。",
+  luma: "成片組裝時平滑跨片段亮度差異；會重新編碼影片，音訊保持不變。",
+  "luma+contrast": "成片組裝時更強地平衡亮度、對比與冷暖色偏；會重新編碼影片。",
+};
 
 export function LongCreateForm() {
   const { locale } = useI18n();
@@ -1049,11 +1083,11 @@ export function LongCreateForm() {
             {longVideoEnabled && <div className={styles.stack}>
               <div className={styles.twoColumns}>
                 <Field label="Target Duration" error={attempted ? issuesByField.get("targetDurationSeconds") : ""}><input id="long-target-duration" className={styles.input} type="number" min={1} max={600} step={1} value={targetDurationSeconds} disabled={!canInteract} onChange={(event) => { setTargetDurationSeconds(numberDraft(event.target.value)); markPlanDirty(); }} /></Field>
-                <Field label="Frames Per Shot" error={attempted ? issuesByField.get("framesPerShot") : ""}><select id="long-frames-per-shot" className={styles.select} value={framesPerShot} disabled={!canInteract} onChange={(event) => { setFramesPerShot(Number(event.target.value) as 243 | 362); markPlanDirty(); }}><option value={243}>243 frames · 10.125s</option><option value={362}>362 frames · 15.083s</option></select></Field>
+                <Field label="Frames Per Shot" error={attempted ? issuesByField.get("framesPerShot") : ""} helper={MULTISHOT_FRAMES_HELP[framesPerShot]}><select id="long-frames-per-shot" className={styles.select} value={framesPerShot} disabled={!canInteract} onChange={(event) => { setFramesPerShot(Number(event.target.value) as 243 | 362); markPlanDirty(); }}><option value={243}>243 frames · 10.125s</option><option value={362}>362 frames · 15.083s</option></select></Field>
               </div>
               <div className={styles.twoColumns}>
-                <Field label="Continuity" error={attempted ? issuesByField.get("continuityMode") : ""}><select id="long-multishot-continuity" className={styles.select} value={continuityMode} disabled={!canInteract} onChange={(event) => { setContinuityMode(event.target.value as MultishotContinuityMode); markPlanDirty(); }}><option value="first_frame">first_frame · H3 native</option><option value="context_pin">context_pin · raw latent</option></select></Field>
-                <Field label="Prompt Mode" error={attempted ? issuesByField.get("promptMode") : ""}><select id="long-prompt-mode" className={styles.select} value={promptMode} disabled={!canInteract} onChange={(event) => { setPromptMode(event.target.value as MultishotPromptMode); markPlanDirty(); }}><option value="auto_extend">auto_extend</option><option value="manual_shots">manual_shots</option></select></Field>
+                <Field label="Continuity" error={attempted ? issuesByField.get("continuityMode") : ""} helper={`${MULTISHOT_CONTINUITY_HELP[continuityMode]}${continuityMode === "context_pin" && !multishotHealth?.continuity?.contextPin?.available ? " 目前本機不可用，提交時會自動退回 first_frame。" : ""}`}><select id="long-multishot-continuity" className={styles.select} value={continuityMode} disabled={!canInteract} onChange={(event) => { setContinuityMode(event.target.value as MultishotContinuityMode); markPlanDirty(); }}><option value="first_frame">first_frame · H3 native</option><option value="context_pin">context_pin · raw latent</option></select></Field>
+                <Field label="Prompt Mode" error={attempted ? issuesByField.get("promptMode") : ""} helper={MULTISHOT_PROMPT_HELP[promptMode]}><select id="long-prompt-mode" className={styles.select} value={promptMode} disabled={!canInteract} onChange={(event) => { setPromptMode(event.target.value as MultishotPromptMode); markPlanDirty(); }}><option value="auto_extend">auto_extend</option><option value="manual_shots">manual_shots</option></select></Field>
               </div>
               <p className={styles.helper}>將建立 {multishotCount} 個 generation windows；不會嘗試單次 sampling 生成整支長片。{continuityMode === "context_pin" && !multishotHealth?.continuity?.contextPin?.available ? " 本機 Motion Context nodes 不可用，提交後會明確記錄並自動 fallback 到 first_frame。" : ""}</p>
               {promptMode === "auto_extend" && <Field label="完整場景描述" error={attempted ? issuesByField.get("inputText") : ""} helper="每段會加入同人物、服裝、環境、攝影機、光線、動作與對話延續約束。"><textarea id="long-auto-extend-prompt" className={styles.textarea} value={autoExtendPrompt} disabled={!canInteract} onChange={(event) => { setAutoExtendPrompt(event.target.value); markPlanDirty(); }} placeholder="描述一個連續 take；除非明確要求，系統不會加入 cut 或 new scene。" /></Field>}
@@ -1065,8 +1099,8 @@ export function LongCreateForm() {
               <details className={styles.advancedPanel}>
                 <summary>Advanced</summary>
                 <div className={styles.advancedBody}>
-                  <div className={styles.twoColumns}><Field label="Context Frames"><select className={styles.select} value={contextFrames} disabled={!canInteract || continuityMode !== "context_pin"} onChange={(event) => { setContextFrames(Number(event.target.value) as 5 | 22 | 39 | 56); markPlanDirty(); }}>{[5, 22, 39, 56].map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Chain Gain Control"><select className={styles.select} value={chainGainControl} disabled={!canInteract} onChange={(event) => { setChainGainControl(event.target.value as "off" | "flatten"); markPlanDirty(); }}><option value="off">off</option><option value="flatten">flatten</option></select></Field></div>
-                  <Field label="Master Normalize"><select className={styles.select} value={masterNormalize} disabled={!canInteract} onChange={(event) => { setMasterNormalize(event.target.value as "off" | "luma" | "luma+contrast"); markPlanDirty(); }}><option value="off">off</option><option value="luma">luma</option><option value="luma+contrast">luma+contrast</option></select></Field>
+                  <div className={styles.twoColumns}><Field label="Context Frames" helper={continuityMode === "context_pin" ? CONTEXT_FRAMES_HELP[contextFrames] : "只在 context_pin 模式生效；目前使用 first_frame，因此此項不套用。"}><select className={styles.select} value={contextFrames} disabled={!canInteract || continuityMode !== "context_pin"} onChange={(event) => { setContextFrames(Number(event.target.value) as 5 | 22 | 39 | 56); markPlanDirty(); }}>{[5, 22, 39, 56].map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Chain Gain Control" helper={CHAIN_GAIN_HELP[chainGainControl]}><select className={styles.select} value={chainGainControl} disabled={!canInteract} onChange={(event) => { setChainGainControl(event.target.value as "off" | "flatten"); markPlanDirty(); }}><option value="off">off</option><option value="flatten">flatten</option></select></Field></div>
+                  <Field label="Master Normalize" helper={MASTER_NORMALIZE_HELP[masterNormalize]}><select className={styles.select} value={masterNormalize} disabled={!canInteract} onChange={(event) => { setMasterNormalize(event.target.value as "off" | "luma" | "luma+contrast"); markPlanDirty(); }}><option value="off">off</option><option value="luma">luma</option><option value="luma+contrast">luma+contrast</option></select></Field>
                 </div>
               </details>
             </div>}
@@ -1135,7 +1169,11 @@ export function LongCreateForm() {
             </Field>}
           </div>
           <p className={styles.helper}>固定 H3 preset 支援 T2V/I2V/Ref2VA；舊版自訂 LoRA 仍限 T2V/I2V。strength 範圍 0–2，固定預設 0.8。</p>
-          <Field label="模型設定檔" error={attempted ? issuesByField.get("modelProfile") : ""}><select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>{RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}</select></Field>
+          <Field label="影片模型" error={attempted ? issuesByField.get("modelProfile") : ""} helper={RENDER_MODELS.find((model) => model.value === modelProfile)?.description || RENDER_MODELS[0].description}>
+            <select id="long-model-profile" className={styles.select} value={modelProfile} onChange={(event) => { setModelProfile(event.target.value); markPlanDirty(); }}>
+              {RENDER_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+            </select>
+          </Field>
           <div className={styles.resolutionField}>
             <span className={styles.label}>影片尺寸</span>
             <div className={styles.resolutionRow}>

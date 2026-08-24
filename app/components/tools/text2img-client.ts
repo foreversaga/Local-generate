@@ -43,7 +43,8 @@ export type Text2ImgModelHealth = {
   reason?: string;
   models: Text2ImgHealth["models"];
   encoders: Record<string, Text2ImgEncoderHealth>;
-  architecture: "flux2" | "krea2";
+  loras: Record<string, Text2ImgLoraHealth>;
+  architecture: "flux2";
   defaultSteps: number;
   maxSteps: number;
   cfg: number;
@@ -54,6 +55,19 @@ export type Text2ImgModelHealth = {
   minDimension: number;
   maxDimension: number;
   dimensionStep: number;
+};
+
+export type Text2ImgLoraSelection = {
+  id: string;
+  strength: number;
+};
+
+export type Text2ImgLoraHealth = {
+  id: string;
+  label: string;
+  filename: string;
+  defaultStrength: number;
+  available: boolean;
 };
 
 export type Text2ImgEncoderHealth = {
@@ -83,6 +97,7 @@ export type Text2ImgJob = {
   width: number;
   height: number;
   steps: number;
+  cfg: number;
   seed: number;
   modelId: string;
   encoderId: string;
@@ -95,6 +110,7 @@ export type Text2ImgJob = {
   precision: string;
   license: string;
   commercial: boolean;
+  loras: Text2ImgLoraSelection[];
   output?: StudioAsset | null;
   error?: string;
   errorCode?: string;
@@ -105,9 +121,11 @@ export type Text2ImgSubmitInput = {
   width: number;
   height: number;
   steps: number;
+  cfg: number;
   seed: number;
   modelId: string;
   encoderId: string;
+  loras: Text2ImgLoraSelection[];
 };
 
 type Text2ImgPayload = {

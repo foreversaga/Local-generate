@@ -109,6 +109,21 @@ test("coordinator continuation exposes cleanup completion and blocks on explicit
   );
 });
 
+test("unavailable Ollama is detected before acquiring a model and uses deterministic continuation", async () => {
+  let generated = false;
+  const finalizer = createContinuationPromptFinalizer({
+    model: "vision-test-model",
+    checkAvailable: async () => false,
+    ollamaCoordinator: { generate: async () => { generated = true; } },
+  });
+  const draftPrompt = buildI2VAPrompt({ description: "continue walking" });
+  const result = await finalizer({ mode: "i2v", segment: { prompt: draftPrompt }, draftPrompt, previousTail: "/not/read.png", continuityBible: {} });
+  assert.equal(generated, false);
+  assert.equal(result.provenance.fallback, true);
+  assert.equal(result.provenance.reason, "OLLAMA_UNAVAILABLE");
+  assert.match(result.prompt, /continue/i);
+});
+
 test("vision timeout and unsafe tail use deterministic fallback without rejecting", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-tail-fallback-"));
   const tailPath = path.join(root, "normalized-tail.png");

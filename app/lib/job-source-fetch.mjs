@@ -7,6 +7,7 @@ export const JOB_SOURCE_SPECS = Object.freeze([
   Object.freeze({ source: 'video', url: '/app/api/jobs' }),
   Object.freeze({ source: 'long', url: '/app/api/sequences' }),
   Object.freeze({ source: 'upscale', url: '/app/api/upscale/jobs' }),
+  Object.freeze({ source: 'text2img', url: '/app/api/text2img/jobs' }),
   Object.freeze({ source: 'img2img', url: '/app/api/img2img/jobs' }),
   Object.freeze({ source: 'lora', url: '/app/api/lora-training/jobs' }),
 ]);

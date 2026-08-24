@@ -137,7 +137,7 @@ export const UPSCALE_PROFILES = [
     {
         id: "seedvr2_7b_sharp_nvfp4",
         label: "SeedVR2 7B Sharp NVFP4",
-        description: "高品質圖片與影片重建，使用原生 SeedVR2 workflow 與 wavelet 色彩校正。",
+        description: "較省記憶體的高品質圖片與影片重建；支援 wavelet 色彩校正，但不支援 Tiled Detail / Skin Detail。",
         supportsImages: true,
     },
     {

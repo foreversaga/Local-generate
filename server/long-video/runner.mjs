@@ -11,6 +11,7 @@ import { validatePrompt } from "./prompt-validator.mjs";
 import { buildDeterministicContinuationPrompt, ensureRef2vaLatentContinuationPrompt, ensureRef2vaVisualContextPrompt } from "./continuation-finalizer.mjs";
 import { mergeLongVideoNegativePrompt } from "./quality-defaults.mjs";
 import { buildRef2VCameraPlanContext, mergeNegativePromptTerms } from "../../app/lib/ref2v-camera-plan.mjs";
+import { buildWindowedAutoExtendPrompts } from "../../app/lib/multishot-prompt-windows.mjs";
 
 async function logEvent(id, event, deps) {
   if (deps.log) return deps.log(event);
@@ -236,6 +237,18 @@ async function defaultVerifyCompletedSegment(segment) {
   return Boolean(normalized?.isFile() && tail?.isFile());
 }
 
+export function repairLegacyAutoExtendPrompts(job) {
+  if (job?.longVideoEnabled !== true || job?.promptMode !== "auto_extend" || job?.planMeta?.promptSource !== "auto_extend" || !Array.isArray(job?.segments) || job.segments.length < 2) return null;
+  const firstPrompt = String(job.segments[0]?.prompt || "");
+  const source = firstPrompt.split(/\n\nEnd this window on a stable readable face[\s\S]*$/i)[0].trim();
+  const timedHeadings = source.match(/^\s*(?:\[)?\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:–|—|-|~|to)\s*\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?/gmi) || [];
+  if (timedHeadings.length < 2) return null;
+  const anchor = source.slice(0, Math.min(160, source.length));
+  const duplicated = job.segments.filter((segment) => String(segment?.prompt || "").includes(anchor)).length;
+  if (duplicated < 2) return null;
+  return buildWindowedAutoExtendPrompts(source, job.segments.map((segment) => ({ start: segment.start, end: segment.end })));
+}
+
 export async function runSequence(sequenceOrId, deps = {}) {
   const job = typeof sequenceOrId === "string" ? await getJob(sequenceOrId) : sequenceOrId;
   const minimumSegments = job?.longVideoEnabled === true ? 1 : 2;
@@ -267,6 +280,20 @@ export async function runSequence(sequenceOrId, deps = {}) {
   const assemble = deps.assemble || deps.media?.assemble || defaultAssemble;
   const verifyCompletedSegment = deps.verifyCompletedSegment || defaultVerifyCompletedSegment;
   const writeManifest = deps.writeManifest || writeSequenceManifest;
+  const repairedPrompts = repairLegacyAutoExtendPrompts(job);
+  if (repairedPrompts) {
+    for (let index = 0; index < repairedPrompts.length; index += 1) {
+      await setSegment(job, index, {
+        prompt: repairedPrompts[index],
+        promptSource: "auto_extend",
+        status: "pending",
+        recoverable: true,
+        error: null,
+        promptFinalization: null,
+      }, deps);
+    }
+    await logEvent(id, { level: "warn", event: "prompt.auto_extend_legacy_repaired", stage: "sequence.preflight", segmentCount: repairedPrompts.length }, deps);
+  }
   const normalizedPaths = [];
   const motionContext = job.continuationMode === "motion_context";
   const legacyLatentContext = job.continuationMode === "latent_context";

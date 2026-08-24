@@ -70,7 +70,8 @@ export function UpscaleWorkspace() {
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
     const sourceKind = source?.kind || "video";
     const isSeedVR2 = profile === "seedvr2_7b_sharp_fp16" || profile === "seedvr2_7b_sharp_nvfp4";
-    const detailMode = isSeedVR2 && !isSeedVR2DetailDraftDefault(detailDraft);
+    const supportsSeedVR2Detail = profile === "seedvr2_7b_sharp_fp16";
+    const detailMode = supportsSeedVR2Detail && !isSeedVR2DetailDraftDefault(detailDraft);
     const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
     const samplingIsDefault = steps.trim() !== ""
         && Number(steps) === SEEDVR2_DEFAULT_SAMPLING.steps
@@ -159,7 +160,7 @@ export function UpscaleWorkspace() {
             return;
         }
         if (active || busy) return;
-        if (health?.ready === false) {
+        if (healthLoading || health?.ready !== true) {
             setError(readinessLabel);
             document.getElementById("upscale-readiness")?.focus();
             return;
@@ -197,7 +198,9 @@ export function UpscaleWorkspace() {
                     scheduler,
                     denoise: Math.round(parsedDenoise * 100) / 100,
                 };
-                detailSettings = parseSeedVR2DetailDraft(detailDraft, seedVR2Help.detail.errors);
+                detailSettings = supportsSeedVR2Detail
+                    ? parseSeedVR2DetailDraft(detailDraft, seedVR2Help.detail.errors)
+                    : {};
             }
             const next = await submitUpscale(source, profile, {
                 scale: isSeedVR2 ? parsedScale : UPSCALE_SCALE,
@@ -293,19 +296,24 @@ export function UpscaleWorkspace() {
         };
     }, [job?.id, job?.output, job?.output?.name, job?.output?.root, job?.output?.url, job?.status]);
 
-    const statusLabel = job
-        ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale", locale)}${job.stage ? ` · ${job.stage}` : ""}`
-        : "已就緒，可開始升頻";
     const readinessLabel = healthLoading
             ? localizedReadinessLabel("checking", locale)
             : health?.ready
                 ? localizedReadinessLabel("ready", locale)
                 : localizedReadinessLabel("unavailable", locale);
+    const statusLabel = job
+        ? `${jobStatusLabel(job.status === "completed" ? "complete" : job.status, "upscale", locale)}${job.stage ? ` · ${job.stage}` : ""}`
+        : healthLoading
+            ? "正在檢查升頻能力"
+            : health?.ready
+                ? "已就緒，可開始升頻"
+                : "所選模式目前無法使用";
 
     function handleProfileChange(event: ChangeEvent<HTMLSelectElement>) {
         if (active || busy) return;
         const next = event.target.value as UpscaleProfile;
         if (!UPSCALE_PROFILES.some((item) => item.id === next)) return;
+        if (next !== "seedvr2_7b_sharp_fp16") setDetailDraft(createDefaultSeedVR2DetailDraft());
         setProfile(next);
         setHealth(null);
         setHealthError("");
@@ -404,6 +412,7 @@ export function UpscaleWorkspace() {
                         <select value={profile} onChange={handleProfileChange} disabled={active || Boolean(busy)} aria-label="選擇升頻後端">
                             {UPSCALE_PROFILES.map((item) => <option key={item.id} value={item.id} disabled={sourceKind === "image" && !item.supportsImages}>{item.label}</option>)}
                         </select>
+                        <small className={styles.fieldHelp} aria-live="polite">{selectedProfile.description}</small>
                     </label>
                     {isSeedVR2 && (
                         <div className={styles.parameterPanel} aria-label="SeedVR2 進階參數">
@@ -427,14 +436,14 @@ export function UpscaleWorkspace() {
                                     <select value={resizeMethod} onChange={(event) => setResizeMethod(event.target.value as SeedVR2ResizeMethod)} disabled={active || Boolean(busy)}>
                                         {SEEDVR2_RESIZE_METHODS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                     </select>
-                                    <small className={styles.fieldHelp}>{seedVR2Help.resize[resizeMethod]}</small>
+                                    <small className={styles.fieldHelp} aria-live="polite">{seedVR2Help.resize[resizeMethod]}</small>
                                 </label>
                                 <label className={styles.profileField}>
                                     <span>色彩校正</span>
                                     <select value={colorCorrection} onChange={(event) => setColorCorrection(event.target.value as SeedVR2ColorCorrection)} disabled={active || Boolean(busy)}>
                                         {SEEDVR2_COLOR_CORRECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                     </select>
-                                    <small className={styles.fieldHelp}>{seedVR2Help.colorCorrection[colorCorrection]}</small>
+                                    <small className={styles.fieldHelp} aria-live="polite">{seedVR2Help.colorCorrection[colorCorrection]}</small>
                                 </label>
                             </div>
                             <p className={styles.helper}>1–4× 可調；倍數越高會明顯增加統一記憶體用量與處理時間。</p>
@@ -460,14 +469,14 @@ export function UpscaleWorkspace() {
                                             <select value={samplerName} onChange={(event) => setSamplerName(event.target.value as SeedVR2SamplerName)} disabled={active || Boolean(busy)}>
                                                 {SEEDVR2_SAMPLERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                             </select>
-                                            <small className={styles.fieldHelp}>{seedVR2Help.sampler[samplerName]}</small>
+                                            <small className={styles.fieldHelp} aria-live="polite">{seedVR2Help.sampler[samplerName]}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.scheduler")}</span>
                                             <select value={scheduler} onChange={(event) => setScheduler(event.target.value as SeedVR2Scheduler)} disabled={active || Boolean(busy)}>
                                                 {SEEDVR2_SCHEDULERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                                             </select>
-                                            <small className={styles.fieldHelp}>{seedVR2Help.scheduler[scheduler]}</small>
+                                            <small className={styles.fieldHelp} aria-live="polite">{seedVR2Help.scheduler[scheduler]}</small>
                                         </label>
                                         <label className={styles.profileField}>
                                             <span>{t("upscale.seedvr2.denoise")}</span>
@@ -481,14 +490,20 @@ export function UpscaleWorkspace() {
                                     </div>
                                 </div>
                             </details>
-                            <SeedVR2DetailControls
-                                locale={locale}
-                                value={detailDraft}
-                                disabled={active || Boolean(busy)}
-                                onChange={setDetailDraft}
-                                onPresetChange={handleSeedVR2DetailPreset}
-                                onReset={resetSeedVR2Detail}
-                            />
+                            {supportsSeedVR2Detail ? (
+                                <SeedVR2DetailControls
+                                    locale={locale}
+                                    value={detailDraft}
+                                    disabled={active || Boolean(busy)}
+                                    onChange={setDetailDraft}
+                                    onPresetChange={handleSeedVR2DetailPreset}
+                                    onReset={resetSeedVR2Detail}
+                                />
+                            ) : (
+                                <p className={styles.helper} role="note">
+                                    Tiled Detail 與 Skin Detail 目前僅支援 FP16。NVFP4 使用原生快速重建；如需局部細節強化，請切換至 FP16。
+                                </p>
+                            )}
                             {detailMode && health?.detail?.available === false && (
                                 <p className={styles.detailUnavailable} role="status">{t("upscale.seedvr2.detailUnavailable")}</p>
                             )}
@@ -506,7 +521,7 @@ export function UpscaleWorkspace() {
                     </div>
                     {healthError && <p className={styles.inlineError} role="alert">{healthError}</p>}
                     {missingNodes.length > 0 && <p className={styles.helper}>缺少節點：{missingNodes.join(", ")}</p>}
-                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={active || Boolean(busy)} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
+                    <button type="button" className={styles.primaryButton} onClick={() => void start()} disabled={active || Boolean(busy) || healthLoading || health?.ready !== true} aria-busy={busy === "submit" || busy === "upload"} aria-describedby="upscale-readiness">
                         {busy === "submit" ? "建立工作中…" : active ? "升頻中…" : `開始 ${activeScale}× 升頻`}
                     </button>
                     <div className={styles.status} aria-live="polite">

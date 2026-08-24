@@ -60,6 +60,7 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                                 <option key={item.id} value={item.id}>{t(item.id === "skin_detail" ? "upscale.seedvr2.detail.preset.skin" : "upscale.seedvr2.detail.preset.default")}</option>
                             ))}
                         </select>
+                        <small className={styles.fieldHelp} aria-live="polite">{help.presetHelp[value.detailPreset]}</small>
                     </label>
                     <label className={styles.profileField}>
                         <span>Input Noise Scale</span>
@@ -96,7 +97,7 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                         <select value={value.blendingMethod} onChange={(event) => update("blendingMethod", event.target.value as SeedVR2BlendingMethod)} disabled={disabled}>
                             {SEEDVR2_BLENDING_METHODS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                         </select>
-                        <small className={styles.fieldHelp}>{help.blendingMethod[value.blendingMethod]}</small>
+                        <small className={styles.fieldHelp} aria-live="polite">{help.blendingMethod[value.blendingMethod]}</small>
                     </label>
                     <label className={styles.profileField}>
                         <span>Anti-aliasing Strength</span>
@@ -113,7 +114,7 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                         <select value={value.tilingStrategy} onChange={(event) => update("tilingStrategy", event.target.value as SeedVR2TilingStrategy)} disabled={disabled}>
                             {SEEDVR2_TILING_STRATEGIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                         </select>
-                        <small className={styles.fieldHelp}>{help.tilingStrategy[value.tilingStrategy]}</small>
+                        <small className={styles.fieldHelp} aria-live="polite">{help.tilingStrategy[value.tilingStrategy]}</small>
                     </label>
                 </div>
                 <div className={styles.advancedSamplingFooter}>

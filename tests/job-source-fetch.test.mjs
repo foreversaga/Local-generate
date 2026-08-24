@@ -49,7 +49,7 @@ test('an HTTP source failure remains visible while other sources stay usable', a
       ? response(500, { code: 'LONG_BACKEND_DOWN', error: 'long source temporarily unavailable' })
       : response(200, successJobs(sourceForUrl(url))),
   });
-  assert.equal(snapshot.jobs.length, 4);
+  assert.equal(snapshot.jobs.length, JOB_SOURCE_SPECS.length - 1);
   assert.deepEqual(snapshot.errors, [{
     source: 'long', status: 500, code: 'LONG_BACKEND_DOWN', message: 'long source temporarily unavailable',
   }]);
@@ -64,7 +64,7 @@ test('network rejection maps to a safe source diagnostic instead of an empty-suc
   });
   const error = snapshot.errors.find((item) => item.source === 'video');
   assert.deepEqual(error, { source: 'video', status: null, code: 'NETWORK_ERROR', message: 'Unable to reach video jobs.' });
-  assert.equal(snapshot.jobs.length, 4);
+  assert.equal(snapshot.jobs.length, JOB_SOURCE_SPECS.length - 1);
   assert.doesNotMatch(JSON.stringify(snapshot), /super-secret/);
 });
 
@@ -75,7 +75,7 @@ test('timeout maps consistently and does not block partial results', async () =>
       ? new Promise(() => {})
       : response(200, successJobs(sourceForUrl(url))),
   });
-  assert.equal(snapshot.jobs.length, 4);
+  assert.equal(snapshot.jobs.length, JOB_SOURCE_SPECS.length - 1);
   assert.deepEqual(snapshot.errors, [{
     source: 'upscale', status: 408, code: 'TIMEOUT', message: 'Timed out loading upscale jobs.',
   }]);

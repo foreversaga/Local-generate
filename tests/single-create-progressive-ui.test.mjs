@@ -49,3 +49,18 @@ test("single-video advanced controls stay mounted when collapsed", async () => {
   assert.match(css, /section\[aria-labelledby="script-library-title"\]/);
   assert.match(css, /section\[aria-labelledby="single-prompt-assistant-title"\]/);
 });
+
+test("single-video UI disables modes and profiles that runtime health marks unavailable", async () => {
+  const form = await readFile(
+    new URL("../app/components/create/SingleCreateForm.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(form, /\/api\/video\/health/);
+  assert.match(form, /const runtimeReady = !healthLoading/);
+  assert.match(form, /disabled=\{!canInteract \|\| unavailable\}/);
+  assert.match(form, /serviceState\.profiles\[option\.value\]\?\.available === false/);
+  assert.match(form, /if \(!runtimeReady\)/);
+  assert.match(form, /GenerateButton canInteract=\{canGenerate\}/);
+  assert.match(form, /所選模式與模型已就緒/);
+});

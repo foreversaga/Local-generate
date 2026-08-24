@@ -130,8 +130,8 @@ export function assertLongLoraSupported(value, { mode } = {}) {
   if (!fixedH3 && ref2v) {
     fail("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference long-video segments.", 422);
   }
-  const profileSupported = profile === "nvfp4_blackwell"
-    || (fixedH3 && ref2v && profile === "ref2va_pruned_nvfp4");
+  const profileSupported = ["nvfp4_blackwell", "int8_convrot_quality"].includes(profile)
+    || (fixedH3 && ref2v && ["ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(profile));
   if (!profileSupported) {
     fail("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${profile}.`, 422, { modelProfile: profile });
   }

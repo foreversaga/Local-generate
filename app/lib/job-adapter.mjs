@@ -63,11 +63,14 @@ export function adaptJob(raw, source = "video") {
         ? raw.inputText
         : "",
     negativePrompt: typeof raw?.negativePrompt === "string" ? raw.negativePrompt : "",
-    modelProfile: typeof raw?.modelProfile === "string" ? raw.modelProfile : typeof raw?.model === "string" ? raw.model : "",
+    modelProfile: source === "text2img" && typeof raw?.modelLabel === "string"
+      ? raw.modelLabel
+      : typeof raw?.modelProfile === "string" ? raw.modelProfile : typeof raw?.model === "string" ? raw.model : "",
     width: numericOrNull(raw?.width),
     height: numericOrNull(raw?.height),
     duration: numericOrNull(raw?.duration),
     steps: numericOrNull(raw?.steps),
+    cfg: numericOrNull(raw?.cfg),
     seed: numericOrNull(raw?.seed),
     timeoutSeconds: numericOrNull(raw?.timeoutSeconds),
     outputName: typeof raw?.outputName === "string" ? raw.outputName : "",
@@ -93,7 +96,7 @@ export function adaptJob(raw, source = "video") {
     etaSource: typeof raw?.etaSource === "string" ? raw.etaSource : "",
     etaConfidence: typeof raw?.etaConfidence === "string" ? raw.etaConfidence : "",
     timingSampleCount: nonNegativeInteger(raw?.timingSampleCount),
-    error: typeof raw?.error === "string" ? raw.error : raw?.error?.message || "",
+    error: jobError(raw, source),
     output,
     outputAvailable: outputAvailability(output),
     artifact,
@@ -173,8 +176,16 @@ function jobDescription(raw, source) {
 
 function jobTitle(raw, source) {
   if (source === "long") return raw?.title || "長影片";
-  if (source === "upscale") return `影片升頻 · ${raw?.sourceName || "影片"}`;
-  if (source === "img2img") return `以圖生圖 · ${raw?.sourceName || "圖片"}`;
+  if (source === "upscale") {
+    const sourceName = String(raw?.sourceName || "");
+    const image = /\.(?:png|jpe?g|webp)$/i.test(sourceName);
+    return `${image ? "圖片" : "影片"}升頻 · ${sourceName || (image ? "圖片" : "影片")}`;
+  }
+  if (source === "text2img") {
+    const prompt = String(raw?.prompt || "").trim();
+    return prompt ? `文字生圖 · ${prompt.slice(0, 58)}${prompt.length > 58 ? "…" : ""}` : "文字生圖";
+  }
+  if (source === "img2img") return `${raw?.poseName ? "OpenPose 骨架生圖" : "以圖生圖"} · ${raw?.sourceName || "圖片"}`;
   if (source === "lora") {
     const name = raw?.displayName || raw?.outputName || raw?.config?.outputName || raw?.slug;
     return name ? String(name) : "LoRA 訓練";
@@ -185,14 +196,20 @@ function jobTitle(raw, source) {
 }
 
 function jobSubtitle(raw, source) {
-  if (source === "long") return `${raw?.segmentCount ?? raw?.segments?.length ?? 0} 個片段 · ${raw?.duration || 0} 秒`;
+  if (source === "long") {
+    const segments = Array.isArray(raw?.segments) ? raw.segments : [];
+    const total = Number(raw?.segmentCount ?? segments.length) || 0;
+    const completed = segments.filter((segment) => segment?.status === "completed").length;
+    return `${completed}/${total} 段完成 · 目標 ${raw?.duration || raw?.targetDurationSeconds || 0} 秒`;
+  }
   if (source === "upscale") return `${raw?.scale || 2}× 影片升頻`;
+  if (source === "text2img") return [raw?.modelLabel || raw?.model, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.steps ? `${raw.steps} steps` : ""].filter(Boolean).join(" · ");
   if (source === "img2img") {
     const count = positiveInteger(raw?.batchCount);
     const completed = nonNegativeInteger(raw?.completedCount);
     const failed = nonNegativeInteger(raw?.failedCount);
     const summary = count && count > 1 ? `${completed}/${count} 項完成${failed ? `，${failed} 項失敗` : ""}` : "";
-    return [raw?.model || "圖片生成", summary].filter(Boolean).join(" 繚 ");
+    return [raw?.poseName ? "OpenPose ControlNet" : raw?.model || "圖片生成", summary].filter(Boolean).join(" · ");
   }
   if (source === "lora") {
     const family = raw?.family || raw?.training?.family || raw?.config?.family || "LoRA";
@@ -200,6 +217,18 @@ function jobSubtitle(raw, source) {
     return [`${String(family).toLocaleUpperCase()} LoRA`, Number.isFinite(imageCount) && imageCount > 0 ? `${imageCount} 張圖片` : ""].filter(Boolean).join(" · ");
   }
   return [raw?.modelProfile, raw?.width && raw?.height ? `${raw.width}×${raw.height}` : "", raw?.duration ? `${raw.duration} 秒` : ""].filter(Boolean).join(" · ");
+}
+
+function jobError(raw, source) {
+  const message = typeof raw?.error === "string" ? raw.error : raw?.error?.message || "";
+  if (source !== "long" || String(raw?.status || "") !== "failed") return message;
+  const segments = Array.isArray(raw?.segments) ? raw.segments : [];
+  const total = Number(raw?.segmentCount ?? segments.length) || segments.length;
+  const completedSegments = segments.filter((segment) => segment?.status === "completed");
+  if (!total || completedSegments.length >= total) return message;
+  const completedSeconds = completedSegments.reduce((sum, segment) => sum + (Number(segment?.renderedDuration ?? segment?.duration) || 0), 0);
+  const summary = `長影片在第 ${completedSegments.length + 1}/${total} 段失敗；目前僅完成 ${completedSegments.length}/${total} 段（約 ${completedSeconds.toFixed(1)} 秒），尚未合併成最終影片。`;
+  return [summary, message].filter(Boolean).join(" ");
 }
 
 function outputRef(raw, source, artifact = null) {

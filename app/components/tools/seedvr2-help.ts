@@ -16,6 +16,7 @@ type SeedVR2DetailHelpCopy = {
     reset: string;
     experimentalWarning: string;
     preset: Record<SeedVR2DetailPreset, string>;
+    presetHelp: Record<SeedVR2DetailPreset, string>;
     inputNoiseScale: string;
     latentNoiseScale: string;
     tileWidth: string;
@@ -99,6 +100,10 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
             default: "預設（維持原工作流）",
             skin_detail: "皮膚細節（毛孔／髮絲／材質）",
         },
+        presetHelp: {
+            default: "維持既有 SeedVR2 graph 與輸出行為，不啟用 tiled 細節重建。",
+            skin_detail: "套用 2×、Lanczos、Wavelet 與 0.035 Input Noise，啟用 tiled 重建以加強皮膚、髮絲與材質細節。",
+        },
         inputNoiseScale: "在輸入影像加入少量噪聲，讓模型有空間重建毛孔與其他高頻細節。真人素材建議從 0.02–0.06 測試。",
         latentNoiseScale: "在 latent 階段加入噪聲。皮膚細節模式預設為 0；提高通常會讓結果更柔或增加變化。",
         tileWidth: "每個細節重建 tile 的寬度。1024 是高品質起點；越大越吃記憶體。",
@@ -176,6 +181,10 @@ const EN_HELP: SeedVR2HelpCopy = {
         preset: {
             default: "Default (preserve current workflow)",
             skin_detail: "Skin detail (pores / hair / material)",
+        },
+        presetHelp: {
+            default: "Preserves the existing SeedVR2 graph and output behavior without tiled detail reconstruction.",
+            skin_detail: "Applies 2×, Lanczos, Wavelet, and 0.035 input noise, then enables tiled reconstruction for skin, hair, and material detail.",
         },
         inputNoiseScale: "Adds a small amount of noise before reconstruction so the model has room to rebuild pores and other high-frequency detail. For people, start around 0.02–0.06.",
         latentNoiseScale: "Adds noise in latent space. Skin detail defaults to 0; increasing it commonly softens the result or adds variation.",

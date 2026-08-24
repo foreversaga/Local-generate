@@ -34,7 +34,11 @@ export const SEEDVR2_DEFAULT_CFG = 1;
 export const SEEDVR2_DEFAULT_SAMPLER_NAME = "euler";
 export const SEEDVR2_DEFAULT_SCHEDULER = "simple";
 export const SEEDVR2_DEFAULT_DENOISE = 1;
-export const SEEDVR2_DETAIL_NODE = "SeedVR2DetailUpscaler";
+export const SEEDVR2_DETAIL_NODE = "SeedVR2TilingUpscaler";
+export const SEEDVR2_DETAIL_DIT_LOADER_NODE = "SeedVR2LoadDiTModel";
+export const SEEDVR2_DETAIL_VAE_LOADER_NODE = "SeedVR2LoadVAEModel";
+export const SEEDVR2_DETAIL_FP16_UNET_NAME = SEEDVR2_FP16_UNET_NAME;
+export const SEEDVR2_DETAIL_VAE_NAME = "ema_vae_fp16.safetensors";
 export const SEEDVR2_DEFAULT_DETAIL = Object.freeze({
   detailPreset: "default",
   inputNoiseScale: 0,
@@ -66,17 +70,12 @@ export const SEEDVR2_TILING_STRATEGIES = Object.freeze(["chess", "grid"]);
 export const SEEDVR2_DETAIL_PRESETS = Object.freeze(["default", "skin_detail"]);
 export const SEEDVR2_DETAIL_NODE_INPUT_TYPES = Object.freeze({
   image: "IMAGE",
-  unet_name: "COMBO",
-  vae_name: "COMBO",
+  dit: "SEEDVR2_DIT",
+  vae: "SEEDVR2_VAE",
   seed: "INT",
-  scale: "FLOAT",
-  resize_method: "COMBO",
+  new_resolution: "INT",
+  upscale_factor: "FLOAT",
   color_correction: "COMBO",
-  steps: "INT",
-  cfg: "FLOAT",
-  sampler_name: "COMBO",
-  scheduler: "COMBO",
-  denoise: "FLOAT",
   input_noise_scale: "FLOAT",
   latent_noise_scale: "FLOAT",
   tile_width: "INT",
@@ -87,7 +86,6 @@ export const SEEDVR2_DETAIL_NODE_INPUT_TYPES = Object.freeze({
   anti_aliasing_strength: "FLOAT",
   mask_blur: "FLOAT",
   tiling_strategy: "COMBO",
-  detail_preset: "COMBO",
 });
 export const SEEDVR2_DETAIL_NODE_INPUTS = Object.freeze(Object.keys(SEEDVR2_DETAIL_NODE_INPUT_TYPES));
 export const SEEDVR2_SAMPLER_NAMES = Object.freeze([
@@ -189,6 +187,8 @@ export const SEEDVR2_IMAGE_REQUIRED_NODES = Object.freeze([
 export const SEEDVR2_DETAIL_REQUIRED_NODES = Object.freeze([
   "LoadVideo",
   "GetVideoComponents",
+  SEEDVR2_DETAIL_DIT_LOADER_NODE,
+  SEEDVR2_DETAIL_VAE_LOADER_NODE,
   SEEDVR2_DETAIL_NODE,
   "CreateVideo",
   "SaveVideo",
@@ -196,6 +196,8 @@ export const SEEDVR2_DETAIL_REQUIRED_NODES = Object.freeze([
 
 export const SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES = Object.freeze([
   "LoadImage",
+  SEEDVR2_DETAIL_DIT_LOADER_NODE,
+  SEEDVR2_DETAIL_VAE_LOADER_NODE,
   SEEDVR2_DETAIL_NODE,
   "SaveImage",
 ]);
@@ -261,7 +263,9 @@ const SEEDVR2_NODE_PROGRESS = Object.freeze({
   SeedVR2TemporalMerge: 72,
   VAEDecodeTiled: 84,
   SeedVR2PostProcessing: 88,
-  SeedVR2DetailUpscaler: 58,
+  SeedVR2LoadDiTModel: 36,
+  SeedVR2LoadVAEModel: 38,
+  SeedVR2TilingUpscaler: 58,
   CreateVideo: 90,
   SaveVideo: 90,
   SaveImage: 90,
@@ -447,6 +451,10 @@ function seedVR2UnetName(profile) {
   return profile === SEEDVR2_FP16_PROFILE ? SEEDVR2_FP16_UNET_NAME : SEEDVR2_UNET_NAME;
 }
 
+function seedVR2DetailUnetName(unetName) {
+  return unetName === SEEDVR2_FP16_UNET_NAME ? SEEDVR2_DETAIL_FP16_UNET_NAME : "";
+}
+
 function profileShortName(profile) {
   return profile === H3_LATENT_PROFILE ? "h3latent" : "seedvr2";
 }
@@ -624,15 +632,20 @@ export function evaluateSeedVR2Readiness(objectInfo, {
     ? sourceKind === "image" ? SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES : SEEDVR2_DETAIL_REQUIRED_NODES
     : sourceKind === "image" ? SEEDVR2_IMAGE_REQUIRED_NODES : SEEDVR2_REQUIRED_NODES;
   const nodes = Object.fromEntries(requiredNodes.map((name) => [name, Boolean(objectInfo?.[name])]));
-  const modelNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_NODE] : objectInfo?.UNETLoader;
-  const vaeNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_NODE] : objectInfo?.VAELoader;
-  const unetListed = comboValues(modelNode, "unet_name").includes(unetName);
-  const vaeListed = comboValues(vaeNode, "vae_name").includes(vaeName);
+  const modelNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_DIT_LOADER_NODE] : objectInfo?.UNETLoader;
+  const vaeNode = detailMode ? objectInfo?.[SEEDVR2_DETAIL_VAE_LOADER_NODE] : objectInfo?.VAELoader;
+  const detailUnetName = seedVR2DetailUnetName(unetName);
+  const unetListed = detailMode
+    ? Boolean(detailUnetName) && comboValues(modelNode, "model").includes(detailUnetName)
+    : comboValues(modelNode, "unet_name").includes(unetName);
+  const vaeListed = detailMode
+    ? comboValues(vaeNode, "model").includes(SEEDVR2_DETAIL_VAE_NAME)
+    : comboValues(vaeNode, "vae_name").includes(vaeName);
   const unetFile = modelFiles.unet === undefined ? true : Boolean(modelFiles.unet);
   const vaeFile = modelFiles.vae === undefined ? true : Boolean(modelFiles.vae);
   const models = {
-    unet: { name: unetName, available: unetListed && unetFile },
-    vae: { name: vaeName, available: vaeListed && vaeFile },
+    unet: { name: detailMode ? detailUnetName || unetName : unetName, available: unetListed && unetFile },
+    vae: { name: detailMode ? SEEDVR2_DETAIL_VAE_NAME : vaeName, available: vaeListed && vaeFile },
   };
   let detail;
   if (detailMode) {
@@ -641,14 +654,18 @@ export function evaluateSeedVR2Readiness(objectInfo, {
     const invalidInputs = SEEDVR2_DETAIL_NODE_INPUTS.filter((key) => (
       nodeInputSpec(nodeInfo, key) && nodeInputType(nodeInfo, key) !== SEEDVR2_DETAIL_NODE_INPUT_TYPES[key]
     ));
+    const mappedTilingStrategy = detailSettings.tilingStrategy === "chess" ? "Chess" : "Linear";
     const unsupported = {
-      resizeMethod: comboValues(nodeInfo, "resize_method").includes(detailSettings.resizeMethod) ? [] : [detailSettings.resizeMethod],
+      resizeMethod: detailSettings.resizeMethod === "lanczos" ? [] : [detailSettings.resizeMethod],
       colorCorrection: comboValues(nodeInfo, "color_correction").includes(detailSettings.colorCorrection) ? [] : [detailSettings.colorCorrection],
-      samplerName: comboValues(nodeInfo, "sampler_name").includes(detailSettings.samplerName) ? [] : [detailSettings.samplerName],
-      scheduler: comboValues(nodeInfo, "scheduler").includes(detailSettings.scheduler) ? [] : [detailSettings.scheduler],
+      steps: detailSettings.steps === 1 ? [] : [detailSettings.steps],
+      cfg: detailSettings.cfg === 1 ? [] : [detailSettings.cfg],
+      samplerName: detailSettings.samplerName === "euler" ? [] : [detailSettings.samplerName],
+      scheduler: detailSettings.scheduler === "simple" ? [] : [detailSettings.scheduler],
+      denoise: detailSettings.denoise === 1 ? [] : [detailSettings.denoise],
       blendingMethod: comboValues(nodeInfo, "blending_method").includes(detailSettings.blendingMethod) ? [] : [detailSettings.blendingMethod],
-      tilingStrategy: comboValues(nodeInfo, "tiling_strategy").includes(detailSettings.tilingStrategy) ? [] : [detailSettings.tilingStrategy],
-      detailPreset: comboValues(nodeInfo, "detail_preset").includes(detailSettings.detailPreset) ? [] : [detailSettings.detailPreset],
+      tilingStrategy: comboValues(nodeInfo, "tiling_strategy").includes(mappedTilingStrategy) ? [] : [detailSettings.tilingStrategy],
+      detailPreset: SEEDVR2_DETAIL_PRESETS.includes(detailSettings.detailPreset) ? [] : [detailSettings.detailPreset],
     };
     const schemaReady = missingInputs.length === 0 && invalidInputs.length === 0 && Object.values(unsupported).every((values) => values.length === 0);
     detail = {
@@ -867,7 +884,7 @@ export function buildSeedVR2ImagePrompt({
 export function buildSeedVR2DetailPrompt({
   sourceName,
   filenamePrefix = "seedvr2_detail_upscaled",
-  unetName = SEEDVR2_UNET_NAME,
+  unetName = SEEDVR2_FP16_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
   ...input
@@ -880,19 +897,42 @@ export function buildSeedVR2DetailPrompt({
   if (!usesSeedVR2Detail(settings)) {
     throw makeError("SeedVR2 detail graph requires non-default detail settings.", 400, "DETAIL_SETTINGS_REQUIRED");
   }
-  const detailInputs = {
-    image: sourceKind === "image" ? link(1) : link(2),
-    unet_name: unetName,
-    vae_name: vaeName,
+  const detailUnetName = seedVR2DetailUnetName(unetName);
+  if (!detailUnetName || ![SEEDVR2_VAE_NAME, SEEDVR2_DETAIL_VAE_NAME].includes(vaeName)) {
+    throw makeError("The selected SeedVR2 model is unavailable for tiled detail reconstruction.", 400, "SEEDVR2_DETAIL_MODEL_UNSUPPORTED");
+  }
+  if (settings.resizeMethod !== "lanczos" || settings.steps !== 1 || settings.cfg !== 1
+      || settings.samplerName !== "euler" || settings.scheduler !== "simple" || settings.denoise !== 1) {
+    throw makeError("Tiled detail reconstruction supports the native one-step Lanczos sampling contract only.", 400, "SEEDVR2_DETAIL_SAMPLING_UNSUPPORTED");
+  }
+  const ditInputs = {
+    model: detailUnetName,
+    device: "cuda:0",
+    blocks_to_swap: 0,
+    swap_io_components: false,
+    offload_device: "cpu",
+    cache_model: true,
+    attention_mode: "sdpa",
+  };
+  const vaeInputs = {
+    model: SEEDVR2_DETAIL_VAE_NAME,
+    device: "cuda:0",
+    encode_tiled: true,
+    encode_tile_size: Math.min(settings.tileWidth, settings.tileHeight),
+    encode_tile_overlap: settings.tilePadding,
+    decode_tiled: true,
+    decode_tile_size: Math.min(settings.tileWidth, settings.tileHeight),
+    decode_tile_overlap: settings.tilePadding,
+    tile_debug: "false",
+    offload_device: "cpu",
+    cache_model: true,
+  };
+  const detailInputs = (imageNode, ditNode, vaeNode) => ({
+    image: link(imageNode),
+    dit: link(ditNode),
+    vae: link(vaeNode),
     seed: samplerSeed,
-    scale: settings.scale,
-    resize_method: settings.resizeMethod,
-    color_correction: settings.colorCorrection,
-    steps: settings.steps,
-    cfg: settings.cfg,
-    sampler_name: settings.samplerName,
-    scheduler: settings.scheduler,
-    denoise: settings.denoise,
+    new_resolution: settings.tileUpscaleResolution,
     input_noise_scale: settings.inputNoiseScale,
     latent_noise_scale: settings.latentNoiseScale,
     tile_width: settings.tileWidth,
@@ -902,25 +942,32 @@ export function buildSeedVR2DetailPrompt({
     blending_method: settings.blendingMethod,
     anti_aliasing_strength: settings.antiAliasingStrength,
     mask_blur: settings.maskBlur,
-    tiling_strategy: settings.tilingStrategy,
-    detail_preset: settings.detailPreset,
-  };
+    tiling_strategy: settings.tilingStrategy === "chess" ? "Chess" : "Linear",
+    color_correction: settings.colorCorrection,
+    resolution_target: "longest",
+    tile_batch_size: 1,
+    upscale_factor: settings.scale,
+  });
   if (sourceKind === "image") {
     return {
       "1": { class_type: "LoadImage", inputs: { image: file } },
-      "2": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs },
-      "3": { class_type: "SaveImage", inputs: { images: link(2), filename_prefix: safePrefix } },
+      "2": { class_type: SEEDVR2_DETAIL_DIT_LOADER_NODE, inputs: ditInputs },
+      "3": { class_type: SEEDVR2_DETAIL_VAE_LOADER_NODE, inputs: vaeInputs },
+      "4": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs(1, 2, 3) },
+      "5": { class_type: "SaveImage", inputs: { images: link(4), filename_prefix: safePrefix } },
     };
   }
   return {
     "1": { class_type: "LoadVideo", inputs: { file } },
     "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
-    "3": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs },
-    "4": { class_type: "CreateVideo", inputs: { images: link(3), fps: link(2, 2), audio: link(2, 1) } },
-    "5": {
+    "3": { class_type: SEEDVR2_DETAIL_DIT_LOADER_NODE, inputs: ditInputs },
+    "4": { class_type: SEEDVR2_DETAIL_VAE_LOADER_NODE, inputs: vaeInputs },
+    "5": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs(2, 3, 4) },
+    "6": { class_type: "CreateVideo", inputs: { images: link(5), fps: link(2, 2), audio: link(2, 1) } },
+    "7": {
       class_type: "SaveVideo",
       inputs: {
-        video: link(4),
+        video: link(6),
         filename_prefix: safePrefix,
         format: "mp4",
         codec: "h264",

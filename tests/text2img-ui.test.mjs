@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("exposes FLUX and Krea through the existing Studio text-to-image route and API", async () => {
+test("exposes FLUX.2 Dev and Klein 9B through the existing Studio text-to-image route and API", async () => {
   const [toolsPage, routePage, workspace, client, dictionaries, bridge, envExample, settings] = await Promise.all([
     readFile(new URL("../app/(studio)/tools/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/(studio)/tools/text-to-image/page.tsx", import.meta.url), "utf8"),
@@ -27,11 +27,11 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(workspace, /text2img\.description\.copy\.\$\{descriptionCopyStatus\}/);
   assert.match(workspace, /nature-camera/);
   assert.match(workspace, /flux2-dev/);
-  assert.match(workspace, /krea2-turbo/);
-  assert.match(workspace, /text2img\.model\.krea\.name/);
-  assert.match(workspace, /1152, height: 2048, steps: 10/);
-  assert.match(workspace, /2048, height: 1152/);
-  assert.doesNotMatch(workspace, /flux2-klein-[49]b/);
+  assert.match(workspace, /flux2-klein-9b/);
+  assert.match(workspace, /text2img\.model\.klein9b\.name/);
+  assert.doesNotMatch(workspace, /krea2-turbo/);
+  assert.doesNotMatch(workspace, /text2img\.model\.krea\.name/);
+  assert.doesNotMatch(workspace, /flux2-klein-4b/);
   assert.doesNotMatch(workspace, /juggernaut-xl-v9/);
   assert.match(workspace, /name="image-model"/);
   assert.doesNotMatch(workspace, /name="text-encoder"/);
@@ -40,7 +40,13 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(workspace, /role="switch"/);
   assert.match(workspace, /aria-checked=\{unloadPromptModel\}/);
   assert.match(workspace, /text2img\.assistant\.unload\.label/);
-  assert.match(workspace, /text2img\.model\.dev\.warning/);
+  assert.doesNotMatch(workspace, /licenseKey|warningKey|licenseWarning|licenseTag/);
+  assert.match(workspace, /text2img\.lora\.consistency\.use/);
+  assert.match(workspace, /text2img\.lora\.restore\.use/);
+  assert.match(workspace, /text2img\.lora\.ultrareal\.use/);
+  assert.match(workspace, /type="checkbox"/);
+  assert.match(workspace, /loras: selectedLoras\(\)/);
+  assert.match(workspace, /loras: completedJob\.loras \|\| \[\]/);
   assert.match(workspace, /text2img\.section\.prompt/);
   assert.match(workspace, /text2img\.section\.output/);
   assert.match(workspace, /text2img\.result\.seed/);
@@ -52,7 +58,14 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(workspace, /encoderId: encoder/);
   assert.match(workspace, /jobStageKey\(job\.stage\)/);
   assert.doesNotMatch(workspace, /\? job\.error : job\.stage/);
+  assert.match(workspace, /const next = await fetchText2ImgJob\(job\.id\);[\s\S]*setJob\(next\);[\s\S]*setSubmitError\(""\);/);
   assert.match(workspace, /setSteps\(event\.target\.value\)/);
+  assert.match(workspace, /setGuidance\(event\.target\.value\)/);
+  assert.match(workspace, /min=\{MIN_GUIDANCE\}/);
+  assert.match(workspace, /max=\{MAX_GUIDANCE\}/);
+  assert.match(workspace, /step=\{0\.1\}/);
+  assert.match(workspace, /cfg: normalizedGuidance/);
+  assert.match(workspace, /cfg: completedJob\.cfg/);
   assert.match(workspace, /setSeed\(event\.target\.value\)/);
   assert.match(workspace, /setWidth\(event\.target\.value\)/);
   assert.match(workspace, /setHeight\(event\.target\.value\)/);
@@ -66,12 +79,15 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(workspace, /onBlur=\{\(\) => setSteps\(String\(normalizeIntegerField/);
   assert.match(workspace, /onBlur=\{\(\) => setSeed\(String\(normalizeIntegerField/);
   assert.doesNotMatch(workspace, /set(?:Steps|Seed)\(Number\(event\.target\.value\)\)/);
+  assert.doesNotMatch(workspace, /setGuidance\(Number\(event\.target\.value\)\)/);
   assert.doesNotMatch(workspace, /set(?:Width|Height)\(Number\(event\.target\.value\)\)/);
   assert.match(client, /\/api\/text2img\/health/);
   assert.match(client, /\/api\/text2img\/prompt/);
   assert.match(client, /\/api\/text2img\/jobs/);
   assert.match(client, /modelId: string/);
   assert.match(client, /encoderId: string/);
+  assert.match(client, /cfg: number/);
+  assert.match(client, /loras: Text2ImgLoraSelection\[\]/);
   assert.doesNotMatch(client, /adultMode: boolean/);
   assert.match(client, /unloadPromptModel = false/);
   assert.match(client, /JSON\.stringify\(\{ description, unloadPromptModel \}\)/);
@@ -81,17 +97,21 @@ test("exposes FLUX and Krea through the existing Studio text-to-image route and 
   assert.match(dictionaries, /"text2img\.description\.copy\.copied"/);
   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
-  assert.match(dictionaries, /"text2img\.model\.krea\.name"/);
-  assert.match(dictionaries, /"text2img\.size\.realisticPortrait"/);
-  assert.doesNotMatch(dictionaries, /"text2img\.model\.[49]b\.name"/);
+  assert.match(dictionaries, /"text2img\.model\.klein9b\.name"/);
+  assert.doesNotMatch(dictionaries, /"text2img\.model\.krea\.name"/);
+  assert.doesNotMatch(dictionaries, /"text2img\.size\.realisticPortrait"/);
+  assert.doesNotMatch(dictionaries, /"text2img\.model\.4b\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.juggernaut\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.adultMode\.on\.name"/);
   assert.match(dictionaries, /"text2img\.assistant\.unload\.on"/);
   assert.match(dictionaries, /"text2img\.assistant\.unload\.off"/);
   assert.match(dictionaries, /"text2img\.output\.repeat"/);
+  assert.match(dictionaries, /"text2img\.guidance\.label"/);
+  assert.match(dictionaries, /"text2img\.guidance\.help"/);
+  assert.match(dictionaries, /"text2img\.result\.guidance"/);
   assert.match(dictionaries, /"text2img\.size\.width"/);
   assert.match(dictionaries, /"text2img\.size\.scale"/);
-  assert.match(dictionaries, /FLUX Non-Commercial License/);
+  assert.match(dictionaries, /"text2img\.lora\.available"/);
   assert.match(dictionaries, /"text2img\.job\.stage\.registering"/);
   assert.match(dictionaries, /Qwen3\.8 27B/);
   assert.doesNotMatch(dictionaries, /Qwen3\.5 9B/);

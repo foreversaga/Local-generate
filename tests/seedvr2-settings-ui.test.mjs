@@ -131,8 +131,9 @@ test("SeedVR2 detail reconstruction controls expose the complete backend contrac
 });
 
 test("SeedVR2 controls explain what each setting and option does", async () => {
-  const [workspace, helpCopy, styles] = await Promise.all([
+  const [workspace, detailControls, helpCopy, styles] = await Promise.all([
     readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/SeedVR2DetailControls.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/seedvr2-help.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/tools/UpscaleWorkspace.module.css", import.meta.url), "utf8"),
   ]);
@@ -146,6 +147,13 @@ test("SeedVR2 controls explain what each setting and option does", async () => {
   assert.match(workspace, /seedVR2Help\.cfg/);
   assert.match(workspace, /seedVR2Help\.sampler\[samplerName\]/);
   assert.match(workspace, /seedVR2Help\.scheduler\[scheduler\]/);
+  assert.match(workspace, /selectedProfile\.description/);
+  assert.match(workspace, /aria-live="polite"/);
+  assert.match(helpCopy, /presetHelp: Record<SeedVR2DetailPreset, string>/);
+  assert.match(helpCopy, /維持既有 SeedVR2 graph 與輸出行為/);
+  assert.match(detailControls, /help\.presetHelp\[value\.detailPreset\]/);
+  assert.match(detailControls, /help\.blendingMethod\[value\.blendingMethod\]/);
+  assert.match(detailControls, /help\.tilingStrategy\[value\.tilingStrategy\]/);
   assert.match(workspace, /seedVR2Help\.denoise/);
   assert.match(workspace, /styles\.fieldHelp/);
   assert.match(styles, /\.fieldHelp\{/);
@@ -184,4 +192,19 @@ test("SeedVR2 FP16 is the connected high-quality default", async () => {
   assert.doesNotMatch(workspace, /backendPending/);
   assert.doesNotMatch(workspace, /FP16 後端尚未啟用/);
   assert.match(client, /profile === "seedvr2_7b_sharp_fp16" \|\| profile === "seedvr2_7b_sharp_nvfp4"/);
+});
+
+test("SeedVR2 fails closed and keeps FP16-only detail controls away from NVFP4", async () => {
+  const [workspace, client] = await Promise.all([
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(workspace, /const supportsSeedVR2Detail = profile === "seedvr2_7b_sharp_fp16"/);
+  assert.match(workspace, /const detailMode = supportsSeedVR2Detail/);
+  assert.match(workspace, /supportsSeedVR2Detail \? \(/);
+  assert.match(workspace, /Tiled Detail 與 Skin Detail 目前僅支援 FP16/);
+  assert.match(workspace, /healthLoading \|\| health\?\.ready !== true/);
+  assert.match(workspace, /next !== "seedvr2_7b_sharp_fp16"/);
+  assert.match(client, /不支援 Tiled Detail \/ Skin Detail/);
 });

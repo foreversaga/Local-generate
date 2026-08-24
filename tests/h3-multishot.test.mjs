@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildAutoExtendPrompts,
@@ -44,6 +45,24 @@ function multishotPayload(overrides = {}) {
   };
 }
 
+test("multishot selectors show an explanation for the current option", async () => {
+  const source = await readFile(new URL("../app/components/create/LongCreateForm.tsx", import.meta.url), "utf8");
+  for (const binding of [
+    "helper={MULTISHOT_FRAMES_HELP[framesPerShot]}",
+    "MULTISHOT_CONTINUITY_HELP[continuityMode]",
+    "helper={MULTISHOT_PROMPT_HELP[promptMode]}",
+    "CONTEXT_FRAMES_HELP[contextFrames]",
+    "helper={CHAIN_GAIN_HELP[chainGainControl]}",
+    "helper={MASTER_NORMALIZE_HELP[masterNormalize]}",
+  ]) assert.match(source, new RegExp(binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(source, /目前本機不可用，提交時會自動退回 first_frame/);
+  assert.match(source, /這不是音量控制/);
+  assert.match(source, /直接合併片段、不重新編碼/);
+  assert.match(source, /高畫質 INT8 ConvRot/);
+  assert.match(source, /使用更多 UMA、生成稍慢/);
+  assert.match(source, /<select id="long-model-profile"/);
+});
+
 test("multishot settings compute H3-native windows at 24 FPS", () => {
   const settings = normalizeMultishotSettings({ longVideoEnabled: true, targetDurationSeconds: 60, framesPerShot: 243 });
   assert.equal(settings.fps, 24);
@@ -59,6 +78,34 @@ test("manual and automatic shot prompts preserve one continuous take", () => {
   assert.match(prompts[1], /Continue naturally from the previous moment/);
   assert.doesNotMatch(prompts[1], /cut to/i);
   assert.match(prompts[2], /stable readable face/);
+});
+
+test("automatic multishot prompts assign timestamped story beats to only their own windows", async () => {
+  const { buildLongDirectPlan } = await import("../app/lib/long-create-contract.mjs");
+  const plan = buildLongDirectPlan(multishotPayload({
+    targetDurationSeconds: 30,
+    inputText: [
+      "主角設定：同一位成年女性，臉孔與髮型一致。",
+      "00:00–00:10｜LOOK 1",
+      "她穿白色連身裝，在咖啡館起身。",
+      "00:10–00:20｜LOOK 2",
+      "她換成藍色牛仔褲，走到窗邊。",
+      "00:20–00:30｜LOOK 3",
+      "她穿黃色洋裝走到戶外。",
+      "整體攝影要求：自然光、寫實膚質。",
+    ].join("\n\n"),
+  }));
+  assert.equal(plan.segments.length, 3);
+  assert.match(plan.segments[0].prompt, /白色連身裝/);
+  assert.doesNotMatch(plan.segments[0].prompt, /藍色牛仔褲|黃色洋裝/);
+  assert.match(plan.segments[1].prompt, /藍色牛仔褲/);
+  assert.doesNotMatch(plan.segments[1].prompt, /白色連身裝|黃色洋裝/);
+  assert.match(plan.segments[2].prompt, /黃色洋裝/);
+  for (const segment of plan.segments) {
+    assert.match(segment.prompt, /同一位成年女性/);
+    assert.match(segment.prompt, /自然光、寫實膚質/);
+    assert.match(segment.prompt, /do not preview, summarize, montage, or complete later windows/i);
+  }
 });
 
 test("Motion Context capability validates the real node and input contract", () => {

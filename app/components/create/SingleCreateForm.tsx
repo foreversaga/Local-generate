@@ -71,9 +71,15 @@ type ApiErrorPayload = {
   error?: string | { code?: string; message?: string };
   code?: string;
 };
-type ServiceState = { bridge: boolean; comfy: boolean };
+type CapabilityState = { available: boolean; reason?: string; missingNodes?: string[]; missingModels?: string[] };
+type ServiceState = {
+  bridge: boolean;
+  comfy: boolean;
+  modes: Partial<Record<Mode, CapabilityState>>;
+  profiles: Record<string, CapabilityState>;
+};
 type ModeOption = { value: Mode; label: string; note: string; icon: IconName };
-type ModelOption = { value: string; label: string; note: string };
+type ModelOption = { value: string; label: string; note: string; description: string };
 
 const MODE_OPTIONS: readonly ModeOption[] = [
   { value: "t2v", label: "文字生片", note: "Text → Video", icon: "spark" },
@@ -86,9 +92,11 @@ const MODE_OPTIONS: readonly ModeOption[] = [
 ] as const;
 
 const MODEL_OPTIONS: readonly ModelOption[] = [
-  { value: "nvfp4_blackwell", label: "NVFP4 Blackwell", note: "推薦 · GB10" },
-  { value: "ref2va_pruned_nvfp4", label: "Ref2VA Pruned NVFP4", note: "Blackwell" },
-  { value: "wan22_animate_fp8", label: "Wan2.2 Animate", note: "影片替換模式" },
+  { value: "nvfp4_blackwell", label: "快速 NVFP4", note: "約 12.5 GB DiT", description: "速度與記憶體優先；適合預覽與一般生成，快速動作較可能出現形變。" },
+  { value: "int8_convrot_quality", label: "高畫質 INT8 ConvRot", note: "約 21.0 GB DiT", description: "畫質優先；快速運動與物體形狀通常較穩，但使用更多 UMA、生成稍慢。" },
+  { value: "ref2va_pruned_nvfp4", label: "Ref2VA 快速 NVFP4", note: "約 12.5 GB DiT", description: "多參考圖／影片／音訊的省記憶體模式。" },
+  { value: "ref2va_pruned_int8_convrot", label: "Ref2VA 高畫質 INT8", note: "約 21.0 GB DiT", description: "多參考生成的畫質優先模式；使用更多 UMA、生成稍慢。" },
+  { value: "wan22_animate_fp8", label: "Wan2.2 Animate", note: "影片替換模式", description: "僅用於影片人物替換，不是 MiniMax H3 畫質層級。" },
 ] as const;
 
 export function SingleCreateForm() {
@@ -96,7 +104,8 @@ export function SingleCreateForm() {
   const { FIELD_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false });
+  const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false, modes: {}, profiles: {} });
+  const [healthLoading, setHealthLoading] = useState(true);
   const [mode, setMode] = useState<Mode>("t2v");
   const [initialDescription, setInitialDescription] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -144,6 +153,22 @@ export function SingleCreateForm() {
   const availableModels = useMemo(() => modelOptionsForMode(mode), [mode]);
   const modeOption = MODE_OPTIONS.find((option) => option.value === mode) || MODE_OPTIONS[0];
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
+  const selectedModeCapability = serviceState.modes[mode];
+  const selectedProfileCapability = serviceState.profiles[modelProfile];
+  const runtimeReady = !healthLoading
+    && serviceState.bridge
+    && serviceState.comfy
+    && selectedModeCapability?.available === true
+    && selectedProfileCapability?.available === true;
+  const runtimeReadinessMessage = healthLoading
+    ? "正在檢查所選工作流、模型與節點…"
+    : !serviceState.bridge || !serviceState.comfy
+      ? "Bridge 或 ComfyUI 尚未就緒。"
+      : selectedModeCapability?.available !== true
+        ? selectedModeCapability?.reason || "所選生成模式目前無法使用。"
+        : selectedProfileCapability?.available !== true
+          ? `所選模型尚未就緒${selectedProfileCapability?.missingModels?.length ? `：${selectedProfileCapability.missingModels.join(", ")}` : "。"}`
+          : "所選模式與模型已就緒。";
   const isRef2VMode = mode === "ref2v" || mode === "ref2v_motion";
   const isCharacterMotion = mode === "ref2v_motion";
   const orderedRef2V = useMemo(() => mode === "ref2v_motion"
@@ -320,6 +345,7 @@ export function SingleCreateForm() {
   const previewAsset = referenceImage || referenceImages[0] || lastFrameImage || sourceVideo;
   const isUploading = uploadingTarget !== null;
   const canInteract = !submitting && !isUploading;
+  const canGenerate = canInteract && runtimeReady;
   const draftValue = useMemo(() => ({
     mode,
     initialDescription,
@@ -397,13 +423,21 @@ export function SingleCreateForm() {
   }
 
   async function refreshHealth() {
+    setHealthLoading(true);
     try {
-      const response = await fetch(`${BRIDGE_URL}/api/health`);
+      const response = await fetch(`${BRIDGE_URL}/api/video/health`);
       if (!response.ok) throw new Error("bridge unavailable");
-      const payload = (await response.json()) as { comfy?: { online?: boolean } };
-      setServiceState({ bridge: true, comfy: Boolean(payload.comfy?.online) });
+      const payload = (await response.json()) as { comfyUi?: boolean; modes?: ServiceState["modes"]; profiles?: ServiceState["profiles"] };
+      setServiceState({
+        bridge: true,
+        comfy: Boolean(payload.comfyUi),
+        modes: payload.modes || {},
+        profiles: payload.profiles || {},
+      });
     } catch {
-      setServiceState({ bridge: false, comfy: false });
+      setServiceState({ bridge: false, comfy: false, modes: {}, profiles: {} });
+    } finally {
+      setHealthLoading(false);
     }
   }
 
@@ -535,14 +569,14 @@ export function SingleCreateForm() {
       return;
     }
     if (nextMode === "ref2v" || nextMode === "ref2v_motion") {
-      setModelProfile("ref2va_pruned_nvfp4");
+      setModelProfile(modelProfile === "int8_convrot_quality" || modelProfile === "ref2va_pruned_int8_convrot" ? "ref2va_pruned_int8_convrot" : "ref2va_pruned_nvfp4");
       setWidth(736);
       setHeight(416);
       setSteps(20);
       return;
     }
-    if (modelProfile === "wan22_animate_fp8" || modelProfile === "ref2va_pruned_nvfp4") {
-      setModelProfile("nvfp4_blackwell");
+    if (modelProfile === "wan22_animate_fp8" || modelProfile === "ref2va_pruned_nvfp4" || modelProfile === "ref2va_pruned_int8_convrot") {
+      setModelProfile(modelProfile === "ref2va_pruned_int8_convrot" ? "int8_convrot_quality" : "nvfp4_blackwell");
       setWidth(736);
       setHeight(416);
       setSteps(20);
@@ -774,6 +808,11 @@ export function SingleCreateForm() {
   async function startRender() {
     setSubmitAttempted(true);
     setSubmitError("");
+    if (!runtimeReady) {
+      setSubmitError(runtimeReadinessMessage);
+      document.getElementById("single-validation-summary")?.focus();
+      return;
+    }
     if (validationIssues.length) {
       focusValidationField(validationIssues[0].field);
       return;
@@ -871,20 +910,28 @@ export function SingleCreateForm() {
             </div>
             <div className={styles.modeGrid} role="radiogroup" aria-label="生成模式">
               {MODE_OPTIONS.map((option) => (
+                (() => {
+                  const capability = serviceState.modes[option.value];
+                  const unavailable = !healthLoading && capability?.available === false;
+                  return (
                 <button
                   key={option.value}
                   type="button"
                   role="radio"
                   aria-checked={mode === option.value}
+                  disabled={!canInteract || unavailable}
+                  title={unavailable ? capability?.reason || "所需模型或節點尚未就緒" : option.note}
                   className={`${styles.modeButton} ${mode === option.value ? styles.modeButtonSelected : ""}`}
                   onClick={() => updateMode(option.value)}
                 >
                   <span className={styles.modeIcon}><Icon name={option.icon} /></span>
                   <span className={styles.modeCopy}>
                     <strong>{option.label}</strong>
-                    <span>{option.note}</span>
+                    <span>{option.note}{unavailable ? " · 無法使用" : ""}</span>
                   </span>
                 </button>
+                  );
+                })()
               ))}
             </div>
             <SourceFields
@@ -1024,11 +1071,13 @@ export function SingleCreateForm() {
             <div className={styles.fieldGrid}>
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>{FIELD_LABELS.modelProfile}</span>
-                <select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)}>
+                <select className={styles.select} value={modelProfile} onChange={(event) => setModelProfile(event.target.value)} disabled={!canInteract || healthLoading}>
                   {availableModels.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} · {option.note}</option>
+                    <option key={option.value} value={option.value} disabled={serviceState.profiles[option.value]?.available === false}>{option.label} · {option.note}{serviceState.profiles[option.value]?.available === false ? " · 無法使用" : ""}</option>
                   ))}
                 </select>
+                <span className={styles.helper}>{selectedModel?.description}</span>
+                <span className={styles.helper} role="status">{runtimeReadinessMessage}</span>
               </label>
 
               {mode !== "replace" && (
@@ -1318,7 +1367,12 @@ export function SingleCreateForm() {
           <section id="single-validation-summary" className={styles.summaryCard} aria-live="polite">
           <div className={styles.validationLabel}>檢查結果</div>
           <ul className={styles.validationList}>
-            {validationIssues.length ? validationIssues.map((issue) => (
+            {!runtimeReady ? (
+              <li className={styles.validationItem}>
+                <span className={styles.validationIcon} aria-hidden="true"><Icon name="close" /></span>
+                <span>{runtimeReadinessMessage}</span>
+              </li>
+            ) : validationIssues.length ? validationIssues.map((issue) => (
               <li key={`${issue.field}:${issue.message}`} className={styles.validationItem}>
                 <span className={styles.validationIcon} aria-hidden="true"><Icon name="close" /></span>
                 <button type="button" className={styles.validationLink} onClick={() => focusValidationField(issue.field)}>{issue.message}</button>
@@ -1332,7 +1386,7 @@ export function SingleCreateForm() {
           </ul>
           <div className={styles.serviceState}>
             <span className={`${styles.statusDot} ${serviceState.bridge && serviceState.comfy ? styles.statusDotOnline : ""}`} aria-hidden="true" />
-            <span>{serviceState.bridge && serviceState.comfy ? "Bridge / ComfyUI 在線" : "Bridge 或 ComfyUI 尚未就緒；提交時仍由既有 API 回報錯誤。"}</span>
+            <span>{runtimeReadinessMessage}</span>
           </div>
           <div className={styles.draftActions}>
             <div className={`${styles.draftState} ${draftStatus === "error" ? styles.draftStateError : ""}`} role="status" aria-live="polite">
@@ -1343,13 +1397,13 @@ export function SingleCreateForm() {
           </div>
           {submitError && <div className={styles.submitError} role="alert">{submitError}</div>}
           <div className={styles.desktopGenerate}>
-            <GenerateButton canInteract={canInteract} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
+            <GenerateButton canInteract={canGenerate} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
           </div>
         </section>
       </aside>
 
       <div className={styles.mobileCta}>
-        <GenerateButton canInteract={canInteract} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
+        <GenerateButton canInteract={canGenerate} submitting={submitting} uploading={isUploading} onClick={() => void startRender()} />
       </div>
     </div>
   );
@@ -1849,8 +1903,8 @@ function draftStatusLabel(status: "loading" | "idle" | "saving" | "saved" | "err
 function modelOptionsForMode(mode: Mode) {
   return MODEL_OPTIONS.filter((option) => {
     if (mode === "replace") return option.value === "wan22_animate_fp8";
-    if (mode === "ref2v" || mode === "ref2v_motion") return option.value === "ref2va_pruned_nvfp4";
-    return option.value !== "wan22_animate_fp8" && option.value !== "ref2va_pruned_nvfp4";
+    if (mode === "ref2v" || mode === "ref2v_motion") return option.value === "ref2va_pruned_nvfp4" || option.value === "ref2va_pruned_int8_convrot";
+    return option.value !== "wan22_animate_fp8" && option.value !== "ref2va_pruned_nvfp4" && option.value !== "ref2va_pruned_int8_convrot";
   });
 }
 

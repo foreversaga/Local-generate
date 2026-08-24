@@ -46,6 +46,7 @@ import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coor
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
+import { inspectSingleVideoReadiness } from "./server/video-generation/readiness.mjs";
 import {
   combineEta,
   estimateHistoricalDuration,
@@ -118,20 +119,25 @@ async function requireBridgePython() {
 }
 const REF2VA_MODEL_NAMES = Object.freeze({
   ref2va_pruned_nvfp4: "minimax_h3_ref2va_pruned_nvfp4.safetensors",
+  ref2va_pruned_int8_convrot: "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
 });
 const REF2VA_PROFILE_ALIASES = Object.freeze({
   nvfp4_blackwell: "ref2va_pruned_nvfp4",
   ref2va_pruned_nvfp4: "ref2va_pruned_nvfp4",
+  int8_convrot_quality: "ref2va_pruned_int8_convrot",
+  ref2va_pruned_int8_convrot: "ref2va_pruned_int8_convrot",
 });
 const REMOTE_FL2VA_PROFILE_ALIASES = Object.freeze({
   nvfp4_blackwell: "nvfp4_blackwell",
 });
-const FL2VA_PROFILE_NAMES = new Set(["nvfp4_blackwell"]);
+const FL2VA_PROFILE_NAMES = new Set(["nvfp4_blackwell", "int8_convrot_quality"]);
+const REMOTE_FL2VA_PROFILE_NAMES = new Set(Object.values(REMOTE_FL2VA_PROFILE_ALIASES));
 const REMOTE_REF2VA_PROFILE_ALIASES = Object.freeze({
   // The Vast manifest intentionally ships the Blackwell NVFP4 Ref2VA file.
   nvfp4_blackwell: "ref2va_pruned_nvfp4",
   ref2va_pruned_nvfp4: "ref2va_pruned_nvfp4",
 });
+const REMOTE_REF2VA_PROFILE_NAMES = new Set(Object.values(REMOTE_REF2VA_PROFILE_ALIASES));
 const REF2VA_MODEL_NAME = REF2VA_MODEL_NAMES.ref2va_pruned_nvfp4;
 const INITIAL_REMOTE_MODE = /^(?:1|true|yes)$/i.test(String(process.env.COMFY_REMOTE || ""));
 const LOCAL_COMFY_URL = (process.env.LOCAL_COMFY_URL || (INITIAL_REMOTE_MODE ? "http://127.0.0.1:8188" : process.env.COMFY_URL) || "http://127.0.0.1:8188").replace(/\/$/, "");
@@ -255,6 +261,7 @@ const ollamaCoordinator = createOllamaCoordinator({
 });
 const continuationPromptFinalizer = createContinuationPromptFinalizer({
   ollamaCoordinator,
+  checkAvailable: async () => Boolean(await fetchJson(`${runtimeContext.ollamaUrl}/api/tags`, {}, 5000).catch(() => null)),
   getModel: ({ job } = {}) => job?.ollamaModel || defaultOllamaModel(),
   getOllamaUrl: () => runtimeContext.ollamaUrl,
   getComfyUrl: () => runtimeContext.comfyUrl,
@@ -3655,10 +3662,10 @@ function resolveGenerationModelProfile(mode, value, options = {}) {
     const profile = remote
       ? REMOTE_FL2VA_PROFILE_ALIASES[requested] || requested || "nvfp4_blackwell"
       : requested || "nvfp4_blackwell";
-    if (!FL2VA_PROFILE_NAMES.has(profile)) {
+    if (!(remote ? REMOTE_FL2VA_PROFILE_NAMES : FL2VA_PROFILE_NAMES).has(profile)) {
       throw makeRuntimeError(
         "FL2VA_PROFILE_UNSUPPORTED",
-        `Unsupported FL2VA model profile: ${requested || "(empty)"}. Use nvfp4_blackwell.`,
+        `Unsupported FL2VA model profile: ${requested || "(empty)"}. Use nvfp4_blackwell or int8_convrot_quality.`,
         422,
         { modelProfile: requested },
       );
@@ -3668,10 +3675,10 @@ function resolveGenerationModelProfile(mode, value, options = {}) {
   const profile = remote
     ? REMOTE_REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4"
     : REF2VA_PROFILE_ALIASES[requested] || requested || "ref2va_pruned_nvfp4";
-  if (!Object.hasOwn(REF2VA_MODEL_NAMES, profile)) {
+  if (!(remote ? REMOTE_REF2VA_PROFILE_NAMES.has(profile) : Object.hasOwn(REF2VA_MODEL_NAMES, profile))) {
     throw makeRuntimeError(
       "REF2VA_PROFILE_UNSUPPORTED",
-      `Unsupported Ref2VA model profile: ${requested || "(empty)"}. Use the installed ${remote ? "Vast" : "local"} NVFP4 Ref2VA profile.`,
+      `Unsupported Ref2VA model profile: ${requested || "(empty)"}. Use an installed ${remote ? "Vast" : "local"} Ref2VA profile.`,
       422,
       { modelProfile: requested },
     );
@@ -3715,7 +3722,7 @@ async function startGeneration(payload, internal = {}) {
   if (requestedCharacterLora && mode === "ref2v" && !h3Selection.selected) {
     throw makeRuntimeError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference generation.", 422);
   }
-  if (requestedCharacterLora && mode !== "replace" && !["nvfp4_blackwell", "ref2va_pruned_nvfp4"].includes(String(payload.modelProfile || "nvfp4_blackwell"))) {
+  if (requestedCharacterLora && mode !== "replace" && !["nvfp4_blackwell", "int8_convrot_quality", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(String(payload.modelProfile || "nvfp4_blackwell"))) {
     throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${String(payload.modelProfile || "nvfp4_blackwell")}.`, 422, { modelProfile: String(payload.modelProfile || "nvfp4_blackwell") });
   }
   const registryLora = requestedCharacterLora
@@ -3874,7 +3881,7 @@ async function startGeneration(payload, internal = {}) {
   const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
   const timeoutSeconds = Math.round(clampNumber(payload.timeoutSeconds, 3600, 60, 86400));
-  if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "ref2va_pruned_nvfp4"].includes(modelProfile)) {
+  if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "int8_convrot_quality", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(modelProfile)) {
     throw makeRuntimeError("CHARACTER_LORA_PROFILE_UNSUPPORTED", `Character LoRA is not supported for model profile ${modelProfile}.`, 422, { modelProfile });
   }
   const negativePrompt = String(payload.negativePrompt || "").trim();
@@ -5610,6 +5617,14 @@ async function route(req, res) {
 
   if (req.method === "GET" && pathname === "/api/health") {
     sendJson(res, 200, await health());
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/video/health") {
+    const objectInfo = await fetchJson(runtimeContext.comfyUrl + "/object_info", {}, 5000).catch(() => null);
+    sendJson(res, 200, inspectSingleVideoReadiness(objectInfo, {
+      comfyOnline: Boolean(objectInfo),
+      lastFrame: await hasLastImageGeneratorFlag(),
+    }));
     return;
   }
   if (req.method === "GET" && pathname === "/api/loras") {

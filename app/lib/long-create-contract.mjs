@@ -1,3 +1,5 @@
+import { buildWindowedAutoExtendPrompts } from "./multishot-prompt-windows.mjs";
+
 const MAX_LONG_REFERENCE_IMAGES = 8;
 const ACTIVE_STATUSES = new Set(["queued", "running", "paused", "assembling", "planning"]);
 export const CHARACTER_LORA_DEFAULT_STRENGTH = 0.75;
@@ -41,12 +43,6 @@ function multishotWindows(settings) {
     start = end;
   }
   return windows;
-}
-
-function autoExtendPrompt(premise, index) {
-  const boundary = "End this window on a stable readable face and continuing action. Avoid fast turns, full face occlusion, back-to-camera poses, heavy motion blur, abrupt camera motion, scene transitions, or cutting dialogue mid-word.";
-  if (index === 0) return `${premise}\n\n${boundary}`;
-  return `Continue naturally from the previous moment. Preserve the same people, identity, clothing, environment, time, camera, lens, lighting, action direction, and dialogue continuity. Do not introduce a new scene, new shot, cut, or camera cut unless explicitly requested.\n\nContinue this same take: ${premise}\n\n${boundary}`;
 }
 
 /** Keep the long-video contract aligned with the bridge admission rules. */
@@ -197,7 +193,7 @@ export function buildLongDirectPlan(input) {
     const premise = String(input.inputText || "").trim();
     const windows = multishotWindows(multishot);
     const prompts = multishot.promptMode === "auto_extend"
-      ? windows.map((_, index) => autoExtendPrompt(premise, index))
+      ? buildWindowedAutoExtendPrompts(premise, windows)
       : scripts.map((script) => script.content);
     const referenceMode = input.inputType === "image" ? input.referenceMode : "continuity";
     const segments = windows.map((window, index) => ({

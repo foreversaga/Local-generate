@@ -199,6 +199,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               {job.width !== null && job.height !== null && Number.isFinite(Number(job.width)) && Number.isFinite(Number(job.height)) && <div><dt>解析度</dt><dd>{job.width} × {job.height}</dd></div>}
               {job.duration !== null && Number.isFinite(Number(job.duration)) && <div><dt>長度</dt><dd>{job.duration} 秒</dd></div>}
               {job.steps !== null && Number.isFinite(Number(job.steps)) && <div><dt>Steps</dt><dd>{job.steps}</dd></div>}
+              {job.cfg !== null && Number.isFinite(Number(job.cfg)) && <div><dt>Guidance / CFG</dt><dd>{job.cfg}</dd></div>}
               {job.seed !== null && Number.isFinite(Number(job.seed)) && <div><dt>Seed</dt><dd>{job.seed}</dd></div>}
               {job.outputName && <div><dt>輸出檔名</dt><dd>{job.outputName}</dd></div>}
             </dl>

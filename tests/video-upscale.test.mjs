@@ -17,6 +17,10 @@ import {
   SEEDVR2_DETAIL_REQUIRED_NODES,
   SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES,
   SEEDVR2_DETAIL_NODE,
+  SEEDVR2_DETAIL_DIT_LOADER_NODE,
+  SEEDVR2_DETAIL_VAE_LOADER_NODE,
+  SEEDVR2_DETAIL_FP16_UNET_NAME,
+  SEEDVR2_DETAIL_VAE_NAME,
   SEEDVR2_DETAIL_NODE_INPUTS,
   SEEDVR2_DETAIL_NODE_INPUT_TYPES,
   SEEDVR2_DEFAULT_DETAIL,
@@ -36,6 +40,7 @@ import {
   normalizeSeedVR2Settings,
   parseSeedVR2History,
 } from "../server/video-upscale/seedvr2.mjs";
+import { createSeedVR2JobStore } from "../server/video-upscale/seedvr2-store.mjs";
 
 function response(payload, status = 200) {
   return {
@@ -57,6 +62,16 @@ function binaryResponse(bytes, status = 200) {
   };
 }
 
+async function temporarySeedJobStore(t, label) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `h3-seedvr2-${label}-jobs-`));
+  const store = createSeedVR2JobStore({ root });
+  t.after(async () => {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  return store;
+}
+
 function objectInfo(unetName = SEEDVR2_UNET_NAME) {
   const info = Object.fromEntries(SEEDVR2_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   info.UNETLoader.input.required.unet_name = [[unetName], {}];
@@ -71,23 +86,19 @@ function imageObjectInfo(unetName = SEEDVR2_UNET_NAME) {
   return info;
 }
 
-function detailObjectInfo({ sourceKind = "video", unetName = SEEDVR2_UNET_NAME, omitInput = "", blending = ["multiband", "linear", "gaussian"], tiling = ["chess", "grid"] } = {}) {
+function detailObjectInfo({ sourceKind = "video", unetName = SEEDVR2_DETAIL_FP16_UNET_NAME, omitInput = "", blending = ["multiband", "linear", "gaussian"], tiling = ["Chess", "Linear"] } = {}) {
   const requiredNodes = sourceKind === "image" ? SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES : SEEDVR2_DETAIL_REQUIRED_NODES;
   const info = Object.fromEntries(requiredNodes.map((name) => [name, { input: { required: {} } }]));
   const inputs = Object.fromEntries(SEEDVR2_DETAIL_NODE_INPUTS.filter((name) => name !== omitInput).map((name) => [
     name,
     SEEDVR2_DETAIL_NODE_INPUT_TYPES[name] === "COMBO" ? [["placeholder"], {}] : [SEEDVR2_DETAIL_NODE_INPUT_TYPES[name], {}],
   ]));
-  inputs.unet_name = [[unetName], {}];
-  inputs.vae_name = [[SEEDVR2_VAE_NAME], {}];
-  inputs.resize_method = [["lanczos", "bicubic", "bilinear", "area", "nearest-exact"], {}];
   inputs.color_correction = [["wavelet", "lab", "adain", "none"], {}];
-  inputs.sampler_name = [["euler", "heun", "dpmpp_2m"], {}];
-  inputs.scheduler = [["simple", "normal", "karras"], {}];
   inputs.blending_method = [blending, {}];
   inputs.tiling_strategy = [tiling, {}];
-  inputs.detail_preset = [["default", "skin_detail"], {}];
   info[SEEDVR2_DETAIL_NODE].input.required = inputs;
+  info[SEEDVR2_DETAIL_DIT_LOADER_NODE].input.required.model = [[unetName], {}];
+  info[SEEDVR2_DETAIL_VAE_LOADER_NODE].input.required.model = [[SEEDVR2_DETAIL_VAE_NAME], {}];
   return info;
 }
 
@@ -201,16 +212,9 @@ test("detail graph receives every normalized SeedVR2 detail field for images and
   const video = buildSeedVR2DetailPrompt({ sourceName: "clips/source.mp4", seed: 7, ...settings });
   const image = buildSeedVR2DetailPrompt({ sourceName: "images/source.png", seed: 9, ...settings });
   const expected = {
-    unet_name: SEEDVR2_UNET_NAME,
-    vae_name: SEEDVR2_VAE_NAME,
-    scale: 2,
-    resize_method: "lanczos",
+    upscale_factor: 2,
+    new_resolution: 2560,
     color_correction: "wavelet",
-    steps: 1,
-    cfg: 1,
-    sampler_name: "euler",
-    scheduler: "simple",
-    denoise: 1,
     input_noise_scale: 0.035,
     latent_noise_scale: 0.015,
     tile_width: 768,
@@ -220,39 +224,61 @@ test("detail graph receives every normalized SeedVR2 detail field for images and
     blending_method: "gaussian",
     anti_aliasing_strength: 0.25,
     mask_blur: 2.5,
-    tiling_strategy: "grid",
-    detail_preset: "skin_detail",
+    tiling_strategy: "Linear",
   };
-  assert.equal(video["3"].class_type, SEEDVR2_DETAIL_NODE);
-  assert.equal(image["2"].class_type, SEEDVR2_DETAIL_NODE);
+  assert.equal(video["3"].class_type, SEEDVR2_DETAIL_DIT_LOADER_NODE);
+  assert.equal(video["4"].class_type, SEEDVR2_DETAIL_VAE_LOADER_NODE);
+  assert.equal(video["5"].class_type, SEEDVR2_DETAIL_NODE);
+  assert.equal(image["2"].class_type, SEEDVR2_DETAIL_DIT_LOADER_NODE);
+  assert.equal(image["3"].class_type, SEEDVR2_DETAIL_VAE_LOADER_NODE);
+  assert.equal(image["4"].class_type, SEEDVR2_DETAIL_NODE);
   for (const [key, value] of Object.entries(expected)) {
-    assert.deepEqual(video["3"].inputs[key], value, key);
-    assert.deepEqual(image["2"].inputs[key], value, key);
+    assert.deepEqual(video["5"].inputs[key], value, key);
+    assert.deepEqual(image["4"].inputs[key], value, key);
   }
-  assert.deepEqual(video["3"].inputs.image, ["2", 0]);
-  assert.deepEqual(image["2"].inputs.image, ["1", 0]);
+  assert.deepEqual(video["5"].inputs.image, ["2", 0]);
+  assert.deepEqual(video["5"].inputs.dit, ["3", 0]);
+  assert.deepEqual(video["5"].inputs.vae, ["4", 0]);
+  assert.deepEqual(image["4"].inputs.image, ["1", 0]);
+  assert.equal(image["2"].inputs.model, SEEDVR2_DETAIL_FP16_UNET_NAME);
+  assert.equal(image["3"].inputs.model, SEEDVR2_DETAIL_VAE_NAME);
+  assert.equal(image["2"].inputs.cache_model, true);
+  assert.equal(image["3"].inputs.cache_model, true);
 });
 
 test("detail readiness requires the complete node input contract and requested enum support", () => {
   const settings = normalizeSeedVR2Settings({ detailPreset: "skin_detail" });
-  const ready = evaluateSeedVR2Readiness(detailObjectInfo(), { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  const ready = evaluateSeedVR2Readiness(detailObjectInfo(), { unetName: SEEDVR2_FP16_UNET_NAME, modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
   assert.equal(ready.ready, true);
   assert.equal(ready.detail.available, true);
-  const missing = evaluateSeedVR2Readiness(detailObjectInfo({ omitInput: "latent_noise_scale" }), { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  const missing = evaluateSeedVR2Readiness(detailObjectInfo({ omitInput: "latent_noise_scale" }), { unetName: SEEDVR2_FP16_UNET_NAME, modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
   assert.equal(missing.ready, false);
   assert.deepEqual(missing.detail.missingInputs, ["latent_noise_scale"]);
   const wrongType = detailObjectInfo();
   wrongType[SEEDVR2_DETAIL_NODE].input.required.tile_width = ["FLOAT", {}];
-  const invalid = evaluateSeedVR2Readiness(wrongType, { modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
+  const invalid = evaluateSeedVR2Readiness(wrongType, { unetName: SEEDVR2_FP16_UNET_NAME, modelFiles: { unet: true, vae: true }, detailMode: true, detailSettings: settings });
   assert.equal(invalid.ready, false);
   assert.deepEqual(invalid.detail.invalidInputs, ["tile_width"]);
   const unsupported = evaluateSeedVR2Readiness(detailObjectInfo({ blending: ["multiband", "linear"] }), {
     modelFiles: { unet: true, vae: true },
+    unetName: SEEDVR2_FP16_UNET_NAME,
     detailMode: true,
     detailSettings: { ...settings, blendingMethod: "gaussian" },
   });
   assert.equal(unsupported.ready, false);
   assert.deepEqual(unsupported.detail.unsupported.blendingMethod, ["gaussian"]);
+
+  assert.equal(ready.models.unet.name, SEEDVR2_DETAIL_FP16_UNET_NAME);
+  assert.equal(ready.models.vae.name, SEEDVR2_DETAIL_VAE_NAME);
+
+  const nvfp4 = evaluateSeedVR2Readiness(detailObjectInfo(), {
+    unetName: SEEDVR2_UNET_NAME,
+    modelFiles: { unet: true, vae: true },
+    detailMode: true,
+    detailSettings: settings,
+  });
+  assert.equal(nvfp4.ready, false);
+  assert.equal(nvfp4.models.unet.available, false);
 });
 
 test("readiness requires native nodes and exact model combos", () => {
@@ -284,6 +310,7 @@ test("controller resolves the FP16 profile to the exact FP16 model", async () =>
   await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME), "model");
   await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
   const controller = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
     comfyRoot: root,
     inputRoot,
     outputRoot,
@@ -386,6 +413,7 @@ test("controller queues one active job, preserves public shape, and cleans outpu
     throw new Error(`unexpected endpoint ${url}`);
   };
   const controller = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
     comfyRoot: root,
     inputRoot,
     outputRoot,
@@ -425,6 +453,7 @@ test("controller upscales a single image with SeedVR2 7B and registers a PNG out
   await fs.writeFile(path.join(outputRoot, "seedvr2_result.png"), "result");
   let promptSeen = null;
   const controller = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
     comfyRoot: root,
     inputRoot,
     outputRoot,
@@ -519,6 +548,7 @@ test("remote controller uploads source video and downloads the ComfyUI artifact"
     throw new Error(`unexpected endpoint ${url}`);
   };
   const controller = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
     comfyUrl: "http://remote.test",
     remote: true,
     comfyRoot: root,
@@ -577,6 +607,7 @@ test("controller runs the H3 latent profile with its own model paths and output 
     throw new Error(`unexpected endpoint ${url}`);
   };
   const controller = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(root, "jobs") }),
     comfyRoot: root,
     inputRoot,
     outputRoot,
@@ -610,8 +641,9 @@ test("controller runs the H3 latent profile with its own model paths and output 
   assert.match(completed.stage, /Completed/);
 });
 
-test("controller route reports 503 when ComfyUI readiness is false", async () => {
+test("controller route reports 503 when ComfyUI readiness is false", async (t) => {
   const controller = createSeedVR2Controller({
+    jobStore: await temporarySeedJobStore(t, "readiness"),
     inputRoot: path.join(os.tmpdir(), "h3-seedvr2-input-missing"),
     outputRoot: path.join(os.tmpdir(), "h3-seedvr2-output-missing"),
     fetchImpl: async () => { throw new Error("offline"); },
@@ -625,8 +657,9 @@ test("controller route reports 503 when ComfyUI readiness is false", async () =>
   assert.equal(res.body.health.ready, false);
 });
 
-test("controller rejects detail submissions when the detail node contract is unavailable", async () => {
+test("controller rejects detail submissions when the detail node contract is unavailable", async (t) => {
   const controller = createSeedVR2Controller({
+    jobStore: await temporarySeedJobStore(t, "detail-readiness"),
     inputRoot: path.join(os.tmpdir(), "h3-seedvr2-input-detail-missing"),
     outputRoot: path.join(os.tmpdir(), "h3-seedvr2-output-detail-missing"),
     fetchImpl: async (url) => {
@@ -747,8 +780,9 @@ test("SeedVR2 detail validation uses stable 400-series error codes for every fie
   );
 });
 
-test("detail validation codes are preserved by the public POST API", async () => {
+test("detail validation codes are preserved by the public POST API", async (t) => {
   const controller = createSeedVR2Controller({
+    jobStore: await temporarySeedJobStore(t, "validation"),
     inputRoot: path.join(os.tmpdir(), "h3-seedvr2-validation-input"),
     outputRoot: path.join(os.tmpdir(), "h3-seedvr2-validation-output"),
     fetchImpl: async () => { throw new Error("validation must run before ComfyUI readiness"); },

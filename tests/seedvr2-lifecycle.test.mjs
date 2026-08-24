@@ -10,8 +10,14 @@ import {
   SEEDVR2_REQUIRED_NODES,
   SEEDVR2_DETAIL_REQUIRED_NODES,
   SEEDVR2_DETAIL_NODE,
+  SEEDVR2_DETAIL_DIT_LOADER_NODE,
+  SEEDVR2_DETAIL_VAE_LOADER_NODE,
+  SEEDVR2_DETAIL_FP16_UNET_NAME,
+  SEEDVR2_DETAIL_VAE_NAME,
   SEEDVR2_DETAIL_NODE_INPUTS,
   SEEDVR2_DETAIL_NODE_INPUT_TYPES,
+  SEEDVR2_FP16_PROFILE,
+  SEEDVR2_FP16_UNET_NAME,
   SEEDVR2_UNET_NAME,
   SEEDVR2_VAE_NAME,
   createSeedVR2Controller,
@@ -42,16 +48,12 @@ function detailObjectInfo() {
     name,
     SEEDVR2_DETAIL_NODE_INPUT_TYPES[name] === "COMBO" ? [["placeholder"], {}] : [SEEDVR2_DETAIL_NODE_INPUT_TYPES[name], {}],
   ]));
-  inputs.unet_name = [[SEEDVR2_UNET_NAME], {}];
-  inputs.vae_name = [[SEEDVR2_VAE_NAME], {}];
-  inputs.resize_method = [["lanczos", "bicubic", "bilinear", "area", "nearest-exact"], {}];
   inputs.color_correction = [["wavelet", "lab", "adain", "none"], {}];
-  inputs.sampler_name = [["euler", "heun", "dpmpp_2m"], {}];
-  inputs.scheduler = [["simple", "normal", "karras"], {}];
   inputs.blending_method = [["multiband", "linear", "gaussian"], {}];
-  inputs.tiling_strategy = [["chess", "grid"], {}];
-  inputs.detail_preset = [["default", "skin_detail"], {}];
+  inputs.tiling_strategy = [["Chess", "Linear"], {}];
   info[SEEDVR2_DETAIL_NODE].input.required = inputs;
+  info[SEEDVR2_DETAIL_DIT_LOADER_NODE].input.required.model = [[SEEDVR2_DETAIL_FP16_UNET_NAME], {}];
+  info[SEEDVR2_DETAIL_VAE_LOADER_NODE].input.required.model = [[SEEDVR2_DETAIL_VAE_NAME], {}];
   return info;
 }
 
@@ -177,6 +179,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
   await fs.mkdir(inputRoot, { recursive: true });
   await fs.mkdir(outputRoot, { recursive: true });
   await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_UNET_NAME), "model");
+  await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME), "model");
   await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
   await fs.writeFile(path.join(inputRoot, "source.mp4"), "source");
   await fs.writeFile(path.join(outputRoot, "seedvr2-result.mp4"), "result");
@@ -294,7 +297,7 @@ test("detail settings survive persistence, public output, failure, and retry rec
   const settings = {
     sourceName: "source.mp4",
     sourceRoot: "input",
-    profile: SEEDVR2_PROFILE,
+    profile: SEEDVR2_FP16_PROFILE,
     seed: 88,
     scale: 2,
     resizeMethod: "lanczos",
@@ -325,9 +328,9 @@ test("detail settings survive persistence, public output, failure, and retry rec
     assert.deepEqual(failed[key], settings[key], key);
     assert.deepEqual(failed.provenance.request[key], settings[key], `provenance.${key}`);
   }
-  assert.equal(failed.prompt["3"].class_type, SEEDVR2_DETAIL_NODE);
-  assert.equal(failed.prompt["3"].inputs.input_noise_scale, 0.035);
-  assert.equal(failed.prompt["3"].inputs.tile_upscale_resolution, 2560);
+  assert.equal(failed.prompt["5"].class_type, SEEDVR2_DETAIL_NODE);
+  assert.equal(failed.prompt["5"].inputs.input_noise_scale, 0.035);
+  assert.equal(failed.prompt["5"].inputs.tile_upscale_resolution, 2560);
 
   const result = apiResponse();
   await value.controller.handleRoute({ method: "POST", url: `/api/upscale/jobs/${failed.id}/retry` }, result);
@@ -341,8 +344,8 @@ test("detail settings survive persistence, public output, failure, and retry rec
     assert.deepEqual(retried.provenance.request[key], settings[key], `retry.provenance.${key}`);
   }
   const completed = await waitFor(() => value.store.read(retried.id), (job) => job?.status === "completed");
-  assert.equal(completed.prompt["3"].inputs.latent_noise_scale, 0.012);
-  assert.equal(completed.prompt["3"].inputs.blending_method, "gaussian");
+  assert.equal(completed.prompt["5"].inputs.latent_noise_scale, 0.012);
+  assert.equal(completed.prompt["5"].inputs.blending_method, "gaussian");
 });
 
 test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the history artifact", async (t) => {

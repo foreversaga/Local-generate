@@ -294,6 +294,7 @@ function normalizeCandidate(candidate) {
  */
 export function createContinuationPromptFinalizer({
   ollamaCoordinator,
+  checkAvailable,
   request,
   model,
   getModel,
@@ -320,6 +321,13 @@ export function createContinuationPromptFinalizer({
       prompt: fallbackPrompt,
       provenance: provenance({ provider, model: selectedModel, fallback: true, reason, error, skill: skillPolicy }),
     });
+    if (typeof checkAvailable === "function") {
+      try {
+        if (!(await checkAvailable(context))) return fallback("OLLAMA_UNAVAILABLE");
+      } catch (error) {
+        return fallback("OLLAMA_UNAVAILABLE", error);
+      }
+    }
     try {
       if (!context.previousTail) return fallback("tail_missing");
       if (!selectedModel) {

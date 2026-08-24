@@ -32,6 +32,32 @@ test("job adapter exposes reusable prompts for single, long, and image jobs rega
   assert.deepEqual([failedImage.prompt, failedImage.negativePrompt], ["image prompt", "blur"]);
 });
 
+test("failed long jobs distinguish completed segment files from the unassembled final video", () => {
+  const job = adaptJob({
+    id: "long-partial",
+    status: "failed",
+    duration: 60,
+    error: { message: "fetch failed" },
+    segments: [
+      { status: "completed", duration: 10.125, renderedDuration: 10.125 },
+      { status: "failed", duration: 10.125 },
+      ...Array.from({ length: 4 }, () => ({ status: "pending", duration: 10.125 })),
+    ],
+  }, "long");
+  assert.equal(job.subtitle, "1/6 段完成 · 目標 60 秒");
+  assert.match(job.error, /第 2\/6 段失敗/);
+  assert.match(job.error, /約 10\.1 秒/);
+  assert.match(job.error, /尚未合併成最終影片/);
+});
+
+test("job adapter names every image generation and upscale function distinctly", () => {
+  assert.match(adaptJob({ id: "text", prompt: "night market", modelLabel: "FLUX.2 Dev", width: 1024, height: 1024, steps: 20, cfg: 4 }, "text2img").title, /^文字生圖/);
+  assert.equal(adaptJob({ id: "text", prompt: "night market", modelLabel: "FLUX.2 Dev", cfg: 4 }, "text2img").cfg, 4);
+  assert.match(adaptJob({ id: "pose", sourceName: "person.png", poseName: "pose.png" }, "img2img").title, /^OpenPose 骨架生圖/);
+  assert.match(adaptJob({ id: "image-upscale", sourceName: "portrait.png" }, "upscale").title, /^圖片升頻/);
+  assert.match(adaptJob({ id: "video-upscale", sourceName: "clip.mp4" }, "upscale").title, /^影片升頻/);
+});
+
 test("job output references are marked unavailable when their media key is stale", () => {
   const available = new Set(["output:valid/render.mp4"]);
   assert.equal(outputAvailability({ root: "output", name: "valid/render.mp4" }, available), true);

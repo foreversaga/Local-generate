@@ -1,18 +1,40 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createText2ImgStore } from "./text2img-store.mjs";
 
 export const FLUX2_VAE = "flux2-vae.safetensors";
 export const FLUX2_CLIP_TYPE = "flux2";
 export const FLUX2_DEV_MODEL = "flux2_dev_fp8mixed.safetensors";
 export const FLUX2_DEV_TEXT_ENCODER = "mistral_3_small_flux2_bf16.safetensors";
-export const KREA2_TURBO_MODEL = "krea2_turbo_fp8_scaled.safetensors";
-export const KREA2_TEXT_ENCODER = "qwen3vl_4b_fp8_scaled.safetensors";
-export const KREA2_VAE = "qwen_image_vae.safetensors";
-export const KREA2_CLIP_TYPE = "krea2";
+export const FLUX2_KLEIN_9B_MODEL = "flux-2-klein-9b-fp8.safetensors";
+export const FLUX2_KLEIN_9B_TEXT_ENCODER = "qwen_3_8b_fp8mixed.safetensors";
+export const FLUX2_KLEIN_9B_VAE = "full_encoder_small_decoder.safetensors";
 export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-dev";
 export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
-export const KREA2_TURBO_MODEL_ID = "krea2-turbo";
+
+export const FLUX2_KLEIN_9B_LORAS = Object.freeze([
+  Object.freeze({
+    id: "consistency-v2",
+    label: "Flux2-Klein-9B Consistency V2",
+    filename: "flux2-klein-9b/Flux2-Klein-9B-consistency-V2.safetensors",
+    defaultStrength: 0.8,
+  }),
+  Object.freeze({
+    id: "image-restore-v1",
+    label: "Ultimate Upscaler Klein-9B",
+    filename: "flux2-klein-9b/Flux2-Klein-Image-RestoreV1.safetensors",
+    defaultStrength: 0.8,
+  }),
+  Object.freeze({
+    id: "ultrareal-v4",
+    label: "UltraReal - Krea2, Klein9B · KL_9B_V4",
+    filename: "flux2-klein-9b/ultra_real_v4.safetensors",
+    defaultStrength: 0.55,
+  }),
+]);
+
+const FLUX2_KLEIN_9B_LORA_BY_ID = Object.freeze(Object.fromEntries(FLUX2_KLEIN_9B_LORAS.map((lora) => [lora.id, lora])));
 
 export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
   [DEFAULT_TEXT2IMG_MODEL_ID]: Object.freeze({
@@ -37,28 +59,26 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
     maxDimension: 1536,
     dimensionStep: 16,
   }),
-  [KREA2_TURBO_MODEL_ID]: Object.freeze({
-    id: KREA2_TURBO_MODEL_ID,
-    label: "Krea 2 Turbo · FP8 Scaled",
-    model: KREA2_TURBO_MODEL,
-    textEncoder: KREA2_TEXT_ENCODER,
-    vae: KREA2_VAE,
-    clipType: KREA2_CLIP_TYPE,
-    precision: "FP8 Scaled",
-    license: "Krea 2 Community License",
-    commercial: true,
-    architecture: "krea2",
-    encoderLabel: "Qwen3-VL 4B · FP8 Scaled",
-    encoderPrecision: "FP8 Scaled",
-    defaultSteps: 8,
+  "flux2-klein-9b": Object.freeze({
+    id: "flux2-klein-9b",
+    label: "FLUX.2 Klein 9B · FP8",
+    model: FLUX2_KLEIN_9B_MODEL,
+    textEncoder: FLUX2_KLEIN_9B_TEXT_ENCODER,
+    vae: FLUX2_KLEIN_9B_VAE,
+    clipType: FLUX2_CLIP_TYPE,
+    precision: "FP8 + FP8 Mixed encoder",
+    license: "FLUX Non-Commercial License",
+    commercial: false,
+    architecture: "flux2",
+    encoderLabel: "Qwen3 8B · FP8 Mixed",
+    encoderPrecision: "FP8 Mixed",
+    defaultSteps: 4,
     maxSteps: 20,
     cfg: 1,
-    sampler: "ER-SDE",
-    scheduler: "Simple",
-    flowShift: 1.15,
-    denoise: 1,
+    sampler: "Euler",
+    scheduler: "Flux2",
     minDimension: 512,
-    maxDimension: 2048,
+    maxDimension: 1536,
     dimensionStep: 16,
   }),
 });
@@ -79,23 +99,23 @@ const FLUX_DEV_REQUIRED_NODES = Object.freeze([
   "SaveImage",
 ]);
 
-const KREA2_REQUIRED_NODES = Object.freeze([
+const FLUX2_KLEIN_REQUIRED_NODES = Object.freeze([
   "UNETLoader",
   "CLIPLoader",
   "VAELoader",
+  "LoraLoaderModelOnly",
   "CLIPTextEncode",
-  "ConditioningZeroOut",
-  "EmptyLatentImage",
-  "ModelSamplingAuraFlow",
-  "KSampler",
+  "CFGGuider",
+  "RandomNoise",
+  "KSamplerSelect",
+  "Flux2Scheduler",
+  "EmptyFlux2LatentImage",
+  "SamplerCustomAdvanced",
   "VAEDecode",
   "SaveImage",
 ]);
 
-export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...new Set([
-  ...FLUX_DEV_REQUIRED_NODES,
-  ...KREA2_REQUIRED_NODES,
-])]);
+export const TEXT2IMG_REQUIRED_NODES = Object.freeze([...new Set([...FLUX_DEV_REQUIRED_NODES, ...FLUX2_KLEIN_REQUIRED_NODES])]);
 
 const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished", "done"]);
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
@@ -149,6 +169,15 @@ function boundedInteger(value, name, fallback, min, max, step = 1) {
   return resolved;
 }
 
+function boundedNumber(value, name, fallback, min, max, step = 0.1) {
+  const resolved = value === undefined || value === null || value === "" ? fallback : Number(value);
+  const units = resolved / step;
+  if (!Number.isFinite(resolved) || resolved < min || resolved > max || Math.abs(units - Math.round(units)) > 1e-9) {
+    throw makeError(`${name} must be a number between ${min} and ${max} in steps of ${step}.`, 400, `TEXT2IMG_${name.toUpperCase()}_INVALID`);
+  }
+  return Math.round(units) * step;
+}
+
 function resolveText2ImgModel(modelId = DEFAULT_TEXT2IMG_MODEL_ID) {
   const id = String(modelId || DEFAULT_TEXT2IMG_MODEL_ID).trim();
   const profile = TEXT2IMG_MODEL_PROFILES[id];
@@ -175,6 +204,28 @@ function resolveText2ImgEncoder(profile, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID
   return encoder;
 }
 
+function normalizeText2ImgLoras(value, profile) {
+  if (value === undefined || value === null) return Object.freeze([]);
+  if (!Array.isArray(value)) throw makeError("loras must be an array.", 400, "TEXT2IMG_LORAS_INVALID");
+  if (profile.id !== "flux2-klein-9b" && value.length) {
+    throw makeError("Selected LoRAs are only compatible with FLUX.2 Klein 9B.", 400, "TEXT2IMG_LORAS_MODEL_INVALID");
+  }
+  const seen = new Set();
+  const loras = value.map((item) => {
+    const id = String(item?.id || "").trim();
+    const preset = FLUX2_KLEIN_9B_LORA_BY_ID[id];
+    if (!preset || seen.has(id)) throw makeError(`Unsupported or duplicate Klein 9B LoRA: ${id || "(empty)"}.`, 400, "TEXT2IMG_LORA_INVALID");
+    seen.add(id);
+    return Object.freeze({
+      id,
+      label: preset.label,
+      filename: preset.filename,
+      strength: boundedNumber(item?.strength, `lora_${id}_strength`, preset.defaultStrength, 0, 2, 0.05),
+    });
+  });
+  return Object.freeze(loras);
+}
+
 export function normalizeText2ImgInput(input = {}) {
   const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
   if (!prompt) throw makeError("Prompt is required.", 400, "TEXT2IMG_PROMPT_REQUIRED");
@@ -183,6 +234,7 @@ export function normalizeText2ImgInput(input = {}) {
   }
   const profile = resolveText2ImgModel(input.modelId);
   const encoder = resolveText2ImgEncoder(profile, input.encoderId);
+  const loras = normalizeText2ImgLoras(input.loras, profile);
   return Object.freeze({
     prompt,
     modelId: profile.id,
@@ -190,7 +242,9 @@ export function normalizeText2ImgInput(input = {}) {
     width: boundedInteger(input.width, "width", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
     height: boundedInteger(input.height, "height", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
     steps: boundedInteger(input.steps, "steps", profile.defaultSteps, 1, profile.maxSteps),
+    cfg: boundedNumber(input.cfg, "cfg", profile.cfg, 1, 8, 0.1),
     seed: boundedInteger(input.seed, "seed", 12345, 0, 2_147_483_647),
+    loras,
   });
 }
 
@@ -238,7 +292,7 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
     "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
     "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
-    "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: profile.cfg } },
+    "5": { class_type: "FluxGuidance", inputs: { conditioning: link(4), guidance: request.cfg } },
     "6": { class_type: "BasicGuider", inputs: { model: link(1), conditioning: link(5) } },
     "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
     "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
@@ -253,43 +307,45 @@ export function buildFlux2DevText2ImgPrompt(input = {}, { filenamePrefix = "text
   };
 }
 
-/** Build the native ComfyUI API graph used by Krea 2 Turbo. */
-export function buildKrea2TurboText2ImgPrompt(input = {}, { filenamePrefix = "text2img/krea2_turbo" } = {}) {
-  const request = normalizeText2ImgInput({ ...input, modelId: KREA2_TURBO_MODEL_ID });
+/** Build the official FLUX.2 Klein 9B distilled text-to-image graph. */
+export function buildFlux2Klein9BText2ImgPrompt(input = {}, { filenamePrefix = "text2img/flux2_klein_9b" } = {}) {
+  const request = normalizeText2ImgInput({ ...input, modelId: "flux2-klein-9b" });
   const profile = resolveText2ImgModel(request.modelId);
   const encoder = resolveText2ImgEncoder(profile, request.encoderId);
-  return {
+  const graph = {
     "1": { class_type: "UNETLoader", inputs: { unet_name: profile.model, weight_dtype: "default" } },
     "2": { class_type: "CLIPLoader", inputs: { clip_name: encoder.textEncoder, type: profile.clipType, device: "default" } },
     "3": { class_type: "VAELoader", inputs: { vae_name: profile.vae } },
     "4": { class_type: "CLIPTextEncode", inputs: { text: request.prompt, clip: link(2) } },
-    "5": { class_type: "ConditioningZeroOut", inputs: { conditioning: link(4) } },
-    "6": { class_type: "EmptyLatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
-    "7": { class_type: "ModelSamplingAuraFlow", inputs: { model: link(1), shift: profile.flowShift } },
-    "8": {
-      class_type: "KSampler",
-      inputs: {
-        model: link(7),
-        positive: link(4),
-        negative: link(5),
-        latent_image: link(6),
-        seed: request.seed,
-        steps: request.steps,
-        cfg: profile.cfg,
-        sampler_name: "er_sde",
-        scheduler: "simple",
-        denoise: profile.denoise,
-      },
+    "5": { class_type: "CLIPTextEncode", inputs: { text: "", clip: link(2) } },
+    "6": { class_type: "CFGGuider", inputs: { model: link(1), positive: link(4), negative: link(5), cfg: request.cfg } },
+    "7": { class_type: "RandomNoise", inputs: { noise_seed: request.seed } },
+    "8": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+    "9": { class_type: "Flux2Scheduler", inputs: { steps: request.steps, width: request.width, height: request.height } },
+    "10": { class_type: "EmptyFlux2LatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
+    "11": {
+      class_type: "SamplerCustomAdvanced",
+      inputs: { noise: link(7), guider: link(6), sampler: link(8), sigmas: link(9), latent_image: link(10) },
     },
-    "12": { class_type: "VAEDecode", inputs: { samples: link(8), vae: link(3) } },
-    "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/krea2_turbo") } },
+    "12": { class_type: "VAEDecode", inputs: { samples: link(11), vae: link(3) } },
+    "13": { class_type: "SaveImage", inputs: { images: link(12), filename_prefix: String(filenamePrefix || "text2img/flux2_klein_9b") } },
   };
+  let modelNodeId = "1";
+  request.loras.forEach((lora, index) => {
+    const nodeId = String(14 + index);
+    graph[nodeId] = {
+      class_type: "LoraLoaderModelOnly",
+      inputs: { model: link(modelNodeId), lora_name: lora.filename, strength_model: lora.strength },
+    };
+    modelNodeId = nodeId;
+  });
+  graph["6"].inputs.model = link(modelNodeId);
+  return graph;
 }
 
 export function buildText2ImgPrompt(input = {}, options = {}) {
-  if (String(input?.modelId || DEFAULT_TEXT2IMG_MODEL_ID) === KREA2_TURBO_MODEL_ID) {
-    return buildKrea2TurboText2ImgPrompt(input, options);
-  }
+  const profile = resolveText2ImgModel(input.modelId);
+  if (profile.id === "flux2-klein-9b") return buildFlux2Klein9BText2ImgPrompt(input, options);
   return buildFlux2DevText2ImgPrompt(input, options);
 }
 
@@ -307,8 +363,9 @@ export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote =
   const textEncoders = comboValues(objectInfo?.CLIPLoader, "clip_name");
   const clipTypes = comboValues(objectInfo?.CLIPLoader, "type");
   const vaes = comboValues(objectInfo?.VAELoader, "vae_name");
+  const loraFiles = comboValues(objectInfo?.LoraLoaderModelOnly, "lora_name");
   const profiles = Object.fromEntries(Object.values(TEXT2IMG_MODEL_PROFILES).map((profile) => {
-    const requiredNodes = profile.architecture === "krea2" ? KREA2_REQUIRED_NODES : FLUX_DEV_REQUIRED_NODES;
+    const requiredNodes = profile.id === "flux2-klein-9b" ? FLUX2_KLEIN_REQUIRED_NODES : FLUX_DEV_REQUIRED_NODES;
     const profileNodesReady = requiredNodes.every((name) => Boolean(objectInfo?.[name]));
     const encoders = Object.fromEntries(Object.values(encoderProfilesFor(profile)).map((encoder) => {
       const available = textEncoders.includes(encoder.textEncoder);
@@ -327,7 +384,10 @@ export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote =
     else if (remote) reason = "LOCAL_ONLY_MODEL";
     else if (!profileNodesReady) reason = "REQUIRED_NODE_MISSING";
     else if (!Object.values(models).every(Boolean)) reason = "MODEL_OR_COMPANION_MISSING";
-    return [profile.id, { ...profile, ready, models, encoders, ...(reason ? { reason } : {}) }];
+    const loras = profile.id === "flux2-klein-9b"
+      ? Object.fromEntries(FLUX2_KLEIN_9B_LORAS.map((lora) => [lora.id, { ...lora, available: loraFiles.includes(lora.filename) }]))
+      : {};
+    return [profile.id, { ...profile, ready, models, encoders, loras, ...(reason ? { reason } : {}) }];
   }));
   const selectedProfile = resolveText2ImgModel(modelId);
   const selectedId = selectedProfile.id;
@@ -413,9 +473,52 @@ export function createText2ImgController({
   requestTimeoutMs = 30_000,
   gpuCoordinator = null,
   gpuRuntime = remote ? "remote" : "local",
+  store = null,
+  storeRoot,
 } = {}) {
   if (!outputRoot) throw new Error("Text-to-image controller requires outputRoot.");
+  const jobStore = store || createText2ImgStore({ ...(storeRoot ? { root: storeRoot } : {}) });
   const jobs = new Map();
+  let initializationPromise = null;
+
+  async function persistJob(job, { required = false } = {}) {
+    try {
+      const saved = await jobStore.save(cloneJob(job));
+      delete job.persistenceError;
+      return saved;
+    } catch (error) {
+      job.persistenceError = errorMessage(error, "Unable to persist text-to-image job.");
+      if (required) throw makeError(job.persistenceError, 503, "TEXT2IMG_PERSISTENCE_FAILED");
+      console.error("[text2img] Unable to persist job:", job.persistenceError);
+      return null;
+    }
+  }
+
+  async function initialize() {
+    if (!initializationPromise) {
+      initializationPromise = (async () => {
+        const records = await jobStore.list();
+        for (const persisted of records) {
+          if (!persisted?.id) continue;
+          const job = cloneJob(persisted);
+          if (["queued", "running"].includes(job.status)) {
+            job.status = "interrupted";
+            job.stage = "Interrupted";
+            job.error = job.error || "Text-to-image generation was interrupted when the Web service restarted.";
+            job.errorCode = job.errorCode || "TEXT2IMG_INTERRUPTED";
+            job.completedAt = job.completedAt || isoNow(now());
+            job.updatedAt = job.completedAt;
+            await persistJob(job);
+          }
+          jobs.set(String(job.id), job);
+        }
+      })().catch((error) => {
+        initializationPromise = null;
+        throw error;
+      });
+    }
+    await initializationPromise;
+  }
 
   async function requestJson(pathname, init = {}, timeoutMs = requestTimeoutMs) {
     const controller = new AbortController();
@@ -563,10 +666,12 @@ export function createText2ImgController({
       const parsed = parseText2ImgHistory(await requestJson(`/history/${encodeURIComponent(job.promptId)}`), job.promptId);
       if (parsed.state === "failed") throw makeError(parsed.error, 502, "COMFY_EXECUTION_FAILED");
       if (parsed.state === "completed") return parsed.artifact;
+      const previousProgress = job.progress;
       const elapsedRatio = Math.min(1, (Date.now() - started) / Math.max(1, maxPollMs));
       job.progress = Math.max(job.progress, Math.min(88, 32 + Math.round(elapsedRatio * 56)));
       job.stage = "Generating image";
       job.updatedAt = isoNow(now());
+      if (job.progress !== previousProgress) await persistJob(job);
       await sleep(pollIntervalMs);
     }
     throw makeError("Timed out while waiting for the generated image.", 504, "TEXT2IMG_HISTORY_TIMEOUT");
@@ -588,13 +693,17 @@ export function createText2ImgController({
       job.stage = "Checking image models";
       job.startedAt = isoNow(now());
       job.updatedAt = job.startedAt;
+      await persistJob(job);
       if (typeof beforeRun === "function") await beforeRun(job);
       const readiness = await checkReadiness(job.modelId, job.encoderId);
       if (!readiness.ready) throw makeError(`${job.modelLabel} is not ready in ComfyUI.`, 503, readiness.reason || "TEXT2IMG_NOT_READY");
+      const missingLora = (job.loras || []).find((lora) => !readiness.profiles?.[job.modelId]?.loras?.[lora.id]?.available);
+      if (missingLora) throw makeError(`${missingLora.label} is not installed in ComfyUI.`, 503, "TEXT2IMG_LORA_MISSING");
       const graph = buildText2ImgPrompt(job, { filenamePrefix: `text2img/${job.modelId.replaceAll("-", "_")}_${job.id.slice(0, 8)}` });
       job.progress = 20;
       job.stage = "Submitting ComfyUI workflow";
       job.updatedAt = isoNow(now());
+      await persistJob(job);
       const submitted = await requestJson("/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -605,19 +714,23 @@ export function createText2ImgController({
         const detail = submitted.node_errors ? ` ${JSON.stringify(submitted.node_errors).slice(0, 800)}` : "";
         throw makeError(`ComfyUI rejected the image workflow.${detail}`, 502, "COMFY_PROMPT_REJECTED");
       }
+      await persistJob(job);
       job.progress = 30;
       job.stage = "Generating image";
       job.updatedAt = isoNow(now());
+      await persistJob(job);
       const artifact = await waitForHistory(job);
       job.progress = 94;
       job.stage = "Registering image";
       job.updatedAt = isoNow(now());
+      await persistJob(job);
       job.output = await registerArtifact(artifact);
       job.status = "completed";
       job.progress = 100;
       job.stage = "Completed";
       job.completedAt = isoNow(now());
       job.updatedAt = job.completedAt;
+      await persistJob(job);
     } catch (error) {
       job.status = "failed";
       job.stage = "Failed";
@@ -625,12 +738,14 @@ export function createText2ImgController({
       job.errorCode = error?.code || "TEXT2IMG_ERROR";
       job.completedAt = isoNow(now());
       job.updatedAt = job.completedAt;
+      await persistJob(job);
     } finally {
       lease?.release?.();
     }
   }
 
   async function enqueue(input = {}) {
+    await initialize();
     if (remote) throw makeError("Text-to-image models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
     const request = normalizeText2ImgInput(input);
     const profile = resolveText2ImgModel(request.modelId);
@@ -660,6 +775,12 @@ export function createText2ImgController({
       error: "",
     };
     jobs.set(job.id, job);
+    try {
+      await persistJob(job, { required: true });
+    } catch (error) {
+      jobs.delete(job.id);
+      throw error;
+    }
     queueMicrotask(() => { void runJob(job); });
     return cloneJob(job);
   }
@@ -700,12 +821,21 @@ export function createText2ImgController({
       return true;
     }
     if (req.method === "GET" && pathname === "/api/text2img/jobs") {
-      respond(res, 200, { jobs: [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(cloneJob) });
+      try {
+        await initialize();
+        const requestUrl = new URL(req.url || pathname, "http://localhost");
+        const requestedLimit = Number(requestUrl.searchParams.get("limit"));
+        const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 100) : 100;
+        respond(res, 200, { jobs: [...jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit).map(cloneJob) });
+      } catch (error) {
+        fail(res, 503, errorMessage(error, "Unable to load text-to-image jobs."), "TEXT2IMG_PERSISTENCE_UNAVAILABLE");
+      }
       return true;
     }
     if (req.method === "GET" && pathname.startsWith("/api/text2img/jobs/")) {
       const id = decodeURIComponent(pathname.slice("/api/text2img/jobs/".length));
-      const job = jobs.get(id);
+      await initialize();
+      const job = jobs.get(id) || await jobStore.read(id);
       if (!job) fail(res, 404, "Text-to-image job not found.", "TEXT2IMG_JOB_NOT_FOUND");
       else respond(res, 200, { job: cloneJob(job) });
       return true;
@@ -713,5 +843,6 @@ export function createText2ImgController({
     return false;
   }
 
+  void initialize().catch((error) => console.error("[text2img] Unable to initialize persisted jobs:", errorMessage(error)));
   return Object.freeze({ checkReadiness, checkPromptAssistant, generatePhotographicPrompt, enqueue, getJob: (id) => jobs.has(String(id)) ? cloneJob(jobs.get(String(id))) : null, handleRoute });
 }

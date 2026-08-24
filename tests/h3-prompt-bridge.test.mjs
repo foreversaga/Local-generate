@@ -93,16 +93,27 @@ test("GB10 generation defaults resolve to the NVFP4 model family", () => {
   assert.equal(resolveGenerationModelProfile("i2v", "nvfp4_blackwell"), "nvfp4_blackwell");
   assert.equal(resolveGenerationModelProfile("ref2v", "nvfp4_blackwell"), "ref2va_pruned_nvfp4");
   assert.equal(resolveGenerationModelProfile("ref2v", "ref2va_pruned_nvfp4"), "ref2va_pruned_nvfp4");
+  assert.equal(resolveGenerationModelProfile("t2v", "int8_convrot_quality"), "int8_convrot_quality");
+  assert.equal(resolveGenerationModelProfile("ref2v", "int8_convrot_quality"), "ref2va_pruned_int8_convrot");
+  assert.equal(resolveGenerationModelProfile("ref2v", "ref2va_pruned_int8_convrot"), "ref2va_pruned_int8_convrot");
 });
 
 test("Vast Ref2VA resolves to the manifest's installed NVFP4 artifact", () => {
   assert.equal(resolveGenerationModelProfile("ref2v", "nvfp4_blackwell", { remote: true }), "ref2va_pruned_nvfp4");
+  assert.throws(
+    () => resolveGenerationModelProfile("ref2v", "int8_convrot_quality", { remote: true }),
+    { code: "REF2VA_PROFILE_UNSUPPORTED", status: 422 },
+  );
 });
 
 test("Vast FL2VA defaults to the manifest's installed NVFP4 artifact", () => {
   assert.equal(resolveGenerationModelProfile("t2v", "", { remote: true }), "nvfp4_blackwell");
   assert.throws(
     () => resolveGenerationModelProfile("t2v", "10eros_max_beta2_nvfp4", { remote: true }),
+    { code: "FL2VA_PROFILE_UNSUPPORTED", status: 422 },
+  );
+  assert.throws(
+    () => resolveGenerationModelProfile("t2v", "int8_convrot_quality", { remote: true }),
     { code: "FL2VA_PROFILE_UNSUPPORTED", status: 422 },
   );
 });

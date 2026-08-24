@@ -1,3 +1,5 @@
+import { buildWindowedAutoExtendPrompts } from "../../app/lib/multishot-prompt-windows.mjs";
+
 export const MULTISHOT_FPS = 24;
 export const MULTISHOT_FRAME_OPTIONS = Object.freeze([243, 362]);
 export const MULTISHOT_CONTINUITY_MODES = Object.freeze(["first_frame", "context_pin"]);
@@ -86,14 +88,12 @@ export function splitManualShotPrompts(value, shotCount) {
   return prompts;
 }
 
-export function buildAutoExtendPrompts(value, shotCount) {
-  const premise = String(value || "").trim();
-  if (!premise) invalid("AUTO_EXTEND_PROMPT_REQUIRED", "auto_extend requires a scene description.");
-  const continuity = "Continue naturally from the previous moment. Preserve the same people, identity, clothing, environment, time of day, camera, lens, lighting, action direction, and dialogue continuity. Do not introduce a new scene, a new shot, a cut, or a camera cut unless explicitly requested.";
-  const boundary = "End this window on a stable readable face and a continuing action. Avoid a fast turn, full face occlusion, back-to-camera pose, heavy motion blur, abrupt camera motion, scene transition, or dialogue cut mid-word.";
-  return Array.from({ length: shotCount }, (_, index) => index === 0
-    ? `${premise}\n\n${boundary}`
-    : `${continuity}\n\nContinue this same take: ${premise}\n\n${boundary}`);
+export function buildAutoExtendPrompts(value, shotCount, windows = null) {
+  const count = Math.max(1, Number(shotCount) || 1);
+  const promptWindows = Array.isArray(windows) && windows.length === count
+    ? windows
+    : Array.from({ length: count }, (_, index) => ({ start: index, end: index + 1 }));
+  return buildWindowedAutoExtendPrompts(value, promptWindows);
 }
 
 function nodeInputs(node) {

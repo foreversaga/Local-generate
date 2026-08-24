@@ -15,6 +15,7 @@ import {
   SEEDVR2_VAE_NAME,
   createSeedVR2Controller,
 } from "../server/video-upscale/seedvr2.mjs";
+import { createSeedVR2JobStore } from "../server/video-upscale/seedvr2-store.mjs";
 
 const waitFor = async (read, predicate, message) => {
   const deadline = Date.now() + 3_000;
@@ -113,6 +114,7 @@ test("shared coordinator serializes real img2img and SeedVR2 adapters", async (t
     toAsset: async (_root, name) => ({ root: "output", name, kind: "image" }),
   });
   const seedController = createSeedVR2Controller({
+    jobStore: createSeedVR2JobStore({ root: path.join(seedRoot, "jobs") }),
     comfyUrl: "http://seed-comfy",
     comfyRoot: seedRoot,
     inputRoot: path.join(seedRoot, "input"),

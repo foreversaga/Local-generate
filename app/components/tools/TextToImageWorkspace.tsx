@@ -10,6 +10,7 @@ import {
   submitText2Img,
   type Text2ImgHealth,
   type Text2ImgJob,
+  type Text2ImgLoraSelection,
 } from "./text2img-client";
 import styles from "./TextToImageWorkspace.module.css";
 
@@ -18,7 +19,7 @@ type SizePreset = {
   width: number;
   height: number;
   steps?: number;
-  label: "text2img.size.square" | "text2img.size.portrait" | "text2img.size.portraitWide" | "text2img.size.landscape" | "text2img.size.landscapeWide" | "text2img.size.realisticPortrait";
+  label: "text2img.size.square" | "text2img.size.portrait" | "text2img.size.portraitWide" | "text2img.size.landscape" | "text2img.size.landscapeWide";
 };
 
 const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
@@ -29,53 +30,58 @@ const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
     { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
     { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
   ],
-  "krea2-turbo": [
-    { id: "square", width: 1536, height: 1536, label: "text2img.size.square" },
-    { id: "portrait", width: 1152, height: 2048, label: "text2img.size.portrait" },
-    { id: "landscape", width: 2048, height: 1152, label: "text2img.size.landscape" },
-    { id: "realisticPortrait", width: 1152, height: 2048, steps: 10, label: "text2img.size.realisticPortrait" },
+  "flux2-klein-9b": [
+    { id: "square", width: 1024, height: 1024, label: "text2img.size.square" },
+    { id: "portrait", width: 768, height: 1024, label: "text2img.size.portrait" },
+    { id: "portraitWide", width: 896, height: 1152, label: "text2img.size.portraitWide" },
+    { id: "landscape", width: 1024, height: 768, label: "text2img.size.landscape" },
+    { id: "landscapeWide", width: 1152, height: 896, label: "text2img.size.landscapeWide" },
   ],
 };
 
 const DEFAULT_STEPS = 20;
+const DEFAULT_GUIDANCE = 4;
+const MIN_GUIDANCE = 1;
+const MAX_GUIDANCE = 8;
 const DEFAULT_SEED = 12345;
 const DEFAULT_WIDTH = 1024;
 const DEFAULT_HEIGHT = 1024;
 const CUSTOM_PRESET_ID = "custom";
 const DEFAULT_MODEL_ID = "flux2-dev";
 const DEFAULT_ENCODER_ID = "official";
+const KLEIN_LORA_OPTIONS = [
+  { id: "consistency-v2", nameKey: "text2img.lora.consistency.name", useKey: "text2img.lora.consistency.use", defaultStrength: 0.8 },
+  { id: "image-restore-v1", nameKey: "text2img.lora.restore.name", useKey: "text2img.lora.restore.use", defaultStrength: 0.8 },
+  { id: "ultrareal-v4", nameKey: "text2img.lora.ultrareal.name", useKey: "text2img.lora.ultrareal.use", defaultStrength: 0.55 },
+] as const;
 const MODEL_OPTIONS = [
   {
     id: DEFAULT_MODEL_ID,
     mark: "DEV",
     nameKey: "text2img.model.dev.name",
     noteKey: "text2img.model.dev.note",
-    licenseKey: "text2img.model.dev.license",
-    commercial: false,
     defaultSteps: 20,
     maxSteps: 50,
+    defaultGuidance: 4,
     minDimension: 512,
     maxDimension: 1536,
     sizeHelpKey: "text2img.size.help.flux",
     stepsHelpKey: "text2img.steps.help.flux",
     negativeNoteKey: "text2img.negativeNote.flux",
-    warningKey: "text2img.model.dev.warning",
   },
   {
-    id: "krea2-turbo",
-    mark: "K2",
-    nameKey: "text2img.model.krea.name",
-    noteKey: "text2img.model.krea.note",
-    licenseKey: "text2img.model.krea.license",
-    commercial: true,
-    defaultSteps: 8,
+    id: "flux2-klein-9b",
+    mark: "K9",
+    nameKey: "text2img.model.klein9b.name",
+    noteKey: "text2img.model.klein9b.note",
+    defaultSteps: 4,
     maxSteps: 20,
+    defaultGuidance: 1,
     minDimension: 512,
-    maxDimension: 2048,
-    sizeHelpKey: "text2img.size.help.krea",
-    stepsHelpKey: "text2img.steps.help.krea",
-    negativeNoteKey: "text2img.negativeNote.krea",
-    warningKey: "text2img.model.krea.warning",
+    maxDimension: 1536,
+    sizeHelpKey: "text2img.size.help.klein9b",
+    stepsHelpKey: "text2img.steps.help.klein9b",
+    negativeNoteKey: "text2img.negativeNote.klein9b",
   },
 ] as const;
 
@@ -99,6 +105,14 @@ function normalizeIntegerField(value: string, fallback: number, min: number, max
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizeDecimalField(value: string, fallback: number, min: number, max: number, step: number) {
+  if (!value.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const bounded = Math.max(min, Math.min(max, parsed));
+  return Math.round(bounded / step) * step;
 }
 
 function normalizeDimensionField(value: string, fallback: number, min: number, max: number) {
@@ -142,7 +156,11 @@ export function TextToImageWorkspace() {
   const [width, setWidth] = useState(String(DEFAULT_WIDTH));
   const [height, setHeight] = useState(String(DEFAULT_HEIGHT));
   const [steps, setSteps] = useState(String(DEFAULT_STEPS));
+  const [guidance, setGuidance] = useState(String(DEFAULT_GUIDANCE));
   const [seed, setSeed] = useState(String(DEFAULT_SEED));
+  const [loraSettings, setLoraSettings] = useState<Record<string, { enabled: boolean; strength: string }>>(() => Object.fromEntries(
+    KLEIN_LORA_OPTIONS.map((item) => [item.id, { enabled: false, strength: String(item.defaultStrength) }]),
+  ));
   const [job, setJob] = useState<Text2ImgJob | null>(null);
   const [submitError, setSubmitError] = useState("");
 
@@ -157,6 +175,12 @@ export function TextToImageWorkspace() {
   const maxDimension = selectedHealth?.maxDimension || selectedOption.maxDimension;
   const selectedPreset = sizePresets.find((item) => item.id === presetId);
   const scaleBounds = selectedPreset ? resolutionScaleBounds(selectedPreset.width, selectedPreset.height, minDimension, maxDimension) : null;
+  const selectedLoras = (): Text2ImgLoraSelection[] => modelId === "flux2-klein-9b"
+    ? KLEIN_LORA_OPTIONS.flatMap((item) => {
+      const setting = loraSettings[item.id];
+      return setting?.enabled ? [{ id: item.id, strength: normalizeDecimalField(setting.strength, item.defaultStrength, 0, 2, 0.05) }] : [];
+    })
+    : [];
 
   const refreshHealth = useCallback(async () => {
     setHealthError("");
@@ -186,7 +210,10 @@ export function TextToImageWorkspace() {
     const poll = async () => {
       try {
         const next = await fetchText2ImgJob(job.id);
-        if (!cancelled) setJob(next);
+        if (!cancelled) {
+          setJob(next);
+          setSubmitError("");
+        }
       } catch (error) {
         if (!cancelled) setSubmitError(error instanceof Error ? error.message : t("text2img.job.error"));
       }
@@ -234,10 +261,12 @@ export function TextToImageWorkspace() {
     setPromptBusy(true);
     try {
       const normalizedSteps = normalizeIntegerField(steps, defaultSteps, 1, maxSteps);
+      const normalizedGuidance = normalizeDecimalField(guidance, selectedHealth?.cfg || DEFAULT_GUIDANCE, MIN_GUIDANCE, MAX_GUIDANCE, 0.1);
       const normalizedSeed = normalizeIntegerField(seed, DEFAULT_SEED, 0, 2_147_483_647);
       const normalizedWidth = normalizeDimensionField(width, DEFAULT_WIDTH, minDimension, maxDimension);
       const normalizedHeight = normalizeDimensionField(height, DEFAULT_HEIGHT, minDimension, maxDimension);
       setSteps(String(normalizedSteps));
+      setGuidance(String(normalizedGuidance));
       setSeed(String(normalizedSeed));
       setWidth(String(normalizedWidth));
       setHeight(String(normalizedHeight));
@@ -250,9 +279,11 @@ export function TextToImageWorkspace() {
         width: normalizedWidth,
         height: normalizedHeight,
         steps: normalizedSteps,
+        cfg: normalizedGuidance,
         seed: normalizedSeed,
         modelId,
         encoderId,
+        loras: selectedLoras(),
       }));
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("text2img.submit.error"));
@@ -279,7 +310,12 @@ export function TextToImageWorkspace() {
     setWidth(String(completedJob.width));
     setHeight(String(completedJob.height));
     setSteps(String(completedJob.steps));
+    setGuidance(String(completedJob.cfg));
     setSeed(String(completedJob.seed));
+    setLoraSettings((current) => Object.fromEntries(KLEIN_LORA_OPTIONS.map((item) => {
+      const selected = completedJob.loras?.find((lora) => lora.id === item.id);
+      return [item.id, { enabled: Boolean(selected), strength: String(selected?.strength ?? current[item.id]?.strength ?? item.defaultStrength) }];
+    })));
     setPrompt(completedJob.prompt);
     setPromptModel("");
     try {
@@ -288,9 +324,11 @@ export function TextToImageWorkspace() {
         width: completedJob.width,
         height: completedJob.height,
         steps: completedJob.steps,
+        cfg: completedJob.cfg,
         seed: completedJob.seed,
         modelId: completedJob.modelId,
         encoderId: encoder,
+        loras: completedJob.loras || [],
       }));
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : t("text2img.repeat.error"));
@@ -422,6 +460,7 @@ export function TextToImageWorkspace() {
                         setModelId(item.id);
                         setEncoderId(DEFAULT_ENCODER_ID);
                         setSteps(String(item.defaultSteps));
+                        setGuidance(String(item.defaultGuidance));
                         setPresetId(nextPreset.id);
                         setResolutionScale(100);
                         setWidth(String(nextPreset.width));
@@ -435,9 +474,6 @@ export function TextToImageWorkspace() {
                       <strong>{t(item.nameKey)}</strong>
                       <small>{t(item.noteKey)}</small>
                     </span>
-                    <span className={`${styles.licenseTag} ${item.commercial ? styles.commercialTag : styles.nonCommercialTag}`}>
-                      {t(item.licenseKey)}
-                    </span>
                     {health && <span className={profile?.ready ? styles.optionReady : styles.optionMissing} aria-label={profile?.ready ? t("text2img.health.ready") : t("text2img.health.modelsMissing")} />}
                   </label>
                 );
@@ -445,8 +481,48 @@ export function TextToImageWorkspace() {
             </div>
           </fieldset>
 
-          <p className={styles.licenseWarning} role="note">{t(selectedOption.warningKey)}</p>
-
+          {modelId === "flux2-klein-9b" && (
+            <fieldset className={styles.loraFieldset}>
+              <legend>{t("text2img.lora.title")}</legend>
+              <p>{t("text2img.lora.help")}</p>
+              <div className={styles.loraGrid}>
+                {KLEIN_LORA_OPTIONS.map((item) => {
+                  const setting = loraSettings[item.id];
+                  const available = Boolean(selectedHealth?.loras?.[item.id]?.available);
+                  return (
+                    <div key={item.id} className={`${styles.loraOption} ${setting.enabled ? styles.loraOptionActive : ""} ${!available ? styles.loraOptionMissing : ""}`}>
+                      <label className={styles.loraToggle}>
+                        <input
+                          type="checkbox"
+                          checked={setting.enabled}
+                          disabled={!available}
+                          onChange={(event) => setLoraSettings((current) => ({ ...current, [item.id]: { ...current[item.id], enabled: event.target.checked } }))}
+                        />
+                        <span>
+                          <strong>{t(item.nameKey)}</strong>
+                          <small>{t(item.useKey)}</small>
+                        </span>
+                        <em>{available ? t("text2img.lora.available") : t("text2img.lora.missing")}</em>
+                      </label>
+                      <label className={styles.loraStrength}>
+                        <span>{t("text2img.lora.strength")}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={setting.strength}
+                          disabled={!available || !setting.enabled}
+                          onChange={(event) => setLoraSettings((current) => ({ ...current, [item.id]: { ...current[item.id], strength: event.target.value } }))}
+                          onBlur={() => setLoraSettings((current) => ({ ...current, [item.id]: { ...current[item.id], strength: String(normalizeDecimalField(current[item.id].strength, item.defaultStrength, 0, 2, 0.05)) } }))}
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
 
           <fieldset className={styles.presetFieldset}>
             <legend>{t("text2img.size.label")}</legend>
@@ -542,6 +618,19 @@ export function TextToImageWorkspace() {
               <small>{t(selectedOption.stepsHelpKey)}</small>
             </label>
             <label className={styles.field}>
+              <span>{t("text2img.guidance.label")}</span>
+              <input
+                type="number"
+                min={MIN_GUIDANCE}
+                max={MAX_GUIDANCE}
+                step={0.1}
+                value={guidance}
+                onChange={(event) => setGuidance(event.target.value)}
+                onBlur={() => setGuidance(String(normalizeDecimalField(guidance, selectedHealth?.cfg || DEFAULT_GUIDANCE, MIN_GUIDANCE, MAX_GUIDANCE, 0.1)))}
+              />
+              <small>{t("text2img.guidance.help")}</small>
+            </label>
+            <label className={styles.field}>
               <span>{t("text2img.seed.label")}</span>
               <div className={styles.seedControl}>
                 <input
@@ -560,10 +649,8 @@ export function TextToImageWorkspace() {
           </div>
 
           <div className={styles.fixedSettings}>
-            <span>CFG {selectedHealth?.cfg ?? 1}</span>
             <span>{selectedHealth?.sampler || "Euler"}</span>
             <span>{selectedHealth?.precision || "BF16"}</span>
-            <span>{selectedHealth?.license || t(selectedOption.licenseKey)}</span>
           </div>
           <p className={styles.helper}>{t(selectedOption.negativeNoteKey)}</p>
 
@@ -598,6 +685,7 @@ export function TextToImageWorkspace() {
                 <span>{job.width} × {job.height}</span>
                 <span>{t("text2img.result.seed", { seed: job.seed })}</span>
                 <span>{t("text2img.result.steps", { steps: job.steps })}</span>
+                <span>{t("text2img.result.guidance", { guidance: job.cfg })}</span>
                 <span>{job.modelLabel}</span>
               </div>
               <div className={styles.outputActions}>

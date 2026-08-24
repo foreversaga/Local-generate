@@ -9,7 +9,7 @@ import { buildI2VAPrompt, buildRef2VAPrompt, buildT2VAPrompt } from "../server/l
 import { validatePrompt } from "../server/long-video/prompt-validator.mjs";
 import { appendEvent, atomicWriteJson, createJob, getJob, updateJob } from "../server/long-video/store.mjs";
 import { extractTailAvContext, extractTailFrame, validateNormalizedProbe } from "../server/long-video/media.mjs";
-import { latentRenderedDuration, latentRenderedFrameCount, runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
+import { latentRenderedDuration, latentRenderedFrameCount, repairLegacyAutoExtendPrompts, runSequence, sequenceProgressForSegment } from "../server/long-video/runner.mjs";
 import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
@@ -24,6 +24,26 @@ function apiRequest(method, url, value = {}) {
 function apiResponse() {
   return { headersSent: false, writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } };
 }
+
+test("legacy auto-extend jobs are repartitioned before retry", () => {
+  const source = "角色設定：同一位主角。\n\n00:00–00:10｜第一幕\n只演第一幕。\n\n00:10–00:20｜第二幕\n只演第二幕。";
+  const legacySuffix = "\n\nEnd this window on a stable readable face and continuing action.";
+  const job = {
+    longVideoEnabled: true,
+    promptMode: "auto_extend",
+    planMeta: { promptSource: "auto_extend" },
+    segments: [
+      { start: 0, end: 10, prompt: source + legacySuffix, status: "completed" },
+      { start: 10, end: 20, prompt: `Continue this same take: ${source}${legacySuffix}`, status: "failed" },
+    ],
+  };
+  const prompts = repairLegacyAutoExtendPrompts(job);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0], /只演第一幕/);
+  assert.doesNotMatch(prompts[0], /只演第二幕/);
+  assert.match(prompts[1], /只演第二幕/);
+  assert.doesNotMatch(prompts[1], /只演第一幕/);
+});
 
 test("long-video routes report that the response was handled", async () => {
   const response = apiResponse();
