@@ -1277,7 +1277,10 @@ export function LongCreateForm() {
 
 function LongJobProgress({ job, locale }: { job: LongJob; locale: string }) {
   const total = job.segments.length;
-  const activeIndex = Number.isInteger(Number(job.activeSegmentIndex))
+  const activeIndex = job.activeSegmentIndex !== null
+    && job.activeSegmentIndex !== undefined
+    && job.activeSegmentIndex !== ""
+    && Number.isInteger(Number(job.activeSegmentIndex))
     ? Number(job.activeSegmentIndex)
     : job.segments.findIndex((segment) => ["queued", "rendering", "normalizing", "extracting_tail", "extracting_context", "finalizing_prompt"].includes(String(segment.status || "")));
   const activeSegment = activeIndex >= 0 ? job.segments[activeIndex] : null;

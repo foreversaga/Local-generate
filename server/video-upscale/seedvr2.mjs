@@ -498,7 +498,13 @@ function applySeedVR2ProgressEvent(job, graph, event, runtime) {
   }
   if (event.type === "execution_start") {
     runtime.wsState = "connected";
-    if (job.status === "running") job.stage = "ComfyUI / starting execution";
+    if (job.status === "running") {
+      job.stage = "ComfyUI / starting execution";
+      job.comfyNode = "";
+      job.nativeCurrent = null;
+      job.nativeMaximum = null;
+      job.progressSource = "estimated";
+    }
     return;
   }
   if (event.type === "execution_cached") {
@@ -511,11 +517,23 @@ function applySeedVR2ProgressEvent(job, graph, event, runtime) {
     runtime.wsProgressSeen = true;
     if (event.node === null || event.node === undefined || event.node === "") {
       runtime.wsTerminal = "executing";
-      if (job.status === "running") job.stage = "ComfyUI / finalizing output";
+      if (job.status === "running") {
+        job.stage = "ComfyUI / finalizing output";
+        job.comfyNode = "";
+        job.nativeCurrent = null;
+        job.nativeMaximum = null;
+        job.progressSource = "estimated";
+      }
       return;
     }
     setProgressFloor(seedvr2NodeBaseline(node.classType));
-    if (job.status === "running") job.stage = `ComfyUI / ${node.label}`;
+    if (job.status === "running") {
+      job.stage = `ComfyUI / ${node.label}`;
+      job.comfyNode = node.classType;
+      job.nativeCurrent = null;
+      job.nativeMaximum = null;
+      job.progressSource = "estimated";
+    }
     return;
   }
   if (event.type === "progress") {
@@ -526,7 +544,13 @@ function applySeedVR2ProgressEvent(job, graph, event, runtime) {
     runtime.wsProgressSeen = true;
     const fraction = Math.min(1, Math.max(0, current / maximum));
     setProgressFloor(seedvr2NodeBaseline(node.classType) + Math.round(fraction * 8));
-    if (job.status === "running") job.stage = `ComfyUI / ${node.label} (${Math.max(0, current)}/${Math.max(1, maximum)})`;
+    if (job.status === "running") {
+      job.stage = `ComfyUI / ${node.label} (${Math.max(0, current)}/${Math.max(1, maximum)})`;
+      job.comfyNode = node.classType;
+      job.nativeCurrent = Math.max(0, current);
+      job.nativeMaximum = Math.max(1, maximum);
+      job.progressSource = "native";
+    }
     return;
   }
   if (event.type === "progress_state") {
@@ -1250,6 +1274,10 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
     ...(gpu ? { gpu } : {}),
     progress: job.progress,
     stage: job.stage,
+    nativeCurrent: job.nativeCurrent ?? null,
+    nativeMaximum: job.nativeMaximum ?? null,
+    comfyNode: job.comfyNode || "",
+    progressSource: job.progressSource || "estimated",
     source,
     sourceName: job.sourceName,
     sourceRoot: job.sourceRoot,

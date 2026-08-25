@@ -192,7 +192,14 @@ export function LibraryWorkspace() {
             setPreview(null);
             await refresh();
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "刪除素材失敗。");
+            const message = reason instanceof Error ? reason.message : "刪除素材失敗。";
+            await refresh();
+            setSelected(new Set());
+            setSelectedFolders(new Set());
+            setPendingDelete(null);
+            setSelectionMode(false);
+            setPreview(null);
+            setError(message);
         } finally {
             setBusy(false);
         }

@@ -1,0 +1,87 @@
+.panel {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  padding: 14px;
+}
+
+.header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.header span {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 10px 11px;
+}
+
+.list li > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.list strong {
+  font-size: 11px;
+}
+
+.list li > div span {
+  overflow: hidden;
+  color: var(--muted-2);
+  font: 10px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duration,
+.pending {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.overall {
+  border-color: color-mix(in srgb, var(--lime) 34%, var(--line)) !important;
+  background: color-mix(in srgb, var(--lime) 5%, var(--bg)) !important;
+}
+
+.overall .duration {
+  color: var(--lime);
+}
+
+@media (max-width: 560px) {
+  .header,
+  .list li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

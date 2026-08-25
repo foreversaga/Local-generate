@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  buildPersonPhotoRecipeBrief,
+  personPhotoLibrarySummary,
+  randomizePersonPhotoRecipes,
+  validatePersonPhotoRecipe,
+} from "./person-photo-randomizer.mjs";
 import { createText2ImgStore } from "./text2img-store.mjs";
 
 export const FLUX2_CLIP_TYPE = "flux2";
@@ -95,6 +101,55 @@ export const NATURE_CAMERA_SYSTEM_PROMPT = [
   "Return exactly one JSON object with one key named prompt. The prompt must be a single non-empty string, with no Markdown, headings, explanations, negative-prompt list, or extra keys.",
 ].join(" ");
 
+function recipeRequiredClothing(recipe) {
+  const requirements = recipe?.hardRequirements?.clothing
+    ?? recipe?.hardRequirements?.clothingRequirements
+    ?? recipe?.hardRequirements
+    ?? recipe?.clothingRequirements
+    ?? [];
+  const values = [];
+  const visit = (value) => {
+    if (typeof value === "string" && value.trim()) values.push(value.trim());
+    else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") {
+      if (value.selectedItem) visit(value.selectedItem);
+      else if (Array.isArray(value.selectedItems)) visit(value.selectedItems);
+      else if (typeof value.prompt === "string") visit(value.prompt);
+      else if (typeof value.label === "string") visit(value.label);
+      else if (typeof value.text === "string") visit(value.text);
+      else if (typeof value.value === "string") visit(value.value);
+      else Object.values(value).forEach(visit);
+    }
+  };
+  visit(requirements);
+  return [...new Set(values)];
+}
+
+function ensureRequiredClothing(prompt, recipe) {
+  const required = recipeRequiredClothing(recipe).filter((item) => !prompt.toLocaleLowerCase().includes(item.toLocaleLowerCase()));
+  if (!required.length) return prompt;
+  const clause = `Mandatory visible clothing: ${required.join(", ")}.`;
+  const result = `${prompt.replace(/[\s.]+$/, "")}. ${clause}`;
+  if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
+    throw makeError(`Prompt with mandatory clothing exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
+  }
+  return result;
+}
+
+function normalizeRecipe(recipe) {
+  if (recipe === undefined || recipe === null) return null;
+  try {
+    const validation = validatePersonPhotoRecipe(recipe);
+    if (!validation?.passed) {
+      throw Object.assign(new Error("Person-photo recipe failed hard validation."), { status: 400, code: "TEXT2IMG_RECIPE_INVALID", validation });
+    }
+    return structuredClone({ ...recipe, brief: buildPersonPhotoRecipeBrief(recipe), validation });
+  } catch (error) {
+    if (error?.status || error?.code) throw error;
+    throw makeError(errorMessage(error, "Invalid person-photo recipe."), 400, "TEXT2IMG_RECIPE_INVALID");
+  }
+}
+
 function isoNow(now = new Date()) {
   return new Date(now).toISOString();
 }
@@ -186,7 +241,9 @@ function normalizeText2ImgLoras(value, profile) {
 }
 
 export function normalizeText2ImgInput(input = {}) {
-  const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  const recipe = normalizeRecipe(input.recipe);
+  const rawPrompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  const prompt = recipe ? ensureRequiredClothing(rawPrompt, recipe) : rawPrompt;
   if (!prompt) throw makeError("Prompt is required.", 400, "TEXT2IMG_PROMPT_REQUIRED");
   if (prompt.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
     throw makeError(`Prompt must not exceed ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
@@ -198,12 +255,21 @@ export function normalizeText2ImgInput(input = {}) {
     prompt,
     modelId: profile.id,
     encoderId: encoder.id,
-    width: boundedInteger(input.width, "width", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
-    height: boundedInteger(input.height, "height", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
+    width: boundedInteger(input.width ?? recipe?.dimensions?.width, "width", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
+    height: boundedInteger(input.height ?? recipe?.dimensions?.height, "height", 1024, profile.minDimension, profile.maxDimension, profile.dimensionStep),
     steps: boundedInteger(input.steps, "steps", profile.defaultSteps, 1, profile.maxSteps),
     cfg: boundedNumber(input.cfg, "cfg", profile.cfg, 1, 8, 0.1),
     seed: boundedInteger(input.seed, "seed", 12345, 0, 2_147_483_647),
     loras,
+    ...(recipe ? {
+      batchId: String(input.batchId ?? recipe.batchId ?? ""),
+      batchIndex: boundedInteger(input.batchIndex ?? recipe.batchIndex, "batchIndex", 0, 0, 19),
+      batchSize: boundedInteger(input.batchSize ?? recipe.batchSize, "batchSize", 1, 1, 20),
+      recipeSeed: boundedInteger(input.recipeSeed ?? recipe.recipeSeed, "recipeSeed", 0, 0, 2_147_483_647),
+      libraryVersion: String(recipe.libraryVersion || ""),
+      recipe,
+      validation: recipe.validation || null,
+    } : {}),
   });
 }
 
@@ -526,7 +592,14 @@ export function createText2ImgController({
   }
 
   async function generatePhotographicPrompt(input = {}) {
-    const description = normalizeText2ImgDescription(input);
+    const recipe = normalizeRecipe(input.recipe);
+    const description = recipe
+      ? normalizeText2ImgDescription({ description: buildPersonPhotoRecipeBrief(recipe) })
+      : normalizeText2ImgDescription(input);
+    const requiredClothing = recipeRequiredClothing(recipe);
+    const assistantInput = requiredClothing.length
+      ? `${description}\nMandatory visible clothing (preserve these exact requirements): ${requiredClothing.join(", ")}.`
+      : description;
     const unloadPromptModel = !promptAssistant?.generate && input.unloadPromptModel === true;
     const assistant = await checkPromptAssistant();
     if (!assistant.ready) throw makeError("Photographic prompt model is not ready.", 503, assistant.reason || "PROMPT_MODEL_UNAVAILABLE");
@@ -546,9 +619,9 @@ export function createText2ImgController({
       });
       lease = admission ? await admission.granted : null;
       if (promptAssistant?.generate) {
-        const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${description}` });
-        const prompt = parseNatureCameraPromptResponse(response);
-        return { description, prompt, model, provider: promptAssistant.provider || "openai", profile: NATURE_CAMERA_PROFILE, unloadPromptModel: false };
+        const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${assistantInput}` });
+        const prompt = ensureRequiredClothing(parseNatureCameraPromptResponse(response), recipe);
+        return { description, prompt, model, provider: promptAssistant.provider || "openai", profile: NATURE_CAMERA_PROFILE, unloadPromptModel: false, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
       }
       const response = await ollamaCoordinator.generate({
         ollamaUrl,
@@ -557,7 +630,7 @@ export function createText2ImgController({
         model,
         body: {
           system: NATURE_CAMERA_SYSTEM_PROMPT,
-          prompt: `User image description:\n${description}`,
+          prompt: `User image description:\n${assistantInput}`,
           think: false,
           options: { temperature: 0.25, top_p: 0.9, num_ctx: 8192 },
         },
@@ -566,8 +639,8 @@ export function createText2ImgController({
         unloadAfter: unloadPromptModel,
       });
       const payload = response?.payload && typeof response.payload === "object" ? response.payload : {};
-      const prompt = parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text);
-      return { description, prompt, model, profile: NATURE_CAMERA_PROFILE, unloadPromptModel };
+      const prompt = ensureRequiredClothing(parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text), recipe);
+      return { description, prompt, model, profile: NATURE_CAMERA_PROFILE, unloadPromptModel, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
     } finally {
       lease?.release?.();
     }
@@ -691,6 +764,7 @@ export function createText2ImgController({
       progress: 0,
       stage: "Queued",
       ...request,
+      submittedPrompt: request.prompt,
       model: profile.model,
       modelLabel: profile.label,
       encoder: encoder.textEncoder,
@@ -727,6 +801,36 @@ export function createText2ImgController({
     const fail = sendError || ((response, status, message, code) => respond(response, status, { error: message, ...(code ? { code } : {}) }));
     if (req.method === "GET" && pathname === "/api/text2img/health") {
       respond(res, 200, { ...(await checkReadiness()), promptAssistant: await checkPromptAssistant() });
+      return true;
+    }
+    if (req.method === "GET" && pathname === "/api/text2img/person-photo/library") {
+      try {
+        respond(res, 200, { library: await personPhotoLibrarySummary() });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 500, errorMessage(error), error?.code || "TEXT2IMG_PERSON_PHOTO_LIBRARY_FAILED");
+      }
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/text2img/person-photo/randomize") {
+      try {
+        const input = await readJson(req);
+        const count = boundedInteger(input?.count, "count", 1, 1, 20);
+        const result = await randomizePersonPhotoRecipes({ ...input, count });
+        const randomized = Array.isArray(result)
+          ? { mode: count === 1 ? "single" : "batch", batchSeed: input?.seed ?? null, count: result.length, recipes: result }
+          : result;
+        const batchId = String(idFactory());
+        const recipes = randomized.recipes.map((item, batchIndex) => ({
+          ...item,
+          id: String(idFactory()),
+          batchId,
+          batchIndex,
+          batchSize: randomized.count,
+        }));
+        respond(res, 200, { ...randomized, batchId, recipes });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 400, errorMessage(error), error?.code || "TEXT2IMG_PERSON_PHOTO_RANDOMIZE_FAILED");
+      }
       return true;
     }
     if (req.method === "POST" && pathname === "/api/text2img/prompt") {

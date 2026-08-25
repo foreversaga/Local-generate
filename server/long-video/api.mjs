@@ -35,7 +35,7 @@ function segmentFromPath(pathname) {
   return { id: decodeURIComponent(match[1]), index: Number(match[2]), suffix: pathname.endsWith("/prompt") ? "prompt" : pathname.endsWith("/retry") ? "retry" : "" };
 }
 
-const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance", "controlIntent", "executionPhase", "activeAttempt", "recovery"]);
+const SEQUENCE_SERVER_FIELDS = new Set(["id", "schemaVersion", "revision", "createdAt", "updatedAt", "startedAt", "completedAt", "elapsedMs", "status", "recoverable", "outputAllocated", "outputPath", "finalAsset", "assembly", "progress", "stage", "activeSegmentIndex", "segmentProgress", "segmentStage", "generationJobId", "progressSource", "nativeCurrent", "nativeMaximum", "error", "loraProvenance", "characterLoraProvenance", "controlIntent", "executionPhase", "activeAttempt", "recovery"]);
 const SEQUENCE_EDITABLE_FIELDS = new Set(["title", "inputType", "inputText", "scripts", "inputAsset", "imagePurpose", "referenceMode", "referenceAssets", "continuationMode", "motionContextSeconds", "longVideoEnabled", "targetDurationSeconds", "framesPerShot", "continuityMode", "promptMode", "identityAnchor", "voiceContinuity", "contextFrames", "chainGainControl", "masterNormalize", "continuityBible", "timeline", "segments", "duration", "outputFolder", "width", "height", "steps", "seed", "negativePrompt", "modelProfile", "promptProvider", "ollamaModel", "sglangModel", "codexModel", "codexReasoningEffort", "seam", "planMeta", "planningSettings", "h3LoraEnabled", "h3LoraPreset", "characterLoraName", "characterLoraId", "characterLoraStrength"]);
 const SEGMENT_EDITABLE_FIELDS = new Set(["start", "end", "description", "prompt", "negativePrompt", "endingState", "cameraPlan"]);
 
@@ -59,9 +59,9 @@ function semanticSegmentChanged(previous, next) {
 function invalidateFromSegment(segments, changedIndex, targetStatus = "pending") {
   return segments.map((segment, index) => {
     if (index < changedIndex) return segment;
-    if (index === changedIndex) return { ...segment, status: targetStatus, error: null, recoverable: false };
-    if (segment.status === "pending" || segment.status === "stale") return { ...segment, error: null, recoverable: true };
-    return { ...segment, status: "stale", error: null, recoverable: true };
+    if (index === changedIndex) return { ...segment, status: targetStatus, startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: false };
+    if (segment.status === "pending" || segment.status === "stale") return { ...segment, startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: true };
+    return { ...segment, status: "stale", startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: true };
   });
 }
 
@@ -277,8 +277,8 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       validatePrompt(patch.prompt, { mode });
       if (!current.segments?.[segmentPath.index]) throw new LongVideoError("SEGMENT_NOT_FOUND", `Segment not found: ${segmentPath.index}`, 404);
       const segments = current.segments.map((segment, index) => {
-        if (index === segmentPath.index) return { ...segment, prompt: patch.prompt, status: "ready", error: null, recoverable: false };
-        if (index > segmentPath.index && segment.status !== "pending" && segment.status !== "stale") return { ...segment, status: "stale", error: null, recoverable: true };
+        if (index === segmentPath.index) return { ...segment, prompt: patch.prompt, status: "ready", startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: false };
+        if (index > segmentPath.index && segment.status !== "pending" && segment.status !== "stale") return { ...segment, status: "stale", startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: true };
         return segment;
       });
       const next = await saveJob({ ...current, segments, timeline: segments }, { expectedRevision: patch.revision ?? current.revision });
@@ -288,9 +288,9 @@ export async function handleLongVideoRoute(req, res, context = {}) {
       const current = await getJob(segmentPath.id);
       if (!current.segments?.[segmentPath.index]) throw new LongVideoError("SEGMENT_NOT_FOUND", `Segment not found: ${segmentPath.index}`, 404);
       const segments = current.segments.map((segment, index) => {
-        if (index === segmentPath.index) return { ...segment, status: "pending", error: null, recoverable: false };
+        if (index === segmentPath.index) return { ...segment, status: "pending", startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: false };
         if (index > segmentPath.index && segment.status !== "pending" && segment.status !== "stale") {
-          return { ...segment, status: "stale", error: null, recoverable: true };
+          return { ...segment, status: "stale", startedAt: null, completedAt: null, childElapsedMs: null, elapsedMs: null, error: null, recoverable: true };
         }
         return segment;
       });
@@ -336,7 +336,7 @@ export async function handleLongVideoRoute(req, res, context = {}) {
           const marker = await import("node:fs/promises").then(({ readFile }) => readFile(`${existingPath}/.h3-sequence.json`, "utf8")).then((text) => JSON.parse(text)).catch(() => null);
           if (!marker || marker.id !== id) throw new LongVideoError("OUTPUT_FOLDER_OWNERSHIP", "Output folder marker is missing or belongs to another sequence.", 409);
         }
-        const queued = await saveJob({ ...startJob, status: "queued", recoverable: false, error: null }, { expectedRevision: current.revision });
+        const queued = await saveJob({ ...startJob, status: "queued", startedAt: null, completedAt: null, elapsedMs: null, recoverable: false, error: null }, { expectedRevision: current.revision });
         if (allocatedPath) await writeSequenceManifest(allocatedPath, queued);
         await appendEvent(id, { event: "api.start", from: current.status, to: "queued", stage: "queue" });
         const runJob = context.runJob || ((job, deps) => runSequence(job, deps));

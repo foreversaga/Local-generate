@@ -63,6 +63,35 @@ test("long job adapter preserves detailed segment and native progress", () => {
   assert.deepEqual(job.segments, segments);
 });
 
+test("long job adapter preserves a null active segment instead of coercing it to segment zero", () => {
+  const job = adaptJob({ id: "long-assembling", status: "assembling", activeSegmentIndex: null, segments: [{ status: "completed" }] }, "long");
+  assert.equal(job.activeSegmentIndex, null);
+});
+
+test("long job adapter exposes child and overall elapsed time with legacy event fallback", () => {
+  const job = adaptJob({
+    id: "long-history",
+    status: "completed",
+    updatedAt: "2026-08-25T01:03:00.000Z",
+    segments: [
+      { id: "s1", childJobId: "child-1", status: "completed", completedAt: "2026-08-25T01:01:00.000Z", childElapsedMs: 10_000 },
+      { id: "s2", childJobId: "child-2", status: "completed" },
+    ],
+    events: [
+      { event: "runner.start", timestamp: "2026-08-25T01:00:00.000Z" },
+      { event: "generation.start", segmentIndex: 1, timestamp: "2026-08-25T01:01:30.000Z" },
+      { event: "segment.completed", segmentIndex: 1, timestamp: "2026-08-25T01:02:00.000Z" },
+      { event: "runner.success", timestamp: "2026-08-25T01:03:00.000Z" },
+    ],
+  }, "long");
+  assert.equal(job.segments[0].completedAt, "2026-08-25T01:01:00.000Z");
+  assert.equal(job.segments[1].completedAt, "2026-08-25T01:02:00.000Z");
+  assert.equal(job.segments[0].childElapsedMs, 10_000);
+  assert.equal(job.segments[1].elapsedMs, 30_000);
+  assert.equal(job.completedAt, "2026-08-25T01:03:00.000Z");
+  assert.equal(job.elapsedMs, 180_000);
+});
+
 test("job adapter names every image generation and upscale function distinctly", () => {
   assert.match(adaptJob({ id: "text", prompt: "night market", modelLabel: "FLUX.2 Dev", width: 1024, height: 1024, steps: 20, cfg: 4 }, "text2img").title, /^文字生圖/);
   assert.equal(adaptJob({ id: "text", prompt: "night market", modelLabel: "FLUX.2 Dev", cfg: 4 }, "text2img").cfg, 4);

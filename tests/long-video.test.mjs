@@ -14,6 +14,7 @@ import { latentRenderedDuration, latentRenderedFrameCount, repairLegacyAutoExten
 import { DEFAULT_NEGATIVE_PROMPT, normalizePlannerImages, parsePlannerResponse, planSequence } from "../server/long-video/planner.mjs";
 import { handleLongVideoRoute } from "../server/long-video/api.mjs";
 import { LongVideoError, createSequenceRecord, sanitizeAssetRef, validateContinuityBible, validateSequenceInput } from "../server/long-video/schema.mjs";
+import { acquireSequenceLease, readSequenceLease } from "../server/long-video/lease.mjs";
 import { longJobIsActive } from "../app/lib/long-create-contract.mjs";
 import { createOllamaCoordinator } from "../server/ollama-coordinator.mjs";
 import { ensureRef2vaLatentContinuationPrompt, ensureRef2vaVisualContextPrompt } from "../server/long-video/continuation-finalizer.mjs";
@@ -63,6 +64,13 @@ test("long-video routes report that the response was handled", async () => {
   assert.equal(await handleLongVideoRoute(apiRequest("GET", "/api/health"), apiResponse(), {}), false);
   const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
   assert.match(bridge, /if \(handledByDomainRouter \|\| res\.headersSent\) return/);
+});
+
+test("long-video recovery starts only from the production server entrypoint", async () => {
+  const bridge = await readFile(new URL("../local-bridge.mjs", import.meta.url), "utf8");
+  const productionServer = await readFile(new URL("../server/production-web.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(bridge, /void longVideoRecoveryCoordinator\.start\(/);
+  assert.match(productionServer, /await startLongVideoRecovery\(\)/);
 });
 
 test("rejects Windows reserved names and traversal", async () => {
@@ -876,6 +884,42 @@ test("runner preserves cancelled status when the active child reports cancellati
     assert.equal(job.status, "cancelled");
     assert.equal(job.segments[0].status, "stale");
   } finally {
+    if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
+    else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runner persists the original terminal failure before releasing its sequence lease", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-runner-failure-lease-"));
+  const previousDataRoot = process.env.H3_SEQUENCE_DATA_ROOT;
+  const previousOutputRoot = process.env.COMFYUI_OUTPUT_ROOT;
+  try {
+    process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
+    process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
+    const created = await createJob({
+      title: "failure lease",
+      inputType: "text",
+      inputText: "brief",
+      outputFolder: "failure-lease",
+      duration: 10,
+      timeline: [{ start: 0, end: 5, description: "a" }, { start: 5, end: 10, description: "b" }],
+    });
+    const job = await updateJob(created.id, { outputAllocated: true, outputPath: path.join(root, "output", "failure-lease") });
+    const lease = await acquireSequenceLease(job.id, { ownerId: "failure-test", ttlMs: 5_000 });
+    const failure = Object.assign(new Error("generation failed before assembly"), { code: "GENERATION_TEST_FAILED" });
+    await assert.rejects(() => runSequence(job, {
+      lease,
+      generate: async () => { throw failure; },
+      writeManifest: async () => {},
+    }), { code: "GENERATION_TEST_FAILED" });
+    const persisted = await getJob(job.id);
+    assert.equal(persisted.status, "failed");
+    assert.equal(persisted.error.code, "GENERATION_TEST_FAILED");
+    assert.equal(await readSequenceLease(job.id), null);
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.H3_SEQUENCE_DATA_ROOT;
+    else process.env.H3_SEQUENCE_DATA_ROOT = previousDataRoot;
     if (previousOutputRoot === undefined) delete process.env.COMFYUI_OUTPUT_ROOT;
     else process.env.COMFYUI_OUTPUT_ROOT = previousOutputRoot;
     await rm(root, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { startProdServer } from "vinext/server/prod-server";
 import { installProcessErrorBoundary } from "./process-error-boundary.mjs";
 
 const processErrorBoundary = installProcessErrorBoundary();
-const { route: h3ApiRoute } = await import("../local-bridge.mjs");
+const { route: h3ApiRoute, startLongVideoRecovery } = await import("../local-bridge.mjs");
 
 const PUBLIC_HOST = "0.0.0.0";
 const PUBLIC_PORT = 8787;
@@ -50,6 +50,10 @@ await startProdServer({
   host: VINEXT_HOST,
   outDir: fileURLToPath(new URL("../dist", import.meta.url)),
   silent: true,
+});
+
+await startLongVideoRecovery().catch((error) => {
+  console.error("[long-video] startup recovery failed", error?.message || error);
 });
 
 const server = createServer((req, res) => {

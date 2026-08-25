@@ -74,6 +74,17 @@ test("reconciliation restarts only durable parent checkpoints without a child", 
   assert.deepEqual({ action: unknown.action, reason: unknown.reason }, { action: "operator", reason: "missing_attempt_binding" });
 });
 
+test("reconciliation treats a null active segment as no active child while assembling", () => {
+  const result = reconcileSequenceState({
+    id: "seq-assembling",
+    status: "assembling",
+    activeSegmentIndex: null,
+    activeAttempt: null,
+    segments: [{ status: "completed" }, { status: "completed" }],
+  }, { comfyAvailable: false });
+  assert.deepEqual({ action: result.action, reason: result.reason }, { action: "restart", reason: "safe_parent_checkpoint" });
+});
+
 test("startup coordinator schedules every safely recovered runner before opening mutations", async () => {
   const calls = [];
   const coordinator = createRecoveryCoordinator({

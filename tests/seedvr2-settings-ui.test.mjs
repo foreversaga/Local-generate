@@ -48,6 +48,22 @@ test("SeedVR2 advanced sampling UI stays collapsed and preserves string editing 
   assert.match(client, /denoise\?: number/);
 });
 
+test("SeedVR2 running UI shows structured tile progress independently from overall progress", async () => {
+  const [workspace, client, styles] = await Promise.all([
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/tools/UpscaleWorkspace.module.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(workspace, /job\?\.comfyNode === "SeedVR2TilingUpscaler"/);
+  assert.match(workspace, /分塊進度/);
+  assert.match(workspace, /nativeCurrent/);
+  assert.match(workspace, /nativeMaximum/);
+  assert.match(workspace, /tileProgress/);
+  assert.match(client, /nativeCurrent\?: number \| null/);
+  assert.match(client, /nativeMaximum\?: number \| null/);
+  assert.match(styles, /\.tileProgress\{/);
+});
+
 test("SeedVR2 detail reconstruction controls expose the complete backend contract", async () => {
   const [workspace, client, controls, detailModel, dictionaries, styles] = await Promise.all([
     readFile(new URL("../app/components/tools/UpscaleWorkspace.tsx", import.meta.url), "utf8"),

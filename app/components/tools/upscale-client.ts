@@ -160,6 +160,10 @@ export type UpscaleJob = {
     status: UpscaleJobStatus;
     progress: number;
     stage: string;
+    nativeCurrent?: number | null;
+    nativeMaximum?: number | null;
+    comfyNode?: string;
+    progressSource?: "native" | "estimated" | string;
     sourceName: string;
     sourceRoot?: "input" | "output";
     source?: { name: string; root: "input" | "output" };

@@ -252,6 +252,13 @@ export function canonicalSeedVR2Job(input = {}) {
   const completedAt = safeTimestamp(input.completedAt || input.timestamps?.completedAt);
   const cancelledAt = safeTimestamp(input.cancelledAt || input.timestamps?.cancelledAt);
   const updatedAt = safeTimestamp(input.updatedAt || input.timestamps?.updatedAt) || createdAt;
+  const stage = safeText(input.stage, "Queued", 120);
+  const stageProgress = stage.match(/\((\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)\)\s*$/);
+  const stageNode = stage.match(/^ComfyUI\s*\/\s*([^()]+?)(?:\s*\(|$)/)?.[1]?.trim() || "";
+  const rawNativeCurrent = safeNumber(input.nativeCurrent ?? stageProgress?.[1]);
+  const rawNativeMaximum = safeNumber(input.nativeMaximum ?? stageProgress?.[2]);
+  const nativeCurrent = rawNativeCurrent !== null && rawNativeCurrent >= 0 ? rawNativeCurrent : null;
+  const nativeMaximum = rawNativeMaximum !== null && rawNativeMaximum > 0 ? rawNativeMaximum : null;
   const seed = safeInteger(input.seed ?? input.provenance?.request?.seed, 0);
   const profile = safeText(input.profile, DEFAULT_PROFILE, 80);
   const sampling = isSeedVR2Profile(profile) ? {
@@ -278,7 +285,13 @@ export function canonicalSeedVR2Job(input = {}) {
     id,
     status: PERSISTED_STATUSES.has(String(input.status || "")) ? String(input.status) : "queued",
     progress: Math.max(0, Math.min(100, safeNumber(input.progress, 0))),
-    stage: safeText(input.stage, "Queued", 120),
+    stage,
+    nativeCurrent,
+    nativeMaximum,
+    comfyNode: safeText(input.comfyNode || stageNode, "", 160),
+    progressSource: input.progressSource === "native" || (nativeCurrent !== null && nativeMaximum !== null)
+      ? "native"
+      : "estimated",
     sourceName,
     sourceRoot,
     source: { name: sourceName, root: sourceRoot },

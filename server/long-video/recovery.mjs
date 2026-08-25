@@ -3,6 +3,13 @@ import { SEQUENCE_CHECKPOINTS } from "./schema.mjs";
 
 const ACTIVE_PARENT_STATES = new Set(["running", "queued", "assembling", "paused", "planning", "recovering"]);
 
+export function sequenceActiveSegmentIndex(job) {
+  const value = job?.activeSegmentIndex;
+  if (value === null || value === undefined || value === "") return -1;
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric >= 0 ? numeric : -1;
+}
+
 function childStatus(child) {
   const status = String(child?.status || "").toLowerCase();
   if (["queued", "pending", "starting", "running", "recovering", "cancelling"].includes(status)) return "running";
@@ -32,7 +39,7 @@ export function reconcileSequenceState(
   job,
   { child = null, artifact = null, comfyAvailable = true, ambiguous = false } = {},
 ) {
-  const index = Number.isInteger(Number(job?.activeSegmentIndex)) ? Number(job.activeSegmentIndex) : -1;
+  const index = sequenceActiveSegmentIndex(job);
   const segment = index >= 0 ? job?.segments?.[index] : null;
   const binding = segment ? bindingFor(job, segment, index) : job?.activeAttempt ? bindingFor(job, {}, index) : null;
   const status = childStatus(child);
@@ -100,7 +107,7 @@ export async function recoverInterruptedJobs({
         throw error;
       }
     }
-    const index = Number.isInteger(Number(job.activeSegmentIndex)) ? Number(job.activeSegmentIndex) : -1;
+    const index = sequenceActiveSegmentIndex(job);
     const segment = index >= 0 ? job.segments?.[index] : null;
     const binding = segment ? bindingFor(job, segment, index) : job.activeAttempt ? bindingFor(job, {}, index) : null;
     let child = null;

@@ -3,6 +3,25 @@
   gap: 18px;
 }
 
+.modeTabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.modeTabs button, .quickChoices button, .secondaryButton { border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; padding: 9px 13px; cursor: pointer; }
+.modeTabs .modeActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.randomPanel { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface) 85%, transparent); }
+.randomFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.quickChoices { display: flex; gap: 8px; flex-wrap: wrap; }
+.applyAll { display: flex; gap: 8px; align-items: center; }
+.secondaryButton { justify-self: start; }
+.recipeGrid, .outputGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.recipeCard, .outputItem { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.recipeCard header, .outputItem header { display: flex; justify-content: space-between; gap: 8px; }
+.recipeCard p, .outputItem p { margin: 0; overflow-wrap: anywhere; }
+.recipeWarning { color: var(--warning, #d79a36); }
+.recipeChecks summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.recipeChecks ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; }
+.outputItem img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 9px; }
+.outputPlaceholder { min-height: 180px; display: grid; place-items: center; border-radius: 9px; background: color-mix(in srgb, var(--surface) 75%, black); }
+@media (max-width: 680px) { .randomFields { grid-template-columns: 1fr; } }
+
 .modelBar,
 .panel,
 .outputCard {

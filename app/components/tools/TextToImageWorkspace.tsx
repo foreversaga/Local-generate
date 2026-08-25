@@ -6,8 +6,13 @@ import { assetUrl } from "../library/asset-client";
 import {
   fetchText2ImgHealth,
   fetchText2ImgJob,
+  fetchPersonPhotoLibrary,
   generateText2ImgPrompt,
+  randomizePersonPhotos,
   submitText2Img,
+  type ClothingRequirement,
+  type PersonPhotoLibrary,
+  type PersonPhotoRecipe,
   type Text2ImgHealth,
   type Text2ImgJob,
   type Text2ImgLoraSelection,
@@ -47,6 +52,15 @@ const KLEIN_LORA_OPTIONS = [
   { id: "image-restore-v1", nameKey: "text2img.lora.restore.name", useKey: "text2img.lora.restore.use", defaultStrength: 0.8 },
   { id: "ultrareal-v4", nameKey: "text2img.lora.ultrareal.name", useKey: "text2img.lora.ultrareal.use", defaultStrength: 0.55 },
 ] as const;
+const CLOTHING_CATEGORY_KEYS: Record<string, string> = {
+  outfit: "text2img.random.category.outfit",
+  top: "text2img.random.category.top",
+  bottom: "text2img.random.category.bottom",
+  shoes: "text2img.random.category.shoes",
+  outerwear: "text2img.random.category.outerwear",
+  hosiery: "text2img.random.category.hosiery",
+  custom: "text2img.random.category.custom",
+};
 const MODEL_OPTIONS = [
   {
     id: DEFAULT_MODEL_ID,
@@ -123,6 +137,16 @@ export function TextToImageWorkspace() {
   const [health, setHealth] = useState<Text2ImgHealth | null>(null);
   const [healthError, setHealthError] = useState("");
   const [description, setDescription] = useState("");
+  const [inputMode, setInputMode] = useState<"manual" | "random">("manual");
+  const [randomMode, setRandomMode] = useState<"single" | "batch">("single");
+  const [batchCount, setBatchCount] = useState("4");
+  const [recipeSeed, setRecipeSeed] = useState("");
+  const [clothingCategory, setClothingCategory] = useState("hosiery");
+  const [clothingText, setClothingText] = useState("");
+  const [clothingOptionId, setClothingOptionId] = useState("");
+  const [personLibrary, setPersonLibrary] = useState<PersonPhotoLibrary | null>(null);
+  const [recipes, setRecipes] = useState<PersonPhotoRecipe[]>([]);
+  const [recipeBusy, setRecipeBusy] = useState(false);
   const [descriptionCopyStatus, setDescriptionCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [prompt, setPrompt] = useState("");
   const [promptModel, setPromptModel] = useState("");
@@ -141,6 +165,7 @@ export function TextToImageWorkspace() {
     KLEIN_LORA_OPTIONS.map((item) => [item.id, { enabled: false, strength: String(item.defaultStrength) }]),
   ));
   const [job, setJob] = useState<Text2ImgJob | null>(null);
+  const [jobs, setJobs] = useState<Text2ImgJob[]>([]);
   const [submitError, setSubmitError] = useState("");
 
   const selectedOption = MODEL_OPTIONS.find((item) => item.id === modelId) || MODEL_OPTIONS[0];
@@ -184,7 +209,46 @@ export function TextToImageWorkspace() {
   }, [t]);
 
   useEffect(() => {
-    if (!job?.id || terminal(job.status)) return;
+    if (inputMode !== "random" || personLibrary) return;
+    void fetchPersonPhotoLibrary().then(setPersonLibrary).catch((error) => {
+      setSubmitError(error instanceof Error ? error.message : t("text2img.random.error"));
+    });
+  }, [inputMode, personLibrary, t]);
+
+  useEffect(() => {
+    const active = jobs.filter((item) => !terminal(item.status));
+    if (!active.length) return;
+    let cancelled = false;
+    const poll = async () => {
+      const updates = await Promise.all(active.map(async (item) => {
+        try { return await fetchText2ImgJob(item.id); } catch { return item; }
+      }));
+      if (!cancelled) setJobs((current) => current.map((item) => updates.find((next) => next.id === item.id) || item));
+    };
+    const timer = window.setInterval(() => { void poll(); }, 750);
+    void poll();
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [jobs]);
+
+  const clothingRequirements = (): ClothingRequirement[] => clothingText.trim() ? [{
+    category: clothingCategory, value: clothingText.trim(), ...(clothingOptionId ? { optionId: clothingOptionId } : {}), applyToAll: true,
+  }] : [];
+
+  async function randomizeRecipes() {
+    setRecipeBusy(true); setSubmitError("");
+    try {
+      const count = randomMode === "single" ? 1 : normalizeIntegerField(batchCount, 4, 1, 20);
+      setBatchCount(String(count));
+      const seedValue = recipeSeed.trim() ? normalizeIntegerField(recipeSeed, 0, 0, 2_147_483_647) : undefined;
+      const result = await randomizePersonPhotos({ count, seed: seedValue, clothingRequirements: clothingRequirements() });
+      setRecipes(result.recipes); setRecipeSeed(String(result.batchSeed));
+      if (result.recipes[0]) setDescription(result.recipes[0].brief);
+    } catch (error) { setSubmitError(error instanceof Error ? error.message : t("text2img.random.error")); }
+    finally { setRecipeBusy(false); }
+  }
+
+  useEffect(() => {
+    if (jobs.length || !job?.id || terminal(job.status)) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -203,7 +267,7 @@ export function TextToImageWorkspace() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [job?.id, job?.status, t]);
+  }, [job?.id, job?.status, jobs.length, t]);
 
   async function copyDescription() {
     if (!description) return;
@@ -234,9 +298,11 @@ export function TextToImageWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedReady || !health?.promptAssistant?.ready || !description.trim() || promptBusy || (job && !terminal(job.status))) return;
+    if (!selectedReady || !health?.promptAssistant?.ready || (inputMode === "manual" ? !description.trim() : !recipes.length)
+      || promptBusy || (job && !terminal(job.status)) || jobs.some((item) => !terminal(item.status))) return;
     setSubmitError("");
     setJob(null);
+    setJobs([]);
     setPromptBusy(true);
     try {
       const normalizedSteps = normalizeIntegerField(steps, defaultSteps, 1, maxSteps);
@@ -249,6 +315,22 @@ export function TextToImageWorkspace() {
       setSeed(String(normalizedSeed));
       setWidth(String(normalizedWidth));
       setHeight(String(normalizedHeight));
+      if (inputMode === "random") {
+        const generatedPrompts = [];
+        for (const recipe of recipes) generatedPrompts.push(await generateText2ImgPrompt(recipe.brief, { unloadPromptModel, recipe }));
+        setPrompt(generatedPrompts[0]?.prompt || ""); setPromptModel(generatedPrompts[0]?.model || "");
+        const queued: Text2ImgJob[] = [];
+        for (let index = 0; index < recipes.length; index += 1) {
+          const recipe = recipes[index]; const generated = generatedPrompts[index];
+          queued.push(await submitText2Img({ prompt: generated.prompt, width: recipe.dimensions.width, height: recipe.dimensions.height,
+            steps: normalizedSteps, cfg: normalizedGuidance, seed: randomSeed(), modelId, encoderId, loras: selectedLoras(),
+            batchId: recipe.batchId, batchIndex: recipe.batchIndex, batchSize: recipe.batchSize, recipeSeed: recipe.recipeSeed, recipe }));
+          if (recipes.length > 1) setJobs([...queued]);
+        }
+        if (queued.length === 1) setJob(queued[0]);
+        else setJobs(queued);
+        return;
+      }
       const generated = await generateText2ImgPrompt(description.trim(), { unloadPromptModel });
       setPrompt(generated.prompt);
       setPromptModel(generated.model);
@@ -314,6 +396,17 @@ export function TextToImageWorkspace() {
     }
   }
 
+  async function retryBatchJob(failedJob: Text2ImgJob) {
+    setSubmitError("");
+    try {
+      const next = await submitText2Img({ prompt: failedJob.prompt, width: failedJob.width, height: failedJob.height,
+        steps: failedJob.steps, cfg: failedJob.cfg, seed: failedJob.seed, modelId: failedJob.modelId,
+        encoderId: failedJob.encoderId || DEFAULT_ENCODER_ID, loras: failedJob.loras || [], batchId: failedJob.batchId,
+        batchIndex: failedJob.batchIndex, batchSize: failedJob.batchSize, recipeSeed: failedJob.recipeSeed, recipe: failedJob.recipe });
+      setJobs((current) => current.map((item) => item.id === failedJob.id ? next : item));
+    } catch (error) { setSubmitError(error instanceof Error ? error.message : t("text2img.repeat.error")); }
+  }
+
   const statusText = healthError
     ? healthError
     : !health
@@ -326,7 +419,7 @@ export function TextToImageWorkspace() {
             ? t("text2img.health.comfyOffline")
             : t("text2img.health.modelsMissing");
 
-  const isBusy = promptBusy || Boolean(job && !terminal(job.status));
+  const isBusy = promptBusy || Boolean(job && !terminal(job.status)) || jobs.some((item) => !terminal(item.status));
   const promptAssistantReady = Boolean(health?.promptAssistant?.ready);
   const workflowReady = Boolean(selectedReady && promptAssistantReady);
   const repeatProfile = job ? health?.profiles?.[job.modelId] : null;
@@ -362,6 +455,24 @@ export function TextToImageWorkspace() {
             <span className={styles.sectionCode}>{t("text2img.section.prompt")}</span>
           </div>
 
+          <div className={styles.modeTabs} role="group" aria-label={t("text2img.mode.label")}>
+            <button type="button" disabled={isBusy} className={inputMode === "manual" ? styles.modeActive : ""} onClick={() => { setInputMode("manual"); setRecipes([]); setJobs([]); setJob(null); }}>{t("text2img.mode.manual")}</button>
+            <button type="button" disabled={isBusy} className={inputMode === "random" ? styles.modeActive : ""} onClick={() => { setInputMode("random"); setJobs([]); setJob(null); }}>{t("text2img.mode.random")}</button>
+          </div>
+          {inputMode === "random" && <section className={styles.randomPanel}>
+            <div className={styles.modeTabs} role="group"><button type="button" className={randomMode === "single" ? styles.modeActive : ""} onClick={() => { setRandomMode("single"); setRecipes([]); }}>{t("text2img.random.single")}</button><button type="button" className={randomMode === "batch" ? styles.modeActive : ""} onClick={() => { setRandomMode("batch"); setRecipes([]); }}>{t("text2img.random.batch")}</button></div>
+            <div className={styles.randomFields}>
+              {randomMode === "batch" && <label className={styles.field}><span>{t("text2img.random.count")}</span><input type="number" min={1} max={20} value={batchCount} onChange={(event) => setBatchCount(event.target.value)} onBlur={() => setBatchCount(String(normalizeIntegerField(batchCount, 4, 1, 20)))} /></label>}
+              <label className={styles.field}><span>{t("text2img.random.recipeSeed")}</span><input type="number" min={0} max={2147483647} value={recipeSeed} placeholder={t("text2img.random.auto")} onChange={(event) => setRecipeSeed(event.target.value)} /></label>
+              <label className={styles.field}><span>{t("text2img.random.clothingCategory")}</span><select value={clothingCategory} onChange={(event) => { setClothingCategory(event.target.value); setClothingOptionId(""); }}>{Object.keys(personLibrary?.clothingOptions || { hosiery: [] }).map((category) => <option key={category} value={category}>{t(CLOTHING_CATEGORY_KEYS[category] || category)}</option>)}</select></label>
+              <label className={styles.field}><span>{t("text2img.random.mustInclude")}</span><input value={clothingText} placeholder={t("text2img.random.mustIncludePlaceholder")} onChange={(event) => { setClothingText(event.target.value); setClothingOptionId(""); }} /></label>
+            </div>
+            <div className={styles.quickChoices}><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色短襪"); setClothingOptionId("H01"); }}>H01 · {t("text2img.random.whiteAnkleSocks")}</button><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色中筒襪"); setClothingOptionId("H04"); }}>H04 · {t("text2img.random.whiteCrewSocks")}</button></div>
+            {randomMode === "batch" && <p className={styles.applyAll}>{t("text2img.random.applyAll")}</p>}
+            <button type="button" className={styles.secondaryButton} disabled={recipeBusy} onClick={() => void randomizeRecipes()}>{recipeBusy ? t("text2img.random.randomizing") : recipes.length ? t("text2img.random.rerollLocked") : t("text2img.random.action")}</button>
+            {!!recipes.length && <div className={styles.recipeGrid}>{recipes.map((recipe) => <article key={recipe.id} className={styles.recipeCard}><header><strong>#{recipe.batchIndex + 1}</strong><span>{t("text2img.random.score").replace("{score}", String(recipe.validation.score))}</span></header><p>{recipe.brief}</p><small>{recipe.dimensions.aspectRatio} · {recipe.dimensions.width} × {recipe.dimensions.height} · Seed {recipe.recipeSeed}</small>{recipe.validation.warnings?.map((warning) => <p className={styles.recipeWarning} key={warning}>⚠ {warning}</p>)}{!!recipe.validation.checks?.length && <details className={styles.recipeChecks}><summary>{t("text2img.random.rules")}</summary><ul>{recipe.validation.checks.map((check) => <li key={check.id}>{check.passed ? "✓" : "✕"} {check.detail}</li>)}</ul></details>}</article>)}</div>}
+          </section>}
+
           <div className={styles.fieldWide}>
             <div className={styles.fieldLabelRow}>
               <label htmlFor="text2img-description">{t("text2img.description.label")}</label>
@@ -386,6 +497,7 @@ export function TextToImageWorkspace() {
                 setPrompt("");
                 setPromptModel("");
               }}
+              readOnly={inputMode === "random"}
             />
             <small>{t("text2img.description.help")} · {description.length}/2000</small>
           </div>
@@ -634,7 +746,7 @@ export function TextToImageWorkspace() {
           <p className={styles.helper}>{t(selectedOption.negativeNoteKey)}</p>
 
           {submitError && <p className={styles.error} role="alert">{submitError}</p>}
-          <button className={styles.primaryButton} type="submit" disabled={!workflowReady || !description.trim() || isBusy}>
+          <button className={styles.primaryButton} type="submit" disabled={!workflowReady || (inputMode === "manual" ? !description.trim() : !recipes.length) || isBusy}>
             {promptBusy ? t("text2img.generate.prompting") : isBusy ? t("text2img.generate.running") : t("text2img.generate.action")}
           </button>
         </form>
@@ -648,7 +760,17 @@ export function TextToImageWorkspace() {
             <span className={styles.sectionCode}>{t("text2img.section.output")}</span>
           </div>
 
-          {promptBusy ? (
+          {jobs.length > 0 ? (
+            <div className={styles.outputGrid}>{jobs.map((item) => <article className={styles.outputItem} key={item.id}>
+              <header><strong>#{(item.batchIndex ?? 0) + 1}</strong><span>{item.status}</span></header>
+              {item.output ? <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={assetUrl(item.output)} alt={t("text2img.output.alt")} />
+              </> : <div className={styles.outputPlaceholder}>{item.status === "failed" ? item.error || t("text2img.output.failed") : `${Math.round(item.progress)}%`}</div>}
+              <small>Seed {item.seed} · Recipe {item.recipeSeed}</small><details><summary>{t("text2img.prompt.generated")}</summary><p>{item.prompt}</p></details>
+              {item.status === "failed" && <button type="button" onClick={() => void retryBatchJob(item)}>{t("text2img.output.retry")}</button>}
+            </article>)}</div>
+          ) : promptBusy ? (
             <div className={styles.progressState}>
               <div className={styles.progressRing} style={{ "--progress": "14%" } as CSSProperties}><span>AI</span></div>
               <strong>{t("text2img.output.prompting")}</strong>

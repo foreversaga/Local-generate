@@ -42,6 +42,10 @@ export function normalizeJobStatus(value) {
 
 export function adaptJob(raw, source = "video") {
   const status = normalizeJobStatus(raw?.status);
+  const events = Array.isArray(raw?.events) ? raw.events : [];
+  const segments = source === "long" ? adaptLongSegments(raw?.segments, events) : Array.isArray(raw?.segments) ? raw.segments : [];
+  const completedAt = jobCompletionAt(raw, source, status, events);
+  const elapsedMs = jobElapsedMilliseconds(raw, source, status, events, completedAt);
   const createdAt = raw?.createdAt || raw?.startedAt || raw?.updatedAt || raw?.finishedAt || raw?.completedAt || "";
   const batchProgress = Number.isFinite(Number(raw?.batchCount)) && Number(raw.batchCount) > 0
     ? ((Number(raw?.completedCount) || 0) + (Number(raw?.failedCount) || 0)) / Number(raw.batchCount) * 100
@@ -90,11 +94,13 @@ export function adaptJob(raw, source = "video") {
     activeSegmentIndex: numericOrNull(raw?.activeSegmentIndex),
     segmentProgress: numericOrNull(raw?.segmentProgress),
     segmentStage: typeof raw?.segmentStage === "string" ? raw.segmentStage : "",
-    segments: Array.isArray(raw?.segments) ? raw.segments : [],
+    segments,
     comfyQueueRemaining: numericOrNull(raw?.comfyQueueRemaining),
     createdAt,
-    updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || createdAt,
-    elapsedMs: nonNegativeNumberOrNull(raw?.elapsedMs),
+    updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || completedAt || createdAt,
+    completedAt,
+    events,
+    elapsedMs,
     estimatedDurationMs: nonNegativeNumberOrNull(raw?.estimatedDurationMs),
     etaMs: etaMilliseconds(raw, source),
     etaLowerMs: numericOrNull(raw?.etaLowerMs),
@@ -149,8 +155,71 @@ function positiveInteger(value) {
 }
 
 function numericOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function eventTimestamp(events, predicate) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (predicate(event) && typeof event?.timestamp === "string" && event.timestamp) return event.timestamp;
+  }
+  return "";
+}
+
+function adaptLongSegments(value, events) {
+  if (!Array.isArray(value)) return [];
+  return value.map((segment, index) => {
+    const completedAt = firstNonEmptyText(
+      segment?.completedAt,
+      segment?.finishedAt,
+      eventTimestamp(events, (event) => event?.event === "segment.completed" && Number(event?.segmentIndex) === index),
+    );
+    const startedAt = firstNonEmptyText(
+      segment?.startedAt,
+      eventTimestamp(events, (event) => event?.event === "generation.start" && Number(event?.segmentIndex) === index),
+    );
+    const explicitElapsed = nonNegativeNumberOrNull(segment?.elapsedMs);
+    const elapsedMs = explicitElapsed ?? elapsedBetween(startedAt, completedAt);
+    const childElapsedMs = nonNegativeNumberOrNull(segment?.childElapsedMs);
+    const timing = {
+      ...(startedAt ? { startedAt } : {}),
+      ...(completedAt ? { completedAt } : {}),
+      ...(elapsedMs !== null ? { elapsedMs } : {}),
+      ...(childElapsedMs !== null ? { childElapsedMs } : {}),
+    };
+    return Object.keys(timing).length ? { ...segment, ...timing } : segment;
+  });
+}
+
+function elapsedBetween(startedAt, completedAt) {
+  const startedMs = Date.parse(String(startedAt || ""));
+  const completedMs = Date.parse(String(completedAt || ""));
+  return Number.isFinite(startedMs) && Number.isFinite(completedMs) && completedMs >= startedMs
+    ? completedMs - startedMs
+    : null;
+}
+
+function jobElapsedMilliseconds(raw, source, status, events, completedAt) {
+  const explicit = nonNegativeNumberOrNull(raw?.elapsedMs);
+  if (explicit !== null) return explicit;
+  if (source !== "long" || status !== "complete") return null;
+  const startedAt = firstNonEmptyText(
+    raw?.startedAt,
+    events.find((event) => event?.event === "runner.start" && typeof event?.timestamp === "string")?.timestamp,
+  );
+  return elapsedBetween(startedAt, completedAt);
+}
+
+function jobCompletionAt(raw, source, status, events) {
+  const explicit = firstNonEmptyText(raw?.completedAt, raw?.finishedAt, raw?.timestamps?.completedAt);
+  if (explicit) return explicit;
+  if (source === "long") {
+    const eventTime = eventTimestamp(events, (event) => event?.event === "runner.success" || event?.event === "assembly.completed");
+    if (eventTime) return eventTime;
+  }
+  return status === "complete" || status === "partial" ? firstNonEmptyText(raw?.updatedAt) : "";
 }
 
 function firstNonEmptyText(...values) {

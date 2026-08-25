@@ -67,6 +67,26 @@ function markOutputAvailability(job: UnifiedJob, availableKeys: Set<string> | nu
   return nextAvailability === job.outputAvailable ? job : { ...job, outputAvailable: nextAvailability };
 }
 
+async function enrichLongChildElapsed(job: UnifiedJob): Promise<UnifiedJob> {
+  if (job.source !== "long" || !Array.isArray(job.segments)) return job;
+  const segments = await Promise.all(job.segments.map(async (segment: Record<string, unknown>) => {
+    if (segment.childElapsedMs !== null && segment.childElapsedMs !== undefined && Number.isFinite(Number(segment.childElapsedMs))) return segment;
+    const childJobId = typeof segment.childJobId === "string" ? segment.childJobId : "";
+    if (!childJobId) return segment;
+    try {
+      const response = await fetch(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(childJobId)}`, { cache: "no-store" });
+      if (!response.ok) return segment;
+      const payload = await response.json().catch(() => ({})) as { job?: Record<string, unknown> } & Record<string, unknown>;
+      const child = payload.job && typeof payload.job === "object" ? payload.job : payload;
+      const childElapsedMs = Number(child.elapsedMs);
+      return Number.isFinite(childElapsedMs) && childElapsedMs >= 0 ? { ...segment, childElapsedMs } : segment;
+    } catch {
+      return segment;
+    }
+  }));
+  return { ...job, segments } as UnifiedJob;
+}
+
 const unifiedJobsRequests = new Map<string, { expiresAt: number; promise: Promise<UnifiedJobsSnapshot> }>();
 
 export async function fetchUnifiedJobs(options?: FetchUnifiedJobsOptions): Promise<UnifiedJobsSnapshot> {
@@ -109,8 +129,11 @@ export async function fetchUnifiedJob(jobId: string, sourceHint?: string): Promi
     const message = typeof payload.error === "string" ? payload.error : payload.error?.message || `Unable to load ${sourceHint} job.`;
     return { job: null, sourceError: { source: sourceHint || "", status: response.status, code: payload.code || `HTTP_${response.status}`, message } };
   }
-  const raw = payload.job && typeof payload.job === "object" ? payload.job : payload;
+  const raw = payload.job && typeof payload.job === "object"
+    ? { ...payload.job, ...(Array.isArray(payload.events) ? { events: payload.events } : {}) }
+    : payload;
   let job = adaptJob(raw, spec.source) as UnifiedJob;
+  job = await enrichLongChildElapsed(job);
   if (job.status === "complete" && job.output) {
     job = markOutputAvailability(job, await fetchOutputAssetKeys(globalThis.fetch));
   }

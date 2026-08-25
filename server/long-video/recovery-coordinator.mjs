@@ -1,4 +1,4 @@
-import { recoverInterruptedJobs, reconcileSequenceState } from "./recovery.mjs";
+import { recoverInterruptedJobs, reconcileSequenceState, sequenceActiveSegmentIndex } from "./recovery.mjs";
 import { getJob } from "./store.mjs";
 
 /**
@@ -65,7 +65,7 @@ export function createRecoveryCoordinator({
     if (options.child || options.artifact || options.comfyAvailable === false || options.ambiguous) {
       return reconcileSequenceState(job, options);
     }
-    const index = Number.isInteger(Number(job?.activeSegmentIndex)) ? Number(job.activeSegmentIndex) : -1;
+    const index = sequenceActiveSegmentIndex(job);
     const segment = index >= 0 ? job.segments?.[index] : null;
     const binding = job.activeAttempt || segment;
     const child = inspectChild && binding ? await inspectChild(binding, job) : null;

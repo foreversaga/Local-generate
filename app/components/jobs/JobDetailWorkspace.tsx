@@ -10,6 +10,7 @@ import { StatusBadge } from "./JobsWorkspace";
 import { SaveJobAsScript } from "./SaveJobAsScript";
 import styles from "./JobsWorkspace.module.css";
 import progressStyles from "./ProgressDetails.module.css";
+import historyStyles from "./CompletionHistory.module.css";
 
 export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourceHint?: string }) {
   const { locale, t } = useI18n();
@@ -141,8 +142,24 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
         : t("jobs.etaEstimating")
     : "";
   const longTotalSegments = job.source === "long" ? job.segments.length : 0;
-  const longActiveIndex = job.source === "long" && Number.isInteger(Number(job.activeSegmentIndex)) ? Number(job.activeSegmentIndex) : -1;
+  const longActiveIndex = job.source === "long"
+    && job.activeSegmentIndex !== null
+    && job.activeSegmentIndex !== undefined
+    && job.activeSegmentIndex !== ""
+    && Number.isInteger(Number(job.activeSegmentIndex))
+    ? Number(job.activeSegmentIndex)
+    : -1;
   const longSegmentProgress = Math.min(100, Math.max(0, Math.round(Number(job.segmentProgress) || 0)));
+  const nativeCurrent = Number(job.nativeCurrent);
+  const nativeMaximum = Number(job.nativeMaximum);
+  const hasNativeProgress = Number.isFinite(nativeCurrent) && nativeCurrent >= 0
+    && Number.isFinite(nativeMaximum) && nativeMaximum > 0;
+  const isUpscaleTileProgress = job.source === "upscale"
+    && job.comfyNode === "SeedVR2TilingUpscaler"
+    && hasNativeProgress;
+  const upscaleTileProgress = isUpscaleTileProgress
+    ? Math.min(100, Math.max(0, Math.round(nativeCurrent / nativeMaximum * 100)))
+    : 0;
 
   return (
     <div className={styles.detailLayout}>
@@ -168,7 +185,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
           ) : complete ? (
             <div className={styles.statusMessage}>
               <strong>生成完成</strong>
-              <span>{job.updatedAt ? `更新於 ${formatDate(job.updatedAt, locale)}` : "工作已完成"}</span>
+              <span>{job.completedAt ? `完成於 ${formatDate(job.completedAt, locale)}` : job.updatedAt ? `更新於 ${formatDate(job.updatedAt, locale)}` : "工作已完成"}</span>
             </div>
           ) : (
             <div className={styles.statusMessage}>
@@ -186,6 +203,41 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
           <div><span>採樣步驟</span><strong>{job.nativeCurrent !== null && job.nativeMaximum !== null ? `${job.nativeCurrent}/${job.nativeMaximum}` : "等待原生回報"}</strong></div>
           <div><span>進度來源</span><strong>{job.progressSource === "native" ? "ComfyUI 原生回報" : "階段估算"}</strong></div>
           <div><span>最後更新</span><strong>{job.updatedAt ? formatDate(job.updatedAt, locale) : "—"}</strong></div>
+        </section>}
+
+        {isUpscaleTileProgress && <section className={`${progressStyles.panel} ${progressStyles.grid}`} aria-label="升階分塊進度">
+          <div><span>目前階段</span><strong>{job.stage || "SeedVR2 分塊升階"}</strong></div>
+          <div><span>分塊進度</span><strong>{nativeCurrent} / {nativeMaximum}</strong></div>
+          <div><span>分塊完成率</span><strong>{upscaleTileProgress}%</strong></div>
+          <div><span>進度來源</span><strong>{job.progressSource === "native" ? "ComfyUI 原生回報" : "階段估算"}</strong></div>
+        </section>}
+
+        {job.source === "long" && longTotalSegments > 0 && <section className={historyStyles.panel} aria-label="工作耗時">
+          <div className={historyStyles.header}>
+            <h3>工作耗時</h3>
+            <span>各子工作耗時與整體長影片總耗時</span>
+          </div>
+          <ol className={historyStyles.list}>
+            {job.segments.map((segment: { id?: string; childJobId?: string; status?: string; childElapsedMs?: number | null; elapsedMs?: number | null }, index: number) => {
+              const segmentElapsedValue = segment.childElapsedMs ?? segment.elapsedMs;
+              const segmentElapsedMs = segmentElapsedValue === null || segmentElapsedValue === undefined ? Number.NaN : Number(segmentElapsedValue);
+              return <li key={segment.id || segment.childJobId || index}>
+                <div>
+                  <strong>子工作 {index + 1}</strong>
+                  <span>{segment.childJobId || segment.id || `segment-${index + 1}`}</span>
+                </div>
+                {Number.isFinite(segmentElapsedMs)
+                  ? <span className={historyStyles.duration}>{formatWorkDuration(segmentElapsedMs)}</span>
+                  : <span className={historyStyles.pending}>{segment.status === "completed" ? "耗時未記錄" : "尚未完成"}</span>}
+              </li>;
+            })}
+            <li className={historyStyles.overall}>
+              <div><strong>整體長影片（含合併）</strong><span>{job.id}</span></div>
+              {job.elapsedMs !== null && job.elapsedMs !== undefined && Number.isFinite(Number(job.elapsedMs))
+                ? <span className={historyStyles.duration}>{formatWorkDuration(Number(job.elapsedMs))}</span>
+                : <span className={historyStyles.pending}>{complete ? "耗時未記錄" : "尚未完成"}</span>}
+            </li>
+          </ol>
         </section>}
 
         {job.error && <div className={styles.error} role="alert">{job.error}</div>}
@@ -225,6 +277,7 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
               <div><dt>Source</dt><dd>{sourceLabel(job.source, locale)}</dd></div>
               <div><dt>Stage</dt><dd>{job.stage || "—"}</dd></div>
               <div><dt>更新時間</dt><dd>{job.updatedAt || "—"}</dd></div>
+              {job.completedAt && <div><dt>完成時間</dt><dd>{job.completedAt}</dd></div>}
               {job.comfyNode && <div><dt>ComfyUI Node</dt><dd>{job.comfyNode}{job.comfyNodeTitle ? ` · ${job.comfyNodeTitle}` : ""}</dd></div>}
               {job.nativeCurrent !== null && job.nativeMaximum !== null && Number.isFinite(Number(job.nativeCurrent)) && Number.isFinite(Number(job.nativeMaximum)) && <div><dt>Sampler Step</dt><dd>{job.nativeCurrent}/{job.nativeMaximum}</dd></div>}
               {hasElapsed && <div><dt>已執行</dt><dd>{formatEtaDuration(Number(job.elapsedMs), t)}</dd></div>}
@@ -258,6 +311,16 @@ function formatEtaDuration(
   return seconds < 60
     ? t("time.seconds", { seconds })
     : t("time.minutesSeconds", { minutes: Math.floor(seconds / 60), seconds: seconds % 60 });
+}
+
+function formatWorkDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours} 小時 ${minutes} 分 ${seconds} 秒`;
+  if (minutes) return `${minutes} 分 ${seconds} 秒`;
+  return `${seconds} 秒`;
 }
 
 function formatDate(value: string, locale: string) {

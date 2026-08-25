@@ -288,6 +288,7 @@ export function createBridgeDomainRouter({
           reconcileSequence,
           recoverChild,
           capabilities: motionContextCapability,
+          includeEvents: true,
         });
         return req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
       },

@@ -196,6 +196,23 @@ function generationResultPath(result, fallback) {
   return result?.rawPath || result?.outputPath || result?.path || fallback;
 }
 
+function elapsedBetween(startedAt, completedAt) {
+  const startedMs = Date.parse(String(startedAt || ""));
+  const completedMs = Date.parse(String(completedAt || ""));
+  return Number.isFinite(startedMs) && Number.isFinite(completedMs) && completedMs >= startedMs
+    ? completedMs - startedMs
+    : null;
+}
+
+function childElapsedMilliseconds(generated) {
+  const explicit = Number(generated?.job?.elapsedMs ?? generated?.elapsedMs);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  return elapsedBetween(
+    generated?.job?.executionStartedAt || generated?.job?.startedAt || generated?.startedAt,
+    generated?.job?.finishedAt || generated?.job?.completedAt || generated?.finishedAt || generated?.completedAt,
+  );
+}
+
 export function sequenceProgressForSegment(segmentIndex, segmentCount, generationProgress) {
   const count = Math.max(1, Number(segmentCount) || 1);
   const index = Math.min(count - 1, Math.max(0, Number(segmentIndex) || 0));
@@ -336,7 +353,9 @@ export async function runSequence(sequenceOrId, deps = {}) {
   let previousContext = null;
   let activeSegmentIndex = -1;
   let activeAttemptRecord = null;
-  await setJob(job, { status: "running", progress: 1, stage: "sequence.start", error: null }, deps);
+  const runnerStartedAt = new Date().toISOString();
+  const sequenceStartedAt = job.startedAt || runnerStartedAt;
+  await setJob(job, { status: "running", progress: 1, stage: "sequence.start", startedAt: sequenceStartedAt, completedAt: null, elapsedMs: null, error: null }, deps);
   await logEvent(id, { event: "runner.start", from: "ready", to: "running", stage: "sequence.start", segmentCount: job.segments.length }, deps);
   try {
     for (let index = 0; index < job.segments.length; index += 1) {
@@ -545,6 +564,10 @@ export async function runSequence(sequenceOrId, deps = {}) {
       };
       await setSegment(job, index, {
         status: "queued",
+        startedAt,
+        completedAt: null,
+        childElapsedMs: null,
+        elapsedMs: null,
         attempt,
         attemptId,
         childJobId: reattachAttempt ? segment.childJobId : null,
@@ -753,8 +776,11 @@ export async function runSequence(sequenceOrId, deps = {}) {
       await setSegment(job, index, { checkpoint: "tail_verified", tailAsset: outputAssetRef(tailPath) }, deps);
       previousTail = tailPath;
       normalizedPaths.push(completedPath);
-      await setSegment(job, index, { status: "completed", checkpoint: "segment_completed", renderedDuration, overlapTrimFrames, normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), completedPath).replaceAll("\\", "/") }, deps);
-      if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, previousContext, producedRawPath, completedPath, tailPath, contextPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), overlapTrimFrames, ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), generationJobId, finishedAt: new Date().toISOString() }).catch(() => {});
+      const segmentCompletedAt = new Date().toISOString();
+      const childElapsedMs = childElapsedMilliseconds(generated);
+      const segmentElapsedMs = elapsedBetween(startedAt, segmentCompletedAt);
+      await setSegment(job, index, { status: "completed", checkpoint: "segment_completed", completedAt: segmentCompletedAt, childElapsedMs, elapsedMs: segmentElapsedMs, renderedDuration, overlapTrimFrames, normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), completedPath).replaceAll("\\", "/") }, deps);
+      if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, previousContext, producedRawPath, completedPath, tailPath, contextPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), overlapTrimFrames, ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), generationJobId, finishedAt: segmentCompletedAt, childElapsedMs, elapsedMs: segmentElapsedMs }).catch(() => {});
       activeAttemptRecord = null;
       await setJob(job, {
         activeAttempt: null,
@@ -773,12 +799,22 @@ export async function runSequence(sequenceOrId, deps = {}) {
     if (id && deps.lease) await assertSequenceLease(id, deps.lease);
     const assemblyRevision = Number(job.assembly?.revision || 0) + 1;
     const assemblyDirectory = deps.assemblyDir || (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || "")) ? sequenceAssemblyDir(id) : path.join(folder, "assembly"));
-    const renderedMasterDuration = job.segments.reduce((sum, segment) => sum + Number(segment.renderedDuration ?? segment.duration ?? (segment.end - segment.start)), 0);
-    const assembledDuration = Number(renderedMasterDuration.toFixed(6));
+    // Native H3 output may be longer than the requested window because its
+    // latent frame grid is quantized. Multishot segments are normalized back
+    // to their timeline duration before concat, so validate that final file
+    // against the normalized timeline rather than the raw H3 duration.
+    const assemblyMasterDuration = job.segments.reduce((sum, segment) => sum + Number(
+      job.longVideoEnabled === true
+        ? segment.duration ?? (segment.end - segment.start)
+        : segment.renderedDuration ?? segment.duration ?? (segment.end - segment.start),
+    ), 0);
+    const assembledDuration = Number(assemblyMasterDuration.toFixed(6));
     const assembly = await assemble({ segmentPaths: normalizedPaths, outputFolder: folder, assemblyDir: assemblyDirectory, revision: assemblyRevision, duration: assembledDuration, width: job.width, height: job.height, masterNormalize: job.masterNormalize || "off", allowSingleSegment: job.longVideoEnabled === true, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, event, deps) });
     const finalAsset = outputAssetRef(assembly.outputPath);
-    if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, checkpoint: "assembly_verified", finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt: new Date().toISOString() });
-    await setJob(job, { status: "completed", executionPhase: "completed", progress: 100, stage: "assembly.completed", activeSegmentIndex: null, segmentProgress: 100, segmentStage: "長影片已完成", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe }, controlIntent: "run" }, deps);
+    const completedAt = new Date().toISOString();
+    const elapsedMs = elapsedBetween(sequenceStartedAt, completedAt);
+    if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAssemblyJson(id, { revision: assembly.revision, checkpoint: "assembly_verified", finalAsset, concatFile: "assembly/concat.txt", probe: assembly.probe, completedAt });
+    await setJob(job, { status: "completed", executionPhase: "completed", progress: 100, stage: "assembly.completed", completedAt, elapsedMs, activeSegmentIndex: null, segmentProgress: 100, segmentStage: "長影片已完成", finalAsset, assembly: { finalAsset, revision: assembly.revision, probe: assembly.probe }, controlIntent: "run" }, deps);
     await writeManifest(folder, job);
     await logEvent(id, { event: "runner.success", from: "assembling", to: "completed", stage: "assembly.completed", outputRelative: finalAsset.name }, deps);
     if (leaseHeartbeat) clearInterval(leaseHeartbeat);
@@ -787,28 +823,42 @@ export async function runSequence(sequenceOrId, deps = {}) {
   } catch (error) {
     if (leaseHeartbeat) clearInterval(leaseHeartbeat);
     const leaseLost = error?.code === "SEQUENCE_LEASE_LOST" || error?.code === "SEQUENCE_LEASE_HELD";
-    if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
-    if (leaseLost) throw error;
-    const durableJob = id && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id))
-      ? await getJob(id).catch(() => null)
-      : null;
-    const cancelled = error?.code === "SEQUENCE_CANCELLED"
-      || Boolean(deps.shouldCancel?.(job))
-      || job.controlIntent === "cancel_requested"
-      || durableJob?.status === "cancelled"
-      || durableJob?.controlIntent === "cancel_requested";
-    if (activeSegmentIndex >= 0 && job.segments?.[activeSegmentIndex]) {
-      const failedAttempt = Number(job.segments[activeSegmentIndex].attempt || 0);
-      await setSegment(job, activeSegmentIndex, {
-        status: cancelled ? "stale" : "failed",
-        recoverable: !cancelled,
-        error: { code: error?.code || "RUNNER_FAILED", message: error?.message || String(error), details: error?.details },
-      }, deps);
-      if (failedAttempt > 0 && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, activeSegmentIndex, failedAttempt, { ...(activeAttemptRecord || {}), attempt: failedAttempt, segmentIndex: activeSegmentIndex, status: "failed", prompt: persistedAttemptPrompt(activeAttemptRecord?.prompt, [activeAttemptRecord?.previousTail, activeAttemptRecord?.rawPath]), errorCode: error?.code || "RUNNER_FAILED", errorMessage: error?.message || String(error), stderrTail: error?.details?.stderrTail, exitCode: error?.details?.exitCode, finishedAt: new Date().toISOString() }).catch(() => {});
+    if (leaseLost) {
+      if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
+      throw error;
     }
-    await setJob(job, { status: cancelled ? "cancelled" : "failed", stage: cancelled ? "sequence.cancelled" : "sequence.failed", error: { code: error?.code || "RUNNER_FAILED", message: error?.message || String(error), stack: error?.stack } }, deps);
-    await writeManifest(folder, job).catch(() => {});
-    await logEvent(id, { level: cancelled ? "info" : "error", event: cancelled ? "runner.cancelled" : "runner.failure", from: "running", to: cancelled ? "cancelled" : "failed", segmentIndex: activeSegmentIndex >= 0 ? activeSegmentIndex : undefined, errorCode: error?.code || "RUNNER_FAILED", errorMessage: error?.message || String(error), errorDetails: error?.details, stderrTail: error?.details?.stderrTail, exitCode: error?.details?.exitCode, stack: error?.stack }, deps);
+    let persistenceError = null;
+    try {
+      const durableJob = id && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id))
+        ? await getJob(id).catch(() => null)
+        : null;
+      const cancelled = error?.code === "SEQUENCE_CANCELLED"
+        || Boolean(deps.shouldCancel?.(job))
+        || job.controlIntent === "cancel_requested"
+        || durableJob?.status === "cancelled"
+        || durableJob?.controlIntent === "cancel_requested";
+      if (activeSegmentIndex >= 0 && job.segments?.[activeSegmentIndex]) {
+        const failedAttempt = Number(job.segments[activeSegmentIndex].attempt || 0);
+        await setSegment(job, activeSegmentIndex, {
+          status: cancelled ? "stale" : "failed",
+          completedAt: null,
+          recoverable: !cancelled,
+          error: { code: error?.code || "RUNNER_FAILED", message: error?.message || String(error), details: error?.details },
+        }, deps);
+        if (failedAttempt > 0 && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, activeSegmentIndex, failedAttempt, { ...(activeAttemptRecord || {}), attempt: failedAttempt, segmentIndex: activeSegmentIndex, status: "failed", prompt: persistedAttemptPrompt(activeAttemptRecord?.prompt, [activeAttemptRecord?.previousTail, activeAttemptRecord?.rawPath]), errorCode: error?.code || "RUNNER_FAILED", errorMessage: error?.message || String(error), stderrTail: error?.details?.stderrTail, exitCode: error?.details?.exitCode, finishedAt: new Date().toISOString() }).catch(() => {});
+      }
+      await setJob(job, { status: cancelled ? "cancelled" : "failed", stage: cancelled ? "sequence.cancelled" : "sequence.failed", completedAt: null, error: { code: error?.code || "RUNNER_FAILED", message: error?.message || String(error), stack: error?.stack } }, deps);
+      await writeManifest(folder, job).catch(() => {});
+      await logEvent(id, { level: cancelled ? "info" : "error", event: cancelled ? "runner.cancelled" : "runner.failure", from: "running", to: cancelled ? "cancelled" : "failed", segmentIndex: activeSegmentIndex >= 0 ? activeSegmentIndex : undefined, errorCode: error?.code || "RUNNER_FAILED", errorMessage: error?.message || String(error), errorDetails: error?.details, stderrTail: error?.details?.stderrTail, exitCode: error?.details?.exitCode, stack: error?.stack }, deps);
+    } catch (reason) {
+      persistenceError = reason;
+    } finally {
+      // Keep the fence until the terminal state and diagnostic event are
+      // durable. Releasing it first masks the real failure with LEASE_LOST and
+      // strands the parent in its previous active state.
+      if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
+    }
+    if (persistenceError) console.error("[long-video] failure persistence error", id, persistenceError);
     throw error;
   }
 }

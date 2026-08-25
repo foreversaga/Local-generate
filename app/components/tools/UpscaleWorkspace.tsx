@@ -108,6 +108,12 @@ export function UpscaleWorkspace() {
 
     const active = Boolean(job && ACTIVE_STATUSES.has(job.status));
     const progress = Math.min(100, Math.max(0, Math.round(Number(job?.progress) || 0)));
+    const nativeCurrent = Number(job?.nativeCurrent);
+    const nativeMaximum = Number(job?.nativeMaximum);
+    const hasNativeProgress = Number.isFinite(nativeCurrent) && nativeCurrent >= 0
+        && Number.isFinite(nativeMaximum) && nativeMaximum > 0;
+    const isTileProgress = hasNativeProgress && job?.comfyNode === "SeedVR2TilingUpscaler";
+    const tileProgress = isTileProgress ? Math.min(100, Math.max(0, Math.round(nativeCurrent / nativeMaximum * 100))) : 0;
     const sourceKey = source ? assetKey(source) : "";
     const selectedProfile = UPSCALE_PROFILES.find((item) => item.id === profile) || UPSCALE_PROFILES[0];
     const seedVR2Help = getSeedVR2Help(locale);
@@ -531,6 +537,11 @@ export function UpscaleWorkspace() {
                             {job && <strong>{progress}%</strong>}
                         </div>
                         {job && <div className={styles.progressTrack} role="progressbar" aria-label={`${selectedProfile.label} 進度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-valuetext={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>}
+                        {isTileProgress && <div className={styles.tileProgress} aria-label="分塊進度">
+                            <span>分塊進度</span>
+                            <strong>{nativeCurrent} / {nativeMaximum}</strong>
+                            <span>{tileProgress}%</span>
+                        </div>}
                     </div>
                     {active && job?.status !== "cancelling" && <button type="button" className={styles.secondaryButton} onClick={() => void cancel()} disabled={Boolean(busy)}>{busy === "cancel" ? "取消中…" : ACTION_LABELS.cancel}</button>}
                     {job && (job.status === "failed" || job.status === "cancelled" || job.status === "interrupted") && <button type="button" className={styles.secondaryButton} onClick={() => void retry()} disabled={!canRetry}>{busy === "retry" ? "重試中…" : ACTION_LABELS.retry}</button>}

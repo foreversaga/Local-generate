@@ -19,6 +19,19 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.doesNotMatch(workspace, /text2img\.model\.dev\.name/);
   assert.match(workspace, /assetUrl\(job\.output\)/);
   assert.match(workspace, /generateText2ImgPrompt/);
+  assert.match(workspace, /randomizePersonPhotos/);
+  assert.match(workspace, /fetchPersonPhotoLibrary/);
+  assert.match(workspace, /batchCount, setBatchCount.*"4"/);
+  assert.match(workspace, /normalizeIntegerField\(batchCount, 4, 1, 20\)/);
+  assert.match(workspace, /H01/);
+  assert.match(workspace, /H04/);
+  assert.match(workspace, /generatedPrompts/);
+  assert.match(workspace, /setJobs\(queued\)/);
+  assert.match(workspace, /jobs\.length > 0/);
+  assert.match(workspace, /recipe\.validation\.checks/);
+  assert.match(client, /\/api\/text2img\/person-photo\/library/);
+  assert.match(client, /\/api\/text2img\/person-photo\/randomize/);
+  assert.match(client, /recipeSeed/);
   assert.match(workspace, /text2img\.description\.label/);
   assert.match(workspace, /copyDescription/);
   assert.match(workspace, /navigator\.clipboard\?\.writeText/);
@@ -90,7 +103,7 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(client, /loras: Text2ImgLoraSelection\[\]/);
   assert.doesNotMatch(client, /adultMode: boolean/);
   assert.match(client, /unloadPromptModel = false/);
-  assert.match(client, /JSON\.stringify\(\{ description, unloadPromptModel \}\)/);
+  assert.match(client, /JSON\.stringify\(\{ description, recipe, unloadPromptModel \}\)/);
   assert.match(dictionaries, /"page\.text2img\.title"/);
   assert.match(dictionaries, /"text2img\.generate\.action"/);
   assert.match(dictionaries, /"text2img\.description\.copy\.idle"/);
@@ -107,6 +120,8 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(dictionaries, /"text2img\.assistant\.unload\.off"/);
   assert.match(dictionaries, /"text2img\.output\.repeat"/);
   assert.match(dictionaries, /"text2img\.guidance\.label"/);
+  assert.match(dictionaries, /"text2img\.mode\.random"/);
+  assert.match(dictionaries, /"text2img\.random\.applyAll"/);
   assert.match(dictionaries, /"text2img\.guidance\.help"/);
   assert.match(dictionaries, /"text2img\.result\.guidance"/);
   assert.match(dictionaries, /"text2img\.size\.width"/);

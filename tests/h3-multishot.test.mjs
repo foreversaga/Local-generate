@@ -160,7 +160,7 @@ test("first_frame runner keeps original references separate and trims synchroniz
     outputPath: "/tmp/memory-multishot",
   };
   await runSequence(job, {
-    generate: async (payload) => { generated.push(payload); return payload.outputPath; },
+    generate: async (payload) => { generated.push(payload); return { outputPath: payload.outputPath, job: { elapsedMs: 1_234 } }; },
     normalize: async ({ outputPath, duration }) => { normalizedDurations.push(duration); return { outputPath }; },
     extractTail: async ({ outputPath }) => ({ outputPath }),
     trimOverlap: async (payload) => { trimmed.push(payload); return { outputPath: payload.outputPath, trimmedFrames: 1 }; },
@@ -252,11 +252,12 @@ test("available context_pin relays raw AV latent metadata and never decoded medi
     outputPath: "/tmp/memory-context-pin",
   };
   const generated = [];
+  let assemblyDuration;
   await runSequence(job, {
     motionContextCapability: async () => ({ available: true, missingNodes: [], missingInputs: [] }),
-    generate: async (payload) => { generated.push(payload); return payload.outputPath; },
+    generate: async (payload) => { generated.push(payload); return { outputPath: payload.outputPath, job: { elapsedMs: 1_234 } }; },
     normalize: async ({ outputPath }) => ({ outputPath }), extractTail: async ({ outputPath }) => ({ outputPath }),
-    assemble: async ({ outputFolder }) => ({ outputPath: `${outputFolder}/final.mp4`, revision: 1, probe: {} }),
+    assemble: async ({ outputFolder, duration }) => { assemblyDuration = duration; return { outputPath: `${outputFolder}/final.mp4`, revision: 1, probe: {} }; },
     writeManifest: async () => {}, updateJob: async () => {}, updateSegment: async () => {}, log: async () => {},
   });
   assert.equal(generated[1].latentContinuation, true);
@@ -266,4 +267,10 @@ test("available context_pin relays raw AV latent metadata and never decoded medi
   assert.equal(generated[1].inputVideoPath, undefined);
   assert.equal(generated[1].continuationFramePath, undefined);
   assert.equal(contextPinRenderedDuration(243 / 24, 1), 255 / 24);
+  assert.equal(assemblyDuration, 20.25, "assembly validates the normalized timeline, not the longer raw H3 frame grid");
+  assert.ok(job.segments.every((segment) => Number.isFinite(Date.parse(segment.completedAt))));
+  assert.ok(job.segments.every((segment) => segment.childElapsedMs === 1_234));
+  assert.ok(job.segments.every((segment) => Number.isFinite(segment.elapsedMs)));
+  assert.ok(Number.isFinite(Date.parse(job.completedAt)));
+  assert.ok(Number.isFinite(job.elapsedMs));
 });

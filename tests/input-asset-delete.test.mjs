@@ -117,6 +117,91 @@ test("deletes an empty media folder", async () => {
   await assert.rejects(() => fs.stat(path.join(root, "empty")), { code: "ENOENT" });
 });
 
+test("deletes an owned long-video output folder with its sequence manifest", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-sequence-"));
+  const folder = path.join(root, "sequence-output");
+  await fs.mkdir(folder, { recursive: true });
+  await fs.writeFile(path.join(folder, "final.mp4"), "video");
+  await fs.writeFile(path.join(folder, ".h3-sequence.json"), JSON.stringify({
+    id: "seq-owned-output",
+    outputFolder: "sequence-output",
+    outputAllocated: true,
+  }));
+  const deleted = await deleteMediaFolder("output", "sequence-output", { rootPath: root, activeCheck: noActiveUse });
+  assert.deepEqual(deleted, { name: "sequence-output", root: "output", kind: "folder", deletedCount: 1, deletedFolderCount: 1 });
+  await assert.rejects(() => fs.stat(folder), { code: "ENOENT" });
+});
+
+test("rejects invalid or misplaced sequence manifests before deleting media", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-invalid-sequence-"));
+  const outputFolder = path.join(root, "output-folder");
+  await fs.mkdir(outputFolder, { recursive: true });
+  await fs.writeFile(path.join(outputFolder, "final.mp4"), "video");
+  await fs.writeFile(path.join(outputFolder, ".h3-sequence.json"), JSON.stringify({
+    id: "seq-other-output",
+    outputFolder: "different-folder",
+    outputAllocated: true,
+  }));
+  await assert.rejects(
+    () => deleteMediaFolder("output", "output-folder", { rootPath: root, activeCheck: noActiveUse }),
+    { code: "ASSET_FOLDER_MANIFEST_INVALID", status: 409 },
+  );
+  assert.equal(await fs.readFile(path.join(outputFolder, "final.mp4"), "utf8"), "video");
+
+  const inputFolder = path.join(root, "input-folder");
+  await fs.mkdir(inputFolder, { recursive: true });
+  await fs.writeFile(path.join(inputFolder, "frame.png"), "image");
+  await fs.writeFile(path.join(inputFolder, ".h3-sequence.json"), JSON.stringify({
+    id: "seq-input-folder",
+    outputFolder: "input-folder",
+    outputAllocated: true,
+  }));
+  await assert.rejects(
+    () => deleteMediaFolder("input", "input-folder", { rootPath: root, activeCheck: noActiveUse }),
+    { code: "ASSET_FOLDER_UNSUPPORTED_CONTENT", status: 409 },
+  );
+  assert.equal(await fs.readFile(path.join(inputFolder, "frame.png"), "utf8"), "image");
+});
+
+test("rejects unrelated hidden files and active marker-only output folders without partial deletion", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-hidden-"));
+  const hiddenFolder = path.join(root, "hidden-output");
+  await fs.mkdir(hiddenFolder, { recursive: true });
+  await fs.writeFile(path.join(hiddenFolder, "final.mp4"), "video");
+  await fs.writeFile(path.join(hiddenFolder, ".keep"), "keep");
+  await assert.rejects(
+    () => deleteMediaFolder("output", "hidden-output", { rootPath: root, activeCheck: noActiveUse }),
+    { code: "ASSET_FOLDER_UNSUPPORTED_CONTENT", status: 409 },
+  );
+  assert.equal(await fs.readFile(path.join(hiddenFolder, "final.mp4"), "utf8"), "video");
+
+  const activeFolder = path.join(root, "active-output");
+  await fs.mkdir(activeFolder, { recursive: true });
+  await fs.writeFile(path.join(activeFolder, ".h3-sequence.json"), JSON.stringify({
+    id: "seq-active-output",
+    outputFolder: "active-output",
+    outputAllocated: true,
+  }));
+  await assert.rejects(
+    () => deleteMediaFolder("output", "active-output", {
+      rootPath: root,
+      activeCheck: async () => ({ blocked: true, code: "ASSET_IN_USE" }),
+    }),
+    { code: "ASSET_IN_USE", status: 409 },
+  );
+  assert.equal(await fs.readFile(path.join(activeFolder, ".h3-sequence.json"), "utf8").then(Boolean), true);
+});
+
+test("does not allow deleting a sequence manifest as an individual asset", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-manifest-file-"));
+  await fs.writeFile(path.join(root, ".h3-sequence.json"), "{}");
+  await assert.rejects(
+    () => deleteMediaAsset("output", ".h3-sequence.json", { rootPath: root, activeCheck: noActiveUse }),
+    { code: "ASSET_KIND_INVALID", status: 415 },
+  );
+  assert.equal(await fs.readFile(path.join(root, ".h3-sequence.json"), "utf8"), "{}");
+});
+
 test("refuses recursive deletion when an unsupported file is present", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-folder-delete-unsupported-"));
   await fs.mkdir(path.join(root, "characters"), { recursive: true });

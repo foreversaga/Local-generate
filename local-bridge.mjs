@@ -5272,7 +5272,17 @@ async function uploadAsset(request, metadata) {
   return await assetUploadService.upload(request, metadata);
 }
 
-const ACTIVE_LONG_VIDEO_STATES = new Set(["planning", "queued", "running", "paused", "assembling"]);
+const ACTIVE_LONG_VIDEO_STATES = new Set([
+  "planning",
+  "queued",
+  "running",
+  "paused",
+  "assembling",
+  "recovering",
+  "recovery_needs_operator",
+]);
+const SEQUENCE_FOLDER_MANIFEST = ".h3-sequence.json";
+const SEQUENCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/;
 
 function assetDeletionError(code, message, status = 400) {
   const error = new Error(message);
@@ -5309,6 +5319,28 @@ function pathContained(root, candidate) {
 function inputAssetKey(rootName, relativeName) {
   const normalized = relativeName.replaceAll("\\", "/");
   return `${rootName}:${process.platform === "win32" ? normalized.toLowerCase() : normalized}`;
+}
+
+async function validateSequenceFolderManifest(filePath, outputFolder) {
+  let marker;
+  try {
+    marker = JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Sequence folder marker was not found.", 404);
+    throw assetDeletionError("ASSET_FOLDER_MANIFEST_INVALID", "Sequence folder marker is not valid JSON.", 409);
+  }
+  if (
+    !marker
+    || typeof marker !== "object"
+    || Array.isArray(marker)
+    || typeof marker.id !== "string"
+    || !SEQUENCE_ID_PATTERN.test(marker.id)
+    || marker.outputFolder !== outputFolder
+    || marker.outputAllocated !== true
+  ) {
+    throw assetDeletionError("ASSET_FOLDER_MANIFEST_INVALID", "Sequence folder marker does not own this output folder.", 409);
+  }
+  return marker;
 }
 
 async function activeInputAssetUse(relativeName) {
@@ -5467,29 +5499,60 @@ async function deleteMediaFolder(rootName, relativeName, {
   const supportedFiles = tree.files;
   const supportedNames = new Set(supportedFiles.map((file) => file.relativeName));
   const unsupportedFiles = [];
+  const internalFiles = [];
   const inspect = async (directory) => {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) continue;
       const fullPath = path.join(directory, entry.name);
       const stat = await fs.lstat(fullPath);
       if (stat.isSymbolicLink()) throw assetDeletionError("ASSET_NOT_REGULAR", "Symlink or reparse media assets cannot be deleted.", 409);
+      const relative = path.relative(rootAbsolute, fullPath).replaceAll("\\", "/");
+      if (entry.name.startsWith(".")) {
+        const isOwnedSequenceManifest = rootName === "output"
+          && directory === candidate
+          && entry.name === SEQUENCE_FOLDER_MANIFEST
+          && stat.isFile();
+        if (isOwnedSequenceManifest) {
+          await validateSequenceFolderManifest(fullPath, cleanName);
+          internalFiles.push({ relativeName: relative, fullPath });
+        } else {
+          unsupportedFiles.push(relative);
+        }
+        continue;
+      }
       if (stat.isDirectory()) await inspect(fullPath);
       else if (stat.isFile()) {
-        const relative = path.relative(rootAbsolute, fullPath).replaceAll("\\", "/");
         if (!supportedNames.has(relative)) unsupportedFiles.push(relative);
-      }
+      } else unsupportedFiles.push(relative);
     }
   };
   await inspect(candidate);
   if (unsupportedFiles.length) {
     throw assetDeletionError("ASSET_FOLDER_UNSUPPORTED_CONTENT", "Media folder contains unsupported files and was not deleted.", 409);
   }
+  const folderActiveUse = typeof activeCheck === "function" ? await activeCheck(rootName, cleanName) : null;
+  if (folderActiveUse?.blocked) {
+    throw assetDeletionError(folderActiveUse.code || "ASSET_IN_USE", "Media folder is in use by an active job.", 409);
+  }
   for (const file of supportedFiles) {
     const activeUse = typeof activeCheck === "function" ? await activeCheck(rootName, file.relativeName) : null;
     if (activeUse?.blocked) throw assetDeletionError(activeUse.code || "ASSET_IN_USE", "Media asset is in use by an active job.", 409);
   }
+  for (const file of internalFiles) {
+    const stat = await fs.lstat(file.fullPath).catch((error) => {
+      if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Sequence folder marker was not found.", 404);
+      throw error;
+    });
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw assetDeletionError("ASSET_NOT_REGULAR", "Sequence folder marker must be a regular file.", 409);
+    }
+    await validateSequenceFolderManifest(file.fullPath, cleanName);
+  }
 
   for (const file of supportedFiles) await deleteMediaAsset(rootName, file.relativeName, { rootPath, activeCheck });
+  for (const file of internalFiles) await fs.unlink(file.fullPath).catch((error) => {
+    if (error?.code === "ENOENT") throw assetDeletionError("ASSET_NOT_FOUND", "Sequence folder marker was not found.", 404);
+    throw error;
+  });
   const directories = [...tree.folders].sort((left, right) => right.relativeName.split("/").length - left.relativeName.split("/").length);
   for (const folder of directories) await fs.rmdir(path.join(rootAbsolute, folder.relativeName));
   await fs.rmdir(candidate);
@@ -5774,9 +5837,10 @@ const longVideoRecoveryCoordinator = createRecoveryCoordinator({
   releaseLease: releaseSequenceLease,
   resumeRecovered: resumeRecoveredSequence,
 });
-void longVideoRecoveryCoordinator.start().catch((error) => {
-  console.error("[long-video] startup recovery failed", error?.message || error);
-});
+
+async function startLongVideoRecovery() {
+  return await longVideoRecoveryCoordinator.start();
+}
 
 const domainRouter = createBridgeDomainRouter({
   getSeedVR2Controller: () => seedvr2Controller,
@@ -6110,6 +6174,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 
 export {
   route,
+  startLongVideoRecovery,
   promptMode,
   walkMedia,
   summarizeMediaFolders,

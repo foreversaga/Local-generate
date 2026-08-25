@@ -374,6 +374,15 @@ test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the hi
   );
   assert.ok(running.progress >= 64);
   assert.match(running.stage, /KSampler.*3\/4/);
+  assert.equal(running.nativeCurrent, 3);
+  assert.equal(running.nativeMaximum, 4);
+  assert.equal(running.comfyNode, "KSampler");
+  assert.equal(running.progressSource, "native");
+  const publicRunning = await value.controller.getJob(queued.id);
+  assert.equal(publicRunning.nativeCurrent, 3);
+  assert.equal(publicRunning.nativeMaximum, 4);
+  assert.equal(publicRunning.comfyNode, "KSampler");
+  assert.equal(publicRunning.progressSource, "native");
   assert.equal(FakeComfyWebSocket.instances[0].url, "ws://127.0.0.1:8188/ws?clientId=h3-seedvr2");
 
   FakeComfyWebSocket.instances[0].emit("message", JSON.stringify({ type: "execution_success", data: { prompt_id: running.promptId } }));
@@ -381,6 +390,21 @@ test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the hi
   const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
   assert.equal(completed.output.name, "seedvr2-result.mp4");
   assert.equal(FakeComfyWebSocket.instances[0].closed, true);
+});
+
+test("SeedVR2 job store backfills structured tile progress from a legacy stage", () => {
+  const job = canonicalSeedVR2Job({
+    id: "legacy-tile-progress",
+    sourceName: "source.mp4",
+    sourceRoot: "input",
+    status: "running",
+    progress: 66,
+    stage: "ComfyUI / SeedVR2TilingUpscaler (45/100)",
+  });
+  assert.equal(job.nativeCurrent, 45);
+  assert.equal(job.nativeMaximum, 100);
+  assert.equal(job.comfyNode, "SeedVR2TilingUpscaler");
+  assert.equal(job.progressSource, "native");
 });
 
 test("SeedVR2 turns a matching WebSocket execution_error into a failed job without waiting for poll timeout", async (t) => {
