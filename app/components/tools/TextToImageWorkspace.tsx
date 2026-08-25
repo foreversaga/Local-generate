@@ -553,10 +553,10 @@ export function TextToImageWorkspace() {
             <div className={styles.quickChoices}><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色短襪"); setClothingOptionId("H01"); }}>H01 · {t("text2img.random.whiteAnkleSocks")}</button><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色中筒襪"); setClothingOptionId("H04"); }}>H04 · {t("text2img.random.whiteCrewSocks")}</button></div>
             {randomMode === "batch" && <p className={styles.applyAll}>{t("text2img.random.applyAll")}</p>}
             <button type="button" className={styles.secondaryButton} disabled={recipeBusy} onClick={() => void randomizeRecipes()}>{recipeBusy ? t("text2img.random.randomizing") : recipes.length ? t("text2img.random.rerollLocked") : t("text2img.random.action")}</button>
-            {!!recipes.length && <div className={styles.recipeGrid}>{recipes.map((recipe) => <article key={recipe.id} className={styles.recipeCard}><header><strong>#{recipe.batchIndex + 1}</strong><span>{t("text2img.random.score").replace("{score}", String(recipe.validation.score))}</span></header><p className={styles.recipeBrief}>{recipe.brief}</p><small>{recipe.dimensions.aspectRatio} · {recipe.dimensions.width} × {recipe.dimensions.height} · Seed {recipe.recipeSeed}</small>{recipe.validation.warnings?.map((warning) => <p className={styles.recipeWarning} key={warning}>⚠ {warning}</p>)}{!!recipe.validation.checks?.length && <details className={styles.recipeChecks}><summary>{t("text2img.random.rules")}</summary><ul>{recipe.validation.checks.map((check) => <li key={check.id}>{check.passed ? "✓" : "✕"} {check.detail}</li>)}</ul></details>}</article>)}</div>}
+            {!!recipes.length && <div className={styles.recipeGrid}>{recipes.map((recipe) => <details key={recipe.id} className={styles.recipeCard}><summary><strong>#{recipe.batchIndex + 1}</strong><span>{t("text2img.random.score").replace("{score}", String(recipe.validation.score))}</span></summary><div className={styles.recipeCardBody}><p className={styles.recipeBrief}>{recipe.brief}</p><small>{recipe.dimensions.aspectRatio} · {recipe.dimensions.width} × {recipe.dimensions.height} · Seed {recipe.recipeSeed}</small>{recipe.validation.warnings?.map((warning) => <p className={styles.recipeWarning} key={warning}>⚠ {warning}</p>)}{!!recipe.validation.checks?.length && <details className={styles.recipeChecks}><summary>{t("text2img.random.rules")}</summary><ul>{recipe.validation.checks.map((check) => <li key={check.id}>{check.passed ? "✓" : "✕"} {check.detail}</li>)}</ul></details>}</div></details>)}</div>}
           </section>}
 
-          <div className={styles.fieldWide}>
+          {(inputMode !== "random" || randomMode !== "batch") && <div className={styles.fieldWide}>
             <div className={styles.fieldLabelRow}>
               <label htmlFor="text2img-description">{t("text2img.description.label")}</label>
               <button
@@ -583,7 +583,7 @@ export function TextToImageWorkspace() {
               readOnly={inputMode === "random"}
             />
             <small>{t("text2img.description.help")} · {description.length}/2000</small>
-          </div>
+          </div>}
 
           <div className={`${styles.assistantBar} ${promptAssistantReady ? styles.assistantReady : styles.assistantBlocked}`}>
             <div>

@@ -14,7 +14,12 @@
 .secondaryButton { justify-self: start; }
 .recipeGrid, .outputGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .recipeCard, .outputItem { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
-.recipeCard header, .outputItem header { display: flex; justify-content: space-between; gap: 8px; }
+.recipeCard > summary, .outputItem header { display: flex; justify-content: space-between; gap: 8px; }
+.recipeCard > summary { align-items: center; cursor: pointer; list-style: none; }
+.recipeCard > summary::-webkit-details-marker { display: none; }
+.recipeCard > summary::after { content: "+"; color: var(--muted); font-size: 16px; line-height: 1; }
+.recipeCard[open] > summary::after { content: "−"; }
+.recipeCardBody { display: grid; gap: 9px; padding-top: 3px; }
 .recipeCard p, .outputItem p { margin: 0; overflow-wrap: anywhere; }
 .recipeBrief, .outputItem details p { white-space: pre-wrap; }
 .recipeWarning { color: var(--warning, #d79a36); }

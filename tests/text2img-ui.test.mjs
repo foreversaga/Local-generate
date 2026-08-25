@@ -44,6 +44,9 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(workspace, /const generated = await generateText2ImgPrompt[\s\S]*queued\[index\] = await submitText2Img/);
   assert.doesNotMatch(workspace, /for \(const recipe of recipes\) generatedPrompts\.push\(await/);
   assert.match(workspace, /className=\{styles\.recipeBrief\}/);
+  assert.match(workspace, /recipes\.map\(\(recipe\) => <details key=\{recipe\.id\} className=\{styles\.recipeCard\}>/);
+  assert.match(workspace, /<summary><strong>#\{recipe\.batchIndex \+ 1\}<\/strong><span>/);
+  assert.match(workspace, /className=\{styles\.recipeCardBody\}/);
   assert.match(workspace, /singlePromptDraftReady/);
   assert.match(workspace, /randomMode === "single"/);
   assert.match(workspace, /setSinglePromptDraftReady\(true\);[\s\S]*return;/);
@@ -60,6 +63,7 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(client, /\/api\/text2img\/person-photo\/randomize/);
   assert.match(client, /recipeSeed/);
   assert.match(workspace, /text2img\.description\.label/);
+  assert.match(workspace, /\(inputMode !== "random" \|\| randomMode !== "batch"\) && <div className=\{styles\.fieldWide\}>/);
   assert.match(workspace, /copyDescription/);
   assert.match(workspace, /navigator\.clipboard\?\.writeText/);
   assert.match(workspace, /navigator\.clipboard\.writeText\(description\)/);
