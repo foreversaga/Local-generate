@@ -46,7 +46,11 @@ export function adaptJob(raw, source = "video") {
   const segments = source === "long" ? adaptLongSegments(raw?.segments, events) : Array.isArray(raw?.segments) ? raw.segments : [];
   const completedAt = jobCompletionAt(raw, source, status, events);
   const elapsedMs = jobElapsedMilliseconds(raw, source, status, events, completedAt);
-  const createdAt = raw?.createdAt || raw?.startedAt || raw?.updatedAt || raw?.finishedAt || raw?.completedAt || "";
+  const createdAt = raw?.createdAt || raw?.queuedAt || raw?.startedAt || raw?.updatedAt || raw?.finishedAt || raw?.completedAt || "";
+  const terminal = ["complete", "partial", "error", "cancelled"].includes(status);
+  const updatedAt = terminal
+    ? firstNonEmptyText(raw?.completedAt, raw?.finishedAt, raw?.timestamps?.completedAt, completedAt, raw?.updatedAt, createdAt)
+    : firstNonEmptyText(raw?.updatedAt, raw?.startedAt, createdAt);
   const batchProgress = Number.isFinite(Number(raw?.batchCount)) && Number(raw.batchCount) > 0
     ? ((Number(raw?.completedCount) || 0) + (Number(raw?.failedCount) || 0)) / Number(raw.batchCount) * 100
     : null;
@@ -97,7 +101,7 @@ export function adaptJob(raw, source = "video") {
     segments,
     comfyQueueRemaining: numericOrNull(raw?.comfyQueueRemaining),
     createdAt,
-    updatedAt: raw?.updatedAt || raw?.finishedAt || raw?.completedAt || completedAt || createdAt,
+    updatedAt,
     completedAt,
     events,
     elapsedMs,

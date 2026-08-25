@@ -15,6 +15,7 @@
 .recipeCard, .outputItem { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
 .recipeCard header, .outputItem header { display: flex; justify-content: space-between; gap: 8px; }
 .recipeCard p, .outputItem p { margin: 0; overflow-wrap: anywhere; }
+.recipeBrief, .outputItem details p { white-space: pre-wrap; }
 .recipeWarning { color: var(--warning, #d79a36); }
 .recipeChecks summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 .recipeChecks ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; }
@@ -201,6 +202,7 @@
 
 .field textarea,
 .field input,
+.field select,
 .fieldWide textarea,
 .seedControl input {
   width: 100%;
@@ -222,6 +224,7 @@
 
 .field textarea:focus,
 .field input:focus,
+.field select:focus,
 .fieldWide textarea:focus,
 .seedControl input:focus {
   border-color: rgba(200, 241, 105, 0.55);
@@ -267,6 +270,7 @@
 
 .assistantReady > span { background: rgba(200, 241, 105, 0.1); color: var(--lime); }
 .assistantBlocked > span { background: rgba(255, 124, 104, 0.1); color: #ff9b8a; }
+.promptModelField { margin-top: 10px; }
 
 .assistantSetting {
   display: flex;
@@ -342,6 +346,8 @@
 }
 
 .promptPreview small { color: var(--muted-2); font-size: 9px; }
+
+.promptEditor { margin-top: 12px; }
 
 .presetFieldset {
   margin: 20px 0 0;
@@ -717,6 +723,9 @@
 
 .repeatButton:disabled { cursor: not-allowed; opacity: 0.5; }
 .secondaryButton { border: 1px solid var(--line); background: var(--bg-elevated); color: var(--text); }
+.deleteButton { color: var(--danger); cursor: pointer; font-family: inherit; }
+.deleteButton:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.deleteButton:disabled { cursor: not-allowed; opacity: 0.5; }
 .textLink { color: var(--lime); }
 
 @media (max-width: 1080px) {

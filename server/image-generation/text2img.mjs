@@ -87,19 +87,26 @@ const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "cancel
 const TEXT2IMG_MAX_PROMPT_LENGTH = 4_000;
 const TEXT2IMG_MAX_DESCRIPTION_LENGTH = 2_000;
 
-export const NATURE_CAMERA_PROFILE = "nature-camera-v1";
+export const NATURE_CAMERA_PROFILE = "nature-camera-v2-anatomy";
+export const NATURE_CAMERA_ANATOMY_CLAUSE = "Anatomical integrity: one coherent adult body with a normal two arms and two legs, allowing limbs to be naturally occluded or outside the crop instead of duplicated; physically connected shoulders, hips, elbows, knees, wrists, and ankles; each visible hand has five distinct fingers with plausible joints, grip, overlap, and perspective; each visible bare foot has five distinct toes with correct orientation, weight-bearing contact, overlap, and perspective.";
 export const NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION = [
   "You turn a short user description into one production-ready photographic prompt for a local image-generation model.",
   "Preserve the requested subject, action, location, mood, medium, aspect-ratio intent, and any explicit camera or lens choice. Match the user's language and do not invent a narrower nationality, age, or appearance than supplied.",
   "When people appear, describe them as adults and make the frame feel captured by a real person at a particular moment. Default to an everyday handheld smartphone candid when the user gives no camera direction; use a coherent 35–50mm documentary view when the scene calls for a cleaner still-camera photograph. Use short telephoto only when the physical shooting distance makes sense, and polished editorial lighting only when explicitly requested.",
   "Build a physically coherent capture story with one plausible viewpoint, one lens behavior, and available window, street, overcast, or practical light. Prefer an in-between action, restrained expression or off-camera gaze, mildly imperfect crop or unequal negative space, and environmental context over a centered commercial pose.",
-  "For human realism, include restrained pores, fine facial hair, mild tonal variation, flyaway hair, small natural asymmetries, realistic eye proportions and eyelids, and anatomically correct hands, fingers, joints, overlaps, grip, and contact with props. Keep attractive people attractive without plastic skin, waxy gloss, beauty-filter smoothness, enlarged eyes, perfect bilateral symmetry, or doll-like faces.",
+  "For human realism, include restrained pores, fine facial hair, mild tonal variation, flyaway hair, small natural asymmetries, realistic eye proportions and eyelids, one coherent adult body with the normal number of arms and legs, physically connected joints, and anatomically correct hands, five fingers per visible hand, feet, five toes per visible bare foot, overlaps, grip, weight-bearing contact, and interaction with props. Allow limbs or digits to be naturally occluded or outside the crop instead of inventing, duplicating, fusing, or twisting them. Keep attractive people attractive without plastic skin, waxy gloss, beauty-filter smoothness, enlarged eyes, perfect bilateral symmetry, or doll-like faces.",
   "Use at most two subtle and compatible capture artifacts such as slight hand motion, modest sensor noise, gentle focus falloff, restrained phone sharpening, or minor resolution loss. Do not stack defects or mix contradictory optics, camera distances, or lighting setups.",
 ].join(" ");
 export const NATURE_CAMERA_SYSTEM_PROMPT = [
   NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION,
-  "Return exactly one JSON object with one key named prompt. The prompt must be a single non-empty string, with no Markdown, headings, explanations, negative-prompt list, or extra keys.",
+  "Return exactly one JSON object with one key named prompt. The prompt must be a single non-empty string with no Markdown, explanations, negative-prompt list, or extra keys.",
+  "Structure the prompt into these labeled blocks in this order: 【照片目標】, 【人物】, 【服裝】, 【動作與表情】, 【構圖與鏡位】, 【場景】, 【光線】, and 【拍攝質感】. Put the heading on its own line, its content on the next line, and one blank line between blocks. Keep each fact in only the most relevant block instead of repeating or concatenating all categories into one paragraph.",
 ].join(" ");
+
+const NATURE_CAMERA_PROMPT_BLOCKS = Object.freeze([
+  "【照片目標】", "【人物】", "【服裝】", "【動作與表情】",
+  "【構圖與鏡位】", "【場景】", "【光線】", "【拍攝質感】",
+]);
 
 function recipeRequiredClothing(recipe) {
   const requirements = recipe?.hardRequirements?.clothing
@@ -129,11 +136,27 @@ function ensureRequiredClothing(prompt, recipe) {
   const required = recipeRequiredClothing(recipe).filter((item) => !prompt.toLocaleLowerCase().includes(item.toLocaleLowerCase()));
   if (!required.length) return prompt;
   const clause = `Mandatory visible clothing: ${required.join(", ")}.`;
-  const result = `${prompt.replace(/[\s.]+$/, "")}. ${clause}`;
+  const result = `${prompt.trimEnd()}\n\n【指定服裝】\n${clause}`;
   if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
     throw makeError(`Prompt with mandatory clothing exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
   }
   return result;
+}
+
+function ensureAnatomicalIntegrity(prompt) {
+  if (prompt.includes(NATURE_CAMERA_ANATOMY_CLAUSE)) return prompt;
+  const result = `${prompt.trimEnd()}\n\n【肢體完整性】\n${NATURE_CAMERA_ANATOMY_CLAUSE}`;
+  if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
+    throw makeError(`Prompt with anatomical integrity clause exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
+  }
+  return result;
+}
+
+function ensurePromptBlocks(prompt, recipe) {
+  const normalized = String(prompt || "").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (NATURE_CAMERA_PROMPT_BLOCKS.every((heading) => normalized.includes(heading))) return normalized;
+  if (recipe?.brief) return `${recipe.brief.trim()}\n\n【模型整合】\n${normalized}`;
+  return `【整體畫面】\n${normalized}`;
 }
 
 function normalizeRecipe(recipe) {
@@ -562,7 +585,10 @@ export function createText2ImgController({
         const status = await promptAssistant.status();
         const models = Array.isArray(status?.models) ? status.models.map(String).filter(Boolean) : [];
         const model = models.includes(status?.model) ? status.model : models[0] || "";
-        return { ready: Boolean(status?.online && model), online: Boolean(status?.online), provider: promptAssistant.provider || "openai", models, model, profile: NATURE_CAMERA_PROFILE, ...((status?.online && model) ? {} : { reason: "PROMPT_MODEL_UNAVAILABLE" }) };
+        const modelOptions = Array.isArray(status?.modelOptions)
+          ? status.modelOptions.filter((option) => option && models.includes(String(option.value || "")))
+          : [];
+        return { ready: Boolean(status?.online && model), online: Boolean(status?.online), provider: promptAssistant.provider || "openai", models, model, modelOptions, profile: NATURE_CAMERA_PROFILE, ...((status?.online && model) ? {} : { reason: "PROMPT_MODEL_UNAVAILABLE" }) };
       } catch {
         return { ready: false, online: false, provider: promptAssistant.provider || "openai", models: [], model: "", profile: NATURE_CAMERA_PROFILE, reason: "PROMPT_MODEL_UNREACHABLE" };
       }
@@ -620,7 +646,7 @@ export function createText2ImgController({
       lease = admission ? await admission.granted : null;
       if (promptAssistant?.generate) {
         const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${assistantInput}` });
-        const prompt = ensureRequiredClothing(parseNatureCameraPromptResponse(response), recipe);
+        const prompt = ensureAnatomicalIntegrity(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(response), recipe), recipe));
         return { description, prompt, model, provider: promptAssistant.provider || "openai", profile: NATURE_CAMERA_PROFILE, unloadPromptModel: false, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
       }
       const response = await ollamaCoordinator.generate({
@@ -639,7 +665,7 @@ export function createText2ImgController({
         unloadAfter: unloadPromptModel,
       });
       const payload = response?.payload && typeof response.payload === "object" ? response.payload : {};
-      const prompt = ensureRequiredClothing(parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text), recipe);
+      const prompt = ensureAnatomicalIntegrity(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text), recipe), recipe));
       return { description, prompt, model, profile: NATURE_CAMERA_PROFILE, unloadPromptModel, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
     } finally {
       lease?.release?.();

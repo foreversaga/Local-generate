@@ -118,6 +118,26 @@ test("merged jobs sort recent first and count active states", () => {
   assert.equal(activeJobCount(jobs), 2);
 });
 
+test("terminal job history prefers its real completion time over a later recovery write", () => {
+  const failed = adaptJob({
+    id: "historical-failure",
+    status: "failed",
+    createdAt: "2026-08-19T09:00:00.000Z",
+    finishedAt: "2026-08-19T09:16:51.736Z",
+    updatedAt: "2026-08-25T14:11:33.711Z",
+  }, "video");
+  assert.equal(failed.createdAt, "2026-08-19T09:00:00.000Z");
+  assert.equal(failed.updatedAt, "2026-08-19T09:16:51.736Z");
+
+  const active = adaptJob({
+    id: "active-job",
+    status: "running",
+    createdAt: "2026-08-25T14:00:00.000Z",
+    updatedAt: "2026-08-25T14:12:00.000Z",
+  }, "video");
+  assert.equal(active.updatedAt, "2026-08-25T14:12:00.000Z");
+});
+
 test("job adapter preserves image batch summaries and treats partial as terminal", () => {
   assert.equal(normalizeJobStatus("partial"), "partial");
   const raw = {

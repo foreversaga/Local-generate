@@ -194,6 +194,7 @@ async function waitFor(predicate, timeoutMs = 2000) {
 }
 
 test("Jobs API reads durable history and recovery never exposes a ghost running job", async () => {
+  const failedUpdatedAt = (await store.read("sv-failed-api")).updatedAt;
   const response = await invoke(getRequest("/api/jobs"));
   assert.equal(response.status, 200);
   const jobs = response.body.jobs;
@@ -206,6 +207,7 @@ test("Jobs API reads durable history and recovery never exposes a ghost running 
   assert.equal(interrupted.recovery.reason, "bridge_restart");
   assert.equal((await invoke(getRequest("/api/jobs/sv-completed-api"))).body.output.name, "done.mp4");
   assert.equal((await invoke(getRequest("/api/jobs/sv-running-api"))).body.status, "interrupted");
+  assert.equal((await store.read("sv-failed-api")).updatedAt, failedUpdatedAt, "reading an already canonical terminal record must not rewrite its history time");
 });
 
 test("a recovered running Comfy prompt can be cancelled after a bridge restart", async () => {

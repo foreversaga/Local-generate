@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createText2ImgController, normalizeText2ImgInput } from "../server/image-generation/text2img.mjs";
+import { NATURE_CAMERA_ANATOMY_CLAUSE, createText2ImgController, normalizeText2ImgInput } from "../server/image-generation/text2img.mjs";
 import { createText2ImgStore } from "../server/image-generation/text2img-store.mjs";
 
 async function invoke(controller, method, url, body) {
@@ -61,7 +61,17 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
       storeRoot: path.join(root, "jobs"),
       promptAssistant: {
         provider: "test",
-        async status() { return { online: true, model: "photo-model", models: ["photo-model"] }; },
+        async status() {
+          return {
+            online: true,
+            model: "photo-model",
+            models: ["photo-model", "ornith:ornith-sglang"],
+            modelOptions: [
+              { value: "photo-model", model: "photo-model", provider: "qwen", location: "remote" },
+              { value: "ornith:ornith-sglang", model: "ornith-sglang", provider: "ornith", location: "local" },
+            ],
+          };
+        },
         async generate(input) { modelCalls.push(input); return JSON.stringify({ prompt: "自然窗光下的成人生活人像" }); },
       },
     });
@@ -74,10 +84,22 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
     const requiredClothing = recipe.hardRequirements[0].selectedItem.text;
     recipe.brief = "untrusted client brief";
 
-    const generated = await controller.generatePhotographicPrompt({ recipe });
+    const assistant = await controller.checkPromptAssistant();
+    assert.deepEqual(assistant.models, ["photo-model", "ornith:ornith-sglang"]);
+    assert.equal(assistant.modelOptions[1].provider, "ornith");
+    const generated = await controller.generatePhotographicPrompt({ recipe, model: "ornith:ornith-sglang" });
     assert.notEqual(generated.description, "untrusted client brief");
+    assert.equal(modelCalls[0].model, "ornith:ornith-sglang");
+    assert.equal(generated.model, "ornith:ornith-sglang");
     assert.ok(modelCalls[0].prompt.includes(requiredClothing));
-    assert.ok(generated.prompt.includes(`Mandatory visible clothing: ${requiredClothing}`));
+    for (const heading of ['照片目標', '人物', '服裝', '動作與表情', '構圖與鏡位', '場景', '光線', '拍攝質感']) {
+      assert.match(modelCalls[0].prompt, new RegExp(`【${heading}】\\n`));
+      assert.match(generated.prompt, new RegExp(`【${heading}】\\n`));
+    }
+    assert.match(generated.prompt, /【模型整合】\n/);
+    assert.ok(generated.prompt.includes(requiredClothing));
+    assert.match(generated.prompt, /【肢體完整性】\n/);
+    assert.ok(generated.prompt.endsWith(NATURE_CAMERA_ANATOMY_CLAUSE));
 
     const normalized = normalizeText2ImgInput({ prompt: generated.prompt, seed: 42, recipe });
     assert.equal(normalized.prompt, generated.prompt);

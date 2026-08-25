@@ -23,6 +23,12 @@ export type Text2ImgHealth = {
     online: boolean;
     models: string[];
     model: string;
+    modelOptions?: Array<{
+      value: string;
+      model: string;
+      provider: string;
+      location: "local" | "remote";
+    }>;
     profile: string;
     provider?: string;
     reason?: string;
@@ -136,7 +142,7 @@ export type PersonPhotoRecipe = {
   dimensions: { aspectRatio: string; width: number; height: number };
   validation: PersonPhotoValidation;
 };
-export type ClothingRequirement = { category: string; value: string; optionId?: string; applyToAll: true };
+export type ClothingRequirement = { category: string; value?: string; optionId?: string; applyToAll: true };
 export type PersonPhotoLibrary = {
   id: string; version: string; sourceHash: string; rulesVersion: string;
   clothingOptions: Record<string, Array<{ id: string; label: string }>>;
@@ -213,11 +219,11 @@ export async function submitText2Img(input: Text2ImgSubmitInput) {
   return payload.job;
 }
 
-export async function generateText2ImgPrompt(description: string, { unloadPromptModel = false, recipe }: { unloadPromptModel?: boolean; recipe?: PersonPhotoRecipe } = {}) {
+export async function generateText2ImgPrompt(description: string, { model = "", unloadPromptModel = false, recipe }: { model?: string; unloadPromptModel?: boolean; recipe?: PersonPhotoRecipe } = {}) {
   const response = await fetch(`${BRIDGE_URL}/api/text2img/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ description, recipe, unloadPromptModel }),
+    body: JSON.stringify({ description, model, recipe, unloadPromptModel }),
   });
   const payload = await readPayload(response);
   if (!response.ok || !payload.prompt || !payload.model || !payload.profile) {

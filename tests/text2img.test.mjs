@@ -10,6 +10,7 @@ import {
   FLUX2_KLEIN_9B_TEXT_ENCODER,
   FLUX2_KLEIN_9B_VAE,
   FLUX2_KLEIN_9B_LORAS,
+  NATURE_CAMERA_ANATOMY_CLAUSE,
   NATURE_CAMERA_PROFILE,
   NATURE_CAMERA_SYSTEM_PROMPT,
   TEXT2IMG_REQUIRED_NODES,
@@ -118,8 +119,14 @@ test("builds a bounded nature-camera description contract for realistic adult ph
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /adults/);
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /35–50mm/);
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /anatomically correct hands/);
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /normal number of arms and legs/);
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /five fingers per visible hand/);
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /five toes per visible bare foot/);
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /plastic skin/);
-  assert.equal(NATURE_CAMERA_PROFILE, "nature-camera-v1");
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /【人物】/);
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /【服裝】/);
+  assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /one blank line between blocks/);
+  assert.equal(NATURE_CAMERA_PROFILE, "nature-camera-v2-anatomy");
   assert.equal(parseNatureCameraPromptResponse('```json\n{"prompt":"自然窗光下的成人紀實人像"}\n```'), "自然窗光下的成人紀實人像");
   assert.throws(() => parseNatureCameraPromptResponse('{"prompt":""}'), { code: "TEXT2IMG_OLLAMA_EMPTY_PROMPT" });
 });
@@ -156,6 +163,9 @@ test("uses an installed Ollama model to turn a short description into a photogra
     assert.equal(result.profile, NATURE_CAMERA_PROFILE);
     assert.equal(result.unloadPromptModel, false);
     assert.match(result.prompt, /手機主鏡頭/);
+    assert.match(result.prompt, /^【整體畫面】\n/);
+    assert.match(result.prompt, /\n\n【肢體完整性】\n/);
+    assert.ok(result.prompt.endsWith(NATURE_CAMERA_ANATOMY_CLAUSE));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].model, installedModel);
     assert.equal(calls[0].body.system, NATURE_CAMERA_SYSTEM_PROMPT);

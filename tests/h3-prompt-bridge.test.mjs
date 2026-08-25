@@ -24,6 +24,8 @@ const {
   resolveGenerationModelProfile,
   elapsedMilliseconds,
   markComfyExecutionStarted,
+  mergeText2ImgPromptAssistantStatuses,
+  requestOrnithPrompt,
   requestSglangPrompt,
 } = await import("../local-bridge.mjs");
 
@@ -264,6 +266,45 @@ test("vLLM prompt provider calls OpenAI chat completions with thinking disabled"
   assert.equal(body.messages[0].content, "Return an H3 prompt.");
   assert.equal(body.messages[1].content, "User idea:\nA subject enters");
   assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("local Ornith prompt provider uses its own OpenAI-compatible endpoint", async () => {
+  const calls = [];
+  const result = await requestOrnithPrompt({
+    model: "ornith-sglang",
+    system: "Return a photographic prompt as JSON.",
+    prompt: "User image description:\nAn adult portrait",
+    responseFormat: { type: "json_object" },
+    maxTokens: 1024,
+    fetcher: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"prompt":"natural portrait"}' } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  assert.equal(result, '{"prompt":"natural portrait"}');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8000/v1/chat/completions");
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.model, "ornith-sglang");
+  assert.deepEqual(body.response_format, { type: "json_object" });
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("text-to-image prompt health keeps remote Qwen default and adds local Ornith", () => {
+  const status = mergeText2ImgPromptAssistantStatuses(
+    { online: true, model: "qwen3.8", models: ["qwen3.8"] },
+    { online: true, model: "ornith-sglang", models: ["ornith-sglang"] },
+  );
+  assert.equal(status.online, true);
+  assert.equal(status.model, "qwen3.8");
+  assert.deepEqual(status.models, ["qwen3.8", "ornith:ornith-sglang"]);
+  assert.deepEqual(status.modelOptions, [
+    { value: "qwen3.8", model: "qwen3.8", provider: "qwen", location: "remote" },
+    { value: "ornith:ornith-sglang", model: "ornith-sglang", provider: "ornith", location: "local" },
+  ]);
 });
 
 test("vLLM provider is routed independently from Ollama", async () => {

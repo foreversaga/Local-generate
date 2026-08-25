@@ -10,6 +10,7 @@
     "dev": "vinext dev",
     "restart:web": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1",
     "restart:web:dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\restart-web.ps1 -Mode development",
+    "restart:web:linux": "bash ./scripts/restart-web-linux.sh",
     "build": "vinext build",
     "start": "node --env-file-if-exists=.env.local server/production-web.mjs",
     "test": "node --import ./tests/test-isolation.mjs --test --test-concurrency=1 tests/*.test.mjs",

@@ -126,6 +126,14 @@ npm.cmd run restart:web
 
 The script identifies the existing H3 Studio process on port `8787`, stops it, and starts the existing Vinext production build through `server/production-web.mjs`, which keeps `/app` and the same-origin local API on the public `8787` process. It then waits for `/app/api/health` to return `200`. It fails clearly when the production build is missing instead of falling back to development mode. ComfyUI on `8188` and Ollama on `11434` are reused and do not need to restart together. Startup records are written to the project `logs` directory. Use `npm.cmd run restart:web:dev` only while actively editing the application.
 
+On Linux, restart only the user-managed production Web/API service with:
+
+```bash
+npm run restart:web:linux
+```
+
+The Linux script checks the Web/API activity counters and the ComfyUI queue before restarting `h3-studio-web.service`, and refuses to interrupt active work. It creates the user service when its transient unit is not loaded. After restart it verifies the service MainPID, port `8787`, `/app/api/health`, the rendered `/app` page, and every production CSS/JavaScript asset referenced by that page. Use `npm run restart:web:linux -- --force` only after manually confirming that interrupting reported or unverifiable work is acceptable. It never restarts ComfyUI or Ollama.
+
 ## Local services
 
 ```text

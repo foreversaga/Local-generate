@@ -17,10 +17,27 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
   assert.equal(summary.version, summary.libraryVersion);
   assert.equal(summary.sourceHash, summary.sourceSha256);
   assert.equal(summary.clothingOptions.outfit.length, 520);
-  assert.deepEqual(Object.keys(summary.clothingOptions).sort(), ['bottom', 'custom', 'hosiery', 'outerwear', 'outfit', 'shoes', 'top']);
+  assert.equal(summary.clothingOptions.swimwear.length, 50);
+  assert.equal(summary.swimwearCount, 50);
+  assert.equal(summary.clothingOptions.miniskirt.length, 20);
+  assert.equal(summary.clothingOptions.bra.length, 50);
+  assert.equal(summary.clothingOptions.panties.length, 50);
+  assert.equal(summary.miniskirtCount, 20);
+  assert.equal(summary.braCount, 50);
+  assert.equal(summary.pantyCount, 50);
+  assert.deepEqual(Object.keys(summary.clothingOptions).sort(), ['bottom', 'bra', 'custom', 'hosiery', 'miniskirt', 'outerwear', 'outfit', 'panties', 'shoes', 'swimwear', 'top']);
   assert.match(summary.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(library.clothing.outfits[0].id, 'C001');
   assert.equal(library.clothing.outfits.at(-1).id, 'C520');
+  assert.deepEqual(library.clothing.swimwear.map(({ id }) => id), Array.from({ length: 50 }, (_, index) => `SW${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.clothing.miniskirts.map(({ id }) => id), Array.from({ length: 20 }, (_, index) => `MS${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.clothing.bras.map(({ id }) => id), Array.from({ length: 50 }, (_, index) => `BR${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.clothing.panties.map(({ id }) => id), Array.from({ length: 50 }, (_, index) => `PT${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.categories.identity.年齡層.map(({ text }) => text), [
+    '18–20 歲成年女性', '20–22 歲成年女性', '23–25 歲成年女性',
+    '26–29 歲成年女性', '20 歲出頭年輕成年女性', '20 多歲年輕成年女性',
+  ]);
+  assert.deepEqual(library.categories.identity.人物數量.map(({ text }) => text), ['單人']);
   assert.deepEqual(summary.hosiery.filter(({ id }) => ['H01', 'H04'].includes(id)).map(({ id }) => id), ['H01', 'H04']);
 });
 
@@ -42,6 +59,39 @@ test('single and batch generation use the same deterministic seed stream', async
   assert.equal(single.mode, 'single');
   assert.equal(single.recipes[0].recipeSeed, first[0].recipeSeed);
   assert.equal(single.recipes[0].selections.outfit.id, first[0].selections.outfit.id);
+});
+
+test('recipe briefs keep every photographic category in a separate labeled block', async () => {
+  const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: 'structured-brief', count: 1 });
+  const headings = ['照片目標', '人物', '服裝', '動作與表情', '構圖與鏡位', '場景', '光線', '拍攝質感'];
+  assert.deepEqual(recipe.brief.match(/【[^\n]+】/g), headings.map((heading) => `【${heading}】`));
+  assert.equal(recipe.brief.split('\n\n').length, headings.length);
+  for (const heading of headings) assert.match(recipe.brief, new RegExp(`【${heading}】\\n[^\\n]+`));
+});
+
+test('a clothing category without a selected style deterministically chooses a random option from that category', async () => {
+  const library = await loadPersonPhotoLibrary();
+  const pools = {
+    outfit: library.clothing.outfits,
+    top: library.clothing.tops,
+    bottom: library.clothing.bottoms,
+    hosiery: library.clothing.hosiery,
+    shoes: library.clothing.shoes,
+    outerwear: library.clothing.outerwear,
+    swimwear: library.clothing.swimwear,
+    miniskirt: library.clothing.miniskirts,
+    bra: library.clothing.bras,
+    panties: library.clothing.panties,
+  };
+  for (const [category, pool] of Object.entries(pools)) {
+    const input = { seed: `category-only:${category}`, clothingRequirements: [{ category, applyToAll: true }] };
+    const first = (await randomizePersonPhotoRecipes(input)).recipes[0];
+    const second = (await randomizePersonPhotoRecipes(input)).recipes[0];
+    const selected = first.hardRequirements[0].selectedItem;
+    assert.ok(pool.some((item) => item.id === selected.id && item.text === selected.text), `${category} must select from its own pool`);
+    assert.deepEqual(first, second);
+    assert.equal(first.validation.passed, true);
+  }
 });
 
 test('generic white socks resolve only to H01/H04 and force visible compatible styling', async () => {
@@ -74,6 +124,125 @@ test('specific hosiery option and locks are retained', async () => {
   assert.equal(buildPersonPhotoRecipeBrief(recipe), recipe.brief);
 });
 
+test('all 50 selectable swimwear styles produce coherent recipes', async () => {
+  const library = await loadPersonPhotoLibrary();
+  for (const option of library.clothing.swimwear) {
+    const { recipes: [recipe] } = await randomizePersonPhotoRecipes({
+      seed: option.id,
+      clothingRequirements: [{ category: 'swimwear', value: option.text, optionId: option.id, applyToAll: true }],
+    });
+    assert.equal(recipe.selections.swimwear.id, option.id);
+    assert.equal(recipe.selections.outfit.id, option.id);
+    assert.ok(recipe.selections.hosiery.id);
+    assert.ok(recipe.selections.outfit.shoe);
+    assert.equal(recipe.selections.outerwear.id, 'O00');
+    assert.match(recipe.brief, new RegExp(option.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(recipe.brief, new RegExp(recipe.selections.hosiery.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(recipe.brief, new RegExp(recipe.selections.outfit.shoe.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(recipe.validation.passed, true);
+    assert.equal(recipe.hardRequirements[0].selectedItem.id, option.id);
+  }
+});
+
+test('swimwear permits any scene, hosiery, shoes and outerwear but rejects upper or lower clothing', async () => {
+  const clothingRequirements = [
+    { category: 'swimwear', optionId: 'SW01', applyToAll: true },
+    { category: 'hosiery', optionId: 'H01', applyToAll: true },
+    { category: 'shoes', optionId: 'S11', applyToAll: true },
+    { category: 'outerwear', optionId: 'O01', applyToAll: true },
+  ];
+  const { recipes: [recipe] } = await randomizePersonPhotoRecipes({
+    seed: 20260825,
+    locks: { photoType: 'imageGoal.照片類型.001', scene: 'scene.商業室內.001' },
+    clothingRequirements,
+  });
+  assert.equal(recipe.selections.scene.id, 'scene.商業室內.001');
+  assert.equal(recipe.selections.hosiery.id, 'H01');
+  assert.equal(recipe.selections.outfit.shoe, '黑色踝靴');
+  assert.equal(recipe.selections.outerwear.id, 'O01');
+  assert.equal(recipe.validation.passed, true);
+  assert.match(recipe.brief, /咖啡廳/);
+  assert.match(recipe.brief, /白色短襪/);
+  assert.match(recipe.brief, /黑色踝靴/);
+  assert.match(recipe.brief, /淺藍牛仔外套/);
+  assert.deepEqual(recipe.hardRequirements.map((item) => item.selectedItem.id), ['SW01', 'H01', 'S11', 'O01']);
+  assert.equal(recipe.validation.checks.some((check) => ['swimwear-scene-compatible', 'swimwear-no-hosiery', 'swimwear-no-outerwear'].includes(check.id)), false);
+
+  await assert.rejects(() => randomizePersonPhotoRecipes({ clothingRequirements: [
+    { category: 'swimwear', optionId: 'SW01', applyToAll: true },
+    { category: 'top', optionId: 'T01', applyToAll: true },
+  ] }), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  await assert.rejects(() => randomizePersonPhotoRecipes({ clothingRequirements: [
+    { category: 'swimwear', optionId: 'SW01', applyToAll: true },
+    { category: 'bottom', optionId: 'B01', applyToAll: true },
+  ] }), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  const invalid = structuredClone(recipe);
+  invalid.selections.outfit.top = '一般白色上衣';
+  const report = validatePersonPhotoRecipe(invalid);
+  assert.equal(report.passed, false);
+  assert.equal(report.checks.find((check) => check.id === 'swimwear-no-upper-lower-clothing')?.passed, false);
+});
+
+test('all miniskirt styles are selectable and compose a complete outfit', async () => {
+  const library = await loadPersonPhotoLibrary();
+  for (const option of library.clothing.miniskirts) {
+    const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: option.id, clothingRequirements: [{ category: 'miniskirt', optionId: option.id, applyToAll: true }] });
+    assert.equal(recipe.selections.miniskirt.id, option.id);
+    assert.equal(recipe.selections.outfit.id, option.id);
+    assert.equal(recipe.selections.outfit.bottom, option.text);
+    assert.ok(recipe.selections.outfit.top);
+    assert.ok(recipe.selections.outfit.shoe);
+    assert.match(recipe.brief, new RegExp(option.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(recipe.validation.passed, true);
+    assert.equal(recipe.hardRequirements[0].selectedItem.id, option.id);
+  }
+  const { recipes: [whiteSocks] } = await randomizePersonPhotoRecipes({ clothingRequirements: [
+    { category: 'miniskirt', optionId: 'MS01', applyToAll: true },
+    { category: 'hosiery', optionId: 'H01', applyToAll: true },
+  ] });
+  assert.match(whiteSocks.selections.outfit.bottom, /迷你裙/);
+  assert.match(whiteSocks.selections.outfit.shoe, /低筒|休閒鞋|跑鞋|樂福鞋|瑪麗珍鞋|平底鞋|低跟鞋|厚底/);
+  assert.equal(whiteSocks.validation.passed, true);
+});
+
+test('all 50 bras and 50 panties are selectable with a complete coherent set', async () => {
+  const library = await loadPersonPhotoLibrary();
+  for (const [category, options] of [['bra', library.clothing.bras], ['panties', library.clothing.panties]]) {
+    for (const option of options) {
+      const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: option.id, clothingRequirements: [{ category, optionId: option.id, applyToAll: true }] });
+      assert.equal(recipe.selections[category].id, option.id);
+      assert.match(recipe.selections.bra.id, /^BR/);
+      assert.match(recipe.selections.panties.id, /^PT/);
+      assert.equal(recipe.selections.hosiery.id, 'H00');
+      assert.equal(recipe.selections.outerwear.id, 'O00');
+      assert.match(recipe.selections.scene.text, /臥室|更衣室|攝影棚|白棚|背景棚/);
+      assert.match(recipe.selections.framing.text, /大腿以上|膝蓋以上|三分之二身|全身|鞋底|人物帶環境/);
+      assert.ok(recipe.brief.includes(recipe.selections.bra.text));
+      assert.ok(recipe.brief.includes(recipe.selections.panties.text));
+      assert.equal(recipe.validation.passed, true);
+      assert.equal(recipe.hardRequirements[0].selectedItem.id, option.id);
+    }
+  }
+});
+
+test('underwear rejects conflicting clothing and invalid external recipes', async () => {
+  await assert.rejects(() => randomizePersonPhotoRecipes({ clothingRequirements: [
+    { category: 'bra', optionId: 'BR01', applyToAll: true },
+    { category: 'hosiery', optionId: 'H01', applyToAll: true },
+  ] }), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  await assert.rejects(() => randomizePersonPhotoRecipes({ clothingRequirements: [
+    { category: 'panties', optionId: 'PT01', applyToAll: true },
+    { category: 'swimwear', optionId: 'SW01', applyToAll: true },
+  ] }), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ clothingRequirements: [{ category: 'bra', optionId: 'BR01', applyToAll: true }] });
+  const publicScene = structuredClone(recipe);
+  publicScene.selections.scene = { id: 'scene.城市場景.external', text: '市中心街道' };
+  assert.equal(validatePersonPhotoRecipe(publicScene).checks.find((check) => check.id === 'underwear-scene-compatible')?.passed, false);
+  const missingBottom = structuredClone(recipe);
+  missingBottom.selections.panties = null;
+  assert.equal(validatePersonPhotoRecipe(missingBottom).checks.find((check) => check.id === 'underwear-complete-set')?.passed, false);
+});
+
 test('rejects invalid count and incompatible locked white-sock outfit', async () => {
   await assert.rejects(() => randomizePersonPhotoRecipes({ count: 21 }), { code: 'PERSON_PHOTO_COUNT_INVALID' });
   await assert.rejects(() => randomizePersonPhotoRecipes({
@@ -94,6 +263,8 @@ test('recipes use one adult subject and semantic primary selections', async () =
   const { recipes } = await randomizePersonPhotoRecipes({ seed: 'semantic', count: 20, clothingRequirements: [{ category: 'hosiery', optionId: 'H00', applyToAll: true }] });
   for (const recipe of recipes) {
     assert.equal(recipe.selections.identity.count.text, '單人');
+    assert.match(recipe.selections.identity.age.text, /^(?:18–20|20–22|23–25|26–29) 歲成年女性$|^20(?: 歲出頭| 多歲)年輕成年女性$/);
+    assert.equal(recipe.validation.checks.find((check) => check.id === 'young-adult-woman-only')?.passed, true);
     assert.deepEqual(Object.keys(recipe.selections.hair).sort(), ['bangs', 'color', 'style', 'texture']);
     assert.match(recipe.selections.pose.id, /^pose\.(站姿|坐姿|蹲_跪姿|躺姿|動態姿勢)\./);
     assert.doesNotMatch(recipe.selections.scene.id, /背景道具/);
@@ -103,6 +274,17 @@ test('recipes use one adult subject and semantic primary selections', async () =
     assert.deepEqual(Object.keys(recipe.dimensions).sort(), ['aspectRatio', 'height', 'width']);
     assert.ok(recipe.dimensions.width >= 768 && recipe.dimensions.height >= 768);
   }
+});
+
+test('rejects older or multi-person identities from external recipes and locks', async () => {
+  const { recipes: [base] } = await randomizePersonPhotoRecipes({ seed: 'young-woman-policy' });
+  const older = structuredClone(base);
+  older.selections.identity.age = { id: 'external.age.older', text: '40–49 歲成年女性' };
+  assert.equal(validatePersonPhotoRecipe(older).checks.find((check) => check.id === 'young-adult-woman-only')?.passed, false);
+  const group = structuredClone(base);
+  group.selections.identity.count = { id: 'external.count.group', text: '雙人' };
+  assert.equal(validatePersonPhotoRecipe(group).checks.find((check) => check.id === 'single-person-only')?.passed, false);
+  await assert.rejects(() => randomizePersonPhotoRecipes({ locks: { 'identity.age': 'identity.年齡層.007' } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
 });
 
 test('all clothing requirement categories are exact and traceable', async () => {

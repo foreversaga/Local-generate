@@ -160,6 +160,10 @@ const GEMMA4_12B_OLLAMA_MODEL = "hf.co/HauhauCS/Gemma4-12B-QAT-Uncensored-Hauhau
 const SGLANG_API_BASE = String(process.env.VLLM_URL || process.env.SGLANG_URL || "http://100.82.76.80:8003/v1").replace(/\/$/, "");
 const SGLANG_API_KEY = String(process.env.VLLM_API_KEY || process.env.SGLANG_API_KEY || "").trim();
 const DEFAULT_SGLANG_MODEL = String(process.env.VLLM_PROMPT_MODEL || process.env.SGLANG_PROMPT_MODEL || "/models/Qwen3.8-27B-UD-IQ3_XXS.gguf").trim();
+const ORNITH_API_BASE = String(process.env.ORNITH_URL || "http://127.0.0.1:8000/v1").replace(/\/$/, "");
+const ORNITH_API_KEY = String(process.env.ORNITH_API_KEY || "").trim();
+const DEFAULT_ORNITH_MODEL = String(process.env.ORNITH_PROMPT_MODEL || "ornith-sglang").trim();
+const ORNITH_TEXT2IMG_MODEL_PREFIX = "ornith:";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || GEMMA4_12B_OLLAMA_MODEL;
 const defaultOllamaModel = () => GEMMA4_12B_OLLAMA_MODEL;
@@ -383,6 +387,13 @@ function sglangHeaders() {
   };
 }
 
+function ornithHeaders() {
+  return {
+    "Content-Type": "application/json",
+    ...(ORNITH_API_KEY ? { Authorization: `Bearer ${ORNITH_API_KEY}` } : {}),
+  };
+}
+
 async function sglangStatus() {
   try {
     const payload = await fetchJson(`${SGLANG_API_BASE}/models`, { headers: sglangHeaders() }, 5000);
@@ -398,6 +409,51 @@ async function sglangStatus() {
   } catch {
     return { online: false, url: SGLANG_API_BASE, model: DEFAULT_SGLANG_MODEL, models: [] };
   }
+}
+
+async function ornithStatus() {
+  try {
+    const payload = await fetchJson(`${ORNITH_API_BASE}/models`, { headers: ornithHeaders() }, 5000);
+    const models = Array.isArray(payload?.data)
+      ? payload.data.map((item) => String(item?.id || "").trim()).filter(Boolean)
+      : [];
+    return {
+      online: true,
+      url: ORNITH_API_BASE,
+      model: models.includes(DEFAULT_ORNITH_MODEL) ? DEFAULT_ORNITH_MODEL : models[0] || DEFAULT_ORNITH_MODEL,
+      models,
+    };
+  } catch {
+    return { online: false, url: ORNITH_API_BASE, model: DEFAULT_ORNITH_MODEL, models: [] };
+  }
+}
+
+export function mergeText2ImgPromptAssistantStatuses(primary, ornith) {
+  const primaryModels = primary?.online && Array.isArray(primary.models) ? primary.models : [];
+  const ornithModels = ornith?.online && Array.isArray(ornith.models) ? ornith.models : [];
+  const localOptions = ornithModels.map((model) => ({
+    value: `${ORNITH_TEXT2IMG_MODEL_PREFIX}${model}`,
+    model,
+    provider: "ornith",
+    location: "local",
+  }));
+  const modelOptions = [
+    ...primaryModels.map((model) => ({ value: model, model, provider: "qwen", location: "remote" })),
+    ...localOptions,
+  ];
+  const models = modelOptions.map((option) => option.value);
+  const preferredPrimary = primaryModels.includes(primary?.model) ? primary.model : primaryModels[0] || "";
+  return {
+    online: models.length > 0,
+    model: preferredPrimary || localOptions[0]?.value || "",
+    models,
+    modelOptions,
+  };
+}
+
+async function text2ImgPromptAssistantStatus() {
+  const [primary, ornith] = await Promise.all([sglangStatus(), ornithStatus()]);
+  return mergeText2ImgPromptAssistantStatuses(primary, ornith);
 }
 
 const CODEX_REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -1536,6 +1592,40 @@ export async function requestSglangPrompt({ model, system, prompt, visualInputs 
     if (error instanceof LongVideoError) throw error;
     if (error?.name === "TimeoutError") throw new LongVideoError("SGLANG_TIMEOUT", "vLLM 提示詞請求逾時。", 504);
     throw new LongVideoError("SGLANG_UNAVAILABLE", `無法連線 Docker vLLM：${error.message}`, 502);
+  }
+}
+
+export async function requestOrnithPrompt({ model, system, prompt, fetcher = fetch, maxTokens = 4096, responseFormat = null }) {
+  try {
+    const response = await fetcher(`${ORNITH_API_BASE}/chat/completions`, {
+      method: "POST",
+      headers: ornithHeaders(),
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: maxTokens,
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload?.error?.message || payload?.message || response.statusText;
+      throw new LongVideoError("ORNITH_REQUEST_FAILED", `Ornith 提示詞請求失敗：${message}`, 502);
+    }
+    const result = cleanPromptText(payload?.choices?.[0]?.message?.content);
+    if (!result) throw new LongVideoError("ORNITH_EMPTY_RESPONSE", "Ornith 回傳了空的提示詞。", 502);
+    return result;
+  } catch (error) {
+    if (error instanceof LongVideoError) throw error;
+    if (error?.name === "TimeoutError") throw new LongVideoError("ORNITH_TIMEOUT", "Ornith 提示詞請求逾時。", 504);
+    throw new LongVideoError("ORNITH_UNAVAILABLE", `無法連線本機 Ornith：${error.message}`, 502);
   }
 }
 
@@ -4884,11 +4974,19 @@ async function repairTerminalSingleVideoRecord(job) {
     }
   }
   if (job.status === "completed") return job;
-  return await updateRecoveredSingleVideoJob(job, {
+  const patch = {
     output: null,
     ...(job.status === "cancelled" ? { exitCode: null, error: "" } : {}),
     ...(!job.executionStartedAt ? { elapsedMs: 0, startedAt: null } : {}),
+  };
+  const repairNeeded = Object.entries(patch).some(([key, value]) => {
+    const current = job[key];
+    if (value === null) return current !== null && current !== undefined;
+    if (value === "") return Boolean(current);
+    if (value === 0) return current !== null && current !== undefined && Number(current) !== 0;
+    return current !== value;
   });
+  return repairNeeded ? await updateRecoveredSingleVideoJob(job, patch) : job;
 }
 
 async function ensureTerminalSingleVideoRecordRepaired(job) {
@@ -5694,18 +5792,23 @@ function createText2ImgControllerForRuntime() {
     preferredOllamaModel: defaultOllamaModel(),
     promptAssistant: {
       provider: "vllm",
-      status: sglangStatus,
-      generate: async ({ model, system, prompt }) => requestSglangPrompt({
-        model,
-        system: [
-          await loadNatureCameraSkillBundle(),
-          "For this text-to-image task, follow the JSON output contract below while retaining all photographic rules from the complete skill.",
-          system,
-        ].join("\n\n"),
-        prompt,
-        maxTokens: 1024,
-        responseFormat: { type: "json_object" },
-      }),
+      status: text2ImgPromptAssistantStatus,
+      generate: async ({ model, system, prompt }) => {
+        const ornithSelected = model.startsWith(ORNITH_TEXT2IMG_MODEL_PREFIX);
+        const requestModel = ornithSelected ? model.slice(ORNITH_TEXT2IMG_MODEL_PREFIX.length) : model;
+        const requestPrompt = ornithSelected ? requestOrnithPrompt : requestSglangPrompt;
+        return requestPrompt({
+          model: requestModel,
+          system: [
+            await loadNatureCameraSkillBundle(),
+            "For this text-to-image task, follow the JSON output contract below while retaining all photographic rules from the complete skill.",
+            system,
+          ].join("\n\n"),
+          prompt,
+          maxTokens: 1024,
+          responseFormat: { type: "json_object" },
+        });
+      },
     },
     gpuCoordinator: gpuResourceCoordinator,
     gpuRuntime: runtimeContext.mode,
