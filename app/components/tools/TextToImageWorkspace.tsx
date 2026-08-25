@@ -37,7 +37,7 @@ const SIZE_PRESETS_BY_MODEL: Record<string, readonly SizePreset[]> = {
   ],
 };
 
-const DEFAULT_STEPS = 4;
+const DEFAULT_STEPS = 12;
 const DEFAULT_GUIDANCE = 1;
 const MIN_GUIDANCE = 1;
 const MAX_GUIDANCE = 8;
@@ -64,16 +64,28 @@ const CLOTHING_CATEGORY_KEYS: Record<string, string> = {
   miniskirt: "text2img.random.category.miniskirt",
   bra: "text2img.random.category.bra",
   panties: "text2img.random.category.panties",
+  underwearSet: "text2img.random.category.underwearSet",
   custom: "text2img.random.category.custom",
 };
-const SELECTABLE_CLOTHING_CATEGORIES = new Set(["swimwear", "miniskirt", "bra", "panties"]);
+const SELECTABLE_CLOTHING_CATEGORIES = new Set(["swimwear", "miniskirt", "bra", "panties", "underwearSet"]);
+const CLOTHING_STYLE_GROUPS = ["classic", "sexy", "sensual"] as const;
+const CLOTHING_STYLE_GROUP_KEYS = {
+  classic: "text2img.random.styleGroup.classic",
+  sexy: "text2img.random.styleGroup.sexy",
+  sensual: "text2img.random.styleGroup.sensual",
+} as const;
+const POSE_STYLE_GROUP_KEYS = {
+  classic: "text2img.random.poseGroup.classic",
+  sexy: "text2img.random.poseGroup.sexy",
+  sensual: "text2img.random.poseGroup.sensual",
+} as const;
 const MODEL_OPTIONS = [
   {
     id: DEFAULT_MODEL_ID,
     mark: "K9",
     nameKey: "text2img.model.klein9b.name",
     noteKey: "text2img.model.klein9b.note",
-    defaultSteps: 4,
+    defaultSteps: 12,
     maxSteps: 20,
     defaultGuidance: 1,
     minDimension: 512,
@@ -150,6 +162,8 @@ export function TextToImageWorkspace() {
   const [clothingCategory, setClothingCategory] = useState("hosiery");
   const [clothingText, setClothingText] = useState("");
   const [clothingOptionId, setClothingOptionId] = useState("");
+  const [poseGroup, setPoseGroup] = useState<"" | "classic" | "sexy" | "sensual">("");
+  const [poseOptionId, setPoseOptionId] = useState("");
   const [personLibrary, setPersonLibrary] = useState<PersonPhotoLibrary | null>(null);
   const [recipes, setRecipes] = useState<PersonPhotoRecipe[]>([]);
   const [recipeBusy, setRecipeBusy] = useState(false);
@@ -181,6 +195,11 @@ export function TextToImageWorkspace() {
 
   const selectedOption = MODEL_OPTIONS.find((item) => item.id === modelId) || MODEL_OPTIONS[0];
   const clothingOptions = personLibrary?.clothingOptions[clothingCategory] || [];
+  const clothingOptionGroups = CLOTHING_STYLE_GROUPS.map((group) => ({
+    group,
+    options: clothingOptions.filter((option) => (option.group || "classic") === group),
+  })).filter(({ options }) => options.length > 0);
+  const poseOptions = (personLibrary?.poseOptions || []).filter((option) => !poseGroup || option.group === poseGroup);
   const sizePresets = SIZE_PRESETS_BY_MODEL[modelId] || SIZE_PRESETS_BY_MODEL[DEFAULT_MODEL_ID];
   const selectedHealth = health?.profiles?.[modelId];
   const selectedEncoderHealth = selectedHealth?.encoders?.[encoderId];
@@ -255,7 +274,8 @@ export function TextToImageWorkspace() {
       const count = randomMode === "single" ? 1 : normalizeIntegerField(batchCount, 10, 1, 20);
       setBatchCount(String(count));
       const seedValue = recipeSeed.trim() ? normalizeIntegerField(recipeSeed, 0, 0, 2_147_483_647) : undefined;
-      const result = await randomizePersonPhotos({ count, seed: seedValue, clothingRequirements: clothingRequirements() });
+      const locks = { ...(poseGroup ? { poseGroup } : {}), ...(poseOptionId ? { pose: poseOptionId } : {}) };
+      const result = await randomizePersonPhotos({ count, seed: seedValue, ...(Object.keys(locks).length ? { locks } : {}), clothingRequirements: clothingRequirements() });
       setRecipes(result.recipes); setRecipeSeed(String(result.batchSeed));
       if (result.recipes[0]) setDescription(result.recipes[0].brief);
     } catch (error) { setSubmitError(error instanceof Error ? error.message : t("text2img.random.error")); }
@@ -546,8 +566,10 @@ export function TextToImageWorkspace() {
             <div className={styles.randomFields}>
               {randomMode === "batch" && <label className={styles.field}><span>{t("text2img.random.count")}</span><input type="number" min={1} max={20} value={batchCount} onChange={(event) => setBatchCount(event.target.value)} onBlur={() => setBatchCount(String(normalizeIntegerField(batchCount, 10, 1, 20)))} /></label>}
               <label className={styles.field}><span>{t("text2img.random.recipeSeed")}</span><input type="number" min={0} max={2147483647} value={recipeSeed} placeholder={t("text2img.random.auto")} onChange={(event) => setRecipeSeed(event.target.value)} /></label>
+              <label className={styles.field}><span>{t("text2img.random.poseGroup")}</span><select value={poseGroup} onChange={(event) => { setPoseGroup(event.target.value as "" | "classic" | "sexy" | "sensual"); setPoseOptionId(""); }}><option value="">{t("text2img.random.poseGroup.all")}</option>{CLOTHING_STYLE_GROUPS.map((group) => <option key={group} value={group}>{t(POSE_STYLE_GROUP_KEYS[group])}</option>)}</select></label>
+              {poseGroup && <label className={styles.field}><span>{t("text2img.random.poseStyle")}</span><select value={poseOptionId} onChange={(event) => setPoseOptionId(event.target.value)}><option value="">{t("text2img.random.poseStylePlaceholder")}</option>{poseOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>}
               <label className={styles.field}><span>{t("text2img.random.clothingCategory")}</span><select value={clothingCategory} onChange={(event) => { setClothingCategory(event.target.value); setClothingText(""); setClothingOptionId(""); }}>{Object.keys(personLibrary?.clothingOptions || { hosiery: [] }).map((category) => <option key={category} value={category}>{t(CLOTHING_CATEGORY_KEYS[category] || category)}</option>)}</select></label>
-              {SELECTABLE_CLOTHING_CATEGORIES.has(clothingCategory) && <label className={styles.field}><span>{t("text2img.random.clothingStyle")}</span><select value={clothingOptionId} onChange={(event) => { const option = clothingOptions.find((item) => item.id === event.target.value); setClothingOptionId(event.target.value); setClothingText(option?.label || ""); }}><option value="">{t("text2img.random.clothingStylePlaceholder")}</option>{clothingOptions.map((option) => <option key={option.id} value={option.id}>{option.id} · {option.label}</option>)}</select></label>}
+              {SELECTABLE_CLOTHING_CATEGORIES.has(clothingCategory) && <label className={styles.field}><span>{t("text2img.random.clothingStyle")}</span><select value={clothingOptionId} onChange={(event) => { const option = clothingOptions.find((item) => item.id === event.target.value); setClothingOptionId(event.target.value); setClothingText(option?.label || ""); }}><option value="">{t("text2img.random.clothingStylePlaceholder")}</option>{clothingOptionGroups.map(({ group, options }) => <optgroup key={group} label={t(CLOTHING_STYLE_GROUP_KEYS[group])}>{options.map((option) => <option key={option.id} value={option.id}>{option.id} · {option.label}</option>)}</optgroup>)}</select></label>}
               <label className={styles.field}><span>{t("text2img.random.mustInclude")}</span><input value={clothingText} placeholder={t("text2img.random.mustIncludePlaceholder")} onChange={(event) => { setClothingText(event.target.value); setClothingOptionId(""); }} /></label>
             </div>
             <div className={styles.quickChoices}><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色短襪"); setClothingOptionId("H01"); }}>H01 · {t("text2img.random.whiteAnkleSocks")}</button><button type="button" onClick={() => { setClothingCategory("hosiery"); setClothingText("白色中筒襪"); setClothingOptionId("H04"); }}>H04 · {t("text2img.random.whiteCrewSocks")}</button></div>

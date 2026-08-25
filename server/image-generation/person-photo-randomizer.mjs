@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 const LIBRARY_URL = new URL('./person-photo-library.v1.json', import.meta.url);
-export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v6-expanded-photo-goals';
+export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v8-intimate-poses-sets';
 let cachedLibrary;
 
 export async function loadPersonPhotoLibrary() {
@@ -23,12 +23,14 @@ export async function personPhotoLibrarySummary() {
       hosiery: library.clothing.hosiery.map(({ id, text }) => ({ id, label: text, text })),
       shoes: library.clothing.shoes.map(({ id, text }) => ({ id, label: text, text })),
       outerwear: library.clothing.outerwear.map(({ id, text }) => ({ id, label: text, text })),
-      swimwear: library.clothing.swimwear.map(({ id, text }) => ({ id, label: text, text })),
+      swimwear: library.clothing.swimwear.map(({ id, text, group }) => ({ id, label: text, text, group })),
       miniskirt: library.clothing.miniskirts.map(({ id, text }) => ({ id, label: text, text })),
-      bra: library.clothing.bras.map(({ id, text }) => ({ id, label: text, text })),
-      panties: library.clothing.panties.map(({ id, text }) => ({ id, label: text, text })),
+      bra: library.clothing.bras.map(({ id, text, group }) => ({ id, label: text, text, group })),
+      panties: library.clothing.panties.map(({ id, text, group }) => ({ id, label: text, text, group })),
+      underwearSet: library.clothing.underwearSets.map(({ id, text, group }) => ({ id, label: text, text, group })),
       custom: [],
     },
+    poseOptions: poseOptionsFor(library).map(({ id, text, group }) => ({ id, label: text, text, group })),
     libraryVersion: library.libraryVersion,
     sourceSha256: library.sourceSha256,
     markdownFileCount: library.markdownFileCount,
@@ -37,6 +39,7 @@ export async function personPhotoLibrarySummary() {
     miniskirtCount: library.clothing.miniskirts.length,
     braCount: library.clothing.bras.length,
     pantyCount: library.clothing.panties.length,
+    underwearSetCount: library.clothing.underwearSets.length,
     photoGoals: photoGoalStats(library),
     hosiery: library.clothing.hosiery,
   };
@@ -63,6 +66,11 @@ const pick = (items, random) => items[Math.floor(random() * items.length)];
 const textOf = (entry) => entry?.text ?? '';
 const section = (sections, pattern) => Object.entries(sections ?? {}).find(([key]) => pattern.test(key))?.[1] ?? [];
 const lockedValue = (locks, key) => locks?.[key];
+const POSE_SECTIONS = /^(?:站姿|坐姿|蹲_跪姿|躺姿|動態姿勢|性感姿勢|情慾姿勢)$/;
+
+function poseOptionsFor(library) {
+  return Object.entries(library.categories.pose ?? {}).filter(([key]) => POSE_SECTIONS.test(key)).flatMap(([, items]) => items);
+}
 
 function choose(items, random, lock, label) {
   if (!items.length) throw new Error(`No options available for ${label}`);
@@ -89,13 +97,14 @@ function resolveRequirements(library, requirements = []) {
     if (requirement.applyToAll === false) throw Object.assign(new Error('Only applyToAll:true is supported'), { code: 'PERSON_PHOTO_REQUIREMENT_SCOPE_INVALID' });
     let category = String(requirement.category ?? '').toLowerCase();
     if (['socks', '襪類', '襪子'].includes(category)) category = 'hosiery';
-    if (!['hosiery', 'top', 'bottom', 'shoes', 'outerwear', 'outfit', 'swimwear', 'miniskirt', 'bra', 'panties', 'custom'].includes(category)) throw Object.assign(new Error(`Unsupported clothing requirement category: ${requirement.category}`), { code: 'PERSON_PHOTO_REQUIREMENT_INVALID' });
+    if (category === 'underwearset') category = 'underwearSet';
+    if (!['hosiery', 'top', 'bottom', 'shoes', 'outerwear', 'outfit', 'swimwear', 'miniskirt', 'bra', 'panties', 'underwearSet', 'custom'].includes(category)) throw Object.assign(new Error(`Unsupported clothing requirement category: ${requirement.category}`), { code: 'PERSON_PHOTO_REQUIREMENT_INVALID' });
     if (category === 'custom') {
       const text = String(requirement.value ?? '').trim();
       if (!text) throw Object.assign(new Error('Custom clothing requirement cannot be empty'), { code: 'PERSON_PHOTO_REQUIREMENT_INVALID' });
       return { category, value: text, optionId: null, applyToAll: true, candidates: [{ id: `custom:${hash32(text)}`, text }] };
     }
-    const poolName = ({ top: 'tops', bottom: 'bottoms', shoes: 'shoes', outerwear: 'outerwear', outfit: 'outfits', hosiery: 'hosiery', swimwear: 'swimwear', miniskirt: 'miniskirts', bra: 'bras', panties: 'panties' })[category];
+    const poolName = ({ top: 'tops', bottom: 'bottoms', shoes: 'shoes', outerwear: 'outerwear', outfit: 'outfits', hosiery: 'hosiery', swimwear: 'swimwear', miniskirt: 'miniskirts', bra: 'bras', panties: 'panties', underwearSet: 'underwearSets' })[category];
     let candidates = library.clothing[poolName];
     const hasSelectedStyle = Boolean(String(requirement.optionId ?? requirement.value ?? '').trim());
     if (hasSelectedStyle && category === 'hosiery' && !requirement.optionId && /白襪|白色襪/.test(requirement.value ?? '')) candidates = candidates.filter((item) => ['H01', 'H04'].includes(item.id));
@@ -238,7 +247,8 @@ export function validatePersonPhotoRecipe(recipe) {
   const whiteSocks = ['H01', 'H04'].includes(s.hosiery?.id);
   const swimwear = s.swimwear;
   const miniskirt = s.miniskirt;
-  const underwear = s.bra || s.panties;
+  const underwearSet = s.underwearSet;
+  const underwear = s.bra || s.panties || underwearSet;
   hard('young-adult-woman-only', youngAdultWoman(s.identity?.age), '人物只能是 18–29 歲的年輕成年女性');
   hard('single-person-only', textOf(s.identity?.count) === '單人', '人物只能是單人');
   hard('white-socks-visible-bottom', !whiteSocks || swimwear || SOCK_BOTTOM.test(textOf(s.outfit)), '白襪需搭配短褲、短裙或九分褲；泳裝不套用此限制');
@@ -253,18 +263,22 @@ export function validatePersonPhotoRecipe(recipe) {
   hard('style-scene-compatible', styleSceneCompatible(s.style, s.scene), '風格方向必須搭配相容的拍攝場景');
   hard('goal-lighting-compatible', goalLightingCompatible(s.photoType, s.style, s.lighting?.source, s.lighting?.direction), '照片目標指定的時段、天候與光線方向必須一致');
   hard('outdoor-lighting-compatible', outdoorLightingCompatible(s.scene, s.lighting?.source, s.lighting?.direction), '戶外場景不可使用窗戶光或窗邊、門口方向');
-  hard('swimwear-stable-id', !swimwear || /^SW(?:0[1-9]|[1-4]\d|50)$/.test(swimwear.id), '泳裝樣式必須來自 SW01–SW50 清單');
-  const swimwearLayerConflict = recipe.hardRequirements?.some((item) => ['outfit', 'top', 'bottom', 'miniskirt', 'bra', 'panties'].includes(item.category))
+  hard('swimwear-stable-id', !swimwear || /^SW(?:0[1-9]|[1-9]\d|100)$/.test(swimwear.id), '泳裝樣式必須來自 SW01–SW100 清單');
+  const swimwearLayerConflict = recipe.hardRequirements?.some((item) => ['outfit', 'top', 'bottom', 'miniskirt', 'bra', 'panties', 'underwearSet'].includes(item.category))
     || (swimwear && (s.outfit?.top !== swimwear.text || Boolean(s.outfit?.bottom)));
   hard('swimwear-no-upper-lower-clothing', !swimwear || !swimwearLayerConflict, '泳裝不可同時搭配一般上衣或下身');
   hard('miniskirt-stable-id', !miniskirt || /^MS(?:0[1-9]|1\d|20)$/.test(miniskirt.id), '迷你裙樣式必須來自 MS01–MS20 清單');
-  hard('bra-stable-id', !s.bra || /^BR(?:0[1-9]|[1-4]\d|50)$/.test(s.bra.id), '上身內衣必須來自 BR01–BR50 清單');
-  hard('panties-stable-id', !s.panties || /^PT(?:0[1-9]|[1-4]\d|50)$/.test(s.panties.id), '下身內褲必須來自 PT01–PT50 清單');
+  hard('bra-stable-id', !s.bra || /^BR(?:0[1-9]|[1-9]\d|100)$/.test(s.bra.id), '上身內衣必須來自 BR01–BR100 清單');
+  hard('panties-stable-id', !s.panties || /^PT(?:0[1-9]|[1-9]\d|100)$/.test(s.panties.id), '下身內褲必須來自 PT01–PT100 清單');
+  hard('underwear-set-stable-id', !underwearSet || /^UW(?:0[1-9]|[1-9]\d|100)$/.test(underwearSet.id), '內衣組合必須來自 UW01–UW100 清單');
+  hard('underwear-set-components-match', !underwearSet || (underwearSet.braId === s.bra?.id && underwearSet.pantiesId === s.panties?.id), '內衣組合的上身與下身款式必須完整對應');
   hard('underwear-complete-set', !underwear || Boolean(s.bra && s.panties), '內衣配方必須同時具有上身內衣與下身內褲');
+  hard('underwear-style-group-compatible', !underwear || !s.bra?.group || !s.panties?.group || s.bra.group === s.panties.group, '上身內衣與下身內褲必須屬於同一款式分組');
   hard('underwear-scene-compatible', !underwear || UNDERWEAR_SCENE.test(textOf(s.scene)), '內衣只搭配臥室、更衣室或攝影棚場景');
   hard('underwear-visible-framing', !underwear || UNDERWEAR_FRAME.test(textOf(s.framing)), '內衣配方需使用能看見上身與下身款式的構圖');
   hard('underwear-no-hosiery', !underwear || s.hosiery?.id === 'H00', '內衣不可同時指定襪類');
   hard('underwear-no-outerwear', !underwear || s.outerwear?.id === 'O00', '內衣不可同時指定外套');
+  hard('pose-style-group-known', !s.pose?.group || ['classic', 'sexy', 'sensual'].includes(s.pose.group), '姿勢分組必須是自然、性感或情慾');
   const requestedCaptureKind = captureKind(s.photoType) ?? captureKind(s.style);
   hard('capture-profile-aligned', !requestedCaptureKind || captureProfileCompatible(s.photoType, s.style, s.captureProfile), '照片目標必須使用對應的拍攝設備 profile');
   hard('capture-profile-ccd-aligned', requestedCaptureKind !== 'ccd' || captureKind(s.captureProfile) === 'ccd', 'CCD 或復古數位風格必須使用 CCD 或消費型數位相機 profile');
@@ -314,9 +328,10 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   const hasMiniskirt = miniskirtRequirements.length > 0;
   const braRequirements = byCategory('bra');
   const pantyRequirements = byCategory('panties');
-  const hasUnderwear = braRequirements.length > 0 || pantyRequirements.length > 0;
+  const underwearSetRequirements = byCategory('underwearSet');
+  const hasUnderwear = braRequirements.length > 0 || pantyRequirements.length > 0 || underwearSetRequirements.length > 0;
   if ([hasSwimwear, hasMiniskirt, hasUnderwear].filter(Boolean).length > 1) throw Object.assign(new Error('Swimwear, miniskirts and underwear are mutually exclusive clothing modes'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
-  const incompatibleSwimwearRequirement = ['outfit', 'top', 'bottom', 'miniskirt', 'bra', 'panties'].some((category) => byCategory(category).length);
+  const incompatibleSwimwearRequirement = ['outfit', 'top', 'bottom', 'miniskirt', 'bra', 'panties', 'underwearSet'].some((category) => byCategory(category).length);
   if (hasSwimwear && incompatibleSwimwearRequirement) throw Object.assign(new Error('Swimwear cannot be combined with regular upper or lower clothing'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
   const incompatibleUnderwearRequirement = ['outfit', 'top', 'bottom', 'shoes', 'swimwear', 'miniskirt'].some((category) => byCategory(category).length)
     || byCategory('hosiery').some((item) => item.candidates.some((candidate) => candidate.id !== 'H00'))
@@ -335,9 +350,32 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   for (const requirement of braRequirements) braPool = braPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.id));
   let pantyPool = library.clothing.panties;
   for (const requirement of pantyRequirements) pantyPool = pantyPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.id));
+  let underwearSetPool = library.clothing.underwearSets;
+  for (const requirement of underwearSetRequirements) underwearSetPool = underwearSetPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.id));
+  for (const requirement of braRequirements) underwearSetPool = underwearSetPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.braId));
+  for (const requirement of pantyRequirements) underwearSetPool = underwearSetPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.pantiesId));
+  if (underwearSetRequirements.length && !underwearSetPool.length) throw Object.assign(new Error('Underwear set requirements do not resolve to one complete set'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  const underwearSet = underwearSetRequirements.length ? choose(underwearSetPool, random, lockedValue(locks, 'underwearSet'), 'underwearSet') : null;
+  if (underwearSet) {
+    braPool = braPool.filter((item) => item.id === underwearSet.braId);
+    pantyPool = pantyPool.filter((item) => item.id === underwearSet.pantiesId);
+  }
+  const singleRequirementGroup = (items) => {
+    const groups = new Set(items.flatMap((item) => item.candidates.map((candidate) => candidate.group).filter(Boolean)));
+    return groups.size === 1 ? [...groups][0] : null;
+  };
+  const braGroup = singleRequirementGroup(braRequirements);
+  const pantyGroup = singleRequirementGroup(pantyRequirements);
+  const underwearSetGroup = singleRequirementGroup(underwearSetRequirements);
+  if (new Set([braGroup, pantyGroup, underwearSetGroup].filter(Boolean)).size > 1) throw Object.assign(new Error('Bra, panties and underwear set requirements must use the same style group'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
+  const underwearGroup = braGroup ?? pantyGroup ?? underwearSetGroup;
+  if (underwearGroup) {
+    braPool = braPool.filter((item) => item.group === underwearGroup);
+    pantyPool = pantyPool.filter((item) => item.group === underwearGroup);
+  }
   if (hasUnderwear && (!braPool.length || !pantyPool.length)) throw Object.assign(new Error('Underwear requirements do not resolve to one complete set'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
   const bra = hasUnderwear ? choose(braPool, random, lockedValue(locks, 'bra'), 'bra') : null;
-  const panties = hasUnderwear ? choose(pantyPool, random, lockedValue(locks, 'panties'), 'panties') : null;
+  const panties = hasUnderwear ? choose(pantyPool.filter((item) => !bra?.group || item.group === bra.group), random, lockedValue(locks, 'panties'), 'panties') : null;
   const whiteSockRequirement = byCategory('hosiery').find((item) => item.candidates.some((candidate) => ['H01', 'H04'].includes(candidate.id)));
   const noHosiery = library.clothing.hosiery.find((item) => item.id === 'H00');
   const hosieryPool = hasUnderwear ? [noHosiery] : byCategory('hosiery')[0]?.candidates ?? library.clothing.hosiery;
@@ -361,7 +399,7 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
     const shoe = choose(shoePool, random, lockedValue(locks, 'shoes'), 'shoes');
     outfit = { ...swimwear, text: `${swimwear.text} + ${shoe.text}`, top: swimwear.text, bottom: '', shoe: shoe.text };
   }
-  else if (hasUnderwear) outfit = { id: `underwear:${bra.id}:${panties.id}`, text: `${bra.text} + ${panties.text}`, top: bra.text, bottom: panties.text, shoe: '' };
+  else if (hasUnderwear) outfit = { id: underwearSet?.id ?? `underwear:${bra.id}:${panties.id}`, text: `${bra.text} + ${panties.text}`, top: bra.text, bottom: panties.text, shoe: '' };
   else if (miniskirt) {
     let topPool = library.clothing.tops;
     for (const requirement of byCategory('top')) topPool = topPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.id));
@@ -429,19 +467,22 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   const requestedCaptureKind = captureKind(photoType) ?? captureKind(style);
   if (requestedCaptureKind) capturePool = capturePool.filter((item) => captureKind(item) === requestedCaptureKind);
   const distancePool = section(c.lens, /拍攝距離/).filter((item) => distanceCompatible(framing, focalLength, item));
+  const poseGroup = String(lockedValue(locks, 'poseGroup') ?? '').trim();
+  if (poseGroup && !['classic', 'sexy', 'sensual'].includes(poseGroup)) throw Object.assign(new Error(`Unknown pose group lock: ${poseGroup}`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+  const posePool = poseOptionsFor(library).filter((item) => !poseGroup || item.group === poseGroup);
   const selections = {
     photoType, style, realism,
     identity, face: selectCategory(c.face, random, locks, 'face'), hair,
-    body: selectCategory(c.body, random, locks, 'body'), skin: selectCategory(c.skin, random, locks, 'skin'), outfit, swimwear, miniskirt, bra, panties, hosiery, outerwear, customClothing,
-    pose: choose([...section(c.pose, /站姿/), ...section(c.pose, /坐姿/), ...section(c.pose, /蹲_跪姿/), ...section(c.pose, /躺姿/), ...section(c.pose, /動態姿勢/)], random, lockedValue(locks, 'pose'), 'pose'), expression: choose(section(c.expression, /情緒組合|基本表情/), random, lockedValue(locks, 'expression'), 'expression'),
+    body: selectCategory(c.body, random, locks, 'body'), skin: selectCategory(c.skin, random, locks, 'skin'), outfit, swimwear, miniskirt, bra, panties, underwearSet, hosiery, outerwear, customClothing,
+    pose: choose(posePool, random, lockedValue(locks, 'pose'), 'pose'), expression: choose(section(c.expression, /情緒組合|基本表情/), random, lockedValue(locks, 'expression'), 'expression'),
     framing, ratio, cameraAngle, focalLength,
     distance: choose(distancePool, random, lockedValue(locks, 'distance'), 'distance'), scene,
     lighting, captureProfile: choose(capturePool, random, lockedValue(locks, 'captureProfile'), 'captureProfile'),
   };
   const recipe = { id: `person-photo-${recipeSeed}-${batchIndex + 1}`, batchIndex, batchSize, recipeSeed, libraryVersion: library.libraryVersion, sourceHash: library.sourceSha256, brief: '', selections, hardRequirements: requirements.map(({ candidates, ...item }) => {
     const componentKey = { top: 'top', bottom: 'bottom', shoes: 'shoe' }[item.category];
-    const selected = item.category === 'hosiery' ? hosiery : item.category === 'outerwear' ? outerwear : item.category === 'swimwear' ? swimwear : item.category === 'miniskirt' ? miniskirt : item.category === 'bra' ? bra : item.category === 'panties' ? panties : item.category === 'custom' ? candidates[0] : item.category === 'outfit' ? outfit : candidates.find((candidate) => candidate.text === outfit[componentKey]);
-    return { ...item, resolvedOptionIds: candidates.map((candidate) => candidate.id), selectedItem: { id: selected.id, text: selected.text } };
+    const selected = item.category === 'hosiery' ? hosiery : item.category === 'outerwear' ? outerwear : item.category === 'swimwear' ? swimwear : item.category === 'miniskirt' ? miniskirt : item.category === 'bra' ? bra : item.category === 'panties' ? panties : item.category === 'underwearSet' ? underwearSet : item.category === 'custom' ? candidates[0] : item.category === 'outfit' ? outfit : candidates.find((candidate) => candidate.text === outfit[componentKey]);
+    return { ...item, resolvedOptionIds: candidates.map((candidate) => candidate.id), selectedItem: { id: selected.id, text: selected.text, ...(selected.group ? { group: selected.group } : {}) } };
   }), dimensions: { aspectRatio: ratio.text, width, height } };
   recipe.brief = buildPersonPhotoRecipeBrief(recipe);
   recipe.validation = validatePersonPhotoRecipe(recipe);

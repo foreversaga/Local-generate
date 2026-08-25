@@ -53,7 +53,7 @@ export const TEXT2IMG_MODEL_PROFILES = Object.freeze({
     architecture: "flux2",
     encoderLabel: "Qwen3 8B · FP8 Mixed",
     encoderPrecision: "FP8 Mixed",
-    defaultSteps: 4,
+    defaultSteps: 12,
     maxSteps: 20,
     cfg: 1,
     sampler: "Euler",

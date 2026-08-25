@@ -65,7 +65,7 @@ test("builds the official FLUX.2 Klein 9B distilled graph", () => {
   assert.equal(graph["3"].inputs.vae_name, FLUX2_KLEIN_9B_VAE);
   assert.deepEqual(graph["5"], { class_type: "CLIPTextEncode", inputs: { text: "", clip: ["2", 0] } });
   assert.deepEqual(graph["6"], { class_type: "CFGGuider", inputs: { model: ["1", 0], positive: ["4", 0], negative: ["5", 0], cfg: 1 } });
-  assert.deepEqual(graph["9"].inputs, { steps: 4, width: 1024, height: 1024 });
+  assert.deepEqual(graph["9"].inputs, { steps: 12, width: 1024, height: 1024 });
   assert.equal(buildText2ImgPrompt({ prompt: "Klein", modelId: "flux2-klein-9b" })["1"].inputs.unet_name, FLUX2_KLEIN_9B_MODEL);
 });
 
@@ -90,7 +90,7 @@ test("validates prompt, dimensions, steps, and seed at the workflow boundary", (
     encoderId: "official",
     width: 1024,
     height: 1024,
-    steps: 4,
+    steps: 12,
     cfg: 1,
     seed: 12345,
     loras: [],
@@ -110,7 +110,7 @@ test("validates prompt, dimensions, steps, and seed at the workflow boundary", (
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", encoderId: "uncensored" }), { code: "TEXT2IMG_ENCODER_INVALID" });
   assert.throws(() => normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b", loras: [{ id: "base-version", strength: 0.8 }] }), { code: "TEXT2IMG_LORA_INVALID" });
   assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }).cfg, 1);
-  assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }).steps, 4);
+  assert.equal(normalizeText2ImgInput({ prompt: "portrait", modelId: "flux2-klein-9b" }).steps, 12);
 });
 
 test("builds a bounded nature-camera description contract for realistic adult photography", () => {
