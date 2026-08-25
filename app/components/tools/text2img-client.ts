@@ -145,6 +145,10 @@ export type PersonPhotoRecipe = {
 export type ClothingRequirement = { category: string; value?: string; optionId?: string; applyToAll: true };
 export type PersonPhotoLibrary = {
   id: string; version: string; sourceHash: string; rulesVersion: string;
+  photoGoals: {
+    photoTypeCount: number; styleCount: number; realismCueCount: number; realismCuesPerRecipe: number;
+    compatiblePhotoStylePairCount: number; compatibleCombinationCount: number;
+  };
   clothingOptions: Record<string, Array<{ id: string; label: string }>>;
 };
 export type PersonPhotoRandomResult = {

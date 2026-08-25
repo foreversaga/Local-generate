@@ -38,6 +38,18 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
     '26–29 歲成年女性', '20 歲出頭年輕成年女性', '20 多歲年輕成年女性',
   ]);
   assert.deepEqual(library.categories.identity.人物數量.map(({ text }) => text), ['單人']);
+  assert.equal(library.categories.imageGoal.照片類型.length, 50);
+  assert.equal(library.categories.imageGoal.風格方向.length, 40);
+  assert.equal(library.categories.imageGoal.真實度.length, 40);
+  assert.match(library.libraryVersion, /^person-photo-v5-expanded-goals-/);
+  assert.deepEqual(summary.photoGoals, {
+    photoTypeCount: 50,
+    styleCount: 40,
+    realismCueCount: 40,
+    realismCuesPerRecipe: 2,
+    compatiblePhotoStylePairCount: 1875,
+    compatibleCombinationCount: 1462500,
+  });
   assert.deepEqual(summary.hosiery.filter(({ id }) => ['H01', 'H04'].includes(id)).map(({ id }) => id), ['H01', 'H04']);
 });
 
@@ -67,6 +79,53 @@ test('recipe briefs keep every photographic category in a separate labeled block
   assert.deepEqual(recipe.brief.match(/【[^\n]+】/g), headings.map((heading) => `【${heading}】`));
   assert.equal(recipe.brief.split('\n\n').length, headings.length);
   for (const heading of headings) assert.match(recipe.brief, new RegExp(`【${heading}】\\n[^\\n]+`));
+  assert.equal(recipe.selections.realism.length, 2);
+  assert.equal(new Set(recipe.selections.realism.map(({ id }) => id)).size, 2);
+  for (const cue of recipe.selections.realism) assert.match(recipe.brief, new RegExp(cue.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('all expanded photo types resolve to coherent scenes across multiple seeds', async () => {
+  const library = await loadPersonPhotoLibrary();
+  const expanded = library.categories.imageGoal.照片類型.slice(30);
+  assert.equal(expanded.length, 20);
+  for (const photoType of expanded) {
+    for (let index = 0; index < 5; index += 1) {
+      const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: `${photoType.id}:${index}`, locks: { photoType: photoType.id } });
+      assert.equal(recipe.selections.photoType.id, photoType.id);
+      assert.equal(recipe.validation.passed, true, `${photoType.text}: ${recipe.validation.checks.filter((check) => !check.passed).map((check) => check.id).join(', ')}`);
+      assert.equal(recipe.validation.checks.find((check) => check.id === 'photo-type-scene-compatible')?.passed, true);
+      assert.equal(recipe.validation.checks.find((check) => check.id === 'style-scene-compatible')?.passed, true);
+      assert.equal(recipe.validation.checks.find((check) => check.id === 'goal-lighting-compatible')?.passed, true);
+    }
+  }
+});
+
+test('expanded capture and lighting goals select matching camera profiles and light', async () => {
+  const cases = [
+    ['imageGoal.照片類型.031', {}, /手機/],
+    ['imageGoal.照片類型.032', {}, /手機/],
+    ['imageGoal.照片類型.033', {}, /手機/],
+    ['imageGoal.照片類型.001', { style: 'imageGoal.風格方向.035' }, /CCD|消費型數位/],
+    ['imageGoal.照片類型.001', { style: 'imageGoal.風格方向.036' }, /中片幅/],
+  ];
+  for (const [photoType, extraLocks, capturePattern] of cases) {
+    const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: `${photoType}:${JSON.stringify(extraLocks)}`, locks: { photoType, ...extraLocks } });
+    assert.match(recipe.selections.captureProfile.text, capturePattern);
+    assert.equal(recipe.validation.checks.find((check) => check.id === 'capture-profile-aligned')?.passed, true);
+  }
+  for (const [photoType, sourcePattern, directionPattern] of [
+    ['imageGoal.照片類型.035', /雨天/, null],
+    ['imageGoal.照片類型.036', /清晨/, null],
+    ['imageGoal.照片類型.037', /黃昏|日落/, /後方/],
+  ]) {
+    const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: photoType, locks: { photoType } });
+    assert.match(recipe.selections.lighting.source.text, sourcePattern);
+    if (directionPattern) assert.match(recipe.selections.lighting.direction.text, directionPattern);
+  }
+  await assert.rejects(() => randomizePersonPhotoRecipes({ locks: {
+    photoType: 'imageGoal.照片類型.031',
+    style: 'imageGoal.風格方向.035',
+  } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
 });
 
 test('a clothing category without a selected style deterministically chooses a random option from that category', async () => {

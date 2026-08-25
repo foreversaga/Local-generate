@@ -14,6 +14,82 @@ const SECTION_KEYS = {
 
 const YOUNG_ADULT_WOMAN_AGE = /^(?:18–20|20–22|23–25|26–29) 歲成年女性$|^20(?: 歲出頭| 多歲)年輕成年女性$/;
 
+function extendedGoalEntries(section, start, entries) {
+  return entries.map((entry, index) => {
+    const value = typeof entry === 'string' ? { text: entry } : entry;
+    return { id: `imageGoal.${section}.${String(start + index).padStart(3, '0')}`, ...value };
+  });
+}
+
+const PHOTO_TYPE_EXTENSIONS = extendedGoalEntries('照片類型', 31, [
+  { text: '朋友代拍手機生活照', captureKind: 'phone' },
+  { text: '前置鏡頭自拍人像', captureKind: 'phone' },
+  { text: '鏡前穿搭自拍照', captureKind: 'phone', sceneGroups: ['居家室內', '商業室內'], sceneTerms: ['更衣鏡前', '更衣室', '飯店房間', '健身房'] },
+  { text: '通勤途中抓拍人像', sceneGroups: ['城市場景'], sceneTerms: ['捷運站入口', '火車站月台', '公車站', '天橋', '騎樓'] },
+  { text: '雨天街頭人物照', sceneGroups: ['城市場景'], lightingSourceTerms: ['雨天'] },
+  { text: '清晨城市散步人像', sceneGroups: ['城市場景'], lightingSourceTerms: ['清晨'] },
+  { text: '黃昏逆光環境人像', sceneGroups: ['城市場景', '自然場景', '建築_景點'], lightingSourceTerms: ['黃昏', '日落'], lightingDirectionTerms: ['後方'] },
+  { text: '書店閱讀生活人像', sceneGroups: ['商業室內'], sceneTerms: ['書店'] },
+  { text: '飯店入住旅行紀錄', sceneGroups: ['商業室內'], sceneTerms: ['飯店大廳', '飯店房間'] },
+  { text: '屋頂露台都市人像', sceneGroups: ['建築_景點'], sceneTerms: ['屋頂露台'] },
+  { text: '美術館觀展環境人像', sceneGroups: ['建築_景點'], sceneTerms: ['現代美術館'] },
+  { text: '健身房運動生活照', sceneGroups: ['商業室內'], sceneTerms: ['健身房'] },
+  { text: '瑜伽教室運動生活照', sceneGroups: ['商業室內'], sceneTerms: ['瑜伽教室'] },
+  { text: '露營旅行紀錄人像', sceneGroups: ['自然場景'], sceneTerms: ['露營區'] },
+  { text: '山林步道人物紀錄', sceneGroups: ['自然場景'], sceneTerms: ['山區步道', '森林小徑', '竹林'] },
+  { text: '河岸散步生活人像', sceneGroups: ['自然場景'], sceneTerms: ['河岸步道'] },
+  { text: '湖畔自然人物照', sceneGroups: ['自然場景'], sceneTerms: ['湖邊'] },
+  { text: '花園漫步人物照', sceneGroups: ['自然場景'], sceneTerms: ['花園'] },
+  { text: '校園建築生活人像', sceneGroups: ['建築_景點'], sceneTerms: ['校園建築外'] },
+  { text: '老街旅行人物照', sceneGroups: ['建築_景點'], sceneTerms: ['老街'] },
+]);
+
+const STYLE_DIRECTION_EXTENSIONS = extendedGoalEntries('風格方向', 21, [
+  { text: '朋友視角自然隨拍感', captureKind: 'phone' },
+  '觀察式紀實感',
+  '安靜低調敘事感',
+  { text: '溫暖居家生活感', sceneGroups: ['居家室內'] },
+  { text: '雨天低飽和灰調', sceneGroups: ['城市場景', '自然場景', '建築_景點'], lightingSourceTerms: ['雨天'] },
+  { text: '黃昏自然逆光感', sceneGroups: ['城市場景', '自然場景', '建築_景點'], lightingSourceTerms: ['黃昏', '日落'], lightingDirectionTerms: ['後方'] },
+  '高對比黑白紀實感',
+  '低飽和雜誌紀實感',
+  '空間敘事背景清晰感',
+  '輕微動態抓拍感',
+  '旅途紀錄感',
+  { text: '戶外機能紀實感', sceneGroups: ['城市場景', '自然場景', '建築_景點'] },
+  { text: '度假輕盈感', sceneGroups: ['商業室內', '自然場景', '建築_景點'] },
+  { text: '極簡建築敘事感', sceneGroups: ['城市場景', '商業室內', '建築_景點'] },
+  { text: '復古數位快照感', captureKind: 'ccd' },
+  { text: '中片幅細膩人像感', captureKind: 'medium-format' },
+  { text: '柔和陰天生活感', sceneGroups: ['城市場景', '自然場景', '建築_景點'], lightingSourceTerms: ['陰天'] },
+  { text: '高對比都市街頭感', sceneGroups: ['城市場景'] },
+  '自然電影靜幀感',
+  '背景可讀的環境肖像感',
+]);
+
+const REALISM_EXTENSIONS = extendedGoalEntries('真實度', 21, [
+  'natural left-right facial asymmetry',
+  'lifelike eye size, sclera and eyelid thickness',
+  'anatomically coherent hands with the correct finger count',
+  'anatomically coherent feet with the correct toe count',
+  'believable joint bends and limb overlaps',
+  'natural body balance and grounded weight',
+  'physically plausible grip and prop contact',
+  'garment folds and tension consistent with the pose',
+  'subtle skin-tone variation and localized redness',
+  'flyaway hair and naturally varied strand clumping',
+  'background details remain spatially recognizable',
+  'depth of field consistent with focal length and distance',
+  'mirror and reflective directions remain consistent',
+  'shadow direction consistent with the main light',
+  'slightly imperfect handheld horizon and crop',
+  'subtle natural focus falloff around the subject',
+  'restrained motion trace during an in-between action',
+  'plausible mixed white balance and local color variation',
+  'natural highlight rolloff with retained shadow detail',
+  'restrained computational sharpening without halos',
+]);
+
 const SWIMWEAR_STYLES = [
   '黑色經典三角比基尼', '白色繫帶三角比基尼', '海軍藍高腰比基尼', '紅色運動型比基尼', '粉色荷葉邊比基尼',
   '淺藍條紋比基尼', '綠色綁帶比基尼', '黃色方領比基尼', '紫色交叉肩帶比基尼', '橘色單肩比基尼',
@@ -124,8 +200,14 @@ export function importPersonPhotoPrompts(sourcePath) {
       if (number === '07') clothing = parseClothing(markdown);
       else categories[SECTION_KEYS[number]] = parseSections(markdown, SECTION_KEYS[number]);
     }
+    categories.imageGoal.照片類型.push(...PHOTO_TYPE_EXTENSIONS);
+    categories.imageGoal.風格方向.push(...STYLE_DIRECTION_EXTENSIONS);
+    categories.imageGoal.真實度.push(...REALISM_EXTENSIONS);
     categories.identity.年齡層 = categories.identity.年齡層.filter((item) => YOUNG_ADULT_WOMAN_AGE.test(item.text));
     categories.identity.人物數量 = categories.identity.人物數量.filter((item) => item.text === '單人');
+    if (categories.imageGoal.照片類型.length !== 50 || categories.imageGoal.風格方向.length !== 40 || categories.imageGoal.真實度.length !== 40) {
+      throw new Error(`Expected expanded photo goals 50/40/40, found ${categories.imageGoal.照片類型.length}/${categories.imageGoal.風格方向.length}/${categories.imageGoal.真實度.length}`);
+    }
     if (categories.identity.年齡層.length !== 6) throw new Error(`Expected 6 young adult woman age options, found ${categories.identity.年齡層.length}`);
     if (categories.identity.人物數量.length !== 1) throw new Error(`Expected only the single-person identity option, found ${categories.identity.人物數量.length}`);
     if (!clothing || clothing.outfits.length !== 520) throw new Error(`Expected C001-C520, found ${clothing?.outfits.length ?? 0}`);
@@ -134,7 +216,7 @@ export function importPersonPhotoPrompts(sourcePath) {
     if (clothing.miniskirts.length !== 20 || clothing.miniskirts[0].id !== 'MS01' || clothing.miniskirts.at(-1).id !== 'MS20') throw new Error('Expected contiguous miniskirt IDs MS01-MS20');
     if (clothing.bras.length !== 50 || clothing.bras[0].id !== 'BR01' || clothing.bras.at(-1).id !== 'BR50') throw new Error('Expected contiguous bra IDs BR01-BR50');
     if (clothing.panties.length !== 50 || clothing.panties[0].id !== 'PT01' || clothing.panties.at(-1).id !== 'PT50') throw new Error('Expected contiguous panty IDs PT01-PT50');
-    return { schemaVersion: 1, libraryVersion: `person-photo-v4-clothing-categories-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
+    return { schemaVersion: 1, libraryVersion: `person-photo-v5-expanded-goals-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 

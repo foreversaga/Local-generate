@@ -7,6 +7,7 @@
 .modeTabs button, .quickChoices button, .secondaryButton { border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; padding: 9px 13px; cursor: pointer; }
 .modeTabs .modeActive { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .randomPanel { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface) 85%, transparent); }
+.goalStats { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .randomFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .quickChoices { display: flex; gap: 8px; flex-wrap: wrap; }
 .applyAll { display: flex; gap: 8px; align-items: center; }

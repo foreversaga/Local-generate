@@ -538,6 +538,11 @@ export function TextToImageWorkspace() {
           </div>
           {inputMode === "random" && <section className={styles.randomPanel}>
             <div className={styles.modeTabs} role="group"><button type="button" className={randomMode === "single" ? styles.modeActive : ""} onClick={() => { setRandomMode("single"); setRecipes([]); setPrompt(""); setPromptModel(""); setSinglePromptDraftReady(false); }}>{t("text2img.random.single")}</button><button type="button" className={randomMode === "batch" ? styles.modeActive : ""} onClick={() => { setRandomMode("batch"); setRecipes([]); setPrompt(""); setPromptModel(""); setSinglePromptDraftReady(false); }}>{t("text2img.random.batch")}</button></div>
+            {personLibrary?.photoGoals && <p className={styles.goalStats}>{t("text2img.random.goalStats")
+              .replace("{types}", String(personLibrary.photoGoals.photoTypeCount))
+              .replace("{styles}", String(personLibrary.photoGoals.styleCount))
+              .replace("{realism}", String(personLibrary.photoGoals.realismCueCount))
+              .replace("{combinations}", personLibrary.photoGoals.compatibleCombinationCount.toLocaleString())}</p>}
             <div className={styles.randomFields}>
               {randomMode === "batch" && <label className={styles.field}><span>{t("text2img.random.count")}</span><input type="number" min={1} max={20} value={batchCount} onChange={(event) => setBatchCount(event.target.value)} onBlur={() => setBatchCount(String(normalizeIntegerField(batchCount, 10, 1, 20)))} /></label>}
               <label className={styles.field}><span>{t("text2img.random.recipeSeed")}</span><input type="number" min={0} max={2147483647} value={recipeSeed} placeholder={t("text2img.random.auto")} onChange={(event) => setRecipeSeed(event.target.value)} /></label>

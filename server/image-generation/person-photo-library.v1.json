@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "libraryVersion": "person-photo-v4-clothing-categories-eb200be0b744",
+  "libraryVersion": "person-photo-v5-expanded-goals-eb200be0b744",
   "source": "person_photo_prompt_docs.zip",
   "sourceSha256": "eb200be0b7443a40d471cddad1febf1fa0740b156339011d83a76b1dd5532d81",
   "markdownFileCount": 15,
@@ -126,6 +126,214 @@
         {
           "id": "imageGoal.照片類型.030",
           "text": "公園自然人物照"
+        },
+        {
+          "id": "imageGoal.照片類型.031",
+          "text": "朋友代拍手機生活照",
+          "captureKind": "phone"
+        },
+        {
+          "id": "imageGoal.照片類型.032",
+          "text": "前置鏡頭自拍人像",
+          "captureKind": "phone"
+        },
+        {
+          "id": "imageGoal.照片類型.033",
+          "text": "鏡前穿搭自拍照",
+          "captureKind": "phone",
+          "sceneGroups": [
+            "居家室內",
+            "商業室內"
+          ],
+          "sceneTerms": [
+            "更衣鏡前",
+            "更衣室",
+            "飯店房間",
+            "健身房"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.034",
+          "text": "通勤途中抓拍人像",
+          "sceneGroups": [
+            "城市場景"
+          ],
+          "sceneTerms": [
+            "捷運站入口",
+            "火車站月台",
+            "公車站",
+            "天橋",
+            "騎樓"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.035",
+          "text": "雨天街頭人物照",
+          "sceneGroups": [
+            "城市場景"
+          ],
+          "lightingSourceTerms": [
+            "雨天"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.036",
+          "text": "清晨城市散步人像",
+          "sceneGroups": [
+            "城市場景"
+          ],
+          "lightingSourceTerms": [
+            "清晨"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.037",
+          "text": "黃昏逆光環境人像",
+          "sceneGroups": [
+            "城市場景",
+            "自然場景",
+            "建築_景點"
+          ],
+          "lightingSourceTerms": [
+            "黃昏",
+            "日落"
+          ],
+          "lightingDirectionTerms": [
+            "後方"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.038",
+          "text": "書店閱讀生活人像",
+          "sceneGroups": [
+            "商業室內"
+          ],
+          "sceneTerms": [
+            "書店"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.039",
+          "text": "飯店入住旅行紀錄",
+          "sceneGroups": [
+            "商業室內"
+          ],
+          "sceneTerms": [
+            "飯店大廳",
+            "飯店房間"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.040",
+          "text": "屋頂露台都市人像",
+          "sceneGroups": [
+            "建築_景點"
+          ],
+          "sceneTerms": [
+            "屋頂露台"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.041",
+          "text": "美術館觀展環境人像",
+          "sceneGroups": [
+            "建築_景點"
+          ],
+          "sceneTerms": [
+            "現代美術館"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.042",
+          "text": "健身房運動生活照",
+          "sceneGroups": [
+            "商業室內"
+          ],
+          "sceneTerms": [
+            "健身房"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.043",
+          "text": "瑜伽教室運動生活照",
+          "sceneGroups": [
+            "商業室內"
+          ],
+          "sceneTerms": [
+            "瑜伽教室"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.044",
+          "text": "露營旅行紀錄人像",
+          "sceneGroups": [
+            "自然場景"
+          ],
+          "sceneTerms": [
+            "露營區"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.045",
+          "text": "山林步道人物紀錄",
+          "sceneGroups": [
+            "自然場景"
+          ],
+          "sceneTerms": [
+            "山區步道",
+            "森林小徑",
+            "竹林"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.046",
+          "text": "河岸散步生活人像",
+          "sceneGroups": [
+            "自然場景"
+          ],
+          "sceneTerms": [
+            "河岸步道"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.047",
+          "text": "湖畔自然人物照",
+          "sceneGroups": [
+            "自然場景"
+          ],
+          "sceneTerms": [
+            "湖邊"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.048",
+          "text": "花園漫步人物照",
+          "sceneGroups": [
+            "自然場景"
+          ],
+          "sceneTerms": [
+            "花園"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.049",
+          "text": "校園建築生活人像",
+          "sceneGroups": [
+            "建築_景點"
+          ],
+          "sceneTerms": [
+            "校園建築外"
+          ]
+        },
+        {
+          "id": "imageGoal.照片類型.050",
+          "text": "老街旅行人物照",
+          "sceneGroups": [
+            "建築_景點"
+          ],
+          "sceneTerms": [
+            "老街"
+          ]
         }
       ],
       "風格方向": [
@@ -208,6 +416,138 @@
         {
           "id": "imageGoal.風格方向.020",
           "text": "社群網紅生活照感"
+        },
+        {
+          "id": "imageGoal.風格方向.021",
+          "text": "朋友視角自然隨拍感",
+          "captureKind": "phone"
+        },
+        {
+          "id": "imageGoal.風格方向.022",
+          "text": "觀察式紀實感"
+        },
+        {
+          "id": "imageGoal.風格方向.023",
+          "text": "安靜低調敘事感"
+        },
+        {
+          "id": "imageGoal.風格方向.024",
+          "text": "溫暖居家生活感",
+          "sceneGroups": [
+            "居家室內"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.025",
+          "text": "雨天低飽和灰調",
+          "sceneGroups": [
+            "城市場景",
+            "自然場景",
+            "建築_景點"
+          ],
+          "lightingSourceTerms": [
+            "雨天"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.026",
+          "text": "黃昏自然逆光感",
+          "sceneGroups": [
+            "城市場景",
+            "自然場景",
+            "建築_景點"
+          ],
+          "lightingSourceTerms": [
+            "黃昏",
+            "日落"
+          ],
+          "lightingDirectionTerms": [
+            "後方"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.027",
+          "text": "高對比黑白紀實感"
+        },
+        {
+          "id": "imageGoal.風格方向.028",
+          "text": "低飽和雜誌紀實感"
+        },
+        {
+          "id": "imageGoal.風格方向.029",
+          "text": "空間敘事背景清晰感"
+        },
+        {
+          "id": "imageGoal.風格方向.030",
+          "text": "輕微動態抓拍感"
+        },
+        {
+          "id": "imageGoal.風格方向.031",
+          "text": "旅途紀錄感"
+        },
+        {
+          "id": "imageGoal.風格方向.032",
+          "text": "戶外機能紀實感",
+          "sceneGroups": [
+            "城市場景",
+            "自然場景",
+            "建築_景點"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.033",
+          "text": "度假輕盈感",
+          "sceneGroups": [
+            "商業室內",
+            "自然場景",
+            "建築_景點"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.034",
+          "text": "極簡建築敘事感",
+          "sceneGroups": [
+            "城市場景",
+            "商業室內",
+            "建築_景點"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.035",
+          "text": "復古數位快照感",
+          "captureKind": "ccd"
+        },
+        {
+          "id": "imageGoal.風格方向.036",
+          "text": "中片幅細膩人像感",
+          "captureKind": "medium-format"
+        },
+        {
+          "id": "imageGoal.風格方向.037",
+          "text": "柔和陰天生活感",
+          "sceneGroups": [
+            "城市場景",
+            "自然場景",
+            "建築_景點"
+          ],
+          "lightingSourceTerms": [
+            "陰天"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.038",
+          "text": "高對比都市街頭感",
+          "sceneGroups": [
+            "城市場景"
+          ]
+        },
+        {
+          "id": "imageGoal.風格方向.039",
+          "text": "自然電影靜幀感"
+        },
+        {
+          "id": "imageGoal.風格方向.040",
+          "text": "背景可讀的環境肖像感"
         }
       ],
       "真實度": [
@@ -290,6 +630,86 @@
         {
           "id": "imageGoal.真實度.020",
           "text": "realistic color response"
+        },
+        {
+          "id": "imageGoal.真實度.021",
+          "text": "natural left-right facial asymmetry"
+        },
+        {
+          "id": "imageGoal.真實度.022",
+          "text": "lifelike eye size, sclera and eyelid thickness"
+        },
+        {
+          "id": "imageGoal.真實度.023",
+          "text": "anatomically coherent hands with the correct finger count"
+        },
+        {
+          "id": "imageGoal.真實度.024",
+          "text": "anatomically coherent feet with the correct toe count"
+        },
+        {
+          "id": "imageGoal.真實度.025",
+          "text": "believable joint bends and limb overlaps"
+        },
+        {
+          "id": "imageGoal.真實度.026",
+          "text": "natural body balance and grounded weight"
+        },
+        {
+          "id": "imageGoal.真實度.027",
+          "text": "physically plausible grip and prop contact"
+        },
+        {
+          "id": "imageGoal.真實度.028",
+          "text": "garment folds and tension consistent with the pose"
+        },
+        {
+          "id": "imageGoal.真實度.029",
+          "text": "subtle skin-tone variation and localized redness"
+        },
+        {
+          "id": "imageGoal.真實度.030",
+          "text": "flyaway hair and naturally varied strand clumping"
+        },
+        {
+          "id": "imageGoal.真實度.031",
+          "text": "background details remain spatially recognizable"
+        },
+        {
+          "id": "imageGoal.真實度.032",
+          "text": "depth of field consistent with focal length and distance"
+        },
+        {
+          "id": "imageGoal.真實度.033",
+          "text": "mirror and reflective directions remain consistent"
+        },
+        {
+          "id": "imageGoal.真實度.034",
+          "text": "shadow direction consistent with the main light"
+        },
+        {
+          "id": "imageGoal.真實度.035",
+          "text": "slightly imperfect handheld horizon and crop"
+        },
+        {
+          "id": "imageGoal.真實度.036",
+          "text": "subtle natural focus falloff around the subject"
+        },
+        {
+          "id": "imageGoal.真實度.037",
+          "text": "restrained motion trace during an in-between action"
+        },
+        {
+          "id": "imageGoal.真實度.038",
+          "text": "plausible mixed white balance and local color variation"
+        },
+        {
+          "id": "imageGoal.真實度.039",
+          "text": "natural highlight rolloff with retained shadow detail"
+        },
+        {
+          "id": "imageGoal.真實度.040",
+          "text": "restrained computational sharpening without halos"
         }
       ]
     },

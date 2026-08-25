@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 const LIBRARY_URL = new URL('./person-photo-library.v1.json', import.meta.url);
-export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v5-flexible-swimwear';
+export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v6-expanded-photo-goals';
 let cachedLibrary;
 
 export async function loadPersonPhotoLibrary() {
@@ -37,6 +37,7 @@ export async function personPhotoLibrarySummary() {
     miniskirtCount: library.clothing.miniskirts.length,
     braCount: library.clothing.bras.length,
     pantyCount: library.clothing.panties.length,
+    photoGoals: photoGoalStats(library),
     hosiery: library.clothing.hosiery,
   };
 }
@@ -72,6 +73,12 @@ function choose(items, random, lock, label) {
   return found;
 }
 
+function chooseDistinct(items, random, count, label) {
+  if (items.length < count) throw new Error(`Not enough options available for ${label}`);
+  const pool = [...items];
+  return Array.from({ length: count }, () => pool.splice(Math.floor(random() * pool.length), 1)[0]);
+}
+
 function matchPool(pool, requirement) {
   const wanted = requirement.optionId ?? requirement.value;
   return pool.filter((item) => item.id === wanted || item.text === wanted || (!requirement.optionId && item.text.includes(String(wanted ?? ''))));
@@ -104,11 +111,10 @@ const SOCK_FRAME = /全身|鞋底/;
 const CLOSE_FRAME = /特寫|胸上/;
 const SMALL_INTERIOR = /小型公寓|臥室|更衣室|玄關|化妝桌|書房桌邊/;
 const LONG_LENS = /105mm|135mm/;
-const SELFIE = /手機隨拍|社群生活照/;
+const SELFIE = /手機隨拍|社群生活照|前置鏡頭自拍|鏡前穿搭自拍/;
 const DISTANT_FRAME = /遠距離環境人像/;
 const FULL_BODY_FRAME = /全身|鞋底|人物帶環境|遠距離環境人像/;
 const YOUNG_ADULT_WOMAN_AGE = /^(?:18–20|20–22|23–25|26–29) 歲成年女性$|^20(?: 歲出頭| 多歲)年輕成年女性$/;
-const SWIMWEAR_PHOTO_TYPE = /真人人像|日常生活感|時尚寫真|雜誌人物|商業廣告|社群生活|旅行紀錄|戶外自然|紀實抓拍|棚拍人物|品牌形象|Lookbook|生活方式廣告|無修圖|手機隨拍|CCD 隨拍|高級時裝|清新日系|韓系生活|底片感|自然光寫真|海邊旅行/;
 const UNDERWEAR_SCENE = /臥室|更衣室|攝影棚|白棚|背景棚/;
 const UNDERWEAR_PHOTO_TYPE = /真人人像|日常生活感|時尚寫真|雜誌人物|商業廣告|棚拍人物|品牌形象|Lookbook|生活方式廣告|無修圖|高級時裝|清新日系|韓系生活|底片感|自然光寫真/;
 const UNDERWEAR_FRAME = /大腿以上|膝蓋以上|三分之二身|全身|鞋底|人物帶環境/;
@@ -130,7 +136,41 @@ function distanceCompatible(framing, focalLength, distance) {
   return true;
 }
 
+function captureKind(entry) {
+  if (entry?.captureKind) return entry.captureKind;
+  const text = textOf(entry);
+  if (/手機|前置鏡頭|鏡前.*自拍|iPhone|Android/.test(text)) return 'phone';
+  if (/CCD|消費型數位|復古數位/.test(text)) return 'ccd';
+  if (/底片|35mm/.test(text)) return 'film';
+  if (/中片幅/.test(text)) return 'medium-format';
+  return null;
+}
+
+function termsOverlap(left, right) {
+  return !left?.length || !right?.length || left.some((term) => right.includes(term));
+}
+
+function photoGoalEntriesCompatible(photoType, style) {
+  const photoKind = captureKind(photoType);
+  const styleKind = captureKind(style);
+  return (!photoKind || !styleKind || photoKind === styleKind)
+    && termsOverlap(photoType?.sceneGroups, style?.sceneGroups)
+    && termsOverlap(photoType?.lightingSourceTerms, style?.lightingSourceTerms)
+    && termsOverlap(photoType?.lightingDirectionTerms, style?.lightingDirectionTerms);
+}
+
+function metadataSceneCompatible(entry, scene) {
+  const sceneId = scene?.id ?? '';
+  const place = textOf(scene);
+  if (entry?.sceneGroups?.length && !entry.sceneGroups.some((group) => sceneId.startsWith(`scene.${group}.`))) return false;
+  if (entry?.sceneTerms?.length && !entry.sceneTerms.some((term) => place.includes(term))) return false;
+  return true;
+}
+
 function photoTypeSceneCompatible(photoType, scene) {
+  const metadataCompatible = metadataSceneCompatible(photoType, scene);
+  if (!metadataCompatible) return false;
+  if (photoType?.sceneGroups?.length || photoType?.sceneTerms?.length) return true;
   const photo = textOf(photoType);
   const place = textOf(scene);
   const sceneId = scene?.id ?? '';
@@ -143,6 +183,41 @@ function photoTypeSceneCompatible(photoType, scene) {
   if (/街拍|都市時尚|都市/.test(photo)) return /scene\.城市場景\./.test(sceneId);
   if (/戶外自然/.test(photo)) return /scene\.自然場景\./.test(sceneId);
   return true;
+}
+
+function styleSceneCompatible(style, scene) {
+  return metadataSceneCompatible(style, scene);
+}
+
+function goalLightingCompatible(photoType, style, source, direction) {
+  return [photoType, style].every((entry) => {
+    const sourceCompatible = !entry?.lightingSourceTerms?.length || entry.lightingSourceTerms.some((term) => textOf(source).includes(term));
+    const directionCompatible = !entry?.lightingDirectionTerms?.length || entry.lightingDirectionTerms.some((term) => textOf(direction).includes(term));
+    return sourceCompatible && directionCompatible;
+  });
+}
+
+function captureProfileCompatible(photoType, style, profile) {
+  const requiredKind = captureKind(photoType) ?? captureKind(style);
+  return !requiredKind || captureKind(profile) === requiredKind;
+}
+
+function photoGoalStats(library) {
+  const photoTypes = section(library.categories.imageGoal, /照片類型/);
+  const styles = section(library.categories.imageGoal, /風格方向/);
+  const realismCues = section(library.categories.imageGoal, /真實度/);
+  const scenes = Object.entries(library.categories.scene).filter(([key]) => /居家室內|商業室內|城市場景|自然場景|建築_景點/.test(key)).flatMap(([, items]) => items);
+  const compatiblePhotoStylePairCount = photoTypes.reduce((total, photoType) => total + styles.filter((style) => photoGoalEntriesCompatible(photoType, style)
+    && scenes.some((scene) => photoTypeSceneCompatible(photoType, scene) && styleSceneCompatible(style, scene))).length, 0);
+  const realismPairCount = (realismCues.length * (realismCues.length - 1)) / 2;
+  return {
+    photoTypeCount: photoTypes.length,
+    styleCount: styles.length,
+    realismCueCount: realismCues.length,
+    realismCuesPerRecipe: 2,
+    compatiblePhotoStylePairCount,
+    compatibleCombinationCount: compatiblePhotoStylePairCount * realismPairCount,
+  };
 }
 
 function outdoorLightingCompatible(scene, source, direction) {
@@ -173,7 +248,10 @@ export function validatePersonPhotoRecipe(recipe) {
   hard('closeup-no-footwear', swimwear || !(CLOSE_FRAME.test(textOf(s.framing)) && whiteSocks), '特寫不能要求可見鞋襪；泳裝不套用此限制');
   hard('small-interior-not-135mm', !(SMALL_INTERIOR.test(textOf(s.scene)) && /135mm/.test(textOf(s.focalLength))), '小型室內空間不使用 135mm');
   hard('framing-focal-distance-compatible', distanceCompatible(s.framing, s.focalLength, s.distance), '構圖、焦段與拍攝距離必須符合真實光學關係');
+  hard('photo-style-compatible', photoGoalEntriesCompatible(s.photoType, s.style), '照片類型與風格的拍攝設備、場景或光線條件不可衝突');
   hard('photo-type-scene-compatible', photoTypeSceneCompatible(s.photoType, s.scene), '照片類型必須搭配相容的拍攝場景');
+  hard('style-scene-compatible', styleSceneCompatible(s.style, s.scene), '風格方向必須搭配相容的拍攝場景');
+  hard('goal-lighting-compatible', goalLightingCompatible(s.photoType, s.style, s.lighting?.source, s.lighting?.direction), '照片目標指定的時段、天候與光線方向必須一致');
   hard('outdoor-lighting-compatible', outdoorLightingCompatible(s.scene, s.lighting?.source, s.lighting?.direction), '戶外場景不可使用窗戶光或窗邊、門口方向');
   hard('swimwear-stable-id', !swimwear || /^SW(?:0[1-9]|[1-4]\d|50)$/.test(swimwear.id), '泳裝樣式必須來自 SW01–SW50 清單');
   const swimwearLayerConflict = recipe.hardRequirements?.some((item) => ['outfit', 'top', 'bottom', 'miniskirt', 'bra', 'panties'].includes(item.category))
@@ -187,11 +265,13 @@ export function validatePersonPhotoRecipe(recipe) {
   hard('underwear-visible-framing', !underwear || UNDERWEAR_FRAME.test(textOf(s.framing)), '內衣配方需使用能看見上身與下身款式的構圖');
   hard('underwear-no-hosiery', !underwear || s.hosiery?.id === 'H00', '內衣不可同時指定襪類');
   hard('underwear-no-outerwear', !underwear || s.outerwear?.id === 'O00', '內衣不可同時指定外套');
-  const captureText = textOf(s.captureProfile);
-  const requestedLook = `${textOf(s.photoType)} ${textOf(s.style)}`;
-  hard('capture-profile-aligned', !/CCD/.test(requestedLook) || /CCD|消費型數位/.test(captureText), 'CCD 風格必須使用 CCD 或消費型數位相機 profile');
-  hard('capture-profile-mobile-aligned', !/手機/.test(requestedLook) || /手機/.test(captureText), '手機風格必須使用手機 capture profile');
-  hard('capture-profile-film-aligned', !/底片/.test(requestedLook) || /底片/.test(captureText), '底片風格必須使用底片 capture profile');
+  const requestedCaptureKind = captureKind(s.photoType) ?? captureKind(s.style);
+  hard('capture-profile-aligned', !requestedCaptureKind || captureProfileCompatible(s.photoType, s.style, s.captureProfile), '照片目標必須使用對應的拍攝設備 profile');
+  hard('capture-profile-ccd-aligned', requestedCaptureKind !== 'ccd' || captureKind(s.captureProfile) === 'ccd', 'CCD 或復古數位風格必須使用 CCD 或消費型數位相機 profile');
+  hard('capture-profile-mobile-aligned', requestedCaptureKind !== 'phone' || captureKind(s.captureProfile) === 'phone', '手機風格必須使用手機 capture profile');
+  hard('capture-profile-film-aligned', requestedCaptureKind !== 'film' || captureKind(s.captureProfile) === 'film', '底片風格必須使用底片 capture profile');
+  hard('capture-profile-medium-format-aligned', requestedCaptureKind !== 'medium-format' || captureKind(s.captureProfile) === 'medium-format', '中片幅風格必須使用中片幅 capture profile');
+  hard('realism-cues-present', Array.isArray(s.realism) && s.realism.length === 2 && new Set(s.realism.map((item) => item.id)).size === 2, '每張需包含兩個不重複的真實度訊號');
   soft('outfit-scene-tone', !(/運動/.test(textOf(s.outfit)) && /飯店大廳|精品/.test(textOf(s.scene))), '運動服與正式精品場景的調性較弱');
   const failedHard = checks.filter((item) => item.severity === 'hard' && !item.passed);
   const warnings = checks.filter((item) => item.severity === 'soft' && !item.passed).map((item) => item.detail);
@@ -213,7 +293,7 @@ export function buildPersonPhotoRecipeBrief(recipe) {
     return content ? `【${label}】\n${content}` : '';
   };
   return [
-    block('照片目標', [s.photoType, s.style]),
+    block('照片目標', [s.photoType, s.style, ...(s.realism ?? [])]),
     block('人物', [...Object.values(s.identity), ...Object.values(s.face), ...Object.values(s.hair), ...Object.values(s.body), ...Object.values(s.skin)]),
     block('服裝', [...clothing, ...s.customClothing]),
     block('動作與表情', [s.pose, s.expression]),
@@ -293,18 +373,23 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
     const shoe = choose(shoePool, random, lockedValue(locks, 'shoes'), 'shoes');
     outfit = { id: miniskirt.id, text: `${top.text} + ${miniskirt.text} + ${shoe.text}`, top: top.text, bottom: miniskirt.text, shoe: shoe.text };
   } else outfit = choose(outfitPool, random, lockedValue(locks, 'outfit'), 'outfit');
-  const photoTypePool = hasUnderwear ? section(c.imageGoal, /照片類型/).filter((item) => UNDERWEAR_PHOTO_TYPE.test(item.text)) : swimwear ? section(c.imageGoal, /照片類型/).filter((item) => SWIMWEAR_PHOTO_TYPE.test(item.text)) : section(c.imageGoal, /照片類型/);
+  const photoTypePool = hasUnderwear ? section(c.imageGoal, /照片類型/).filter((item) => UNDERWEAR_PHOTO_TYPE.test(item.text)) : section(c.imageGoal, /照片類型/);
   const photoType = choose(photoTypePool, random, lockedValue(locks, 'photoType'), 'photoType');
-  let stylePool = section(c.imageGoal, /風格方向/);
-  if (/手機/.test(photoType.text)) stylePool = stylePool.filter((item) => !/CCD|底片/.test(item.text));
-  else if (/CCD/.test(photoType.text)) stylePool = stylePool.filter((item) => !/手機|底片/.test(item.text));
-  else if (/底片/.test(photoType.text)) stylePool = stylePool.filter((item) => !/手機|CCD/.test(item.text));
+  const selectableScenes = Object.entries(c.scene).filter(([key]) => /居家室內|商業室內|城市場景|自然場景|建築_景點/.test(key)).flatMap(([, items]) => items).filter((item) => !hasUnderwear || UNDERWEAR_SCENE.test(item.text));
+  const requestedScene = typeof lockedValue(locks, 'scene') === 'object' ? lockedValue(locks, 'scene')?.id : lockedValue(locks, 'scene');
+  const lockedSceneOption = selectableScenes.find((item) => item.id === requestedScene || item.text === requestedScene);
+  if (lockedSceneOption && !photoTypeSceneCompatible(photoType, lockedSceneOption)) throw Object.assign(new Error('Locked photo type and scene are incompatible'), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+  const stylePool = section(c.imageGoal, /風格方向/).filter((item) => photoGoalEntriesCompatible(photoType, item)
+    && (lockedSceneOption
+      ? photoTypeSceneCompatible(photoType, lockedSceneOption) && styleSceneCompatible(item, lockedSceneOption)
+      : selectableScenes.some((sceneOption) => photoTypeSceneCompatible(photoType, sceneOption) && styleSceneCompatible(item, sceneOption))));
   const style = choose(stylePool, random, lockedValue(locks, 'style'), 'style');
+  const realism = chooseDistinct(section(c.imageGoal, /真實度/), random, 2, 'realism');
   const framing = choose(framingPool, random, lockedValue(locks, 'framing'), 'framing');
   let focalPool = section(c.lens, /焦段/);
   if (SELFIE.test(photoType.text)) focalPool = focalPool.filter((item) => !LONG_LENS.test(item.text));
   let focalLength = choose(focalPool, random, lockedValue(locks, 'focalLength'), 'focalLength');
-  const scenePool = Object.entries(c.scene).filter(([key]) => /居家室內|商業室內|城市場景|自然場景|建築_景點/.test(key)).flatMap(([, items]) => items).filter((item) => photoTypeSceneCompatible(photoType, item) && (!hasUnderwear || UNDERWEAR_SCENE.test(item.text)));
+  const scenePool = selectableScenes.filter((item) => photoTypeSceneCompatible(photoType, item) && styleSceneCompatible(style, item));
   const scene = choose(scenePool, random, lockedValue(locks, 'scene'), 'scene');
   if (SMALL_INTERIOR.test(scene.text) && /135mm/.test(focalLength.text) && !lockedValue(locks, 'focalLength')) focalLength = choose(focalPool.filter((item) => !/135mm/.test(item.text)), random, null, 'focalLength');
   const ratio = choose([...section(c.composition, /直式比例/), ...section(c.composition, /橫式比例/)], random, lockedValue(locks, 'ratio'), 'ratio');
@@ -330,21 +415,22 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   const indoorScene = /scene\.(居家室內|商業室內)\./.test(scene.id);
   const outdoorScene = /scene\.(城市場景|自然場景|建築_景點)\./.test(scene.id);
   const studioLook = /棚拍|攝影棚|白棚|背景棚|商業廣告|雜誌|時裝|editorial/i.test(`${photoType.text} ${style.text} ${scene.text}`);
-  const lightSources = [...section(c.lighting, /自然光/).filter((item) => !outdoorScene || !/窗戶|落地窗/.test(item.text)), ...(indoorScene ? section(c.lighting, /室內光/) : []), ...(studioLook ? section(c.lighting, /攝影用光/) : [])];
-  const lightDirections = section(c.lighting, /光線方向/).filter((item) => !outdoorScene || !/窗邊|門口/.test(item.text));
+  const goalEntries = [photoType, style];
+  const lightSources = [...section(c.lighting, /自然光/).filter((item) => !outdoorScene || !/窗戶|落地窗/.test(item.text)), ...(indoorScene ? section(c.lighting, /室內光/) : []), ...(studioLook ? section(c.lighting, /攝影用光/) : [])]
+    .filter((source) => goalEntries.every((entry) => !entry.lightingSourceTerms?.length || entry.lightingSourceTerms.some((term) => source.text.includes(term))));
+  const lightDirections = section(c.lighting, /光線方向/).filter((item) => (!outdoorScene || !/窗邊|門口/.test(item.text))
+    && goalEntries.every((entry) => !entry.lightingDirectionTerms?.length || entry.lightingDirectionTerms.some((term) => item.text.includes(term))));
   const lighting = { source: choose(lightSources, random, lockedValue(locks, 'lighting.source'), 'lighting.source'), direction: choose(lightDirections, random, lockedValue(locks, 'lighting.direction'), 'lighting.direction'), quality: choose(section(c.lighting, /光質/), random, lockedValue(locks, 'lighting.quality'), 'lighting.quality') };
   const outerwearRequirement = byCategory('outerwear')[0];
   const noOuterwear = library.clothing.outerwear.find((item) => item.id === 'O00');
   const outerwear = choose(hasUnderwear ? [noOuterwear] : outerwearRequirement?.candidates ?? [noOuterwear], random, lockedValue(locks, 'outerwear'), 'outerwear');
   const customClothing = byCategory('custom').map((item) => item.candidates[0]);
-  const requestedCapture = `${photoType.text} ${style.text}`;
   let capturePool = section(c.photographicTexture, /相機類型感/);
-  if (/手機/.test(requestedCapture)) capturePool = capturePool.filter((item) => /手機/.test(item.text));
-  else if (/CCD/.test(requestedCapture)) capturePool = capturePool.filter((item) => /CCD|消費型數位/.test(item.text));
-  else if (/底片/.test(requestedCapture)) capturePool = capturePool.filter((item) => /底片/.test(item.text));
+  const requestedCaptureKind = captureKind(photoType) ?? captureKind(style);
+  if (requestedCaptureKind) capturePool = capturePool.filter((item) => captureKind(item) === requestedCaptureKind);
   const distancePool = section(c.lens, /拍攝距離/).filter((item) => distanceCompatible(framing, focalLength, item));
   const selections = {
-    photoType, style,
+    photoType, style, realism,
     identity, face: selectCategory(c.face, random, locks, 'face'), hair,
     body: selectCategory(c.body, random, locks, 'body'), skin: selectCategory(c.skin, random, locks, 'skin'), outfit, swimwear, miniskirt, bra, panties, hosiery, outerwear, customClothing,
     pose: choose([...section(c.pose, /站姿/), ...section(c.pose, /坐姿/), ...section(c.pose, /蹲_跪姿/), ...section(c.pose, /躺姿/), ...section(c.pose, /動態姿勢/)], random, lockedValue(locks, 'pose'), 'pose'), expression: choose(section(c.expression, /情緒組合|基本表情/), random, lockedValue(locks, 'expression'), 'expression'),

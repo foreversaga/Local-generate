@@ -21,6 +21,8 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(workspace, /generateText2ImgPrompt/);
   assert.match(workspace, /randomizePersonPhotos/);
   assert.match(workspace, /fetchPersonPhotoLibrary/);
+  assert.match(workspace, /personLibrary\.photoGoals\.compatibleCombinationCount/);
+  assert.match(workspace, /text2img\.random\.goalStats/);
   assert.match(workspace, /batchCount, setBatchCount.*"10"/);
   assert.match(workspace, /normalizeIntegerField\(batchCount, 10, 1, 20\)/);
   assert.match(workspace, /H01/);
