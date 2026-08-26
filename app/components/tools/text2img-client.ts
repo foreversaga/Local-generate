@@ -96,7 +96,7 @@ export type Text2ImgPromptResult = {
 
 export type Text2ImgJob = {
   id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
   progress: number;
   stage: string;
   prompt: string;
@@ -173,8 +173,60 @@ export type Text2ImgSubmitInput = {
   recipe?: PersonPhotoRecipe;
 };
 
+export type Text2ImgBatchStatus = "queued" | "prompting" | "generating" | "cancelling" | "completed" | "failed" | "partial" | "cancelled";
+
+export type Text2ImgBatchItem = {
+  index: number;
+  status: Text2ImgJob["status"] | "prompting" | "submitting";
+  prompt: string;
+  promptModel: string;
+  jobId: string;
+  error?: string;
+  seed: number;
+  recipeSeed: number;
+  batchIndex: number;
+  job?: Text2ImgJob;
+};
+
+export type Text2ImgBatch = {
+  id: string;
+  clientRequestId: string;
+  status: Text2ImgBatchStatus;
+  promptModel: string;
+  unloadPromptModel: boolean;
+  cancelRequested: boolean;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+  total: number;
+  prompted: number;
+  submitted: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  items: Text2ImgBatchItem[];
+  itemsOmitted?: boolean;
+};
+
+export type Text2ImgBatchSummary = Omit<Text2ImgBatch, "items">;
+
+export type Text2ImgBatchSubmitInput = {
+  clientRequestId?: string;
+  promptModel: string;
+  unloadPromptModel: boolean;
+  steps: number;
+  cfg: number;
+  modelId: string;
+  encoderId: string;
+  loras: Text2ImgLoraSelection[];
+  items: Array<{ recipe: PersonPhotoRecipe; seed: number; width: number; height: number }>;
+};
+
 type Text2ImgPayload = {
   job?: Text2ImgJob;
+  batch?: Text2ImgBatch;
+  batches?: Text2ImgBatchSummary[];
   health?: Text2ImgHealth;
   error?: string | { message?: string; code?: string };
   code?: string;
@@ -222,6 +274,38 @@ export async function submitText2Img(input: Text2ImgSubmitInput) {
   const payload = await readPayload(response);
   if (!response.ok || !payload.job) throw new Text2ImgApiError(payloadMessage(payload, "Unable to start image generation."), response.status, payload);
   return payload.job;
+}
+
+export async function submitText2ImgBatch(input: Text2ImgBatchSubmitInput) {
+  const response = await fetch(`${BRIDGE_URL}/api/text2img/batches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const payload = await readPayload(response);
+  if (!response.ok || !payload.batch) throw new Text2ImgApiError(payloadMessage(payload, "Unable to start the image batch."), response.status, payload);
+  return payload.batch;
+}
+
+export async function fetchText2ImgBatches({ limit = 1 }: { limit?: number } = {}) {
+  const response = await fetch(`${BRIDGE_URL}/api/text2img/batches?limit=${encodeURIComponent(limit)}`, { cache: "no-store" });
+  const payload = await readPayload(response);
+  if (!response.ok || !payload.batches) throw new Text2ImgApiError(payloadMessage(payload, "Unable to load image batches."), response.status, payload);
+  return payload.batches;
+}
+
+export async function fetchText2ImgBatch(id: string) {
+  const response = await fetch(`${BRIDGE_URL}/api/text2img/batches/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const payload = await readPayload(response);
+  if (!response.ok || !payload.batch) throw new Text2ImgApiError(payloadMessage(payload, "Unable to load the image batch."), response.status, payload);
+  return payload.batch;
+}
+
+export async function cancelText2ImgBatch(id: string) {
+  const response = await fetch(`${BRIDGE_URL}/api/text2img/batches/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  const payload = await readPayload(response);
+  if (!response.ok || !payload.batch) throw new Text2ImgApiError(payloadMessage(payload, "Unable to cancel the image batch."), response.status, payload);
+  return payload.batch;
 }
 
 export async function generateText2ImgPrompt(description: string, { model = "", unloadPromptModel = false, recipe }: { model?: string; unloadPromptModel?: boolean; recipe?: PersonPhotoRecipe } = {}) {

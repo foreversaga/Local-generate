@@ -24,6 +24,8 @@ import {
   parseText2ImgHistory,
 } from "../server/image-generation/text2img.mjs";
 import { createText2ImgStore } from "../server/image-generation/text2img-store.mjs";
+import { createText2ImgBatchStore } from "../server/image-generation/text2img-batch-store.mjs";
+import { randomizePersonPhotoRecipes } from "../server/image-generation/person-photo-randomizer.mjs";
 
 const OBJECT_INFO = {
   ...Object.fromEntries(TEXT2IMG_REQUIRED_NODES.map((name) => [name, {}])),
@@ -291,6 +293,234 @@ test("persists completed text-to-image jobs and reloads them after controller re
   }
 });
 
+test("server-owned text-to-image batches continue without a browser and restore from disk", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-batch-"));
+  const outputRoot = path.join(root, "output");
+  const storeRoot = path.join(root, "jobs");
+  const batchStoreRoot = path.join(root, "batches");
+  await mkdir(path.join(outputRoot, "text2img"), { recursive: true });
+  await Promise.all([1, 2].map((index) => writeFile(path.join(outputRoot, "text2img", `batch-${index}.png`), "image")));
+  let id = 0;
+  let promptId = 0;
+  const fetchImpl = async (url) => {
+    const pathname = new URL(url).pathname;
+    if (pathname === "/object_info") return response(OBJECT_INFO);
+    if (pathname === "/prompt") return response({ prompt_id: `batch-prompt-${++promptId}` });
+    const history = pathname.match(/^\/history\/batch-prompt-(\d+)$/);
+    if (history) {
+      const index = Number(history[1]);
+      return response({
+        [`batch-prompt-${index}`]: {
+          status: { completed: true, status_str: "success" },
+          outputs: { "13": { images: [{ filename: `batch-${index}.png`, subfolder: "text2img", type: "output" }] } },
+        },
+      });
+    }
+    return response({}, 404);
+  };
+  const promptAssistant = {
+    provider: "test",
+    async status() { return { online: true, model: "photo-model", models: ["photo-model"] }; },
+    async generate() { return JSON.stringify({ prompt: "自然光下的成人生活人像" }); },
+  };
+  try {
+    const randomized = await randomizePersonPhotoRecipes({ seed: 2468, count: 2 });
+    const recipes = randomized.recipes.map((recipe, index) => ({ ...recipe, batchId: "recipe-batch", batchIndex: index, batchSize: 2 }));
+    const controller = createText2ImgController({
+      outputRoot,
+      storeRoot,
+      batchStoreRoot,
+      fetchImpl,
+      promptAssistant,
+      pollIntervalMs: 1,
+      maxPollMs: 1_000,
+      idFactory: () => `server-owned-${++id}`,
+      toAsset: async (assetRoot, name) => ({ root: assetRoot, name, kind: "image" }),
+    });
+    const acceptedResponse = await invokeText2ImgRoute(controller, "/api/text2img/batches", { method: "POST", body: {
+      clientRequestId: "recipe-batch",
+      promptModel: "photo-model",
+      modelId: "flux2-klein-9b",
+      encoderId: "official",
+      steps: 12,
+      cfg: 1,
+      loras: [],
+      items: recipes.map((recipe, index) => ({
+        recipe,
+        seed: index + 10,
+        width: index === 0 ? 1280 : 768,
+        height: index === 0 ? 768 : 1280,
+      })),
+    } });
+    assert.equal(acceptedResponse.status, 202);
+    const accepted = acceptedResponse.body.batch;
+    assert.equal(accepted.status, "queued");
+    assert.equal(accepted.total, 2);
+
+    let completed = null;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      completed = await controller.getBatch(accepted.id);
+      if (completed.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(completed?.status, "completed");
+    assert.equal(completed?.prompted, 2);
+    assert.equal(completed?.submitted, 2);
+    assert.equal(completed?.completed, 2);
+    assert.deepEqual(completed?.items.map((item) => [item.job?.width, item.job?.height]), [[1280, 768], [768, 1280]]);
+    assert.deepEqual(completed?.items.map((item) => item.job?.seed), [10, 11]);
+    assert.deepEqual(completed?.items.map((item) => item.job?.output?.name), ["text2img/batch-1.png", "text2img/batch-2.png"]);
+    assert.equal((await createText2ImgBatchStore({ root: batchStoreRoot }).read(accepted.id)).status, "completed");
+
+    const listed = await invokeText2ImgRoute(controller, "/api/text2img/batches?limit=1");
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.batches[0].id, accepted.id);
+    assert.equal(listed.body.batches[0].items, undefined);
+
+    const restoredController = createText2ImgController({ outputRoot, storeRoot, batchStoreRoot, fetchImpl });
+    const restored = await restoredController.getBatch(accepted.id);
+    assert.equal(restored.status, "completed");
+    assert.equal(restored.items.length, 2);
+    assert.equal(restored.items[0].job.status, "completed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch pipeline starts an image job while a later prompt is still in flight", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-pipeline-"));
+  const outputRoot = path.join(root, "output");
+  await mkdir(path.join(outputRoot, "text2img"), { recursive: true });
+  await Promise.all([1, 2].map((index) => writeFile(path.join(outputRoot, "text2img", `pipeline-${index}.png`), "image")));
+  let promptCall = 0;
+  let imageSubmitCount = 0;
+  let secondPromptStarted;
+  let releaseSecondPrompt;
+  let firstImageSubmitted;
+  const secondStarted = new Promise((resolve) => { secondPromptStarted = resolve; });
+  const releaseSecond = new Promise((resolve) => { releaseSecondPrompt = resolve; });
+  const imageSubmitted = new Promise((resolve) => { firstImageSubmitted = resolve; });
+  try {
+    const randomized = await randomizePersonPhotoRecipes({ seed: 1357, count: 2 });
+    const recipes = randomized.recipes.map((recipe, index) => ({ ...recipe, batchId: "pipeline-recipes", batchIndex: index, batchSize: 2 }));
+    const controller = createText2ImgController({
+      outputRoot,
+      storeRoot: path.join(root, "jobs"),
+      batchStoreRoot: path.join(root, "batches"),
+      pollIntervalMs: 1,
+      maxPollMs: 1_000,
+      idFactory: (() => { let id = 0; return () => `pipeline-${++id}`; })(),
+      promptAssistant: {
+        provider: "test",
+        async status() {
+          return {
+            online: true,
+            model: "remote-photo-model",
+            models: ["remote-photo-model"],
+            modelOptions: [{ value: "remote-photo-model", model: "remote-photo-model", provider: "qwen", location: "remote" }],
+          };
+        },
+        async generate() {
+          promptCall += 1;
+          if (promptCall === 2) {
+            secondPromptStarted();
+            await releaseSecond;
+          }
+          return JSON.stringify({ prompt: `自然光成人生活人像 ${promptCall}` });
+        },
+      },
+      fetchImpl: async (url) => {
+        const pathname = new URL(url).pathname;
+        if (pathname === "/object_info") return response(OBJECT_INFO);
+        if (pathname === "/prompt") {
+          imageSubmitCount += 1;
+          if (imageSubmitCount === 1) firstImageSubmitted();
+          return response({ prompt_id: `pipeline-image-${imageSubmitCount}` });
+        }
+        const history = pathname.match(/^\/history\/pipeline-image-(\d+)$/);
+        if (history) {
+          const index = Number(history[1]);
+          return response({
+            [`pipeline-image-${index}`]: {
+              status: { completed: true, status_str: "success" },
+              outputs: { "13": { images: [{ filename: `pipeline-${index}.png`, subfolder: "text2img", type: "output" }] } },
+            },
+          });
+        }
+        return response({}, 404);
+      },
+    });
+    const accepted = await controller.createBatch({
+      clientRequestId: "pipeline-recipes",
+      promptModel: "remote-photo-model",
+      items: recipes.map((recipe, index) => ({ recipe, seed: index + 1 })),
+    });
+    await secondStarted;
+    let pipelineTimeout;
+    try {
+      await Promise.race([
+        imageSubmitted,
+        new Promise((_resolve, reject) => { pipelineTimeout = setTimeout(() => reject(new Error("First image did not start while the second prompt was in flight.")), 1_000); }),
+      ]);
+    } finally {
+      clearTimeout(pipelineTimeout);
+    }
+    assert.equal(imageSubmitCount, 1);
+    const overlapping = await controller.getBatch(accepted.id);
+    assert.match(overlapping.items[0].job.status, /^(?:running|completed)$/);
+    assert.equal(overlapping.items[1].status, "prompting");
+    releaseSecondPrompt();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await controller.getBatch(accepted.id)).status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal((await controller.getBatch(accepted.id)).status, "completed");
+  } finally {
+    releaseSecondPrompt?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cancelling a server-owned batch aborts in-flight prompt work and persists cancellation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-batch-cancel-"));
+  let promptStarted;
+  const started = new Promise((resolve) => { promptStarted = resolve; });
+  try {
+    const randomized = await randomizePersonPhotoRecipes({ seed: 8642, count: 1 });
+    const recipe = { ...randomized.recipes[0], batchId: "cancel-recipe", batchIndex: 0, batchSize: 1 };
+    const controller = createText2ImgController({
+      outputRoot: path.join(root, "output"),
+      storeRoot: path.join(root, "jobs"),
+      batchStoreRoot: path.join(root, "batches"),
+      fetchImpl: async (url) => new URL(url).pathname === "/object_info" ? response(OBJECT_INFO) : response({}, 404),
+      idFactory: () => "cancel-batch",
+      promptAssistant: {
+        provider: "test",
+        async status() { return { online: true, model: "photo-model", models: ["photo-model"] }; },
+        async generate({ signal }) {
+          promptStarted();
+          await new Promise((resolve, reject) => {
+            signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+          });
+        },
+      },
+    });
+    const accepted = await controller.createBatch({
+      clientRequestId: "cancel-recipe",
+      promptModel: "photo-model",
+      items: [{ recipe, seed: 99 }],
+    });
+    await started;
+    const cancelled = await controller.cancelBatch(accepted.id);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.cancelled, 1);
+    assert.equal(cancelled.items[0].status, "cancelled");
+    assert.equal((await createText2ImgBatchStore({ root: path.join(root, "batches") }).read(accepted.id)).status, "cancelled");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("turns persisted active text-to-image jobs into viewable interrupted records after restart", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-recovery-"));
   const store = createText2ImgStore({ root: path.join(root, "jobs") });
@@ -315,10 +545,11 @@ test("turns persisted active text-to-image jobs into viewable interrupted record
   }
 });
 
-async function invokeText2ImgRoute(controller, url) {
+async function invokeText2ImgRoute(controller, url, { method = "GET", body } = {}) {
   const result = { status: 0, body: null };
-  await controller.handleRoute({ method: "GET", url }, {}, {
+  await controller.handleRoute({ method, url }, {}, {
     pathname: new URL(url, "http://localhost").pathname,
+    async readJson() { return body; },
     sendJson(_res, status, body) { result.status = status; result.body = body; },
     sendError(_res, status, message, code) { result.status = status; result.body = { error: message, code }; },
   });

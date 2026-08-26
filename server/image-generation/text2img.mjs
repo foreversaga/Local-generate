@@ -3,10 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   buildPersonPhotoRecipeBrief,
+  PERSON_PHOTO_BATCH_MAX,
   personPhotoLibrarySummary,
   randomizePersonPhotoRecipes,
   validatePersonPhotoRecipe,
 } from "./person-photo-randomizer.mjs";
+import { createText2ImgBatchStore } from "./text2img-batch-store.mjs";
 import { createText2ImgStore } from "./text2img-store.mjs";
 
 export const FLUX2_CLIP_TYPE = "flux2";
@@ -86,6 +88,9 @@ const TERMINAL_STAGES = new Set(["completed", "success", "succeeded", "finished"
 const ERROR_STAGES = new Set(["error", "failed", "failure", "cancelled", "canceled"]);
 const TEXT2IMG_MAX_PROMPT_LENGTH = 4_000;
 const TEXT2IMG_MAX_DESCRIPTION_LENGTH = 2_000;
+const TEXT2IMG_BATCH_DETAIL_LIMIT = 20;
+const TEXT2IMG_BATCH_TERMINAL_STATUSES = new Set(["completed", "failed", "partial", "cancelled"]);
+const TEXT2IMG_JOB_TERMINAL_STATUSES = new Set(["completed", "failed", "interrupted", "cancelled"]);
 
 export const NATURE_CAMERA_PROFILE = "nature-camera-v2-anatomy";
 export const NATURE_CAMERA_ANATOMY_CLAUSE = "Anatomical integrity: one coherent adult body with a normal two arms and two legs, allowing limbs to be naturally occluded or outside the crop instead of duplicated; physically connected shoulders, hips, elbows, knees, wrists, and ankles; each visible hand has five distinct fingers with plausible joints, grip, overlap, and perspective; each visible bare foot has five distinct toes with correct orientation, weight-bearing contact, overlap, and perspective.";
@@ -286,13 +291,47 @@ export function normalizeText2ImgInput(input = {}) {
     loras,
     ...(recipe ? {
       batchId: String(input.batchId ?? recipe.batchId ?? ""),
-      batchIndex: boundedInteger(input.batchIndex ?? recipe.batchIndex, "batchIndex", 0, 0, 19),
-      batchSize: boundedInteger(input.batchSize ?? recipe.batchSize, "batchSize", 1, 1, 20),
+      batchIndex: boundedInteger(input.batchIndex ?? recipe.batchIndex, "batchIndex", 0, 0, PERSON_PHOTO_BATCH_MAX - 1),
+      batchSize: boundedInteger(input.batchSize ?? recipe.batchSize, "batchSize", 1, 1, PERSON_PHOTO_BATCH_MAX),
       recipeSeed: boundedInteger(input.recipeSeed ?? recipe.recipeSeed, "recipeSeed", 0, 0, 2_147_483_647),
       libraryVersion: String(recipe.libraryVersion || ""),
       recipe,
       validation: recipe.validation || null,
     } : {}),
+  });
+}
+
+export function normalizeText2ImgBatchInput(input = {}) {
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > PERSON_PHOTO_BATCH_MAX) {
+    throw makeError(`items must contain between 1 and ${PERSON_PHOTO_BATCH_MAX} recipes.`, 400, "TEXT2IMG_BATCH_ITEMS_INVALID");
+  }
+  const clientRequestId = String(input.clientRequestId || "").trim();
+  if (clientRequestId && !/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(clientRequestId)) {
+    throw makeError("clientRequestId is invalid.", 400, "TEXT2IMG_BATCH_REQUEST_ID_INVALID");
+  }
+  const promptModel = String(input.promptModel || "").trim();
+  if (!promptModel) throw makeError("A prompt model is required.", 400, "TEXT2IMG_BATCH_PROMPT_MODEL_REQUIRED");
+  const items = input.items.map((item, index) => {
+    const recipe = normalizeRecipe(item?.recipe);
+    if (!recipe) throw makeError(`Batch item ${index + 1} requires a person-photo recipe.`, 400, "TEXT2IMG_BATCH_RECIPE_REQUIRED");
+    const request = { ...normalizeText2ImgInput({
+      modelId: input.modelId,
+      encoderId: input.encoderId,
+      steps: input.steps,
+      cfg: input.cfg,
+      loras: input.loras,
+      ...item,
+      prompt: "Pending server-generated photographic prompt.",
+      recipe,
+    }) };
+    delete request.prompt;
+    return Object.freeze({ index, request });
+  });
+  return Object.freeze({
+    clientRequestId,
+    promptModel,
+    unloadPromptModel: input.unloadPromptModel === true,
+    items: Object.freeze(items),
   });
 }
 
@@ -498,10 +537,20 @@ export function createText2ImgController({
   gpuRuntime = remote ? "remote" : "local",
   store = null,
   storeRoot,
+  batchStore = null,
+  batchStoreRoot,
 } = {}) {
   if (!outputRoot) throw new Error("Text-to-image controller requires outputRoot.");
   const jobStore = store || createText2ImgStore({ ...(storeRoot ? { root: storeRoot } : {}) });
+  const linkedBatchStoreRoot = batchStoreRoot
+    || path.resolve(storeRoot || jobStore.root, "..", "batches");
+  const resolvedBatchStore = batchStore || createText2ImgBatchStore({
+    root: linkedBatchStoreRoot,
+  });
   const jobs = new Map();
+  const batches = new Map();
+  const batchRuns = new Map();
+  const batchAbortControllers = new Map();
   let initializationPromise = null;
 
   async function persistJob(job, { required = false } = {}) {
@@ -513,6 +562,19 @@ export function createText2ImgController({
       job.persistenceError = errorMessage(error, "Unable to persist text-to-image job.");
       if (required) throw makeError(job.persistenceError, 503, "TEXT2IMG_PERSISTENCE_FAILED");
       console.error("[text2img] Unable to persist job:", job.persistenceError);
+      return null;
+    }
+  }
+
+  async function persistBatch(batch, { required = false, itemIndexes = null } = {}) {
+    try {
+      const saved = await resolvedBatchStore.save(structuredClone(batch), { itemIndexes });
+      delete batch.persistenceError;
+      return saved;
+    } catch (error) {
+      batch.persistenceError = errorMessage(error, "Unable to persist text-to-image batch.");
+      if (required) throw makeError(batch.persistenceError, 503, "TEXT2IMG_BATCH_PERSISTENCE_FAILED");
+      console.error("[text2img] Unable to persist batch:", batch.persistenceError);
       return null;
     }
   }
@@ -534,6 +596,31 @@ export function createText2ImgController({
             await persistJob(job);
           }
           jobs.set(String(job.id), job);
+        }
+        const persistedBatches = await resolvedBatchStore.list();
+        for (const persisted of persistedBatches) {
+          if (!persisted?.id || !Array.isArray(persisted.items)) continue;
+          const batch = structuredClone(persisted);
+          if (!TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status)) {
+            const cancelRequested = batch.cancelRequested === true || batch.status === "cancelling";
+            batch.recovery = { reason: "bridge_restart", previousStatus: batch.status, recoveredAt: isoNow(now()) };
+            batch.status = cancelRequested ? "cancelling" : "queued";
+            batch.cancelRequested = cancelRequested;
+            const changedItemIndexes = [];
+            for (const item of batch.items) {
+              if (!item?.jobId && !["failed", "cancelled"].includes(item?.status)) {
+                item.status = cancelRequested ? "cancelled" : "queued";
+                item.error = "";
+                changedItemIndexes.push(item.index);
+              }
+            }
+            batch.updatedAt = batch.recovery.recoveredAt;
+            await persistBatch(batch, { itemIndexes: changedItemIndexes });
+          }
+          batches.set(String(batch.id), batch);
+          if (!TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status)) {
+            queueMicrotask(() => { void startBatch(batch.id); });
+          }
         }
       })().catch((error) => {
         initializationPromise = null;
@@ -617,7 +704,8 @@ export function createText2ImgController({
     }
   }
 
-  async function generatePhotographicPrompt(input = {}) {
+  async function generatePhotographicPrompt(input = {}, { signal } = {}) {
+    if (signal?.aborted) throw makeError("Prompt generation was cancelled.", 499, "TEXT2IMG_PROMPT_CANCELLED");
     const recipe = normalizeRecipe(input.recipe);
     const description = recipe
       ? normalizeText2ImgDescription({ description: buildPersonPhotoRecipeBrief(recipe) })
@@ -634,18 +722,21 @@ export function createText2ImgController({
     if (!assistant.models.includes(model)) {
       throw makeError(`Prompt model ${model} is not available.`, 400, "TEXT2IMG_PROMPT_MODEL_MISSING");
     }
+    const selectedModelOption = assistant.modelOptions?.find((option) => String(option?.value || "") === model);
+    const promptUsesLocalGpu = !promptAssistant?.generate || selectedModelOption?.location !== "remote";
     let lease = null;
     try {
-      const admission = gpuCoordinator?.request?.({
+      const admission = promptUsesLocalGpu ? gpuCoordinator?.request?.({
         requestId: `text2img-prompt:${idFactory()}`,
         jobId: `text2img-prompt:${Date.now()}`,
         workloadType: "ollama-vision",
         runtime: gpuRuntime,
-        metadata: { model, profile: NATURE_CAMERA_PROFILE },
-      });
+        metadata: { model, profile: NATURE_CAMERA_PROFILE, location: selectedModelOption?.location || "local" },
+      }) : null;
       lease = admission ? await admission.granted : null;
       if (promptAssistant?.generate) {
-        const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${assistantInput}` });
+        const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${assistantInput}`, signal });
+        if (signal?.aborted) throw makeError("Prompt generation was cancelled.", 499, "TEXT2IMG_PROMPT_CANCELLED");
         const prompt = ensureAnatomicalIntegrity(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(response), recipe), recipe));
         return { description, prompt, model, provider: promptAssistant.provider || "openai", profile: NATURE_CAMERA_PROFILE, unloadPromptModel: false, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
       }
@@ -819,6 +910,266 @@ export function createText2ImgController({
     return cloneJob(job);
   }
 
+  function updateBatchCounts(batch) {
+    const counts = {
+      total: batch.items.length,
+      prompted: batch.items.filter((item) => Boolean(item.prompt)).length,
+      submitted: batch.items.filter((item) => Boolean(item.jobId)).length,
+      completed: batch.items.filter((item) => item.status === "completed").length,
+      failed: batch.items.filter((item) => ["failed", "interrupted"].includes(item.status)).length,
+      cancelled: batch.items.filter((item) => item.status === "cancelled").length,
+    };
+    Object.assign(batch, counts);
+    return counts;
+  }
+
+  function publicBatch(batch, { summary = false } = {}) {
+    const cloned = structuredClone(batch);
+    if (summary) {
+      delete cloned.items;
+      return cloned;
+    }
+    if (batch.items.length > TEXT2IMG_BATCH_DETAIL_LIMIT) {
+      cloned.items = [];
+      cloned.itemsOmitted = true;
+      return cloned;
+    }
+    cloned.items = batch.items.map((item) => {
+      const { request, ...visible } = structuredClone(item);
+      const job = item.jobId ? jobs.get(String(item.jobId)) : null;
+      return {
+        ...visible,
+        seed: request?.seed ?? null,
+        recipeSeed: request?.recipeSeed ?? request?.recipe?.recipeSeed ?? null,
+        batchIndex: request?.batchIndex ?? request?.recipe?.batchIndex ?? item.index,
+        ...(job ? { job: cloneJob(job) } : {}),
+      };
+    });
+    return cloned;
+  }
+
+  async function refreshBatch(batch, { persist = true } = {}) {
+    let changed = false;
+    const changedItemIndexes = [];
+    for (const item of batch.items) {
+      if (!item.jobId) continue;
+      const job = jobs.get(String(item.jobId));
+      if (!job) continue;
+      if (item.status !== job.status) {
+        item.status = job.status;
+        changed = true;
+        changedItemIndexes.push(item.index);
+      }
+      const nextError = String(job.error || "");
+      if (item.error !== nextError) {
+        item.error = nextError;
+        changed = true;
+        changedItemIndexes.push(item.index);
+      }
+    }
+    const previousCounts = JSON.stringify({
+      total: batch.total,
+      prompted: batch.prompted,
+      submitted: batch.submitted,
+      completed: batch.completed,
+      failed: batch.failed,
+      cancelled: batch.cancelled,
+    });
+    const counts = updateBatchCounts(batch);
+    if (previousCounts !== JSON.stringify(counts)) changed = true;
+    const allTerminal = batch.items.every((item) => TEXT2IMG_JOB_TERMINAL_STATUSES.has(item.status));
+    let nextStatus = batch.status;
+    if (batch.cancelRequested) nextStatus = allTerminal ? "cancelled" : "cancelling";
+    else if (allTerminal) {
+      if (counts.completed === counts.total) nextStatus = "completed";
+      else if (counts.failed === counts.total) nextStatus = "failed";
+      else nextStatus = "partial";
+    } else if (counts.submitted === counts.total) nextStatus = "generating";
+    else if (batch.items.some((item) => ["prompting", "submitting"].includes(item.status)) || counts.prompted > 0) nextStatus = "prompting";
+    else nextStatus = "queued";
+    if (batch.status !== nextStatus) {
+      batch.status = nextStatus;
+      changed = true;
+    }
+    if (changed) {
+      batch.updatedAt = isoNow(now());
+      if (TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status) && !batch.completedAt) batch.completedAt = batch.updatedAt;
+      if (persist) await persistBatch(batch, { itemIndexes: changedItemIndexes });
+    }
+    return changed;
+  }
+
+  async function executeBatch(batch, signal) {
+    for (const item of batch.items) {
+      if (batch.cancelRequested || signal.aborted) break;
+      if (item.jobId || ["failed", "cancelled"].includes(item.status)) continue;
+      item.status = "prompting";
+      item.error = "";
+      batch.status = "prompting";
+      batch.updatedAt = isoNow(now());
+      await persistBatch(batch, { itemIndexes: [item.index] });
+      try {
+        const recipe = item.request.recipe;
+        const generated = await generatePhotographicPrompt({
+          recipe,
+          model: batch.promptModel,
+          unloadPromptModel: batch.unloadPromptModel,
+        }, { signal });
+        if (batch.cancelRequested || signal.aborted) {
+          item.status = "cancelled";
+          break;
+        }
+        item.prompt = generated.prompt;
+        item.promptModel = generated.model;
+        item.status = "submitting";
+        batch.updatedAt = isoNow(now());
+        await persistBatch(batch, { itemIndexes: [item.index] });
+        const job = await enqueue({ ...item.request, prompt: generated.prompt });
+        item.jobId = job.id;
+        item.status = job.status;
+        batch.updatedAt = isoNow(now());
+        await persistBatch(batch, { itemIndexes: [item.index] });
+      } catch (error) {
+        if (batch.cancelRequested || signal.aborted || error?.code === "TEXT2IMG_PROMPT_CANCELLED" || error?.name === "AbortError") {
+          item.status = "cancelled";
+          item.error = "";
+          break;
+        }
+        item.status = "failed";
+        item.error = errorMessage(error, "Unable to process batch item.");
+        batch.error = item.error;
+        batch.updatedAt = isoNow(now());
+        await persistBatch(batch, { itemIndexes: [item.index] });
+      }
+    }
+    if (batch.cancelRequested || signal.aborted) {
+      for (const item of batch.items) {
+        if (!item.jobId && !["completed", "failed"].includes(item.status)) item.status = "cancelled";
+      }
+    }
+    await refreshBatch(batch);
+    while (!TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status)) {
+      await sleep(Math.max(250, pollIntervalMs));
+      await refreshBatch(batch);
+    }
+  }
+
+  function startBatch(id) {
+    const batchId = String(id);
+    if (batchRuns.has(batchId)) return batchRuns.get(batchId);
+    const batch = batches.get(batchId);
+    if (!batch || TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status)) return null;
+    const controller = new AbortController();
+    batchAbortControllers.set(batchId, controller);
+    const running = executeBatch(batch, controller.signal).catch(async (error) => {
+      batch.status = batch.cancelRequested ? "cancelled" : "failed";
+      batch.error = batch.cancelRequested ? "" : errorMessage(error, "Text-to-image batch failed.");
+      batch.updatedAt = isoNow(now());
+      batch.completedAt = batch.updatedAt;
+      await persistBatch(batch, { itemIndexes: [] });
+    }).finally(() => {
+      batchRuns.delete(batchId);
+      batchAbortControllers.delete(batchId);
+    });
+    batchRuns.set(batchId, running);
+    return running;
+  }
+
+  async function createBatch(input = {}) {
+    await initialize();
+    if (remote) throw makeError("Text-to-image models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
+    const request = normalizeText2ImgBatchInput(input);
+    if (request.clientRequestId) {
+      const existing = [...batches.values()].find((batch) => batch.clientRequestId === request.clientRequestId);
+      if (existing) {
+        await refreshBatch(existing);
+        return publicBatch(existing);
+      }
+    }
+    const assistant = await checkPromptAssistant();
+    if (!assistant.ready || !assistant.models.includes(request.promptModel)) {
+      throw makeError(`Prompt model ${request.promptModel} is not available.`, 503, assistant.reason || "PROMPT_MODEL_UNAVAILABLE");
+    }
+    const readinessKeys = new Set(request.items.map((item) => `${item.request.modelId}:${item.request.encoderId}`));
+    for (const key of readinessKeys) {
+      const [modelId, encoderId] = key.split(":");
+      const readiness = await checkReadiness(modelId, encoderId);
+      if (!readiness.ready) {
+        throw makeError(`${TEXT2IMG_MODEL_PROFILES[modelId].label} is not ready.`, 503, readiness.reason || "TEXT2IMG_NOT_READY");
+      }
+    }
+    const createdAt = isoNow(now());
+    const batch = {
+      id: String(idFactory()),
+      clientRequestId: request.clientRequestId,
+      status: "queued",
+      promptModel: request.promptModel,
+      unloadPromptModel: request.unloadPromptModel,
+      cancelRequested: false,
+      error: "",
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: null,
+      items: request.items.map(({ index, request: itemRequest }) => ({
+        index,
+        status: "queued",
+        request: structuredClone(itemRequest),
+        prompt: "",
+        promptModel: "",
+        jobId: "",
+        error: "",
+      })),
+    };
+    updateBatchCounts(batch);
+    batches.set(batch.id, batch);
+    try {
+      await persistBatch(batch, { required: true });
+    } catch (error) {
+      batches.delete(batch.id);
+      throw error;
+    }
+    queueMicrotask(() => { void startBatch(batch.id); });
+    return publicBatch(batch);
+  }
+
+  async function getBatch(id) {
+    await initialize();
+    const batch = batches.get(String(id)) || await resolvedBatchStore.read(id);
+    if (!batch) return null;
+    if (!batches.has(String(batch.id))) batches.set(String(batch.id), batch);
+    await refreshBatch(batch);
+    return publicBatch(batch);
+  }
+
+  async function listBatches({ limit = 20 } = {}) {
+    await initialize();
+    const listed = [...batches.values()].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
+    const selected = listed.slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
+    await Promise.all(selected.map((batch) => refreshBatch(batch)));
+    return selected.map((batch) => publicBatch(batch, { summary: true }));
+  }
+
+  async function cancelBatch(id) {
+    await initialize();
+    const batch = batches.get(String(id));
+    if (!batch) return null;
+    if (TEXT2IMG_BATCH_TERMINAL_STATUSES.has(batch.status)) return publicBatch(batch);
+    batch.cancelRequested = true;
+    batch.status = "cancelling";
+    batch.updatedAt = isoNow(now());
+    batchAbortControllers.get(String(id))?.abort();
+    const cancelledItemIndexes = [];
+    for (const item of batch.items) {
+      if (!item.jobId && item.status !== "failed") {
+        item.status = "cancelled";
+        cancelledItemIndexes.push(item.index);
+      }
+    }
+    await refreshBatch(batch);
+    await persistBatch(batch, { itemIndexes: cancelledItemIndexes });
+    return publicBatch(batch);
+  }
+
   async function handleRoute(req, res, { pathname = new URL(req.url || "/", "http://localhost").pathname, readJson, sendJson, sendError } = {}) {
     const respond = sendJson || ((response, status, payload) => {
       response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -840,7 +1191,7 @@ export function createText2ImgController({
     if (req.method === "POST" && pathname === "/api/text2img/person-photo/randomize") {
       try {
         const input = await readJson(req);
-        const count = boundedInteger(input?.count, "count", 1, 1, 20);
+        const count = boundedInteger(input?.count, "count", 1, 1, PERSON_PHOTO_BATCH_MAX);
         const result = await randomizePersonPhotoRecipes({ ...input, count });
         const randomized = Array.isArray(result)
           ? { mode: count === 1 ? "single" : "batch", batchSeed: input?.seed ?? null, count: result.length, recipes: result }
@@ -864,6 +1215,41 @@ export function createText2ImgController({
         respond(res, 200, await generatePhotographicPrompt(await readJson(req)));
       } catch (error) {
         fail(res, Number.isInteger(error?.status) ? error.status : 502, errorMessage(error), error?.code);
+      }
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/text2img/batches") {
+      try {
+        respond(res, 202, { batch: await createBatch(await readJson(req)) });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 400, errorMessage(error), error?.code);
+      }
+      return true;
+    }
+    if (req.method === "GET" && pathname === "/api/text2img/batches") {
+      try {
+        const requestUrl = new URL(req.url || pathname, "http://localhost");
+        respond(res, 200, { batches: await listBatches({ limit: requestUrl.searchParams.get("limit") }) });
+      } catch (error) {
+        fail(res, 503, errorMessage(error, "Unable to load text-to-image batches."), "TEXT2IMG_BATCH_PERSISTENCE_UNAVAILABLE");
+      }
+      return true;
+    }
+    const batchRoute = pathname.match(/^\/api\/text2img\/batches\/([^/]+)(?:\/(cancel))?$/);
+    if (batchRoute) {
+      const id = decodeURIComponent(batchRoute[1]);
+      const action = batchRoute[2] || "";
+      try {
+        const batch = action === "cancel" && req.method === "POST"
+          ? await cancelBatch(id)
+          : !action && req.method === "GET"
+            ? await getBatch(id)
+            : undefined;
+        if (batch === undefined) fail(res, 405, "Method not allowed.", "METHOD_NOT_ALLOWED");
+        else if (!batch) fail(res, 404, "Text-to-image batch not found.", "TEXT2IMG_BATCH_NOT_FOUND");
+        else respond(res, 200, { batch });
+      } catch (error) {
+        fail(res, Number.isInteger(error?.status) ? error.status : 500, errorMessage(error), error?.code);
       }
       return true;
     }
@@ -907,6 +1293,17 @@ export function createText2ImgController({
     return false;
   }
 
-  void initialize().catch((error) => console.error("[text2img] Unable to initialize persisted jobs:", errorMessage(error)));
-  return Object.freeze({ checkReadiness, checkPromptAssistant, generatePhotographicPrompt, enqueue, getJob: (id) => jobs.has(String(id)) ? cloneJob(jobs.get(String(id))) : null, handleRoute });
+  void initialize().catch((error) => console.error("[text2img] Unable to initialize persisted jobs and batches:", errorMessage(error)));
+  return Object.freeze({
+    checkReadiness,
+    checkPromptAssistant,
+    generatePhotographicPrompt,
+    enqueue,
+    createBatch,
+    getBatch,
+    listBatches,
+    cancelBatch,
+    getJob: (id) => jobs.has(String(id)) ? cloneJob(jobs.get(String(id))) : null,
+    handleRoute,
+  });
 }

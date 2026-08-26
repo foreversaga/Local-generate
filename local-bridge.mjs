@@ -1551,8 +1551,10 @@ async function requestOllamaPrompt({ model, system, prompt, visualInputs = [], u
   return cleanPromptText(result.response || result.message?.content);
 }
 
-export async function requestSglangPrompt({ model, system, prompt, visualInputs = [], fetcher = fetch, maxTokens = 4096, responseFormat = null }) {
+export async function requestSglangPrompt({ model, system, prompt, visualInputs = [], fetcher = fetch, maxTokens = 4096, responseFormat = null, signal = null }) {
   try {
+    const timeoutSignal = AbortSignal.timeout(10 * 60 * 1000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const userContent = visualInputs.length
       ? [
           { type: "text", text: prompt },
@@ -1577,7 +1579,7 @@ export async function requestSglangPrompt({ model, system, prompt, visualInputs 
         ...(responseFormat ? { response_format: responseFormat } : {}),
         chat_template_kwargs: { enable_thinking: false },
       }),
-      signal: AbortSignal.timeout(10 * 60 * 1000),
+      signal: requestSignal,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -1590,13 +1592,16 @@ export async function requestSglangPrompt({ model, system, prompt, visualInputs 
     return result;
   } catch (error) {
     if (error instanceof LongVideoError) throw error;
+    if (signal?.aborted) throw new LongVideoError("SGLANG_CANCELLED", "vLLM 提示詞請求已取消。", 499);
     if (error?.name === "TimeoutError") throw new LongVideoError("SGLANG_TIMEOUT", "vLLM 提示詞請求逾時。", 504);
     throw new LongVideoError("SGLANG_UNAVAILABLE", `無法連線 Docker vLLM：${error.message}`, 502);
   }
 }
 
-export async function requestOrnithPrompt({ model, system, prompt, fetcher = fetch, maxTokens = 4096, responseFormat = null }) {
+export async function requestOrnithPrompt({ model, system, prompt, fetcher = fetch, maxTokens = 4096, responseFormat = null, signal = null }) {
   try {
+    const timeoutSignal = AbortSignal.timeout(10 * 60 * 1000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     const response = await fetcher(`${ORNITH_API_BASE}/chat/completions`, {
       method: "POST",
       headers: ornithHeaders(),
@@ -1612,7 +1617,7 @@ export async function requestOrnithPrompt({ model, system, prompt, fetcher = fet
         ...(responseFormat ? { response_format: responseFormat } : {}),
         chat_template_kwargs: { enable_thinking: false },
       }),
-      signal: AbortSignal.timeout(10 * 60 * 1000),
+      signal: requestSignal,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -1624,6 +1629,7 @@ export async function requestOrnithPrompt({ model, system, prompt, fetcher = fet
     return result;
   } catch (error) {
     if (error instanceof LongVideoError) throw error;
+    if (signal?.aborted) throw new LongVideoError("ORNITH_CANCELLED", "Ornith 提示詞請求已取消。", 499);
     if (error?.name === "TimeoutError") throw new LongVideoError("ORNITH_TIMEOUT", "Ornith 提示詞請求逾時。", 504);
     throw new LongVideoError("ORNITH_UNAVAILABLE", `無法連線本機 Ornith：${error.message}`, 502);
   }
@@ -5793,7 +5799,7 @@ function createText2ImgControllerForRuntime() {
     promptAssistant: {
       provider: "vllm",
       status: text2ImgPromptAssistantStatus,
-      generate: async ({ model, system, prompt }) => {
+      generate: async ({ model, system, prompt, signal }) => {
         const ornithSelected = model.startsWith(ORNITH_TEXT2IMG_MODEL_PREFIX);
         const requestModel = ornithSelected ? model.slice(ORNITH_TEXT2IMG_MODEL_PREFIX.length) : model;
         const requestPrompt = ornithSelected ? requestOrnithPrompt : requestSglangPrompt;
@@ -5805,6 +5811,7 @@ function createText2ImgControllerForRuntime() {
             system,
           ].join("\n\n"),
           prompt,
+          signal,
           maxTokens: 1024,
           responseFormat: { type: "json_object" },
         });

@@ -303,7 +303,7 @@ export function createBridgeDomainRouter({
       matches: ({ pathname }) => pathname === "/api/text2img" || pathname.startsWith("/api/text2img/"),
       handle: ({ req, res, pathname, readJson, sendJson, sendError }) => {
         const dispatch = () => getText2ImgController().handleRoute(req, res, { pathname, readJson, sendJson, sendError });
-        return req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
+        return req.method === "GET" ? dispatch() : withRuntimeOperation(dispatch);
       },
     },
     {

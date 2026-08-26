@@ -268,6 +268,21 @@ test("vLLM prompt provider calls OpenAI chat completions with thinking disabled"
   assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
 });
 
+test("vLLM prompt provider forwards external cancellation", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(() => requestSglangPrompt({
+    model: "qwen3.8-27b-uncensored-nvfp4",
+    system: "Return JSON.",
+    prompt: "Cancel this request.",
+    signal: controller.signal,
+    fetcher: async (_url, init) => {
+      assert.equal(init.signal.aborted, true);
+      throw init.signal.reason;
+    },
+  }), { code: "SGLANG_CANCELLED", status: 499 });
+});
+
 test("local Ornith prompt provider uses its own OpenAI-compatible endpoint", async () => {
   const calls = [];
   const result = await requestOrnithPrompt({

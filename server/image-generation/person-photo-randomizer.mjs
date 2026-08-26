@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
+export const PERSON_PHOTO_BATCH_MAX = 1_000;
+
 const LIBRARY_URL = new URL('./person-photo-library.v1.json', import.meta.url);
 export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v8-intimate-poses-sets';
 let cachedLibrary;
@@ -491,7 +493,9 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
 }
 
 export async function randomizePersonPhotoRecipes({ seed = Date.now(), count = 1, locks = {}, clothingRequirements = [] } = {}) {
-  if (!Number.isInteger(count) || count < 1 || count > 20) throw Object.assign(new Error('count must be an integer from 1 to 20'), { code: 'PERSON_PHOTO_COUNT_INVALID' });
+  if (!Number.isInteger(count) || count < 1 || count > PERSON_PHOTO_BATCH_MAX) {
+    throw Object.assign(new Error(`count must be an integer from 1 to ${PERSON_PHOTO_BATCH_MAX}`), { code: 'PERSON_PHOTO_COUNT_INVALID' });
+  }
   const library = await loadPersonPhotoLibrary();
   const requirements = resolveRequirements(library, clothingRequirements);
   const batchSeed = hash32(seed);

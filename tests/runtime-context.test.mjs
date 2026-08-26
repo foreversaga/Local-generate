@@ -68,6 +68,8 @@ test("domain router dispatches the first matching domain and remains independent
 });
 
 test("bridge domain router keeps runtime-switched controller lookup injectable", async () => {
+  let assetLocks = 0;
+  let runtimeOperations = 0;
   const router = createBridgeDomainRouter({
     getSeedVR2Controller: () => ({ handleRoute: async () => true }),
     getImg2ImgController: () => ({ handleRoute: async () => true }),
@@ -83,10 +85,13 @@ test("bridge domain router keeps runtime-switched controller lookup injectable",
     ollamaCoordinator: {},
     continuationPromptFinalizer: async () => "",
     runtimeContext: { comfyUrl: "http://comfy", ollamaUrl: "http://ollama", isRemote: false },
-    withAssetLifecycleLock: (operation) => operation(),
-    withRuntimeOperation: (operation) => operation(),
+    withAssetLifecycleLock: (operation) => { assetLocks += 1; return operation(); },
+    withRuntimeOperation: (operation) => { runtimeOperations += 1; return operation(); },
   });
   assert.deepEqual(router.names, ["upscale", "sequences", "lora-training", "text2img", "pose-preview", "img2img"]);
   assert.equal(await router.dispatch({ pathname: "/api/text2img", req: { method: "GET" }, res: {}, readJson() {}, sendJson() {}, sendError() {} }), true);
+  assert.equal(await router.dispatch({ pathname: "/api/text2img/batches", req: { method: "POST" }, res: {}, readJson() {}, sendJson() {}, sendError() {} }), true);
+  assert.equal(assetLocks, 0);
+  assert.equal(runtimeOperations, 1);
   assert.equal(await router.dispatch({ pathname: "/api/img2img", req: { method: "GET" }, res: {}, readJson() {}, sendJson() {}, sendError() {} }), true);
 });

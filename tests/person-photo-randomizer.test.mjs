@@ -53,6 +53,30 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
     '26–29 歲成年女性', '20 歲出頭年輕成年女性', '20 多歲年輕成年女性',
   ]);
   assert.deepEqual(library.categories.identity.人物數量.map(({ text }) => text), ['單人']);
+  assert.equal(
+    library.categories.face.顴骨_臉頰.find(({ id }) => id === 'face.顴骨_臉頰.007')?.text,
+    '臉頰輪廓自然平順，維持均勻中性膚色',
+  );
+  assert.doesNotMatch(
+    library.categories.face.顴骨_臉頰.find(({ id }) => id === 'face.顴骨_臉頰.007')?.text || '',
+    /蘋果肌|腮紅|泛紅/,
+  );
+  assert.doesNotMatch(JSON.stringify(library.categories.imageGoal.真實度), /localized redness/);
+  assert.deepEqual(library.categories.face.臉型.slice(-2), [
+    { id: 'face.臉型.015', text: '短下巴、輪廓柔和的圓卵形臉' },
+    { id: 'face.臉型.016', text: '臉寬適中、下半臉自然收窄的柔和鵝蛋臉' },
+  ]);
+  assert.deepEqual(library.categories.hair.剪裁_輪廓.slice(-5), [
+    { id: 'hair.剪裁_輪廓.026', text: '高位雙馬尾，兩側髮束自然垂落' },
+    { id: 'hair.剪裁_輪廓.027', text: '半高雙馬尾，後方長髮自然披下' },
+    { id: 'hair.剪裁_輪廓.028', text: '蓬鬆低馬尾，臉側保留柔和修飾髮' },
+    { id: 'hair.剪裁_輪廓.029', text: '長直髮搭配臉側階梯層次' },
+    { id: 'hair.剪裁_輪廓.030', text: '肩下中長髮，髮尾輕微外翻' },
+  ]);
+  assert.deepEqual(library.categories.hair.瀏海.slice(-2), [
+    { id: 'hair.瀏海.015', text: '輕薄齊瀏海，中央略透出額頭' },
+    { id: 'hair.瀏海.016', text: '中間自然分束的薄瀏海' },
+  ]);
   assert.equal(library.categories.imageGoal.照片類型.length, 50);
   assert.equal(library.categories.imageGoal.風格方向.length, 40);
   assert.equal(library.categories.imageGoal.真實度.length, 40);
@@ -66,6 +90,32 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
     compatibleCombinationCount: 1462500,
   });
   assert.deepEqual(summary.hosiery.filter(({ id }) => ['H01', 'H04'].includes(id)).map(({ id }) => id), ['H01', 'H04']);
+});
+
+test('photo-reference face and hair options can be locked into a recipe', async () => {
+  const locks = {
+    'face.臉型': 'face.臉型.015',
+    'face.眉型': 'face.眉型.013',
+    'face.眼型': 'face.眼型.023',
+    'face.鼻型': 'face.鼻型.013',
+    'face.嘴唇': 'face.嘴唇.015',
+    'face.顴骨_臉頰': 'face.顴骨_臉頰.010',
+    'face.下顎_下巴': 'face.下顎_下巴.011',
+    'hair.style': 'hair.剪裁_輪廓.026',
+    'hair.bangs': 'hair.瀏海.015',
+  };
+  const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: 'photo-reference-face-hair', locks });
+  assert.equal(recipe.selections.face.臉型.id, locks['face.臉型']);
+  assert.equal(recipe.selections.face.眉型.id, locks['face.眉型']);
+  assert.equal(recipe.selections.face.眼型.id, locks['face.眼型']);
+  assert.equal(recipe.selections.face.鼻型.id, locks['face.鼻型']);
+  assert.equal(recipe.selections.face.嘴唇.id, locks['face.嘴唇']);
+  assert.equal(recipe.selections.face.顴骨_臉頰.id, locks['face.顴骨_臉頰']);
+  assert.equal(recipe.selections.face.下顎_下巴.id, locks['face.下顎_下巴']);
+  assert.equal(recipe.selections.hair.style.id, locks['hair.style']);
+  assert.equal(recipe.selections.hair.bangs.id, locks['hair.bangs']);
+  assert.match(recipe.brief, /高位雙馬尾，兩側髮束自然垂落/);
+  assert.match(recipe.brief, /面中自然飽滿，臉頰保持均勻中性膚色，無明顯腮紅/);
 });
 
 test('single and batch generation use the same deterministic seed stream', async () => {
@@ -366,7 +416,7 @@ test('underwear rejects conflicting clothing and invalid external recipes', asyn
 });
 
 test('rejects invalid count and incompatible locked white-sock outfit', async () => {
-  await assert.rejects(() => randomizePersonPhotoRecipes({ count: 21 }), { code: 'PERSON_PHOTO_COUNT_INVALID' });
+  await assert.rejects(() => randomizePersonPhotoRecipes({ count: 1001 }), { code: 'PERSON_PHOTO_COUNT_INVALID' });
   await assert.rejects(() => randomizePersonPhotoRecipes({
     seed: 1,
     locks: { outfit: 'C002' },

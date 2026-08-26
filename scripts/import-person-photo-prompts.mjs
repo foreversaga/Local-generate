@@ -13,6 +13,60 @@ const SECTION_KEYS = {
 };
 
 const YOUNG_ADULT_WOMAN_AGE = /^(?:18–20|20–22|23–25|26–29) 歲成年女性$|^20(?: 歲出頭| 多歲)年輕成年女性$/;
+const NEUTRAL_CHEEK_TEXT = '臉頰輪廓自然平順，維持均勻中性膚色';
+
+const PHOTO_REFERENCE_FACE_EXTENSIONS = {
+  臉型: [
+    { id: 'face.臉型.015', text: '短下巴、輪廓柔和的圓卵形臉' },
+    { id: 'face.臉型.016', text: '臉寬適中、下半臉自然收窄的柔和鵝蛋臉' },
+  ],
+  眉型: [
+    { id: 'face.眉型.013', text: '眉頭自然、眉尾略帶弧度的柔和平眉' },
+  ],
+  眼型: [
+    { id: 'face.眼型.023', text: '偏圓杏眼，眼尾平緩' },
+    { id: 'face.眼型.024', text: '細長杏眼，外眼角柔和' },
+  ],
+  鼻型: [
+    { id: 'face.鼻型.013', text: '鼻樑柔和、鼻頭小巧圓潤' },
+  ],
+  嘴唇: [
+    { id: 'face.嘴唇.015', text: '唇峰柔和、嘴角微微上揚的自然唇形' },
+  ],
+  顴骨_臉頰: [
+    { id: 'face.顴骨_臉頰.010', text: '面中自然飽滿，臉頰保持均勻中性膚色，無明顯腮紅' },
+  ],
+  下顎_下巴: [
+    { id: 'face.下顎_下巴.011', text: '下顎柔和收窄、下巴短而圓潤' },
+  ],
+};
+
+const PHOTO_REFERENCE_HAIR_EXTENSIONS = {
+  剪裁_輪廓: [
+    { id: 'hair.剪裁_輪廓.026', text: '高位雙馬尾，兩側髮束自然垂落' },
+    { id: 'hair.剪裁_輪廓.027', text: '半高雙馬尾，後方長髮自然披下' },
+    { id: 'hair.剪裁_輪廓.028', text: '蓬鬆低馬尾，臉側保留柔和修飾髮' },
+    { id: 'hair.剪裁_輪廓.029', text: '長直髮搭配臉側階梯層次' },
+    { id: 'hair.剪裁_輪廓.030', text: '肩下中長髮，髮尾輕微外翻' },
+  ],
+  瀏海: [
+    { id: 'hair.瀏海.015', text: '輕薄齊瀏海，中央略透出額頭' },
+    { id: 'hair.瀏海.016', text: '中間自然分束的薄瀏海' },
+  ],
+};
+
+function appendCategoryExtensions(categories, category, extensions) {
+  for (const [section, entries] of Object.entries(extensions)) {
+    const target = categories[category]?.[section];
+    if (!target) throw new Error(`Expected ${category}.${section} prompt category`);
+    const existingIds = new Set(target.map(({ id }) => id));
+    for (const entry of entries) {
+      if (existingIds.has(entry.id)) throw new Error(`Duplicate prompt option ID: ${entry.id}`);
+      target.push(entry);
+      existingIds.add(entry.id);
+    }
+  }
+}
 
 function extendedGoalEntries(section, start, entries) {
   return entries.map((entry, index) => {
@@ -76,7 +130,7 @@ const REALISM_EXTENSIONS = extendedGoalEntries('真實度', 21, [
   'natural body balance and grounded weight',
   'physically plausible grip and prop contact',
   'garment folds and tension consistent with the pose',
-  'subtle skin-tone variation and localized redness',
+  'subtle natural skin-tone variation across the face and body',
   'flyaway hair and naturally varied strand clumping',
   'background details remain spatially recognizable',
   'depth of field consistent with focal length and distance',
@@ -287,6 +341,11 @@ export function importPersonPhotoPrompts(sourcePath) {
     categories.imageGoal.真實度.push(...REALISM_EXTENSIONS);
     categories.identity.年齡層 = categories.identity.年齡層.filter((item) => YOUNG_ADULT_WOMAN_AGE.test(item.text));
     categories.identity.人物數量 = categories.identity.人物數量.filter((item) => item.text === '單人');
+    const neutralCheek = categories.face.顴骨_臉頰.find((item) => item.id === 'face.顴骨_臉頰.007');
+    if (!neutralCheek) throw new Error('Expected cheek face option face.顴骨_臉頰.007');
+    neutralCheek.text = NEUTRAL_CHEEK_TEXT;
+    appendCategoryExtensions(categories, 'face', PHOTO_REFERENCE_FACE_EXTENSIONS);
+    appendCategoryExtensions(categories, 'hair', PHOTO_REFERENCE_HAIR_EXTENSIONS);
     for (const items of Object.values(categories.pose)) for (const item of items) item.group = 'classic';
     categories.pose.性感姿勢 = SEXY_POSES;
     categories.pose.情慾姿勢 = SENSUAL_POSES;

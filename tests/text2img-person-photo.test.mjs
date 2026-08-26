@@ -55,6 +55,8 @@ test("exposes the person-photo library and creates traceable single or batch rec
 test("rebuilds recipe briefs and preserves mandatory clothing through prompt generation and job normalization", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-person-photo-prompt-"));
   const modelCalls = [];
+  const gpuRequests = [];
+  let releasedGpuLeases = 0;
   try {
     const controller = createText2ImgController({
       outputRoot: root,
@@ -74,6 +76,12 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
         },
         async generate(input) { modelCalls.push(input); return JSON.stringify({ prompt: "自然窗光下的成人生活人像" }); },
       },
+      gpuCoordinator: {
+        request(input) {
+          gpuRequests.push(input);
+          return { granted: Promise.resolve({ release() { releasedGpuLeases += 1; } }) };
+        },
+      },
     });
     const randomized = await invoke(controller, "POST", "/api/text2img/person-photo/randomize", {
       count: 1,
@@ -91,6 +99,9 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
     assert.notEqual(generated.description, "untrusted client brief");
     assert.equal(modelCalls[0].model, "ornith:ornith-sglang");
     assert.equal(generated.model, "ornith:ornith-sglang");
+    assert.equal(gpuRequests.length, 1);
+    assert.equal(gpuRequests[0].metadata.location, "local");
+    assert.equal(releasedGpuLeases, 1);
     assert.ok(modelCalls[0].prompt.includes(requiredClothing));
     for (const heading of ['照片目標', '人物', '服裝', '動作與表情', '構圖與鏡位', '場景', '光線', '拍攝質感']) {
       assert.match(modelCalls[0].prompt, new RegExp(`【${heading}】\\n`));
@@ -100,6 +111,10 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
     assert.ok(generated.prompt.includes(requiredClothing));
     assert.match(generated.prompt, /【肢體完整性】\n/);
     assert.ok(generated.prompt.endsWith(NATURE_CAMERA_ANATOMY_CLAUSE));
+
+    const remoteGenerated = await controller.generatePhotographicPrompt({ recipe, model: "photo-model" });
+    assert.equal(remoteGenerated.model, "photo-model");
+    assert.equal(gpuRequests.length, 1);
 
     const normalized = normalizeText2ImgInput({ prompt: generated.prompt, seed: 42, recipe });
     assert.equal(normalized.prompt, generated.prompt);
@@ -136,13 +151,23 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
   }
 });
 
-test("rejects person-photo batch counts outside 1 through 20", async () => {
+test("accepts 1000 person-photo recipes and rejects counts above the limit", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "h3-person-photo-count-"));
   try {
     const controller = createText2ImgController({ outputRoot: root, storeRoot: path.join(root, "jobs") });
-    const result = await invoke(controller, "POST", "/api/text2img/person-photo/randomize", { count: 21 });
-    assert.equal(result.status, 400);
-    assert.equal(result.body.code, "TEXT2IMG_COUNT_INVALID");
+    const accepted = await invoke(controller, "POST", "/api/text2img/person-photo/randomize", { count: 1000, seed: 1000 });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.body.count, 1000);
+    assert.equal(accepted.body.recipes.length, 1000);
+    assert.equal(accepted.body.recipes.at(-1).batchIndex, 999);
+    assert.equal(accepted.body.recipes.at(-1).batchSize, 1000);
+    const normalized = normalizeText2ImgInput({ prompt: "batch boundary", recipe: accepted.body.recipes.at(-1) });
+    assert.equal(normalized.batchIndex, 999);
+    assert.equal(normalized.batchSize, 1000);
+
+    const rejected = await invoke(controller, "POST", "/api/text2img/person-photo/randomize", { count: 1001 });
+    assert.equal(rejected.status, 400);
+    assert.equal(rejected.body.code, "TEXT2IMG_COUNT_INVALID");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
