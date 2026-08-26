@@ -150,7 +150,7 @@ export type PersonPhotoLibrary = {
     compatiblePhotoStylePairCount: number; compatibleCombinationCount: number;
   };
   clothingOptions: Record<string, Array<{ id: string; label: string; group?: "classic" | "sexy" | "sensual" }>>;
-  poseOptions: Array<{ id: string; label: string; group: "classic" | "sexy" | "sensual" }>;
+  poseOptions: Array<{ id: string; label: string; group: "classic" | "lifestyle" | "sexy" | "sensual" }>;
 };
 export type PersonPhotoRandomResult = {
   mode: "single" | "batch"; batchId: string; batchSeed: number; count: number; recipes: PersonPhotoRecipe[];

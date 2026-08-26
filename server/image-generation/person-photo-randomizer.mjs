@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 export const PERSON_PHOTO_BATCH_MAX = 1_000;
 
 const LIBRARY_URL = new URL('./person-photo-library.v1.json', import.meta.url);
-export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v8-intimate-poses-sets';
+export const PERSON_PHOTO_RULES_VERSION = 'person-photo-rules-v14-reference-pose-skill';
 let cachedLibrary;
 
 export async function loadPersonPhotoLibrary() {
@@ -32,7 +32,7 @@ export async function personPhotoLibrarySummary() {
       underwearSet: library.clothing.underwearSets.map(({ id, text, group }) => ({ id, label: text, text, group })),
       custom: [],
     },
-    poseOptions: poseOptionsFor(library).map(({ id, text, group }) => ({ id, label: text, text, group })),
+    poseOptions: poseOptionsFor(library).map(({ id, label, text, group }) => ({ id, label: label ?? text, text, group })),
     libraryVersion: library.libraryVersion,
     sourceSha256: library.sourceSha256,
     markdownFileCount: library.markdownFileCount,
@@ -68,10 +68,50 @@ const pick = (items, random) => items[Math.floor(random() * items.length)];
 const textOf = (entry) => entry?.text ?? '';
 const section = (sections, pattern) => Object.entries(sections ?? {}).find(([key]) => pattern.test(key))?.[1] ?? [];
 const lockedValue = (locks, key) => locks?.[key];
-const POSE_SECTIONS = /^(?:站姿|坐姿|蹲_跪姿|躺姿|動態姿勢|性感姿勢|情慾姿勢)$/;
+const POSE_SECTIONS = /^(?:站姿|坐姿|蹲_跪姿|躺姿|動態姿勢|生活感姿勢|性感姿勢|情慾姿勢)$/;
+const REAR_VIEW_FACE_KEYS = new Set(['臉型', '鼻型', '下顎_下巴', '耳朵', '真實細節']);
+const REAR_VIEW_HAIR_KEYS = new Set(['髮長', '剪裁_輪廓', '髮色', '直捲程度', '髮量_質感', '髮絲狀態']);
+const FRONT_ONLY_CLOTHING_TERMS = /前扣|深\s*V|聚攏|半罩杯|薄杯|罩杯|低脊心|交叉胸帶|胸前扭結|胸前|法式陽台|陽台/g;
+
+export function isStrictRearViewRecipe(recipe) {
+  return recipe?.selections?.pose?.capturePreset?.strictRearView === true;
+}
+
+export function isReferencePoseRecipe(recipe) {
+  return recipe?.selections?.pose?.capturePreset?.referencePoseSkill === 'reference-pose-description-v1'
+    && typeof recipe?.selections?.pose?.capturePreset?.referencePosePriority === 'string'
+    && recipe.selections.pose.capturePreset.referencePosePriority.trim().length > 0;
+}
+
+export function rearViewClothingText(value) {
+  const parts = String(value ?? '').split(/\s*\+\s*/).map((part) => part
+    .replace(FRONT_ONLY_CLOTHING_TERMS, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/([\u3400-\u9fff])\s+([\u3400-\u9fff])/g, '$1$2')
+    .trim())
+    .filter(Boolean);
+  return parts.join(' + ');
+}
 
 function poseOptionsFor(library) {
   return Object.entries(library.categories.pose ?? {}).filter(([key]) => POSE_SECTIONS.test(key)).flatMap(([, items]) => items);
+}
+
+function lockToken(lock) {
+  return typeof lock === 'object' && lock ? lock.id ?? lock.optionId ?? lock.value : lock;
+}
+
+function applyPoseCapturePreset(locks, pose) {
+  if (!pose?.capturePreset?.locks) return locks;
+  const poseGroup = String(lockedValue(locks, 'poseGroup') ?? '').trim();
+  if (poseGroup && poseGroup !== pose.group) throw Object.assign(new Error(`Pose ${pose.id} does not belong to ${poseGroup}`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+  for (const [key, presetValue] of Object.entries(pose.capturePreset.locks)) {
+    const requested = lockToken(lockedValue(locks, key));
+    if (requested != null && requested !== '' && requested !== presetValue) {
+      throw Object.assign(new Error(`Capture template ${pose.id} requires ${key}=${presetValue}`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+    }
+  }
+  return { ...pose.capturePreset.locks, ...locks, poseGroup: pose.group };
 }
 
 function choose(items, random, lock, label) {
@@ -87,6 +127,15 @@ function chooseDistinct(items, random, count, label) {
   if (items.length < count) throw new Error(`Not enough options available for ${label}`);
   const pool = [...items];
   return Array.from({ length: count }, () => pool.splice(Math.floor(random() * pool.length), 1)[0]);
+}
+
+function chooseRealism(items, random, pose) {
+  const fixed = pose?.capturePreset?.fixedRealism;
+  if (fixed == null) return chooseDistinct(items, random, 2, 'realism');
+  if (!Array.isArray(fixed) || fixed.length !== 2 || new Set(fixed).size !== 2) {
+    throw Object.assign(new Error(`Capture template ${pose.id} must define two distinct realism cues`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+  }
+  return fixed.map((id) => choose(items, random, id, 'realism'));
 }
 
 function matchPool(pool, requirement) {
@@ -129,15 +178,17 @@ const YOUNG_ADULT_WOMAN_AGE = /^(?:18–20|20–22|23–25|26–29) 歲成年女
 const UNDERWEAR_SCENE = /臥室|更衣室|攝影棚|白棚|背景棚/;
 const UNDERWEAR_PHOTO_TYPE = /真人人像|日常生活感|時尚寫真|雜誌人物|商業廣告|棚拍人物|品牌形象|Lookbook|生活方式廣告|無修圖|高級時裝|清新日系|韓系生活|底片感|自然光寫真/;
 const UNDERWEAR_FRAME = /大腿以上|膝蓋以上|三分之二身|全身|鞋底|人物帶環境/;
+const LIFESTYLE_PHOTO_TYPE = /日常生活感|社群生活照|旅行紀錄|室內生活|戶外自然|紀實抓拍|無修圖感|手機隨拍|咖啡廳生活|居家生活|朋友代拍|自拍|通勤途中|雨天街頭|清晨城市散步|書店閱讀|飯店入住|運動生活|散步生活|校園建築生活/;
+const LIFESTYLE_STYLE = /寫實自然|日常生活流|日系清新|韓系簡約|文青紀實|青春自然|溫柔柔和|明亮陽光|原片直出感|社群網紅生活照感|朋友視角自然隨拍感|觀察式紀實感|安靜低調敘事感|溫暖居家生活感|空間敘事背景清晰感|輕微動態抓拍感|旅途紀錄感|柔和陰天生活感|背景可讀的環境肖像感/;
 
 function youngAdultWoman(entry) { return YOUNG_ADULT_WOMAN_AGE.test(textOf(entry)); }
 
 function focalMm(entry) { return Number.parseInt(textOf(entry).match(/\d+/)?.[0] ?? '0', 10); }
 function distanceMeters(entry) { return Number.parseFloat(textOf(entry).match(/\d+(?:\.\d+)?/)?.[0] ?? '0'); }
-function distanceCompatible(framing, focalLength, distance) {
+function distanceCompatible(framing, focalLength, distance, { allowArmLengthFullBody = false } = {}) {
   const meters = distanceMeters(distance);
   const mm = focalMm(focalLength);
-  if (FULL_BODY_FRAME.test(textOf(framing))) {
+  if (FULL_BODY_FRAME.test(textOf(framing)) && !allowArmLengthFullBody) {
     const minimum = mm <= 30 ? 2 : mm <= 58 ? 3 : mm <= 85 ? 4 : 5;
     if (meters < minimum) return false;
   }
@@ -259,7 +310,7 @@ export function validatePersonPhotoRecipe(recipe) {
   hard('selfie-not-long-lens', !(SELFIE.test(textOf(s.photoType)) && LONG_LENS.test(textOf(s.focalLength))), '自拍或社群隨拍不搭配 105–135mm 長焦');
   hard('closeup-no-footwear', swimwear || !(CLOSE_FRAME.test(textOf(s.framing)) && whiteSocks), '特寫不能要求可見鞋襪；泳裝不套用此限制');
   hard('small-interior-not-135mm', !(SMALL_INTERIOR.test(textOf(s.scene)) && /135mm/.test(textOf(s.focalLength))), '小型室內空間不使用 135mm');
-  hard('framing-focal-distance-compatible', distanceCompatible(s.framing, s.focalLength, s.distance), '構圖、焦段與拍攝距離必須符合真實光學關係');
+  hard('framing-focal-distance-compatible', distanceCompatible(s.framing, s.focalLength, s.distance, { allowArmLengthFullBody: Boolean(s.pose?.capturePreset?.allowArmLengthFullBody) }), '構圖、焦段與拍攝距離必須符合真實光學關係');
   hard('photo-style-compatible', photoGoalEntriesCompatible(s.photoType, s.style), '照片類型與風格的拍攝設備、場景或光線條件不可衝突');
   hard('photo-type-scene-compatible', photoTypeSceneCompatible(s.photoType, s.scene), '照片類型必須搭配相容的拍攝場景');
   hard('style-scene-compatible', styleSceneCompatible(s.style, s.scene), '風格方向必須搭配相容的拍攝場景');
@@ -280,7 +331,20 @@ export function validatePersonPhotoRecipe(recipe) {
   hard('underwear-visible-framing', !underwear || UNDERWEAR_FRAME.test(textOf(s.framing)), '內衣配方需使用能看見上身與下身款式的構圖');
   hard('underwear-no-hosiery', !underwear || s.hosiery?.id === 'H00', '內衣不可同時指定襪類');
   hard('underwear-no-outerwear', !underwear || s.outerwear?.id === 'O00', '內衣不可同時指定外套');
-  hard('pose-style-group-known', !s.pose?.group || ['classic', 'sexy', 'sensual'].includes(s.pose.group), '姿勢分組必須是自然、性感或情慾');
+  hard('pose-style-group-known', !s.pose?.group || ['classic', 'lifestyle', 'sexy', 'sensual'].includes(s.pose.group), '姿勢分組必須是自然、生活感、性感或情慾');
+  const referencePoseSkill = s.pose?.capturePreset?.referencePoseSkill;
+  const referencePoseText = `${textOf(s.pose)} ${s.pose?.capturePreset?.referencePosePriority ?? ''}`;
+  hard(
+    'reference-pose-skill-contract',
+    !referencePoseSkill || (
+      referencePoseSkill === 'reference-pose-description-v1'
+      && /臀部.*(?:抬離|離開).*腳跟/.test(referencePoseText)
+      && /手掌.*肩線前方/.test(referencePoseText)
+      && /不得.*(?:跪坐|坐在腳跟)/.test(referencePoseText)
+      && /(?:腳踝|腳掌).*畫面外/.test(referencePoseText)
+    ),
+    '參考姿勢技能必須明確描述支撐點、關節位置、非接觸關係、失敗排除與裁切範圍',
+  );
   const requestedCaptureKind = captureKind(s.photoType) ?? captureKind(s.style);
   hard('capture-profile-aligned', !requestedCaptureKind || captureProfileCompatible(s.photoType, s.style, s.captureProfile), '照片目標必須使用對應的拍攝設備 profile');
   hard('capture-profile-ccd-aligned', requestedCaptureKind !== 'ccd' || captureKind(s.captureProfile) === 'ccd', 'CCD 或復古數位風格必須使用 CCD 或消費型數位相機 profile');
@@ -302,16 +366,29 @@ function selectCategory(sections, random, locks, category) {
 
 export function buildPersonPhotoRecipeBrief(recipe) {
   const s = recipe.selections;
+  const strictRearView = isStrictRearViewRecipe(recipe);
+  const referencePose = isReferencePoseRecipe(recipe);
   const swimwearShoe = s.swimwear && s.outfit?.shoe ? { text: s.outfit.shoe } : null;
   const clothing = s.swimwear ? [s.swimwear, s.hosiery, swimwearShoe, s.outerwear] : s.bra || s.panties ? [s.bra, s.panties] : [s.outfit, s.hosiery, s.outerwear];
   const block = (label, values) => {
     const content = values.filter(Boolean).map(textOf).filter(Boolean).join('，');
     return content ? `【${label}】\n${content}` : '';
   };
+  const face = strictRearView ? Object.entries(s.face).filter(([key]) => REAR_VIEW_FACE_KEYS.has(key)).map(([, value]) => value) : Object.values(s.face);
+  const hair = strictRearView ? Object.entries(s.hair).filter(([key]) => REAR_VIEW_HAIR_KEYS.has(key)).map(([, value]) => value) : Object.values(s.hair);
+  const visibleClothing = strictRearView
+    ? clothing.filter(Boolean).map((item) => ({ text: rearViewClothingText(textOf(item)) })).filter((item) => item.text)
+    : clothing;
+  const rearViewPriority = strictRearView ? `【最高優先鏡位限制】\n${s.pose.capturePreset.rearViewPriority}` : '';
+  const referencePosePriority = referencePose ? `【最高優先參考姿勢限制】\n${s.pose.capturePreset.referencePosePriority}` : '';
+  const rearViewFaceRule = strictRearView ? { text: '臉部變化只套用在越肩露出的單側窄幅側臉；不得為呈現雙眼、完整正臉或五官而旋轉肩膀、胸腔或骨盆' } : null;
+  const rearViewClothingRule = strictRearView ? { text: '保留選定服裝的種類、配色與材質，但只呈現後肩帶、後背下圍、後腰帶、後側布料與背面裝飾；所有前側設計完全在鏡頭外' } : null;
   return [
+    rearViewPriority,
+    referencePosePriority,
     block('照片目標', [s.photoType, s.style, ...(s.realism ?? [])]),
-    block('人物', [...Object.values(s.identity), ...Object.values(s.face), ...Object.values(s.hair), ...Object.values(s.body), ...Object.values(s.skin)]),
-    block('服裝', [...clothing, ...s.customClothing]),
+    block('人物', [rearViewFaceRule, ...Object.values(s.identity), ...face, ...hair, ...Object.values(s.body), ...Object.values(s.skin)]),
+    block('服裝', [rearViewClothingRule, ...visibleClothing, ...s.customClothing]),
     block('動作與表情', [s.pose, s.expression]),
     block('構圖與鏡位', [s.framing, s.ratio, ...Object.values(s.cameraAngle), s.focalLength, s.distance]),
     block('場景', [s.scene]),
@@ -323,6 +400,11 @@ export function buildPersonPhotoRecipeBrief(recipe) {
 function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, requirements }) {
   const random = rngFor(recipeSeed);
   const c = library.categories;
+  const requestedPoseToken = lockToken(lockedValue(locks, 'pose'));
+  const requestedPose = requestedPoseToken == null || requestedPoseToken === '' ? null : poseOptionsFor(library).find((item) => item.id === requestedPoseToken || item.text === requestedPoseToken);
+  locks = applyPoseCapturePreset(locks, requestedPose);
+  const poseGroup = String(lockedValue(locks, 'poseGroup') ?? '').trim();
+  if (poseGroup && !['classic', 'lifestyle', 'sexy', 'sensual'].includes(poseGroup)) throw Object.assign(new Error(`Unknown pose group lock: ${poseGroup}`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
   const byCategory = (name) => requirements.filter((item) => item.category === name);
   const swimwearRequirements = byCategory('swimwear');
   const hasSwimwear = swimwearRequirements.length > 0;
@@ -378,11 +460,10 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   if (hasUnderwear && (!braPool.length || !pantyPool.length)) throw Object.assign(new Error('Underwear requirements do not resolve to one complete set'), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
   const bra = hasUnderwear ? choose(braPool, random, lockedValue(locks, 'bra'), 'bra') : null;
   const panties = hasUnderwear ? choose(pantyPool.filter((item) => !bra?.group || item.group === bra.group), random, lockedValue(locks, 'panties'), 'panties') : null;
-  const whiteSockRequirement = byCategory('hosiery').find((item) => item.candidates.some((candidate) => ['H01', 'H04'].includes(candidate.id)));
   const noHosiery = library.clothing.hosiery.find((item) => item.id === 'H00');
   const hosieryPool = hasUnderwear ? [noHosiery] : byCategory('hosiery')[0]?.candidates ?? library.clothing.hosiery;
   const hosiery = choose(hosieryPool, random, lockedValue(locks, 'hosiery'), 'hosiery');
-  const visibleSocks = whiteSockRequirement || ['H01', 'H04'].includes(hosiery.id);
+  const visibleSocks = ['H01', 'H04'].includes(hosiery.id);
   let outfitPool = library.clothing.outfits;
   for (const requirement of requirements) {
     if (requirement.category === 'outfit') outfitPool = outfitPool.filter((item) => requirement.candidates.some((candidate) => candidate.id === item.id));
@@ -413,18 +494,19 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
     const shoe = choose(shoePool, random, lockedValue(locks, 'shoes'), 'shoes');
     outfit = { id: miniskirt.id, text: `${top.text} + ${miniskirt.text} + ${shoe.text}`, top: top.text, bottom: miniskirt.text, shoe: shoe.text };
   } else outfit = choose(outfitPool, random, lockedValue(locks, 'outfit'), 'outfit');
-  const photoTypePool = hasUnderwear ? section(c.imageGoal, /照片類型/).filter((item) => UNDERWEAR_PHOTO_TYPE.test(item.text)) : section(c.imageGoal, /照片類型/);
+  const photoTypePool = (hasUnderwear ? section(c.imageGoal, /照片類型/).filter((item) => UNDERWEAR_PHOTO_TYPE.test(item.text)) : section(c.imageGoal, /照片類型/))
+    .filter((item) => poseGroup !== 'lifestyle' || LIFESTYLE_PHOTO_TYPE.test(item.text));
   const photoType = choose(photoTypePool, random, lockedValue(locks, 'photoType'), 'photoType');
   const selectableScenes = Object.entries(c.scene).filter(([key]) => /居家室內|商業室內|城市場景|自然場景|建築_景點/.test(key)).flatMap(([, items]) => items).filter((item) => !hasUnderwear || UNDERWEAR_SCENE.test(item.text));
   const requestedScene = typeof lockedValue(locks, 'scene') === 'object' ? lockedValue(locks, 'scene')?.id : lockedValue(locks, 'scene');
   const lockedSceneOption = selectableScenes.find((item) => item.id === requestedScene || item.text === requestedScene);
   if (lockedSceneOption && !photoTypeSceneCompatible(photoType, lockedSceneOption)) throw Object.assign(new Error('Locked photo type and scene are incompatible'), { code: 'PERSON_PHOTO_LOCK_INVALID' });
-  const stylePool = section(c.imageGoal, /風格方向/).filter((item) => photoGoalEntriesCompatible(photoType, item)
+  const stylePool = section(c.imageGoal, /風格方向/).filter((item) => (poseGroup !== 'lifestyle' || LIFESTYLE_STYLE.test(item.text)) && photoGoalEntriesCompatible(photoType, item)
     && (lockedSceneOption
       ? photoTypeSceneCompatible(photoType, lockedSceneOption) && styleSceneCompatible(item, lockedSceneOption)
       : selectableScenes.some((sceneOption) => photoTypeSceneCompatible(photoType, sceneOption) && styleSceneCompatible(item, sceneOption))));
   const style = choose(stylePool, random, lockedValue(locks, 'style'), 'style');
-  const realism = chooseDistinct(section(c.imageGoal, /真實度/), random, 2, 'realism');
+  const realism = chooseRealism(section(c.imageGoal, /真實度/), random, requestedPose);
   const framing = choose(framingPool, random, lockedValue(locks, 'framing'), 'framing');
   let focalPool = section(c.lens, /焦段/);
   if (SELFIE.test(photoType.text)) focalPool = focalPool.filter((item) => !LONG_LENS.test(item.text));
@@ -456,7 +538,8 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   const outdoorScene = /scene\.(城市場景|自然場景|建築_景點)\./.test(scene.id);
   const studioLook = /棚拍|攝影棚|白棚|背景棚|商業廣告|雜誌|時裝|editorial/i.test(`${photoType.text} ${style.text} ${scene.text}`);
   const goalEntries = [photoType, style];
-  const lightSources = [...section(c.lighting, /自然光/).filter((item) => !outdoorScene || !/窗戶|落地窗/.test(item.text)), ...(indoorScene ? section(c.lighting, /室內光/) : []), ...(studioLook ? section(c.lighting, /攝影用光/) : [])]
+  const phoneFlashSources = requestedPose?.capturePreset ? section(c.lighting, /手機閃光/) : [];
+  const lightSources = [...section(c.lighting, /自然光/).filter((item) => !outdoorScene || !/窗戶|落地窗/.test(item.text)), ...(indoorScene ? section(c.lighting, /室內光/) : []), ...(studioLook ? section(c.lighting, /攝影用光/) : []), ...phoneFlashSources]
     .filter((source) => goalEntries.every((entry) => !entry.lightingSourceTerms?.length || entry.lightingSourceTerms.some((term) => source.text.includes(term))));
   const lightDirections = section(c.lighting, /光線方向/).filter((item) => (!outdoorScene || !/窗邊|門口/.test(item.text))
     && goalEntries.every((entry) => !entry.lightingDirectionTerms?.length || entry.lightingDirectionTerms.some((term) => item.text.includes(term))));
@@ -468,10 +551,8 @@ function makeRecipe(library, { batchIndex, batchSize, recipeSeed, locks, require
   let capturePool = section(c.photographicTexture, /相機類型感/);
   const requestedCaptureKind = captureKind(photoType) ?? captureKind(style);
   if (requestedCaptureKind) capturePool = capturePool.filter((item) => captureKind(item) === requestedCaptureKind);
-  const distancePool = section(c.lens, /拍攝距離/).filter((item) => distanceCompatible(framing, focalLength, item));
-  const poseGroup = String(lockedValue(locks, 'poseGroup') ?? '').trim();
-  if (poseGroup && !['classic', 'sexy', 'sensual'].includes(poseGroup)) throw Object.assign(new Error(`Unknown pose group lock: ${poseGroup}`), { code: 'PERSON_PHOTO_LOCK_INVALID' });
-  const posePool = poseOptionsFor(library).filter((item) => !poseGroup || item.group === poseGroup);
+  const distancePool = section(c.lens, /拍攝距離/).filter((item) => distanceCompatible(framing, focalLength, item, { allowArmLengthFullBody: Boolean(requestedPose?.capturePreset?.allowArmLengthFullBody) }));
+  const posePool = poseOptionsFor(library).filter((item) => (!item.selectOnly || item.id === requestedPose?.id) && (!poseGroup || item.group === poseGroup));
   const selections = {
     photoType, style, realism,
     identity, face: selectCategory(c.face, random, locks, 'face'), hair,

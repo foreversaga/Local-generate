@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { NATURE_CAMERA_ANATOMY_CLAUSE, createText2ImgController, normalizeText2ImgInput } from "../server/image-generation/text2img.mjs";
+import { NATURE_CAMERA_ANATOMY_CLAUSE, STRICT_REAR_VIEW_CLAUSE, createText2ImgController, normalizeText2ImgInput } from "../server/image-generation/text2img.mjs";
 import { createText2ImgStore } from "../server/image-generation/text2img-store.mjs";
 
 async function invoke(controller, method, url, body) {
@@ -115,6 +115,26 @@ test("rebuilds recipe briefs and preserves mandatory clothing through prompt gen
     const remoteGenerated = await controller.generatePhotographicPrompt({ recipe, model: "photo-model" });
     assert.equal(remoteGenerated.model, "photo-model");
     assert.equal(gpuRequests.length, 1);
+
+    const rearRandomized = await invoke(controller, "POST", "/api/text2img/person-photo/randomize", {
+      count: 1,
+      seed: 456,
+      locks: { poseGroup: "sexy", pose: "pose.性感姿勢.026" },
+      clothingRequirements: [{ category: "underwearSet", optionId: "UW55", applyToAll: true }],
+    });
+    const rearGenerated = await controller.generatePhotographicPrompt({ recipe: rearRandomized.body.recipes[0], model: "photo-model" });
+    const rearModelInput = modelCalls.at(-1).prompt;
+    assert.match(rearModelInput, /^User image description:\n【最高優先鏡位限制】\n/);
+    assert.match(rearModelInput, /紅色內衣 \+ 紅色側邊細帶內褲/);
+    assert.doesNotMatch(rearModelInput, /紅色前扣深 V 內衣/);
+    assert.ok(rearGenerated.prompt.startsWith(`【最高優先鏡位限制】\n${STRICT_REAR_VIEW_CLAUSE}`));
+    assert.match(rearGenerated.prompt, /【最高優先參考姿勢限制】\n/);
+    assert.match(rearGenerated.prompt, /臀部完全抬離腳跟與小腿且不得接觸/);
+    assert.match(rearGenerated.prompt, /雙手掌位於肩線前方約一個前臂長/);
+    assert.match(rearGenerated.prompt, /不得改成跪坐、坐在腳跟上、直立跪姿/);
+    assert.match(rearGenerated.prompt, /小腿下段、腳踝與腳掌必須在畫面外/);
+    assert.match(rearGenerated.prompt, /Mandatory worn clothing, described only through rear-visible/);
+    assert.doesNotMatch(rearGenerated.prompt, /Mandatory visible clothing/);
 
     const normalized = normalizeText2ImgInput({ prompt: generated.prompt, seed: 42, recipe });
     assert.equal(normalized.prompt, generated.prompt);

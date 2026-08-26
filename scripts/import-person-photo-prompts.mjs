@@ -152,6 +152,30 @@ const SEXY_POSES = [
   '低蹲並以前臂支撐在大腿上', '反向坐椅並把前臂放在椅背上', '半跪姿，一腳踩地並保持軀幹直立', '側躺並讓雙膝輕微彎曲，頭部有支撐', '低頭整理側邊髮絲，身體自然前傾',
 ].map((text, index) => ({ id: `pose.性感姿勢.${String(index + 1).padStart(3, '0')}`, text, group: 'sexy' }));
 
+const SEXY_BED_CAPTURE_TEMPLATE = {
+  id: 'pose.性感姿勢.026',
+  label: '床面近距離背拍',
+  text: '成年女性在鋪有白色床單的臥室床面採主動四點承重姿勢。雙膝至少分開一個肩寬並壓住床面；髖部高於膝蓋，臀部完全抬離腳跟與小腿，臀部不可接觸腳跟或小腿。雙手掌放在肩線前方約一個前臂長的位置，五指張開壓住床面，手腕位於肩膀前方，雙臂伸展並承擔上半身重量。軀幹由髖部向床頭方向明顯前傾，背部接近水平；不得直立跪坐、不得坐在腳跟上、不得把手掌放在臀部兩側。人物背對鏡頭，肩膀、胸腔與骨盆始終朝離鏡頭方向，只輕微轉頭越肩側望，最多露出單側窄幅臉頰。相機從人物正後方 180°、約 0.8 公尺、貼近床面並位於骨盆高度，以手機後置 26mm 等效主鏡頭輕微仰拍；髖部是距離鏡頭最近且視覺上最大的前景，肩膀與頭部向遠處縮小。使用 2:3 直式緊湊構圖，畫面從頭頂至大腿下段，膝蓋可貼近底部邊緣，小腿下段、腳踝與腳掌全部在畫面外，床面與床頭板保持可辨識。只有臉部表情放鬆，身體仍維持主動四點承重。',
+  group: 'sexy',
+  selectOnly: true,
+  capturePreset: {
+    strictRearView: true,
+    referencePoseSkill: 'reference-pose-description-v1',
+    referencePosePriority: '固定參考姿勢不可簡化：雙膝至少分開一個肩寬並承重；髖部高於膝蓋，臀部完全抬離腳跟與小腿且不得接觸；雙手掌位於肩線前方約一個前臂長，手腕在肩膀前方、雙臂伸展並承重；軀幹明顯前傾且背部接近水平。不得改成跪坐、坐在腳跟上、直立跪姿或雙手放在臀部兩側。畫面從頭頂到大腿下段，膝蓋可貼近底部邊緣，小腿下段、腳踝與腳掌必須在畫面外。只有臉部表情可放鬆，身體仍保持主動四點承重。',
+    rearViewPriority: '相機必須位於人物正後方 180°。畫面只可看見後腦、背部、後肩、後腰、臀部、服裝背面與雙腿後側；胸口、腹部、內衣前側、內衣前扣與內褲正面必須完全在鏡頭外。不可使用正面、正面三分之四或側前方視角，也不可為展示臉部或服裝正面而旋轉肩膀、胸腔或骨盆。',
+    locks: {
+      photoType: 'imageGoal.照片類型.003', style: 'imageGoal.風格方向.001', framing: 'composition.取景範圍.005', ratio: 'composition.直式比例.004', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.002', hosiery: 'H00',
+      'identity.atmosphere': 'identity.身份氛圍.008', 'identity.temperament': 'identity.個人氣質.017', 'identity.count': 'identity.人物數量.001',
+      'body.身高感': 'body.身高感.008', 'body.骨架': 'body.骨架.005', 'body.肩頸': 'body.肩頸.002', 'body.上半身': 'body.上半身.002', 'body.腰腹': 'body.腰腹.008', 'body.臀部': 'body.臀部.004', 'body.大腿': 'body.大腿.003', 'body.膝蓋_小腿_腳踝': 'body.膝蓋_小腿_腳踝.008', 'body.手臂_手部': 'body.手臂_手部.008', 'body.整體體型': 'body.整體體型.005', 'body.物理真實感描述': 'body.物理真實感描述.001',
+      'skin.膚色': 'skin.膚色.008', 'skin.底色': 'skin.底色.002', 'skin.面部皮膚質地': 'skin.面部皮膚質地.006', 'skin.真實瑕疵': 'skin.真實瑕疵.006', 'skin.身體皮膚': 'skin.身體皮膚.010', 'skin.光澤程度': 'skin.光澤程度.002',
+      expression: 'expression.基本表情.020',
+      'cameraAngle.vertical': 'cameraAngle.垂直角度.007', 'cameraAngle.height': 'cameraAngle.相機高度.005', 'cameraAngle.horizontal': 'cameraAngle.水平方向.012', scene: 'scene.居家室內.007',
+      'lighting.source': 'lighting.室內光.001', 'lighting.direction': 'lighting.光線方向.005', 'lighting.quality': 'lighting.光質.002', captureProfile: 'photographicTexture.相機類型感.001',
+    },
+    fixedRealism: ['imageGoal.真實度.013', 'imageGoal.真實度.025'],
+  },
+};
+
 const SENSUAL_POSES = [
   '坐在床沿向後傾，以雙手穩定支撐身體', '側躺形成自然身體曲線，以前臂支撐頭部', '跪坐在腳跟上，肩膀放鬆並微微後展', '一側膝蓋跪在床面，另一腳穩定踩地', '半躺並抬起一側膝蓋，以前臂支撐上身',
   '背部輕靠牆面形成柔和弧線，雙腳保持著地', '背對鏡頭再轉頭回望，一手停在腰線', '坐姿雙膝自然錯開，雙手分別支撐座面', '側面跪姿，一手放在大腿上保持平衡', '俯躺並彎起小腿，以雙肘支撐上身',
@@ -159,6 +183,89 @@ const SENSUAL_POSES = [
   '雙手從腰側移向髖部，肩膀保持放鬆', '單手抬起頭髮露出頸肩線條', '靠在梳妝台邊緣，雙手分別支撐桌面與大腿', '肩背靠枕半躺，一側膝蓋自然抬起', '跪姿並將雙手平放在大腿上',
   '雙腿折向同一側側坐，胸肩轉向鏡頭', '單腳踩在低矮踏階上，另一腿穩定承重', '身體轉向側面並以視線越過肩線', '側靠牆面低頭，指尖停在頸側', '坐在長椅邊緣，一手後撐、一手輕放膝上',
 ].map((text, index) => ({ id: `pose.情慾姿勢.${String(index + 1).padStart(3, '0')}`, text, group: 'sensual' }));
+
+const LIFESTYLE_POSES = [
+  '端著馬克杯走到窗邊，視線自然停在窗外', '坐在沙發邊低頭回覆手機訊息，另一手隨意放在膝上', '站在廚房流理台前準備飲品，身體微微側向鏡頭', '走出咖啡店時順手整理肩背包，腳步沒有刻意停下', '坐在咖啡桌旁翻閱書頁，視線落在內容而非鏡頭',
+  '在玄關彎身穿鞋，一手扶牆保持平衡', '走在騎樓下抬手整理被風吹亂的髮絲', '站在便利商店冰櫃前查看飲料標籤，肩膀自然放鬆', '坐在床沿摺疊剛收下的衣物，身體略微前傾', '拉開窗簾讓日光進入房間，頭部順勢轉向窗外',
+  '在書架前抽出一本書，手臂與視線跟著書本移動', '等候過馬路時低頭確認手機，雙腳自然前後錯開', '沿著河岸慢走並回頭聽身旁朋友說話', '坐在公園長椅上整理外套袖口，雙膝自然錯開', '在超市推著購物車查看架上商品，身體處於移動途中',
+  '站在全身鏡前調整上衣下襬，視線停在鏡中穿搭', '坐在窗邊地毯上替盆栽整理葉片，一腿自然屈起', '從餐桌拿起剛沖好的飲品，另一手仍扶著椅背', '走上樓梯途中短暫回頭，重心穩定落在前腳', '在陽台晾衣時抬手掛上衣物，姿勢自然延伸',
+  '坐在車站候車座椅上整理隨身袋內物品', '在雨後街邊收起雨傘，低頭確認傘扣', '靠在廚房檯面旁嚐一口食物，表情自然放鬆', '盤腿坐在沙發上聽音樂，手指輕觸耳機', '穿過家門時回頭與屋內的人說話，手仍扶著門把',
+].map((text, index) => ({ id: `pose.生活感姿勢.${String(index + 1).padStart(3, '0')}`, text, group: 'lifestyle' }));
+
+function socialCaptureStyle(index, label, text, locks, options = {}) {
+  return {
+    id: `pose.社群手機構圖.${String(index).padStart(3, '0')}`,
+    label,
+    text,
+    group: 'lifestyle',
+    selectOnly: true,
+    capturePreset: { locks, ...options },
+  };
+}
+
+const SOCIAL_CAPTURE_STYLES = [
+  socialCaptureStyle(1, '前鏡頭近距離自拍', '成年女性以單手在手臂距離握持手機前鏡頭自拍，視線自然看向螢幕或鏡頭，肩膀與一小段前臂留在畫面邊緣，呈現輕微廣角透視、普通前鏡頭解析感與不完全置中的胸上隨手裁切', {
+    photoType: 'imageGoal.照片類型.032', style: 'imageGoal.風格方向.014', framing: 'composition.取景範圍.003', ratio: 'composition.直式比例.001', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.001', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.002', 'cameraAngle.height': 'cameraAngle.相機高度.002', 'cameraAngle.horizontal': 'cameraAngle.水平方向.001', scene: 'scene.居家室內.002',
+    'lighting.source': 'lighting.自然光.009', 'lighting.direction': 'lighting.光線方向.008', captureProfile: 'photographicTexture.相機類型感.013',
+  }),
+  socialCaptureStyle(2, '高角度自拍', '成年女性將手機前鏡頭舉到頭部上方，手臂自然向上伸展並以中度俯拍收進大腿以上範圍，視線看向螢幕，近距離透視使頭部略近、身體向後延伸，保留臥室背景與一處輕微不完整裁切', {
+    photoType: 'imageGoal.照片類型.032', style: 'imageGoal.風格方向.020', framing: 'composition.取景範圍.005', ratio: 'composition.直式比例.001', focalLength: 'lens.焦段.003', distance: 'lens.拍攝距離.001', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.006', 'cameraAngle.height': 'cameraAngle.相機高度.001', 'cameraAngle.horizontal': 'cameraAngle.水平方向.003', scene: 'scene.居家室內.006',
+    'lighting.source': 'lighting.自然光.009', 'lighting.direction': 'lighting.光線方向.001', captureProfile: 'photographicTexture.相機類型感.013',
+  }),
+  socialCaptureStyle(3, '0.5× 超廣角自拍', '成年女性使用手機後置 0.5× 超廣角，以伸直的手臂從頭部斜上方拍攝全身與大量街景，不刻意修正靠近鏡頭的手臂與腿部延伸、邊緣拉伸及略帶不確定感的構圖，保留社群隨手快照的廣角臨場感', {
+    photoType: 'imageGoal.照片類型.018', style: 'imageGoal.風格方向.014', framing: 'composition.取景範圍.008', ratio: 'composition.直式比例.001', focalLength: 'lens.焦段.001', distance: 'lens.拍攝距離.002',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.006', 'cameraAngle.height': 'cameraAngle.相機高度.001', 'cameraAngle.horizontal': 'cameraAngle.水平方向.003', scene: 'scene.城市場景.001',
+    'lighting.source': 'lighting.自然光.004', 'lighting.direction': 'lighting.光線方向.002', captureProfile: 'photographicTexture.相機類型感.014',
+  }, { allowArmLengthFullBody: true }),
+  socialCaptureStyle(4, '全身鏡前穿搭', '成年女性站在全身鏡前，以手機後置主鏡頭拍下從頭頂到鞋底的完整穿搭，手機與真實握持手勢清楚出現在鏡中，機身約在胸口高度，房間和鏡框保留可辨識細節，構圖像準備出門前隨手記錄 OOTD', {
+    photoType: 'imageGoal.照片類型.033', style: 'imageGoal.風格方向.020', framing: 'composition.取景範圍.009', ratio: 'composition.直式比例.001', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.007',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.001', scene: 'scene.居家室內.011',
+    'lighting.source': 'lighting.室內光.001', 'lighting.direction': 'lighting.光線方向.006', captureProfile: 'photographicTexture.相機類型感.001',
+  }),
+  socialCaptureStyle(5, '遮臉鏡自拍', '成年女性在更衣鏡前用手機遮住部分臉部，以後置主鏡頭拍攝大腿以上穿搭，身體稍微偏離中心、肩線自然傾斜，鏡框或環境在一側形成不等留白，保留普通社群穿搭照的隨手感', {
+    photoType: 'imageGoal.照片類型.033', style: 'imageGoal.風格方向.014', framing: 'composition.取景範圍.005', ratio: 'composition.直式比例.002', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.005', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.003', scene: 'scene.居家室內.011',
+    'lighting.source': 'lighting.室內光.010', 'lighting.direction': 'lighting.光線方向.007', captureProfile: 'photographicTexture.相機類型感.001',
+  }),
+  socialCaptureStyle(6, '鏡前直閃', '成年女性在鏡前以手機後置主鏡頭和直射閃光自拍，手機與握持手清楚可見，閃光在鏡面形成局部亮點，人物局部偏亮、背景較暗並保留室內混合色溫與清楚硬陰影，呈現夜間社群快照而非棚拍打光', {
+    photoType: 'imageGoal.照片類型.033', style: 'imageGoal.風格方向.020', framing: 'composition.取景範圍.006', ratio: 'composition.直式比例.001', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.005', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.001', scene: 'scene.居家室內.011',
+    'lighting.source': 'lighting.手機閃光.001', 'lighting.direction': 'lighting.光線方向.006', captureProfile: 'photographicTexture.相機類型感.015',
+  }),
+  socialCaptureStyle(7, '朋友隨拍', '朋友站在幾步外以手機後置主鏡頭拍攝成年女性的三分之二身生活照，人物沒有完全置中，正在整理衣服或笑到一半而非正式擺拍，街道背景保持可讀，只保留一點手持傾斜與普通手機銳化', {
+    photoType: 'imageGoal.照片類型.031', style: 'imageGoal.風格方向.021', framing: 'composition.取景範圍.007', ratio: 'composition.直式比例.002', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.008', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.005', scene: 'scene.城市場景.001',
+    'lighting.source': 'lighting.自然光.004', 'lighting.direction': 'lighting.光線方向.001', captureProfile: 'photographicTexture.相機類型感.001',
+  }),
+  socialCaptureStyle(8, '咖啡廳抓拍', '朋友坐在咖啡桌對面以手機後置主鏡頭拍攝成年女性的腰上生活照，桌面、杯子或餐點形成近距離前景，人物正拿起飲料、看向窗外或低頭閱讀而沒有對鏡頭擺拍，室內暖光與窗光自然混合', {
+    photoType: 'imageGoal.照片類型.027', style: 'imageGoal.風格方向.021', framing: 'composition.取景範圍.004', ratio: 'composition.直式比例.002', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.005', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.005', scene: 'scene.商業室內.001',
+    'lighting.source': 'lighting.室內光.008', 'lighting.direction': 'lighting.光線方向.002', captureProfile: 'photographicTexture.相機類型感.001',
+  }),
+  socialCaptureStyle(9, '行走回頭', '朋友在後方以手機後置主鏡頭拍攝成年女性沿人行道行走後自然回頭的全身瞬間，重心仍在跨步途中，衣料與髮絲留有克制的動態痕跡，人物稍微偏離中心並保留可辨識街景', {
+    photoType: 'imageGoal.照片類型.031', style: 'imageGoal.風格方向.030', framing: 'composition.取景範圍.008', ratio: 'composition.直式比例.002', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.009',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.013', scene: 'scene.城市場景.004',
+    'lighting.source': 'lighting.自然光.004', 'lighting.direction': 'lighting.光線方向.002', captureProfile: 'photographicTexture.相機類型感.001',
+  }),
+  socialCaptureStyle(10, '夜間 Photo Dump', '朋友在霓虹街道以手機後置主鏡頭和直射閃光拍攝成年女性的膝上瞬間，人物被短促閃光照亮、背景環境光明顯較暗，保留混合白平衡、清楚硬陰影、輕微不完整裁切與相簿直出感，像社群 Photo Dump 中的一張生活快照', {
+    photoType: 'imageGoal.照片類型.018', style: 'imageGoal.風格方向.014', framing: 'composition.取景範圍.006', ratio: 'composition.直式比例.002', focalLength: 'lens.焦段.004', distance: 'lens.拍攝距離.005', hosiery: 'H00',
+    'cameraAngle.vertical': 'cameraAngle.垂直角度.001', 'cameraAngle.height': 'cameraAngle.相機高度.003', 'cameraAngle.horizontal': 'cameraAngle.水平方向.003', scene: 'scene.城市場景.016',
+    'lighting.source': 'lighting.手機閃光.002', 'lighting.direction': 'lighting.光線方向.006', captureProfile: 'photographicTexture.相機類型感.015',
+  }),
+];
+
+const SOCIAL_CAPTURE_PROFILES = [
+  { id: 'photographicTexture.相機類型感.013', text: '手機前置鏡頭手臂距離自拍感' },
+  { id: 'photographicTexture.相機類型感.014', text: '手機後置 0.5× 超廣角社群自拍感' },
+  { id: 'photographicTexture.相機類型感.015', text: '手機後置主鏡頭直閃快照感' },
+];
+
+const PHONE_FLASH_LIGHTING = [
+  { id: 'lighting.手機閃光.001', text: '鏡面手機直閃與偏暗室內環境光' },
+  { id: 'lighting.手機閃光.002', text: '手機直閃與偏暗夜間街道環境光' },
+];
 
 function groupedClothingStyles(prefix, groups) {
   let index = 0;
@@ -347,8 +454,11 @@ export function importPersonPhotoPrompts(sourcePath) {
     appendCategoryExtensions(categories, 'face', PHOTO_REFERENCE_FACE_EXTENSIONS);
     appendCategoryExtensions(categories, 'hair', PHOTO_REFERENCE_HAIR_EXTENSIONS);
     for (const items of Object.values(categories.pose)) for (const item of items) item.group = 'classic';
-    categories.pose.性感姿勢 = SEXY_POSES;
+    categories.pose.生活感姿勢 = [...LIFESTYLE_POSES, ...SOCIAL_CAPTURE_STYLES];
+    categories.pose.性感姿勢 = [...SEXY_POSES, SEXY_BED_CAPTURE_TEMPLATE];
     categories.pose.情慾姿勢 = SENSUAL_POSES;
+    categories.photographicTexture.相機類型感.push(...SOCIAL_CAPTURE_PROFILES);
+    categories.lighting.手機閃光 = PHONE_FLASH_LIGHTING;
     if (categories.imageGoal.照片類型.length !== 50 || categories.imageGoal.風格方向.length !== 40 || categories.imageGoal.真實度.length !== 40) {
       throw new Error(`Expected expanded photo goals 50/40/40, found ${categories.imageGoal.照片類型.length}/${categories.imageGoal.風格方向.length}/${categories.imageGoal.真實度.length}`);
     }
@@ -361,8 +471,8 @@ export function importPersonPhotoPrompts(sourcePath) {
     if (clothing.bras.length !== 100 || clothing.bras[0].id !== 'BR01' || clothing.bras.at(-1).id !== 'BR100') throw new Error('Expected contiguous bra IDs BR01-BR100');
     if (clothing.panties.length !== 100 || clothing.panties[0].id !== 'PT01' || clothing.panties.at(-1).id !== 'PT100') throw new Error('Expected contiguous panty IDs PT01-PT100');
     if (clothing.underwearSets.length !== 100 || clothing.underwearSets[0].id !== 'UW01' || clothing.underwearSets.at(-1).id !== 'UW100') throw new Error('Expected contiguous underwear set IDs UW01-UW100');
-    if (categories.pose.性感姿勢.length !== 25 || categories.pose.情慾姿勢.length !== 25) throw new Error('Expected 25 sexy and 25 sensual pose options');
-    return { schemaVersion: 1, libraryVersion: `person-photo-v7-intimate-poses-sets-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
+    if (categories.pose.生活感姿勢.length !== 35 || categories.pose.性感姿勢.length !== 26 || categories.pose.情慾姿勢.length !== 25) throw new Error('Expected 35 lifestyle, 26 sexy and 25 sensual pose options');
+    return { schemaVersion: 1, libraryVersion: `person-photo-v13-reference-pose-skill-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 

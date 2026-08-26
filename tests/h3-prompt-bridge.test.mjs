@@ -607,6 +607,10 @@ test("vLLM img2img uses the text-only OpenAI-compatible route while ComfyUI rece
     assert.match(calls[0].body.messages[0].content, /<nature-camera-skill>/);
     assert.match(calls[0].body.messages[0].content, /# Nature Camera/);
     assert.match(calls[0].body.messages[0].content, /# Camera Language Reference/);
+    assert.match(calls[0].body.messages[0].content, /<reference-pose-description-skill>/);
+    assert.match(calls[0].body.messages[0].content, /# Reference Pose Description/);
+    assert.match(calls[0].body.messages[0].content, /<reference-pose-language>/);
+    assert.match(calls[0].body.messages[0].content, /hips are higher than the knees and fully lifted away from the heels/);
     assert.match(calls[0].body.messages[0].content, /FLUX\.2 Image Edit/);
     assert.match(calls[0].body.messages[0].content, /You do not receive or inspect the source image/);
     assert.match(calls[0].body.messages[0].content, /negativePrompt must be an empty string/);

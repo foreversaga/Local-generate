@@ -128,7 +128,7 @@ test("builds a bounded nature-camera description contract for realistic adult ph
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /【人物】/);
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /【服裝】/);
   assert.match(NATURE_CAMERA_SYSTEM_PROMPT, /one blank line between blocks/);
-  assert.equal(NATURE_CAMERA_PROFILE, "nature-camera-v2-anatomy");
+  assert.equal(NATURE_CAMERA_PROFILE, "nature-camera-v3-reference-pose");
   assert.equal(parseNatureCameraPromptResponse('```json\n{"prompt":"自然窗光下的成人紀實人像"}\n```'), "自然窗光下的成人紀實人像");
   assert.throws(() => parseNatureCameraPromptResponse('{"prompt":""}'), { code: "TEXT2IMG_OLLAMA_EMPTY_PROMPT" });
 });

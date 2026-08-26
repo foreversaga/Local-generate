@@ -52,6 +52,8 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(workspace, /text2img\.random\.clothingStyle/);
   assert.match(workspace, /clothingOptionGroups\.map/);
   assert.match(workspace, /CLOTHING_STYLE_GROUPS = \["classic", "sexy", "sensual"\]/);
+  assert.match(workspace, /POSE_STYLE_GROUPS = \["classic", "lifestyle", "sexy", "sensual"\]/);
+  assert.match(workspace, /POSE_STYLE_GROUPS\.map/);
   assert.match(workspace, /<optgroup key=\{group\} label=\{t\(CLOTHING_STYLE_GROUP_KEYS\[group\]\)\}>/);
   assert.match(dictionaries, /"text2img\.random\.styleGroup\.sexy": "性感"/);
   assert.match(dictionaries, /"text2img\.random\.styleGroup\.sensual": "情趣"/);
@@ -62,6 +64,9 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(workspace, /poseOptionId \? \{ pose: poseOptionId \} : \{\}/);
   assert.match(dictionaries, /"text2img\.random\.poseGroup\.sexy": "性感"/);
   assert.match(dictionaries, /"text2img\.random\.poseGroup\.sensual": "情慾"/);
+  assert.match(dictionaries, /"text2img\.random\.poseGroup\.lifestyle": "生活感"/);
+  assert.match(dictionaries, /"text2img\.random\.poseGroup": "構圖／姿勢類型"/);
+  assert.match(dictionaries, /"text2img\.random\.poseStyle": "指定風格／姿勢"/);
   assert.match(workspace, /clothingCategory === "custom" && !value/);
   assert.match(workspace, /return \[\{ category: clothingCategory/);
   assert.match(client, /value\?: string/);

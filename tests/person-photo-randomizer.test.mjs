@@ -8,6 +8,21 @@ import {
   validatePersonPhotoRecipe,
 } from '../server/image-generation/person-photo-randomizer.mjs';
 
+const LIFESTYLE_PHOTO_TYPE_FOR_TEST = /日常生活感|社群生活照|旅行紀錄|室內生活|戶外自然|紀實抓拍|無修圖感|手機隨拍|咖啡廳生活|居家生活|朋友代拍|自拍|通勤途中|雨天街頭|清晨城市散步|書店閱讀|飯店入住|運動生活|散步生活|校園建築生活/;
+const LIFESTYLE_STYLE_FOR_TEST = /寫實自然|日常生活流|日系清新|韓系簡約|文青紀實|青春自然|溫柔柔和|明亮陽光|原片直出感|社群網紅生活照感|朋友視角自然隨拍感|觀察式紀實感|安靜低調敘事感|溫暖居家生活感|空間敘事背景清晰感|輕微動態抓拍感|旅途紀錄感|柔和陰天生活感|背景可讀的環境肖像感/;
+const SOCIAL_CAPTURE_LABELS = ['前鏡頭近距離自拍', '高角度自拍', '0.5× 超廣角自拍', '全身鏡前穿搭', '遮臉鏡自拍', '鏡前直閃', '朋友隨拍', '咖啡廳抓拍', '行走回頭', '夜間 Photo Dump'];
+const SEXY_BED_TEMPLATE_LABEL = '床面近距離背拍';
+const SEXY_BED_POSE = '成年女性在鋪有白色床單的臥室床面採主動四點承重姿勢。雙膝至少分開一個肩寬並壓住床面；髖部高於膝蓋，臀部完全抬離腳跟與小腿，臀部不可接觸腳跟或小腿。雙手掌放在肩線前方約一個前臂長的位置，五指張開壓住床面，手腕位於肩膀前方，雙臂伸展並承擔上半身重量。軀幹由髖部向床頭方向明顯前傾，背部接近水平；不得直立跪坐、不得坐在腳跟上、不得把手掌放在臀部兩側。人物背對鏡頭，肩膀、胸腔與骨盆始終朝離鏡頭方向，只輕微轉頭越肩側望，最多露出單側窄幅臉頰。相機從人物正後方 180°、約 0.8 公尺、貼近床面並位於骨盆高度，以手機後置 26mm 等效主鏡頭輕微仰拍；髖部是距離鏡頭最近且視覺上最大的前景，肩膀與頭部向遠處縮小。使用 2:3 直式緊湊構圖，畫面從頭頂至大腿下段，膝蓋可貼近底部邊緣，小腿下段、腳踝與腳掌全部在畫面外，床面與床頭板保持可辨識。只有臉部表情放鬆，身體仍維持主動四點承重。';
+
+function selectionForLock(selections, key) {
+  if (key.startsWith('cameraAngle.')) return selections.cameraAngle[key.slice('cameraAngle.'.length)];
+  if (key.startsWith('lighting.')) return selections.lighting[key.slice('lighting.'.length)];
+  for (const category of ['identity', 'face', 'hair', 'body', 'skin']) {
+    if (key.startsWith(`${category}.`)) return selections[category][key.slice(category.length + 1)];
+  }
+  return selections[key];
+}
+
 test('loads the canonical 15-document library with stable clothing IDs', async () => {
   const library = await loadPersonPhotoLibrary();
   const summary = await personPhotoLibrarySummary();
@@ -44,10 +59,12 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
   assert.deepEqual(summary.clothingOptions.swimwear.slice(49, 51).map(({ id, group }) => ({ id, group })), [{ id: 'SW50', group: 'classic' }, { id: 'SW51', group: 'sexy' }]);
   assert.deepEqual(summary.clothingOptions.bra.slice(74, 76).map(({ id, group }) => ({ id, group })), [{ id: 'BR75', group: 'sexy' }, { id: 'BR76', group: 'sensual' }]);
   assert.deepEqual(summary.clothingOptions.underwearSet.slice(74, 76).map(({ id, group }) => ({ id, group })), [{ id: 'UW75', group: 'sexy' }, { id: 'UW76', group: 'sensual' }]);
-  assert.equal(summary.poseOptions.length, 132);
+  assert.equal(summary.poseOptions.length, 168);
   assert.equal(summary.poseOptions.filter((item) => item.group === 'classic').length, 82);
-  assert.equal(summary.poseOptions.filter((item) => item.group === 'sexy').length, 25);
+  assert.equal(summary.poseOptions.filter((item) => item.group === 'lifestyle').length, 35);
+  assert.equal(summary.poseOptions.filter((item) => item.group === 'sexy').length, 26);
   assert.equal(summary.poseOptions.filter((item) => item.group === 'sensual').length, 25);
+  assert.deepEqual(summary.poseOptions.filter((item) => item.id.startsWith('pose.社群手機構圖.')).map((item) => item.label), SOCIAL_CAPTURE_LABELS);
   assert.deepEqual(library.categories.identity.年齡層.map(({ text }) => text), [
     '18–20 歲成年女性', '20–22 歲成年女性', '23–25 歲成年女性',
     '26–29 歲成年女性', '20 歲出頭年輕成年女性', '20 多歲年輕成年女性',
@@ -80,7 +97,21 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
   assert.equal(library.categories.imageGoal.照片類型.length, 50);
   assert.equal(library.categories.imageGoal.風格方向.length, 40);
   assert.equal(library.categories.imageGoal.真實度.length, 40);
-  assert.match(library.libraryVersion, /^person-photo-v7-intimate-poses-sets-/);
+  const sexyBedTemplate = library.categories.pose.性感姿勢.at(-1);
+  assert.equal(sexyBedTemplate.id, 'pose.性感姿勢.026');
+  assert.equal(sexyBedTemplate.label, SEXY_BED_TEMPLATE_LABEL);
+  assert.equal(sexyBedTemplate.text, SEXY_BED_POSE);
+  assert.equal(sexyBedTemplate.group, 'sexy');
+  assert.equal(sexyBedTemplate.selectOnly, true);
+  assert.equal(sexyBedTemplate.capturePreset.strictRearView, true);
+  assert.equal(sexyBedTemplate.capturePreset.referencePoseSkill, 'reference-pose-description-v1');
+  assert.match(sexyBedTemplate.capturePreset.referencePosePriority, /臀部完全抬離腳跟與小腿/);
+  assert.match(sexyBedTemplate.capturePreset.referencePosePriority, /雙手掌位於肩線前方/);
+  assert.match(sexyBedTemplate.capturePreset.referencePosePriority, /腳踝與腳掌必須在畫面外/);
+  assert.match(sexyBedTemplate.capturePreset.rearViewPriority, /只可看見後腦、背部、後肩、後腰、臀部/);
+  assert.ok(sexyBedTemplate.capturePreset?.locks);
+  assert.deepEqual(sexyBedTemplate.capturePreset.fixedRealism, ['imageGoal.真實度.013', 'imageGoal.真實度.025']);
+  assert.match(library.libraryVersion, /^person-photo-v13-reference-pose-skill-/);
   assert.deepEqual(summary.photoGoals, {
     photoTypeCount: 50,
     styleCount: 40,
@@ -382,8 +413,9 @@ test('all 100 underwear sets lock both components and remain traceable', async (
   }
 });
 
-test('sexy and sensual pose groups can be randomized or exactly locked', async () => {
+test('lifestyle, sexy and sensual pose groups can be randomized or exactly locked', async () => {
   for (const [group, pose] of [
+    ['lifestyle', 'pose.生活感姿勢.001'],
     ['sexy', 'pose.性感姿勢.001'],
     ['sensual', 'pose.情慾姿勢.001'],
   ]) {
@@ -392,9 +424,121 @@ test('sexy and sensual pose groups can be randomized or exactly locked', async (
     const { recipes: [exact] } = await randomizePersonPhotoRecipes({ seed: pose, locks: { poseGroup: group, pose } });
     assert.equal(exact.selections.pose.id, pose);
     assert.match(exact.selections.identity.age.text, /成年女性/);
+    if (group === 'lifestyle') {
+      assert.match(exact.selections.photoType.text, LIFESTYLE_PHOTO_TYPE_FOR_TEST);
+      assert.match(exact.selections.style.text, LIFESTYLE_STYLE_FOR_TEST);
+    }
   }
   await assert.rejects(() => randomizePersonPhotoRecipes({ locks: { poseGroup: 'unknown' } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
   await assert.rejects(() => randomizePersonPhotoRecipes({ locks: { poseGroup: 'sexy', pose: 'pose.情慾姿勢.001' } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+});
+
+test('reference-inspired bed template fixes the capture while varying only clothing, face identity and hair', async () => {
+  const library = await loadPersonPhotoLibrary();
+  const template = library.categories.pose.性感姿勢.find((item) => item.id === 'pose.性感姿勢.026');
+  const { recipes } = await randomizePersonPhotoRecipes({
+    seed: 'sexy-bed-template',
+    count: 40,
+    locks: { poseGroup: 'sexy', pose: template.id },
+  });
+  const entryIds = (entries) => Object.fromEntries(Object.entries(entries).map(([key, value]) => [key, value.id]));
+  const fixedProjection = (recipe) => ({
+    photoType: recipe.selections.photoType.id,
+    style: recipe.selections.style.id,
+    realism: recipe.selections.realism.map((item) => item.id),
+    identity: {
+      atmosphere: recipe.selections.identity.atmosphere.id,
+      temperament: recipe.selections.identity.temperament.id,
+      count: recipe.selections.identity.count.id,
+    },
+    body: entryIds(recipe.selections.body),
+    skin: entryIds(recipe.selections.skin),
+    pose: recipe.selections.pose.id,
+    expression: recipe.selections.expression.id,
+    framing: recipe.selections.framing.id,
+    ratio: recipe.selections.ratio.id,
+    cameraAngle: entryIds(recipe.selections.cameraAngle),
+    focalLength: recipe.selections.focalLength.id,
+    distance: recipe.selections.distance.id,
+    scene: recipe.selections.scene.id,
+    lighting: entryIds(recipe.selections.lighting),
+    captureProfile: recipe.selections.captureProfile.id,
+    dimensions: recipe.dimensions,
+  });
+  const fixed = fixedProjection(recipes[0]);
+  assert.ok(recipes.every((recipe) => recipe.validation.passed && JSON.stringify(fixedProjection(recipe)) === JSON.stringify(fixed)));
+  for (const [key, expectedId] of Object.entries(template.capturePreset.locks)) assert.equal(selectionForLock(recipes[0].selections, key)?.id, expectedId, key);
+  assert.deepEqual(recipes[0].selections.realism.map((item) => item.id), template.capturePreset.fixedRealism);
+  assert.match(recipes[0].selections.identity.age.text, /成年女性/);
+  assert.ok(recipes[0].brief.includes(SEXY_BED_POSE));
+  assert.match(recipes[0].brief, /^【最高優先鏡位限制】\n/);
+  assert.match(recipes[0].brief, /【最高優先參考姿勢限制】\n/);
+  assert.match(recipes[0].brief, /不得改成跪坐、坐在腳跟上、直立跪姿/);
+  assert.match(recipes[0].brief, /小腿下段、腳踝與腳掌必須在畫面外/);
+  assert.match(recipes[0].brief, /最多露出單側窄幅臉頰/);
+  assert.match(recipes[0].brief, /所有前側設計完全在鏡頭外/);
+
+  const faceIdentities = new Set(recipes.map((recipe) => JSON.stringify({ age: recipe.selections.identity.age.id, appearance: recipe.selections.identity.appearance.id, face: entryIds(recipe.selections.face) })));
+  const hairstyles = new Set(recipes.map((recipe) => JSON.stringify(entryIds(recipe.selections.hair))));
+  const clothing = new Set(recipes.map((recipe) => recipe.selections.outfit.id));
+  assert.ok(faceIdentities.size > 1);
+  assert.ok(hairstyles.size > 1);
+  assert.ok(clothing.size > 1);
+
+  const { recipes: [underwear] } = await randomizePersonPhotoRecipes({
+    seed: 'sexy-bed-template-underwear',
+    locks: { poseGroup: 'sexy', pose: template.id },
+    clothingRequirements: [{ category: 'underwearSet', optionId: 'UW76', applyToAll: true }],
+  });
+  assert.equal(underwear.selections.underwearSet.id, 'UW76');
+  assert.equal(underwear.selections.pose.id, template.id);
+  assert.equal(underwear.validation.passed, true);
+  assert.doesNotMatch(underwear.brief, /harness|罩杯/);
+
+  const { recipes: [frontDetailedUnderwear] } = await randomizePersonPhotoRecipes({
+    seed: 'sexy-bed-template-front-detail-clothing',
+    locks: { poseGroup: 'sexy', pose: template.id },
+    clothingRequirements: [{ category: 'underwearSet', optionId: 'UW55', applyToAll: true }],
+  });
+  assert.match(frontDetailedUnderwear.selections.underwearSet.text, /紅色前扣深 V 內衣/);
+  assert.match(frontDetailedUnderwear.brief, /紅色內衣/);
+  assert.doesNotMatch(frontDetailedUnderwear.brief, /紅色前扣深 V 內衣/);
+  await assert.rejects(() => randomizePersonPhotoRecipes({ locks: { pose: template.id, focalLength: 'lens.焦段.015' } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
+});
+
+test('social smartphone capture styles lock coherent optics, viewpoint, scene and light', async () => {
+  const library = await loadPersonPhotoLibrary();
+  const styles = library.categories.pose.生活感姿勢.filter((item) => item.id.startsWith('pose.社群手機構圖.'));
+  assert.equal(styles.length, 10);
+  assert.deepEqual(styles.map((item) => item.label), SOCIAL_CAPTURE_LABELS);
+  assert.ok(styles.every((item) => item.group === 'lifestyle' && item.selectOnly && item.capturePreset?.locks));
+  for (const style of styles) {
+    const { recipes: [recipe] } = await randomizePersonPhotoRecipes({
+      seed: style.id,
+      locks: { poseGroup: 'lifestyle', pose: style.id },
+      clothingRequirements: [{ category: 'hosiery', applyToAll: true }],
+    });
+    assert.equal(recipe.selections.pose.id, style.id);
+    for (const [key, expectedId] of Object.entries(style.capturePreset.locks)) assert.equal(selectionForLock(recipe.selections, key)?.id, expectedId, `${style.label}: ${key}`);
+    assert.equal(recipe.validation.passed, true, style.label);
+    assert.match(recipe.selections.captureProfile.text, /手機/);
+    assert.match(recipe.brief, new RegExp(recipe.selections.captureProfile.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  const { recipes: [ultrawide] } = await randomizePersonPhotoRecipes({ seed: '0.5x', locks: { pose: 'pose.社群手機構圖.003' } });
+  assert.equal(ultrawide.selections.focalLength.text, '18mm 超廣角');
+  assert.equal(ultrawide.selections.distance.text, '0.8 公尺近距離');
+  assert.equal(ultrawide.validation.checks.find((check) => check.id === 'framing-focal-distance-compatible')?.passed, true);
+  const { recipes: randomLifestyle } = await randomizePersonPhotoRecipes({ seed: 'lifestyle-without-compound-styles', count: 100, locks: { poseGroup: 'lifestyle' } });
+  assert.ok(randomLifestyle.every((recipe) => !recipe.selections.pose.selectOnly));
+  const { recipes: [friendSnapshot] } = await randomizePersonPhotoRecipes({
+    seed: 'friend-snapshot-ui-default',
+    locks: { poseGroup: 'lifestyle', pose: 'pose.社群手機構圖.007' },
+    clothingRequirements: [{ category: 'hosiery', applyToAll: true }],
+  });
+  assert.equal(friendSnapshot.selections.hosiery.id, 'H00');
+  assert.equal(friendSnapshot.selections.framing.id, 'composition.取景範圍.007');
+  assert.equal(friendSnapshot.validation.passed, true);
+  await assert.rejects(() => randomizePersonPhotoRecipes({ locks: { pose: 'pose.社群手機構圖.001', focalLength: 'lens.焦段.015' } }), { code: 'PERSON_PHOTO_LOCK_INVALID' });
 });
 
 test('underwear rejects conflicting clothing and invalid external recipes', async () => {
@@ -438,8 +582,8 @@ test('recipes use one adult subject and semantic primary selections', async () =
     assert.match(recipe.selections.identity.age.text, /^(?:18–20|20–22|23–25|26–29) 歲成年女性$|^20(?: 歲出頭| 多歲)年輕成年女性$/);
     assert.equal(recipe.validation.checks.find((check) => check.id === 'young-adult-woman-only')?.passed, true);
     assert.deepEqual(Object.keys(recipe.selections.hair).sort(), ['bangs', 'color', 'style', 'texture']);
-    assert.match(recipe.selections.pose.id, /^pose\.(站姿|坐姿|蹲_跪姿|躺姿|動態姿勢|性感姿勢|情慾姿勢)\./);
-    assert.match(recipe.selections.pose.group, /^(classic|sexy|sensual)$/);
+    assert.match(recipe.selections.pose.id, /^pose\.(站姿|坐姿|蹲_跪姿|躺姿|動態姿勢|生活感姿勢|社群手機構圖|性感姿勢|情慾姿勢)\./);
+    assert.match(recipe.selections.pose.group, /^(classic|lifestyle|sexy|sensual)$/);
     assert.doesNotMatch(recipe.selections.scene.id, /背景道具/);
     assert.deepEqual(Object.keys(recipe.selections.cameraAngle).sort(), ['height', 'horizontal', 'vertical']);
     assert.deepEqual(Object.keys(recipe.selections.lighting).sort(), ['direction', 'quality', 'source']);

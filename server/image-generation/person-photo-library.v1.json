@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "libraryVersion": "person-photo-v7-intimate-poses-sets-eb200be0b744",
+  "libraryVersion": "person-photo-v13-reference-pose-skill-eb200be0b744",
   "source": "person_photo_prompt_docs.zip",
   "sourceSha256": "eb200be0b7443a40d471cddad1febf1fa0740b156339011d83a76b1dd5532d81",
   "markdownFileCount": 15,
@@ -3407,6 +3407,381 @@
           "group": "classic"
         }
       ],
+      "生活感姿勢": [
+        {
+          "id": "pose.生活感姿勢.001",
+          "text": "端著馬克杯走到窗邊，視線自然停在窗外",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.002",
+          "text": "坐在沙發邊低頭回覆手機訊息，另一手隨意放在膝上",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.003",
+          "text": "站在廚房流理台前準備飲品，身體微微側向鏡頭",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.004",
+          "text": "走出咖啡店時順手整理肩背包，腳步沒有刻意停下",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.005",
+          "text": "坐在咖啡桌旁翻閱書頁，視線落在內容而非鏡頭",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.006",
+          "text": "在玄關彎身穿鞋，一手扶牆保持平衡",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.007",
+          "text": "走在騎樓下抬手整理被風吹亂的髮絲",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.008",
+          "text": "站在便利商店冰櫃前查看飲料標籤，肩膀自然放鬆",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.009",
+          "text": "坐在床沿摺疊剛收下的衣物，身體略微前傾",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.010",
+          "text": "拉開窗簾讓日光進入房間，頭部順勢轉向窗外",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.011",
+          "text": "在書架前抽出一本書，手臂與視線跟著書本移動",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.012",
+          "text": "等候過馬路時低頭確認手機，雙腳自然前後錯開",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.013",
+          "text": "沿著河岸慢走並回頭聽身旁朋友說話",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.014",
+          "text": "坐在公園長椅上整理外套袖口，雙膝自然錯開",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.015",
+          "text": "在超市推著購物車查看架上商品，身體處於移動途中",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.016",
+          "text": "站在全身鏡前調整上衣下襬，視線停在鏡中穿搭",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.017",
+          "text": "坐在窗邊地毯上替盆栽整理葉片，一腿自然屈起",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.018",
+          "text": "從餐桌拿起剛沖好的飲品，另一手仍扶著椅背",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.019",
+          "text": "走上樓梯途中短暫回頭，重心穩定落在前腳",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.020",
+          "text": "在陽台晾衣時抬手掛上衣物，姿勢自然延伸",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.021",
+          "text": "坐在車站候車座椅上整理隨身袋內物品",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.022",
+          "text": "在雨後街邊收起雨傘，低頭確認傘扣",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.023",
+          "text": "靠在廚房檯面旁嚐一口食物，表情自然放鬆",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.024",
+          "text": "盤腿坐在沙發上聽音樂，手指輕觸耳機",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.生活感姿勢.025",
+          "text": "穿過家門時回頭與屋內的人說話，手仍扶著門把",
+          "group": "lifestyle"
+        },
+        {
+          "id": "pose.社群手機構圖.001",
+          "label": "前鏡頭近距離自拍",
+          "text": "成年女性以單手在手臂距離握持手機前鏡頭自拍，視線自然看向螢幕或鏡頭，肩膀與一小段前臂留在畫面邊緣，呈現輕微廣角透視、普通前鏡頭解析感與不完全置中的胸上隨手裁切",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.032",
+              "style": "imageGoal.風格方向.014",
+              "framing": "composition.取景範圍.003",
+              "ratio": "composition.直式比例.001",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.001",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.002",
+              "cameraAngle.height": "cameraAngle.相機高度.002",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.001",
+              "scene": "scene.居家室內.002",
+              "lighting.source": "lighting.自然光.009",
+              "lighting.direction": "lighting.光線方向.008",
+              "captureProfile": "photographicTexture.相機類型感.013"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.002",
+          "label": "高角度自拍",
+          "text": "成年女性將手機前鏡頭舉到頭部上方，手臂自然向上伸展並以中度俯拍收進大腿以上範圍，視線看向螢幕，近距離透視使頭部略近、身體向後延伸，保留臥室背景與一處輕微不完整裁切",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.032",
+              "style": "imageGoal.風格方向.020",
+              "framing": "composition.取景範圍.005",
+              "ratio": "composition.直式比例.001",
+              "focalLength": "lens.焦段.003",
+              "distance": "lens.拍攝距離.001",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.006",
+              "cameraAngle.height": "cameraAngle.相機高度.001",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.003",
+              "scene": "scene.居家室內.006",
+              "lighting.source": "lighting.自然光.009",
+              "lighting.direction": "lighting.光線方向.001",
+              "captureProfile": "photographicTexture.相機類型感.013"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.003",
+          "label": "0.5× 超廣角自拍",
+          "text": "成年女性使用手機後置 0.5× 超廣角，以伸直的手臂從頭部斜上方拍攝全身與大量街景，不刻意修正靠近鏡頭的手臂與腿部延伸、邊緣拉伸及略帶不確定感的構圖，保留社群隨手快照的廣角臨場感",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.018",
+              "style": "imageGoal.風格方向.014",
+              "framing": "composition.取景範圍.008",
+              "ratio": "composition.直式比例.001",
+              "focalLength": "lens.焦段.001",
+              "distance": "lens.拍攝距離.002",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.006",
+              "cameraAngle.height": "cameraAngle.相機高度.001",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.003",
+              "scene": "scene.城市場景.001",
+              "lighting.source": "lighting.自然光.004",
+              "lighting.direction": "lighting.光線方向.002",
+              "captureProfile": "photographicTexture.相機類型感.014"
+            },
+            "allowArmLengthFullBody": true
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.004",
+          "label": "全身鏡前穿搭",
+          "text": "成年女性站在全身鏡前，以手機後置主鏡頭拍下從頭頂到鞋底的完整穿搭，手機與真實握持手勢清楚出現在鏡中，機身約在胸口高度，房間和鏡框保留可辨識細節，構圖像準備出門前隨手記錄 OOTD",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.033",
+              "style": "imageGoal.風格方向.020",
+              "framing": "composition.取景範圍.009",
+              "ratio": "composition.直式比例.001",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.007",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.001",
+              "scene": "scene.居家室內.011",
+              "lighting.source": "lighting.室內光.001",
+              "lighting.direction": "lighting.光線方向.006",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.005",
+          "label": "遮臉鏡自拍",
+          "text": "成年女性在更衣鏡前用手機遮住部分臉部，以後置主鏡頭拍攝大腿以上穿搭，身體稍微偏離中心、肩線自然傾斜，鏡框或環境在一側形成不等留白，保留普通社群穿搭照的隨手感",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.033",
+              "style": "imageGoal.風格方向.014",
+              "framing": "composition.取景範圍.005",
+              "ratio": "composition.直式比例.002",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.005",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.003",
+              "scene": "scene.居家室內.011",
+              "lighting.source": "lighting.室內光.010",
+              "lighting.direction": "lighting.光線方向.007",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.006",
+          "label": "鏡前直閃",
+          "text": "成年女性在鏡前以手機後置主鏡頭和直射閃光自拍，手機與握持手清楚可見，閃光在鏡面形成局部亮點，人物局部偏亮、背景較暗並保留室內混合色溫與清楚硬陰影，呈現夜間社群快照而非棚拍打光",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.033",
+              "style": "imageGoal.風格方向.020",
+              "framing": "composition.取景範圍.006",
+              "ratio": "composition.直式比例.001",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.005",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.001",
+              "scene": "scene.居家室內.011",
+              "lighting.source": "lighting.手機閃光.001",
+              "lighting.direction": "lighting.光線方向.006",
+              "captureProfile": "photographicTexture.相機類型感.015"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.007",
+          "label": "朋友隨拍",
+          "text": "朋友站在幾步外以手機後置主鏡頭拍攝成年女性的三分之二身生活照，人物沒有完全置中，正在整理衣服或笑到一半而非正式擺拍，街道背景保持可讀，只保留一點手持傾斜與普通手機銳化",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.031",
+              "style": "imageGoal.風格方向.021",
+              "framing": "composition.取景範圍.007",
+              "ratio": "composition.直式比例.002",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.008",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.005",
+              "scene": "scene.城市場景.001",
+              "lighting.source": "lighting.自然光.004",
+              "lighting.direction": "lighting.光線方向.001",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.008",
+          "label": "咖啡廳抓拍",
+          "text": "朋友坐在咖啡桌對面以手機後置主鏡頭拍攝成年女性的腰上生活照，桌面、杯子或餐點形成近距離前景，人物正拿起飲料、看向窗外或低頭閱讀而沒有對鏡頭擺拍，室內暖光與窗光自然混合",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.027",
+              "style": "imageGoal.風格方向.021",
+              "framing": "composition.取景範圍.004",
+              "ratio": "composition.直式比例.002",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.005",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.005",
+              "scene": "scene.商業室內.001",
+              "lighting.source": "lighting.室內光.008",
+              "lighting.direction": "lighting.光線方向.002",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.009",
+          "label": "行走回頭",
+          "text": "朋友在後方以手機後置主鏡頭拍攝成年女性沿人行道行走後自然回頭的全身瞬間，重心仍在跨步途中，衣料與髮絲留有克制的動態痕跡，人物稍微偏離中心並保留可辨識街景",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.031",
+              "style": "imageGoal.風格方向.030",
+              "framing": "composition.取景範圍.008",
+              "ratio": "composition.直式比例.002",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.009",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.013",
+              "scene": "scene.城市場景.004",
+              "lighting.source": "lighting.自然光.004",
+              "lighting.direction": "lighting.光線方向.002",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            }
+          }
+        },
+        {
+          "id": "pose.社群手機構圖.010",
+          "label": "夜間 Photo Dump",
+          "text": "朋友在霓虹街道以手機後置主鏡頭和直射閃光拍攝成年女性的膝上瞬間，人物被短促閃光照亮、背景環境光明顯較暗，保留混合白平衡、清楚硬陰影、輕微不完整裁切與相簿直出感，像社群 Photo Dump 中的一張生活快照",
+          "group": "lifestyle",
+          "selectOnly": true,
+          "capturePreset": {
+            "locks": {
+              "photoType": "imageGoal.照片類型.018",
+              "style": "imageGoal.風格方向.014",
+              "framing": "composition.取景範圍.006",
+              "ratio": "composition.直式比例.002",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.005",
+              "hosiery": "H00",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.001",
+              "cameraAngle.height": "cameraAngle.相機高度.003",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.003",
+              "scene": "scene.城市場景.016",
+              "lighting.source": "lighting.手機閃光.002",
+              "lighting.direction": "lighting.光線方向.006",
+              "captureProfile": "photographicTexture.相機類型感.015"
+            }
+          }
+        }
+      ],
       "性感姿勢": [
         {
           "id": "pose.性感姿勢.001",
@@ -3532,6 +3907,61 @@
           "id": "pose.性感姿勢.025",
           "text": "低頭整理側邊髮絲，身體自然前傾",
           "group": "sexy"
+        },
+        {
+          "id": "pose.性感姿勢.026",
+          "label": "床面近距離背拍",
+          "text": "成年女性在鋪有白色床單的臥室床面採主動四點承重姿勢。雙膝至少分開一個肩寬並壓住床面；髖部高於膝蓋，臀部完全抬離腳跟與小腿，臀部不可接觸腳跟或小腿。雙手掌放在肩線前方約一個前臂長的位置，五指張開壓住床面，手腕位於肩膀前方，雙臂伸展並承擔上半身重量。軀幹由髖部向床頭方向明顯前傾，背部接近水平；不得直立跪坐、不得坐在腳跟上、不得把手掌放在臀部兩側。人物背對鏡頭，肩膀、胸腔與骨盆始終朝離鏡頭方向，只輕微轉頭越肩側望，最多露出單側窄幅臉頰。相機從人物正後方 180°、約 0.8 公尺、貼近床面並位於骨盆高度，以手機後置 26mm 等效主鏡頭輕微仰拍；髖部是距離鏡頭最近且視覺上最大的前景，肩膀與頭部向遠處縮小。使用 2:3 直式緊湊構圖，畫面從頭頂至大腿下段，膝蓋可貼近底部邊緣，小腿下段、腳踝與腳掌全部在畫面外，床面與床頭板保持可辨識。只有臉部表情放鬆，身體仍維持主動四點承重。",
+          "group": "sexy",
+          "selectOnly": true,
+          "capturePreset": {
+            "strictRearView": true,
+            "referencePoseSkill": "reference-pose-description-v1",
+            "referencePosePriority": "固定參考姿勢不可簡化：雙膝至少分開一個肩寬並承重；髖部高於膝蓋，臀部完全抬離腳跟與小腿且不得接觸；雙手掌位於肩線前方約一個前臂長，手腕在肩膀前方、雙臂伸展並承重；軀幹明顯前傾且背部接近水平。不得改成跪坐、坐在腳跟上、直立跪姿或雙手放在臀部兩側。畫面從頭頂到大腿下段，膝蓋可貼近底部邊緣，小腿下段、腳踝與腳掌必須在畫面外。只有臉部表情可放鬆，身體仍保持主動四點承重。",
+            "rearViewPriority": "相機必須位於人物正後方 180°。畫面只可看見後腦、背部、後肩、後腰、臀部、服裝背面與雙腿後側；胸口、腹部、內衣前側、內衣前扣與內褲正面必須完全在鏡頭外。不可使用正面、正面三分之四或側前方視角，也不可為展示臉部或服裝正面而旋轉肩膀、胸腔或骨盆。",
+            "locks": {
+              "photoType": "imageGoal.照片類型.003",
+              "style": "imageGoal.風格方向.001",
+              "framing": "composition.取景範圍.005",
+              "ratio": "composition.直式比例.004",
+              "focalLength": "lens.焦段.004",
+              "distance": "lens.拍攝距離.002",
+              "hosiery": "H00",
+              "identity.atmosphere": "identity.身份氛圍.008",
+              "identity.temperament": "identity.個人氣質.017",
+              "identity.count": "identity.人物數量.001",
+              "body.身高感": "body.身高感.008",
+              "body.骨架": "body.骨架.005",
+              "body.肩頸": "body.肩頸.002",
+              "body.上半身": "body.上半身.002",
+              "body.腰腹": "body.腰腹.008",
+              "body.臀部": "body.臀部.004",
+              "body.大腿": "body.大腿.003",
+              "body.膝蓋_小腿_腳踝": "body.膝蓋_小腿_腳踝.008",
+              "body.手臂_手部": "body.手臂_手部.008",
+              "body.整體體型": "body.整體體型.005",
+              "body.物理真實感描述": "body.物理真實感描述.001",
+              "skin.膚色": "skin.膚色.008",
+              "skin.底色": "skin.底色.002",
+              "skin.面部皮膚質地": "skin.面部皮膚質地.006",
+              "skin.真實瑕疵": "skin.真實瑕疵.006",
+              "skin.身體皮膚": "skin.身體皮膚.010",
+              "skin.光澤程度": "skin.光澤程度.002",
+              "expression": "expression.基本表情.020",
+              "cameraAngle.vertical": "cameraAngle.垂直角度.007",
+              "cameraAngle.height": "cameraAngle.相機高度.005",
+              "cameraAngle.horizontal": "cameraAngle.水平方向.012",
+              "scene": "scene.居家室內.007",
+              "lighting.source": "lighting.室內光.001",
+              "lighting.direction": "lighting.光線方向.005",
+              "lighting.quality": "lighting.光質.002",
+              "captureProfile": "photographicTexture.相機類型感.001"
+            },
+            "fixedRealism": [
+              "imageGoal.真實度.013",
+              "imageGoal.真實度.025"
+            ]
+          }
         }
       ],
       "情慾姿勢": [
@@ -5266,6 +5696,16 @@
           "id": "lighting.色溫.007",
           "text": "混合色溫"
         }
+      ],
+      "手機閃光": [
+        {
+          "id": "lighting.手機閃光.001",
+          "text": "鏡面手機直閃與偏暗室內環境光"
+        },
+        {
+          "id": "lighting.手機閃光.002",
+          "text": "手機直閃與偏暗夜間街道環境光"
+        }
       ]
     },
     "photographicTexture": {
@@ -5317,6 +5757,18 @@
         {
           "id": "photographicTexture.相機類型感.012",
           "text": "專業時尚攝影感"
+        },
+        {
+          "id": "photographicTexture.相機類型感.013",
+          "text": "手機前置鏡頭手臂距離自拍感"
+        },
+        {
+          "id": "photographicTexture.相機類型感.014",
+          "text": "手機後置 0.5× 超廣角社群自拍感"
+        },
+        {
+          "id": "photographicTexture.相機類型感.015",
+          "text": "手機後置主鏡頭直閃快照感"
         }
       ],
       "清晰度": [

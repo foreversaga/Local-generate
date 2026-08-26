@@ -3,9 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   buildPersonPhotoRecipeBrief,
+  isReferencePoseRecipe,
+  isStrictRearViewRecipe,
   PERSON_PHOTO_BATCH_MAX,
   personPhotoLibrarySummary,
   randomizePersonPhotoRecipes,
+  rearViewClothingText,
   validatePersonPhotoRecipe,
 } from "./person-photo-randomizer.mjs";
 import { createText2ImgBatchStore } from "./text2img-batch-store.mjs";
@@ -92,8 +95,9 @@ const TEXT2IMG_BATCH_DETAIL_LIMIT = 20;
 const TEXT2IMG_BATCH_TERMINAL_STATUSES = new Set(["completed", "failed", "partial", "cancelled"]);
 const TEXT2IMG_JOB_TERMINAL_STATUSES = new Set(["completed", "failed", "interrupted", "cancelled"]);
 
-export const NATURE_CAMERA_PROFILE = "nature-camera-v2-anatomy";
+export const NATURE_CAMERA_PROFILE = "nature-camera-v3-reference-pose";
 export const NATURE_CAMERA_ANATOMY_CLAUSE = "Anatomical integrity: one coherent adult body with a normal two arms and two legs, allowing limbs to be naturally occluded or outside the crop instead of duplicated; physically connected shoulders, hips, elbows, knees, wrists, and ankles; each visible hand has five distinct fingers with plausible joints, grip, overlap, and perspective; each visible bare foot has five distinct toes with correct orientation, weight-bearing contact, overlap, and perspective.";
+export const STRICT_REAR_VIEW_CLAUSE = "Highest-priority camera constraint: the camera is directly behind the adult subject at 180 degrees. Only the back of the head, back, rear shoulders, rear waist, hips, rear-facing clothing surfaces, and backs of the legs may be visible. The chest, abdomen, front of the bra, front clasp, front of the underwear, and both full eyes must remain completely outside the camera view. This is not a front view, three-quarter front view, or side-front view. The shoulders, ribcage, and pelvis remain facing away from the camera; only one narrow cheek profile may appear over one shoulder.";
 export const NATURE_CAMERA_PHOTOGRAPHY_INSTRUCTION = [
   "You turn a short user description into one production-ready photographic prompt for a local image-generation model.",
   "Preserve the requested subject, action, location, mood, medium, aspect-ratio intent, and any explicit camera or lens choice. Match the user's language and do not invent a narrower nationality, age, or appearance than supplied.",
@@ -137,13 +141,41 @@ function recipeRequiredClothing(recipe) {
   return [...new Set(values)];
 }
 
+function promptRequiredClothing(recipe) {
+  const required = recipeRequiredClothing(recipe);
+  return isStrictRearViewRecipe(recipe) ? required.map(rearViewClothingText).filter(Boolean) : required;
+}
+
 function ensureRequiredClothing(prompt, recipe) {
-  const required = recipeRequiredClothing(recipe).filter((item) => !prompt.toLocaleLowerCase().includes(item.toLocaleLowerCase()));
+  const strictRearView = isStrictRearViewRecipe(recipe);
+  const required = promptRequiredClothing(recipe).filter((item) => !prompt.toLocaleLowerCase().includes(item.toLocaleLowerCase()));
   if (!required.length) return prompt;
-  const clause = `Mandatory visible clothing: ${required.join(", ")}.`;
+  const clause = strictRearView
+    ? `Mandatory worn clothing, described only through rear-visible color, material, straps, back band, rear waistband, rear fabric, and back details: ${required.join(", ")}. Front-facing garment details stay outside the camera view.`
+    : `Mandatory visible clothing: ${required.join(", ")}.`;
   const result = `${prompt.trimEnd()}\n\n【指定服裝】\n${clause}`;
   if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
     throw makeError(`Prompt with mandatory clothing exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
+  }
+  return result;
+}
+
+function ensureStrictRearView(prompt, recipe) {
+  if (!isStrictRearViewRecipe(recipe) || prompt.includes(STRICT_REAR_VIEW_CLAUSE)) return prompt;
+  const result = `【最高優先鏡位限制】\n${STRICT_REAR_VIEW_CLAUSE}\n\n${prompt.trimStart()}`;
+  if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
+    throw makeError(`Prompt with strict rear-view constraint exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
+  }
+  return result;
+}
+
+function ensureReferencePose(prompt, recipe) {
+  if (!isReferencePoseRecipe(recipe)) return prompt;
+  const constraint = recipe.selections.pose.capturePreset.referencePosePriority.trim();
+  if (prompt.includes(constraint)) return prompt;
+  const result = `【最高優先參考姿勢限制】\n${constraint}\n\n${prompt.trimStart()}`;
+  if (result.length > TEXT2IMG_MAX_PROMPT_LENGTH) {
+    throw makeError(`Prompt with reference-pose constraint exceeds ${TEXT2IMG_MAX_PROMPT_LENGTH} characters.`, 400, "TEXT2IMG_PROMPT_TOO_LONG");
   }
   return result;
 }
@@ -710,9 +742,10 @@ export function createText2ImgController({
     const description = recipe
       ? normalizeText2ImgDescription({ description: buildPersonPhotoRecipeBrief(recipe) })
       : normalizeText2ImgDescription(input);
-    const requiredClothing = recipeRequiredClothing(recipe);
+    const requiredClothing = promptRequiredClothing(recipe);
+    const strictRearView = isStrictRearViewRecipe(recipe);
     const assistantInput = requiredClothing.length
-      ? `${description}\nMandatory visible clothing (preserve these exact requirements): ${requiredClothing.join(", ")}.`
+      ? `${description}\n${strictRearView ? "Highest-priority rear-view rule: preserve the selected clothing identity, colors, and materials, but describe and show only its rear-visible surfaces; front details must remain outside the camera view. Mandatory worn clothing" : "Mandatory visible clothing (preserve these exact requirements)"}: ${requiredClothing.join(", ")}.`
       : description;
     const unloadPromptModel = !promptAssistant?.generate && input.unloadPromptModel === true;
     const assistant = await checkPromptAssistant();
@@ -737,7 +770,7 @@ export function createText2ImgController({
       if (promptAssistant?.generate) {
         const response = await promptAssistant.generate({ model, system: NATURE_CAMERA_SYSTEM_PROMPT, prompt: `User image description:\n${assistantInput}`, signal });
         if (signal?.aborted) throw makeError("Prompt generation was cancelled.", 499, "TEXT2IMG_PROMPT_CANCELLED");
-        const prompt = ensureAnatomicalIntegrity(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(response), recipe), recipe));
+        const prompt = ensureAnatomicalIntegrity(ensureStrictRearView(ensureReferencePose(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(response), recipe), recipe), recipe), recipe));
         return { description, prompt, model, provider: promptAssistant.provider || "openai", profile: NATURE_CAMERA_PROFILE, unloadPromptModel: false, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
       }
       const response = await ollamaCoordinator.generate({
@@ -756,7 +789,7 @@ export function createText2ImgController({
         unloadAfter: unloadPromptModel,
       });
       const payload = response?.payload && typeof response.payload === "object" ? response.payload : {};
-      const prompt = ensureAnatomicalIntegrity(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text), recipe), recipe));
+      const prompt = ensureAnatomicalIntegrity(ensureStrictRearView(ensureReferencePose(ensureRequiredClothing(ensurePromptBlocks(parseNatureCameraPromptResponse(payload.response || payload.message?.content || response?.text), recipe), recipe), recipe), recipe));
       return { description, prompt, model, profile: NATURE_CAMERA_PROFILE, unloadPromptModel, ...(recipe ? { recipe, validation: recipe.validation || null } : {}) };
     } finally {
       lease?.release?.();

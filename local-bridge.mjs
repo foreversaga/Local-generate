@@ -179,27 +179,39 @@ const NATURE_CAMERA_SKILL_PATH = path.resolve(
   process.env.NATURE_CAMERA_SKILL_PATH || path.join(CODEX_HOME, "skills", "nature-camera", "SKILL.md"),
 );
 const NATURE_CAMERA_REFERENCE_PATH = path.join(path.dirname(NATURE_CAMERA_SKILL_PATH), "references", "camera-language.md");
+const REFERENCE_POSE_SKILL_PATH = path.resolve(
+  process.env.REFERENCE_POSE_SKILL_PATH || path.join(PROJECT_ROOT, "skills", "reference-pose-description", "SKILL.md"),
+);
+const REFERENCE_POSE_LANGUAGE_PATH = path.join(path.dirname(REFERENCE_POSE_SKILL_PATH), "references", "pose-language.md");
 let natureCameraSkillCache = null;
 
 async function loadNatureCameraSkillBundle() {
-  const [skillStat, referenceStat] = await Promise.all([
+  const [skillStat, referenceStat, poseSkillStat, poseLanguageStat] = await Promise.all([
     fs.stat(NATURE_CAMERA_SKILL_PATH),
     fs.stat(NATURE_CAMERA_REFERENCE_PATH),
+    fs.stat(REFERENCE_POSE_SKILL_PATH),
+    fs.stat(REFERENCE_POSE_LANGUAGE_PATH),
   ]).catch(() => {
-    throw new LongVideoError("NATURE_CAMERA_SKILL_MISSING", `找不到完整 nature-camera skill：${NATURE_CAMERA_SKILL_PATH}`, 503);
+    throw new LongVideoError("PHOTOGRAPHY_SKILL_MISSING", `找不到完整攝影技能：${NATURE_CAMERA_SKILL_PATH}；${REFERENCE_POSE_SKILL_PATH}`, 503);
   });
-  const cacheKey = `${skillStat.mtimeMs}:${skillStat.size}:${referenceStat.mtimeMs}:${referenceStat.size}`;
+  const cacheKey = [skillStat, referenceStat, poseSkillStat, poseLanguageStat]
+    .map((stat) => `${stat.mtimeMs}:${stat.size}`)
+    .join(":");
   if (natureCameraSkillCache?.key === cacheKey) return natureCameraSkillCache.value;
-  const [skill, cameraLanguage] = await Promise.all([
+  const [skill, cameraLanguage, poseSkill, poseLanguage] = await Promise.all([
     fs.readFile(NATURE_CAMERA_SKILL_PATH, "utf8"),
     fs.readFile(NATURE_CAMERA_REFERENCE_PATH, "utf8"),
+    fs.readFile(REFERENCE_POSE_SKILL_PATH, "utf8"),
+    fs.readFile(REFERENCE_POSE_LANGUAGE_PATH, "utf8"),
   ]);
   const value = [
-    "Apply the complete trusted nature-camera skill and camera-language reference below as the photographic decision policy.",
-    "Apply all relevant preservation, capture-profile, composition, calibration, optics, lighting, anatomy, and controlled-imperfection rules.",
+    "Apply the complete trusted nature-camera and reference-pose-description skills below as the photographic decision policy.",
+    "Apply all relevant preservation, capture-profile, composition, calibration, optics, lighting, anatomy, controlled-imperfection, support-point, joint-geometry, contact, non-contact, camera, and crop rules.",
     "Task-specific instructions after this bundle override only the skill response-format instruction; they do not override its photographic rules.",
     `<nature-camera-skill>\n${skill.trim()}\n</nature-camera-skill>`,
     `<nature-camera-reference>\n${cameraLanguage.trim()}\n</nature-camera-reference>`,
+    `<reference-pose-description-skill>\n${poseSkill.trim()}\n</reference-pose-description-skill>`,
+    `<reference-pose-language>\n${poseLanguage.trim()}\n</reference-pose-language>`,
   ].join("\n\n");
   natureCameraSkillCache = { key: cacheKey, value };
   return value;
