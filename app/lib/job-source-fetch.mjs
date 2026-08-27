@@ -5,9 +5,11 @@ const MAX_ERROR_MESSAGE_LENGTH = 240;
 
 export const JOB_SOURCE_SPECS = Object.freeze([
   Object.freeze({ source: 'video', url: '/app/api/jobs' }),
+  Object.freeze({ source: 'video-character', url: '/app/api/video-character/jobs' }),
   Object.freeze({ source: 'long', url: '/app/api/sequences' }),
   Object.freeze({ source: 'upscale', url: '/app/api/upscale/jobs' }),
   Object.freeze({ source: 'text2img', url: '/app/api/text2img/jobs' }),
+  Object.freeze({ source: 'text2img-batch', url: '/app/api/text2img/batches' }),
   Object.freeze({ source: 'img2img', url: '/app/api/img2img/jobs' }),
   Object.freeze({ source: 'lora', url: '/app/api/lora-training/jobs' }),
 ]);
@@ -138,6 +140,8 @@ async function fetchOneSource(spec, { fetchImpl, timeoutMs, limitPerSource, summ
 
   const jobs = Array.isArray(payload?.jobs)
     ? payload.jobs
+    : spec.source === 'text2img-batch' && Array.isArray(payload?.batches)
+      ? payload.batches
     : spec.source === 'img2img' && payload?.job && typeof payload.job === 'object'
       ? [payload.job]
       : [];

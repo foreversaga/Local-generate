@@ -430,6 +430,7 @@ export function UpscaleWorkspace() {
                                 <label className={styles.profileField}>
                                     <span>放大倍數</span>
                                     <input type="number" min={SEEDVR2_SCALE_MIN} max={SEEDVR2_SCALE_MAX} step="0.25" value={scale} onChange={(event) => setScale(event.target.value)} disabled={active || Boolean(busy)} />
+                                    <input className={styles.range} type="range" min={SEEDVR2_SCALE_MIN} max={SEEDVR2_SCALE_MAX} step="0.25" value={scale === "" ? SEEDVR2_SCALE_MIN : scale} aria-label="放大倍數滑桿" onInput={(event) => setScale(event.currentTarget.value)} disabled={active || Boolean(busy)} />
                                     <small className={styles.fieldHelp}>{seedVR2Help.scale}</small>
                                 </label>
                                 <label className={styles.profileField}>

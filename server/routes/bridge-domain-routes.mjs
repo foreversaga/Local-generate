@@ -221,6 +221,7 @@ export function createBridgeDomainRouter({
   runtimeContext,
   withAssetLifecycleLock,
   withRuntimeOperation,
+  videoCharacterController,
 } = {}) {
   async function motionContextCapability() {
     try {
@@ -332,5 +333,22 @@ export function createBridgeDomainRouter({
         return req.method === "GET" ? dispatch() : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
       },
     },
+    ...(videoCharacterController ? [{
+      name: "video-character",
+      matches: ({ pathname }) => pathname === "/api/video-character/health"
+        || pathname === "/api/video-character/jobs"
+        || pathname.startsWith("/api/video-character/jobs/"),
+      handle: ({ req, res, pathname, readJson, sendJson, sendError }) => {
+        const dispatch = () => videoCharacterController.handleRoute(req, res, {
+          pathname,
+          readJson,
+          sendJson,
+          sendError,
+        });
+        return req.method === "GET"
+          ? dispatch()
+          : withAssetLifecycleLock(() => withRuntimeOperation(dispatch));
+      },
+    }] : []),
   ]);
 }

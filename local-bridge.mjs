@@ -73,6 +73,7 @@ import {
 import { prepareReferenceVideoClip } from "./server/video-generation/reference-video-clip.mjs";
 import { createScriptLibrary, handleScriptLibraryRoute } from "./server/scripts/script-library.mjs";
 import { createLongScriptLibrary, handleLongScriptLibraryRoute } from "./server/long-scripts/long-script-library.mjs";
+import { createVideoCharacterController } from "./server/video-character/controller.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -93,6 +94,12 @@ const LATENT_GENERATOR = path.join(PROJECT_ROOT, "scripts", "h3-latent-generate.
 const ANIMATE_GENERATOR = path.join(H3_ROOT, "src", "animate_video.py");
 const SINGLE_VIDEO_JOBS_ROOT = path.resolve(
   process.env.MINIMAX_H3_SINGLE_VIDEO_DATA_ROOT || path.join(PROJECT_ROOT, "data", "jobs", "single-video"),
+);
+const VIDEO_CHARACTER_DATA_ROOT = path.resolve(
+  process.env.MINIMAX_H3_VIDEO_CHARACTER_DATA_ROOT || path.join(PROJECT_ROOT, "data", "video-character"),
+);
+const VIDEO_CHARACTER_RUNTIME_ROOT = path.resolve(
+  process.env.MINIMAX_H3_WORKFLOW_ROOT || path.join(PROJECT_ROOT, "..", "minimax-workflow"),
 );
 const SINGLE_VIDEO_OWNER_ID = String(process.env.MINIMAX_H3_SINGLE_VIDEO_OWNER_ID || `bridge-${process.pid}`);
 const singleVideoJobStore = createSingleVideoJobStore({
@@ -5838,6 +5845,18 @@ let seedvr2Controller = createSeedVR2ControllerForRuntime();
 let img2imgController = createImg2ImgControllerForRuntime();
 let text2imgController = createText2ImgControllerForRuntime();
 
+const videoCharacterController = createVideoCharacterController({
+  dataRoot: VIDEO_CHARACTER_DATA_ROOT,
+  inputRoot: INPUT_ROOT,
+  outputRoot: OUTPUT_ROOT,
+  runtimeRoot: VIDEO_CHARACTER_RUNTIME_ROOT,
+  comfyUrl: runtimeContext.comfyUrl,
+  resolveMediaPath,
+  toAsset,
+  getPython: requireBridgePython,
+  runWithGpu: (jobId, operation) => withGpuResource("video-character", jobId, operation, { phase: "video-character" }),
+});
+
 function longVideoChildOutputPath(child) {
   const relative = String(child?.outputRelativeName || child?.outputName || child?.output?.name || "").replaceAll("\\", "/").replace(/^\/+/, "");
   if (!relative || relative.split("/").some((part) => !part || part === "." || part === "..")) return null;
@@ -5985,6 +6004,7 @@ const domainRouter = createBridgeDomainRouter({
   runtimeContext,
   withAssetLifecycleLock,
   withRuntimeOperation,
+  videoCharacterController,
 });
 
 async function route(req, res) {

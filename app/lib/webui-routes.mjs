@@ -59,6 +59,7 @@ export function routeTitle(pathname, locale = "zh-TW") {
   if (normalizedPath === "/app/tools/image-to-image") return english ? "Tools / Image to Image" : "工具 / 以圖生圖";
   if (normalizedPath === "/app/tools/pose-to-image") return english ? "Tools / OpenPose Pose to Image" : "工具 / OpenPose 骨架生圖";
   if (normalizedPath === "/app/tools/lora-trainer") return english ? "Tools / LoRA training" : "工具 / LoRA 訓練";
+  if (normalizedPath === "/app/tools/video-character") return english ? "Tools / Video character" : "工具 / 影片人物";
 
   const route = WEB_UI_ROUTES.find((item) => item.id === primaryRouteForPath(normalizedPath));
   if (!english) return route?.label ?? NAV_LABELS.create;

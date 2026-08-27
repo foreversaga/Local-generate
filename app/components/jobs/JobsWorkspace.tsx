@@ -7,7 +7,7 @@ import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-cl
 import styles from "./JobsWorkspace.module.css";
 
 const STATUS_OPTIONS = ["all", "queued", "running", "complete", "partial", "error", "cancelled"] as const;
-const SOURCE_OPTIONS = ["all", "video", "long", "upscale", "text2img", "img2img", "lora"] as const;
+const SOURCE_OPTIONS = ["all", "video", "video-character", "long", "upscale", "text2img", "text2img-batch", "img2img", "lora"] as const;
 
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
 type SourceFilter = (typeof SOURCE_OPTIONS)[number];

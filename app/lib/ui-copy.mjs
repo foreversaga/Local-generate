@@ -58,9 +58,11 @@ export const FIELD_LABELS = Object.freeze({
 export const SOURCE_LABELS = Object.freeze({
   all: "全部",
   video: "單次影片",
+  "video-character": "影片人物",
   long: "長影片",
   upscale: "影片升頻",
   text2img: "文字生圖",
+  "text2img-batch": "文字生圖批次",
   img2img: "以圖生圖",
   lora: "LoRA 訓練",
   training: "訓練資料",
@@ -71,7 +73,7 @@ export const SOURCE_LABELS = Object.freeze({
 const EN_NAV_LABELS = Object.freeze({ create: "Create", jobs: "Jobs", library: "Library", tools: "Tools", settings: "Settings" });
 const EN_ACTION_LABELS = Object.freeze({ openTool: "Open tool", details: "View details", viewAll: "View all", retry: "Retry", cancel: "Cancel job", pause: "Pause", resume: "Resume", openOutput: "Open output", downloadResult: "Download result", browseLibrary: "Browse Library", clearSource: "Clear source", refresh: "Refresh", close: "Close", back: "Back", preview: "Preview", select: "Select", useSelected: "Use selected" });
 const EN_FIELD_LABELS = Object.freeze({ prompt: "Prompt", negativePrompt: "Negative prompt", seed: "Seed", steps: "Steps", modelProfile: "Model profile", runtime: "Runtime", reasoning: "Reasoning", resolution: "Resolution", model: "Model", cfg: "CFG", denoise: "Denoise", lora: "LoRA", loraStrength: "LoRA strength", batchCount: "Batch count", width: "Width", height: "Height", source: "Source asset", output: "Generated output", validation: "Validation", review: "Generation review" });
-const EN_SOURCE_LABELS = Object.freeze({ all: "All", video: "Single video", long: "Long video", upscale: "Video upscale", text2img: "Text to Image", img2img: "Image to Image", lora: "LoRA training", training: "Training data", input: "Input", output: "Generated output" });
+const EN_SOURCE_LABELS = Object.freeze({ all: "All", video: "Single video", "video-character": "Video character", long: "Long video", upscale: "Video upscale", text2img: "Text to Image", "text2img-batch": "Text-to-image batch", img2img: "Image to Image", lora: "LoRA training", training: "Training data", input: "Input", output: "Generated output" });
 
 const STATUS_LABELS = Object.freeze({
   all: "全部",
@@ -109,13 +111,15 @@ const EN_STATUS_LABELS = Object.freeze({ all: "All", queued: "Queued", running: 
 
 const DOMAIN_RUNNING_LABELS = Object.freeze({
   video: "生成中",
+  "video-character": "生成中",
   long: "生成中",
   text2img: "生成中",
+  "text2img-batch": "生成中",
   img2img: "生成中",
   upscale: "升頻中",
   lora: "訓練中",
 });
-const EN_DOMAIN_RUNNING_LABELS = Object.freeze({ video: "Generating", long: "Generating", text2img: "Generating", img2img: "Generating", upscale: "Upscaling", lora: "Training" });
+const EN_DOMAIN_RUNNING_LABELS = Object.freeze({ video: "Generating", "video-character": "Generating", long: "Generating", text2img: "Generating", "text2img-batch": "Generating", img2img: "Generating", upscale: "Upscaling", lora: "Training" });
 
 function isEnglish(locale) { return locale === "en"; }
 

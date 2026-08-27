@@ -43,6 +43,13 @@ export default function ToolsPage() {
           href="/app/tools/lora-trainer"
           actionLabel="action.openTool"
         />
+        <RouteCard
+          code="06 / VIDEO CHARACTER"
+          titleText="影片人物工作流程"
+          descriptionText="原場景換人物，或用 DWPose 動作骨架搭配參考人物生成影片。"
+          href="/app/tools/video-character"
+          actionLabel="action.openTool"
+        />
       </RouteGrid>
     </RoutePage>
   );

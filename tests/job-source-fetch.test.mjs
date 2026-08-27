@@ -28,6 +28,7 @@ test('successful source requests preserve the unified jobs behavior', async () =
   assert.deepEqual(snapshot.errors, []);
   assert.equal(snapshot.jobs.length, JOB_SOURCE_SPECS.length);
   assert.deepEqual(new Set(snapshot.jobs.map((job) => job.source)), new Set(JOB_SOURCE_SPECS.map((spec) => spec.source)));
+  assert.equal(JOB_SOURCE_SPECS.find((spec) => spec.source === 'video-character')?.url, '/app/api/video-character/jobs');
 });
 
 test('summary job requests bound every source response at the URL', async () => {
@@ -41,6 +42,18 @@ test('summary job requests bound every source response at the URL', async () => 
     },
   });
   assert.deepEqual(calls.sort(), JOB_SOURCE_SPECS.map((spec) => `${spec.url}?limit=5&summary=1`).sort());
+});
+
+test('text-to-image batch records join the unified workspace', async () => {
+  const snapshot = await fetchUnifiedJobSnapshot({
+    fetchImpl: async (url) => sourceForUrl(url) === 'text2img-batch'
+      ? response(200, { batches: [{ id: 'batch-1', status: 'prompting', total: 4, prompted: 1, submitted: 0, completed: 0, failed: 0, cancelled: 0, createdAt: '2026-08-27T00:00:00.000Z' }] })
+      : response(200, { jobs: [] }),
+  });
+  assert.deepEqual(snapshot.errors, []);
+  assert.equal(snapshot.jobs.length, 1);
+  assert.equal(snapshot.jobs[0].source, 'text2img-batch');
+  assert.equal(snapshot.jobs[0].id, 'batch-1');
 });
 
 test('an HTTP source failure remains visible while other sources stay usable', async () => {

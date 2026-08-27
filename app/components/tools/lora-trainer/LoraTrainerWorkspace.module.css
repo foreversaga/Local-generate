@@ -89,6 +89,7 @@
 .field, .fieldWide { display: grid; align-content: start; gap: 7px; min-width: 0; }
 .fieldWide { grid-column: 1 / -1; }
 .field input, .field select, .fieldWide input { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-elevated); padding: 9px 11px; color: var(--text); font: inherit; font-size: 12px; }
+.range { width: 100%; min-height: 34px !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; padding: 10px 0 !important; accent-color: var(--lime); cursor: pointer; }
 .details { margin-top: 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--bg-elevated); }
 .details summary { min-height: 44px; padding: 14px; color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer; }
 .advancedGrid, .details pre { border-top: 1px solid var(--line); padding: 14px; }

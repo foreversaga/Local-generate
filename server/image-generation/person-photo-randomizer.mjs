@@ -321,9 +321,9 @@ export function validatePersonPhotoRecipe(recipe) {
     || (swimwear && (s.outfit?.top !== swimwear.text || Boolean(s.outfit?.bottom)));
   hard('swimwear-no-upper-lower-clothing', !swimwear || !swimwearLayerConflict, '泳裝不可同時搭配一般上衣或下身');
   hard('miniskirt-stable-id', !miniskirt || /^MS(?:0[1-9]|1\d|20)$/.test(miniskirt.id), '迷你裙樣式必須來自 MS01–MS20 清單');
-  hard('bra-stable-id', !s.bra || /^BR(?:0[1-9]|[1-9]\d|100)$/.test(s.bra.id), '上身內衣必須來自 BR01–BR100 清單');
-  hard('panties-stable-id', !s.panties || /^PT(?:0[1-9]|[1-9]\d|100)$/.test(s.panties.id), '下身內褲必須來自 PT01–PT100 清單');
-  hard('underwear-set-stable-id', !underwearSet || /^UW(?:0[1-9]|[1-9]\d|100)$/.test(underwearSet.id), '內衣組合必須來自 UW01–UW100 清單');
+  hard('bra-stable-id', !s.bra || /^BR(?:0[1-9]|[1-9]\d|10[0-3])$/.test(s.bra.id), '上身內衣必須來自 BR01–BR103 清單');
+  hard('panties-stable-id', !s.panties || /^PT(?:0[1-9]|[1-9]\d|10[0-3])$/.test(s.panties.id), '下身內褲必須來自 PT01–PT103 清單');
+  hard('underwear-set-stable-id', !underwearSet || /^UW(?:0[1-9]|[1-9]\d|10[0-3])$/.test(underwearSet.id), '內衣組合必須來自 UW01–UW103 清單');
   hard('underwear-set-components-match', !underwearSet || (underwearSet.braId === s.bra?.id && underwearSet.pantiesId === s.panties?.id), '內衣組合的上身與下身款式必須完整對應');
   hard('underwear-complete-set', !underwear || Boolean(s.bra && s.panties), '內衣配方必須同時具有上身內衣與下身內褲');
   hard('underwear-style-group-compatible', !underwear || !s.bra?.group || !s.panties?.group || s.bra.group === s.panties.group, '上身內衣與下身內褲必須屬於同一款式分組');

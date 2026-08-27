@@ -889,6 +889,16 @@ export function TextToImageWorkspace() {
                   onChange={(event) => { setWidth(event.target.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
                   onBlur={() => setWidth(String(normalizeDimensionField(width, DEFAULT_WIDTH, minDimension, maxDimension)))}
                 />
+                <input
+                  className={styles.dimensionRange}
+                  type="range"
+                  min={minDimension}
+                  max={maxDimension}
+                  step={16}
+                  value={width === "" ? minDimension : width}
+                  aria-label={`${t("text2img.size.width")}滑桿`}
+                  onInput={(event) => { setWidth(event.currentTarget.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
+                />
               </label>
               <label className={styles.field}>
                 <span>{t("text2img.size.height")}</span>
@@ -900,6 +910,16 @@ export function TextToImageWorkspace() {
                   value={height}
                   onChange={(event) => { setHeight(event.target.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
                   onBlur={() => setHeight(String(normalizeDimensionField(height, DEFAULT_HEIGHT, minDimension, maxDimension)))}
+                />
+                <input
+                  className={styles.dimensionRange}
+                  type="range"
+                  min={minDimension}
+                  max={maxDimension}
+                  step={16}
+                  value={height === "" ? minDimension : height}
+                  aria-label={`${t("text2img.size.height")}滑桿`}
+                  onInput={(event) => { setHeight(event.currentTarget.value); setPresetId(CUSTOM_PRESET_ID); setResolutionScale(100); }}
                 />
               </label>
             </div>

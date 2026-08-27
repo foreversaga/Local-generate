@@ -55,3 +55,7 @@ dev.*.log
 
 # LoRA training runtime data
 /data/lora-training/
+/data/video-character/
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo

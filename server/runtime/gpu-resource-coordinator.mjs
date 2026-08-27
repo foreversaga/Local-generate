@@ -5,6 +5,7 @@ export const GPU_WORKLOAD_TYPES = Object.freeze([
   "long-video-segment",
   "img2img",
   "seedvr2-upscale",
+  "video-character",
   "lora-training",
   "ollama-vision",
 ]);

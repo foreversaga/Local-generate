@@ -120,6 +120,15 @@ Invoke-WebRequest -Uri http://127.0.0.1:8787/app/api/health -UseBasicParsing -Ti
 - 不得以 `value={Number(value) || 0}` 或其他會在 `onChange` 階段將空值轉為 `0` 的方式綁定數字欄位。
 - 編輯期間以字串 state 保留使用者輸入；有效數字、範圍、必填與預設值的驗證或正規化，改在失焦或送出時處理。
 
+## WebUI 媒體素材來源規則（強制）
+
+- 凡是 WebUI 讓使用者選取既有圖片或影片素材的功能，素材瀏覽、搜尋、預覽、選取、送出與後端解析必須預設同時支援 ComfyUI `input` 與 `output` 兩個 root，不得只接其中一個。
+- 圖片與影片的素材來源契約必須一致；新增工作流程、素材選取器或 API 時，必須沿用可識別 `{ root: "input" | "output", name, kind }` 的既有資產資料，不得把 `name` 當成固定 `input` 路徑。
+- 只有在功能本身存在明確且已記錄的安全或格式限制時，才可限制特定 root；UI 必須清楚顯示限制原因，並以測試覆蓋該例外。
+- 涉及素材選取的變更，驗收必須至少覆蓋一個 `input` 圖片、一個 `output` 圖片、一個 `input` 影片與一個 `output` 影片，並確認 UI 選取結果、API payload 與後端實際解析路徑保留正確 root。
+- 具備 workspace 的生成工作，來源副本、遮罩、姿勢、分段影片、預覽、記錄與其他過程檔案必須以該工作 workspace 為唯一正式存放位置，不得把 ComfyUI 全域 `input`／`output` 當作工作目錄。
+- 若 ComfyUI 節點只能經由全域 `input`／`output` 交換素材，只能使用 `.video-character-staging/<job-id>/` 這類工作隔離的隱藏暫存；成功、失敗、取消、逾時與服務重啟恢復都必須清除，並以測試確認不刪除其他工作或 workspace 正式素材。
+
 ## 子代理使用規則
 
 - 主代理預設直接處理所有任務，包括探索、操作、驗證與回報。

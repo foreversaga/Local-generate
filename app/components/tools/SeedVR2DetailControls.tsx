@@ -75,11 +75,13 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                     <label className={styles.profileField}>
                         <span>Tile Width</span>
                         <input type="number" min="256" max="2048" step="64" value={value.tileWidth} onChange={updateText("tileWidth")} disabled={disabled} />
+                        <input className={styles.range} type="range" min="256" max="2048" step="64" value={value.tileWidth === "" ? 256 : value.tileWidth} aria-label="Tile Width 滑桿" onInput={updateText("tileWidth")} disabled={disabled} />
                         <small className={styles.fieldHelp}>{help.tileWidth}</small>
                     </label>
                     <label className={styles.profileField}>
                         <span>Tile Height</span>
                         <input type="number" min="256" max="2048" step="64" value={value.tileHeight} onChange={updateText("tileHeight")} disabled={disabled} />
+                        <input className={styles.range} type="range" min="256" max="2048" step="64" value={value.tileHeight === "" ? 256 : value.tileHeight} aria-label="Tile Height 滑桿" onInput={updateText("tileHeight")} disabled={disabled} />
                         <small className={styles.fieldHelp}>{help.tileHeight}</small>
                     </label>
                     <label className={styles.profileField}>
@@ -90,6 +92,7 @@ export function SeedVR2DetailControls({ locale, value, disabled, onChange, onPre
                     <label className={styles.profileField}>
                         <span>Tile Upscale Resolution</span>
                         <input type="number" min="512" max="4096" step="64" value={value.tileUpscaleResolution} onChange={updateText("tileUpscaleResolution")} disabled={disabled} />
+                        <input className={styles.range} type="range" min="512" max="4096" step="64" value={value.tileUpscaleResolution === "" ? 512 : value.tileUpscaleResolution} aria-label="Tile Upscale Resolution 滑桿" onInput={updateText("tileUpscaleResolution")} disabled={disabled} />
                         <small className={styles.fieldHelp}>{help.tileUpscaleResolution}</small>
                     </label>
                     <label className={styles.profileField}>

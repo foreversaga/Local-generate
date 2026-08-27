@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "libraryVersion": "person-photo-v13-reference-pose-skill-eb200be0b744",
+  "libraryVersion": "person-photo-v14-reference-pose-skill-eb200be0b744",
   "source": "person_photo_prompt_docs.zip",
   "sourceSha256": "eb200be0b7443a40d471cddad1febf1fa0740b156339011d83a76b1dd5532d81",
   "markdownFileCount": 15,
@@ -11252,6 +11252,21 @@
         "id": "BR100",
         "text": "黑紅撞色不透明內襯情趣風內衣",
         "group": "sensual"
+      },
+      {
+        "id": "BR101",
+        "text": "象牙白透膚花卉蕾絲低脊心薄杯內衣",
+        "group": "sexy"
+      },
+      {
+        "id": "BR102",
+        "text": "淡粉紫扇貝花卉蕾絲四分之三罩杯內衣",
+        "group": "sexy"
+      },
+      {
+        "id": "BR103",
+        "text": "粉藍薄襯花卉蕾絲四分之三罩杯內衣",
+        "group": "sexy"
       }
     ],
     "panties": [
@@ -11754,6 +11769,21 @@
         "id": "PT100",
         "text": "黑紅撞色不透明底襯情趣風內褲",
         "group": "sensual"
+      },
+      {
+        "id": "PT101",
+        "text": "象牙白透膚花卉蕾絲細側帶丁字內褲",
+        "group": "sexy"
+      },
+      {
+        "id": "PT102",
+        "text": "淡粉紫低腰全蕾絲丁字內褲",
+        "group": "sexy"
+      },
+      {
+        "id": "PT103",
+        "text": "粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）",
+        "group": "sexy"
       }
     ],
     "underwearSets": [
@@ -12656,6 +12686,33 @@
         "pantiesId": "PT100",
         "bra": "黑紅撞色不透明內襯情趣風內衣",
         "panties": "黑紅撞色不透明底襯情趣風內褲"
+      },
+      {
+        "id": "UW101",
+        "text": "象牙白透膚花卉蕾絲低脊心薄杯內衣 + 象牙白透膚花卉蕾絲細側帶丁字內褲",
+        "group": "sexy",
+        "braId": "BR101",
+        "pantiesId": "PT101",
+        "bra": "象牙白透膚花卉蕾絲低脊心薄杯內衣",
+        "panties": "象牙白透膚花卉蕾絲細側帶丁字內褲"
+      },
+      {
+        "id": "UW102",
+        "text": "淡粉紫扇貝花卉蕾絲四分之三罩杯內衣 + 淡粉紫低腰全蕾絲丁字內褲",
+        "group": "sexy",
+        "braId": "BR102",
+        "pantiesId": "PT102",
+        "bra": "淡粉紫扇貝花卉蕾絲四分之三罩杯內衣",
+        "panties": "淡粉紫低腰全蕾絲丁字內褲"
+      },
+      {
+        "id": "UW103",
+        "text": "粉藍薄襯花卉蕾絲四分之三罩杯內衣 + 粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）",
+        "group": "sexy",
+        "braId": "BR103",
+        "pantiesId": "PT103",
+        "bra": "粉藍薄襯花卉蕾絲四分之三罩杯內衣",
+        "panties": "粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）"
       }
     ]
   }

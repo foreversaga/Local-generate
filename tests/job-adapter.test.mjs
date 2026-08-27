@@ -23,6 +23,65 @@ test("job adapter exposes only the actions backed by each source contract", () =
   assert.equal(adaptJob({ id: "v-completed", status: "completed" }, "video").canRetry, true);
   assert.equal(adaptJob({ id: "l", status: "paused" }, "long").canResume, true);
   assert.equal(adaptJob({ id: "done", status: "completed" }, "long").canRetry, false);
+  assert.equal(adaptJob({ id: "vc", status: "running" }, "video-character").canCancel, true);
+  assert.equal(adaptJob({ id: "vc-failed", status: "failed" }, "video-character").canRetry, false);
+});
+
+test("video character jobs expose their persisted settings and measured progress", () => {
+  const job = adaptJob({
+    id: "vc-running",
+    mode: "replace",
+    status: "running",
+    stage: "generate",
+    phase: "generation",
+    nativeCurrent: 5,
+    nativeMaximum: 10,
+    chunkIndex: 1,
+    chunkCount: 4,
+    references: [{ root: "input", name: "front.jpg" }, { root: "input", name: "side.jpg" }],
+    settings: {
+      prompt: "keep the original scene",
+      negativePrompt: "cropped limbs",
+      width: 768,
+      height: 432,
+      fps: 24,
+      steps: 20,
+      seed: 42,
+      timeoutSeconds: 900,
+    },
+  }, "video-character");
+  assert.equal(job.title, "原場景換人物");
+  assert.equal(job.subtitle, "768×432 · 24 FPS · 2 張參考圖");
+  assert.equal(job.prompt, "keep the original scene");
+  assert.equal(job.negativePrompt, "cropped limbs");
+  assert.deepEqual([job.width, job.height, job.steps, job.seed, job.timeoutSeconds], [768, 432, 20, 42, 900]);
+  assert.equal(job.progress, 38);
+  assert.equal(job.chunkIndex, 1);
+  assert.equal(job.chunkCount, 4);
+});
+
+test("text-to-image batch jobs retain their parent lifecycle in the workspace", () => {
+  const running = adaptJob({
+    id: "batch-running",
+    status: "prompting",
+    promptModel: "qwen3.8-27b",
+    total: 4,
+    prompted: 2,
+    submitted: 1,
+    completed: 1,
+    failed: 0,
+    cancelled: 0,
+  }, "text2img-batch");
+  assert.equal(running.status, "running");
+  assert.equal(running.title, "文字生圖批次 · 4 張");
+  assert.equal(running.subtitle, "1/4 張完成 · qwen3.8-27b");
+  assert.equal(running.progress, 38);
+  assert.equal(running.canCancel, true);
+  assert.equal(running.canRetry, false);
+
+  const cancelled = adaptJob({ id: "batch-cancelled", status: "cancelled", total: 4, prompted: 0, completed: 0, failed: 0, cancelled: 4 }, "text2img-batch");
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.canCancel, false);
 });
 
 test("job adapter exposes reusable prompts for single, long, and image jobs regardless of status", () => {

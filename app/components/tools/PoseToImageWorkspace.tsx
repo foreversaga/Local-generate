@@ -125,7 +125,7 @@ export function PoseToImageWorkspace() {
             const [asset] = await uploadAssets([file], "pose-to-image");
             if (!asset || asset.kind !== "image") throw new Error("圖片上傳失敗。");
             setSource(asset);
-            setPosePreview(await requestPosePreview(file));
+            setPosePreview(await requestPosePreview(file, poseResolution));
         } catch (reason) {
             setSource(null);
             setPosePreview("");
@@ -145,7 +145,7 @@ export function PoseToImageWorkspace() {
             if (!response.ok) throw new Error("無法讀取來源圖片。");
             const blob = await response.blob();
             const file = new File([blob], source.name.split("/").pop() || "pose-source.png", { type: blob.type || source.mime || "image/png" });
-            setPosePreview(await requestPosePreview(file));
+            setPosePreview(await requestPosePreview(file, poseResolution));
         } catch (reason) {
             setError(errorMessage(reason, "無法重新擷取骨架。"));
         } finally {
@@ -349,16 +349,19 @@ export function PoseToImageWorkspace() {
                             <small>越高越貼近骨架；過高可能讓肢體僵硬</small>
                         </label>
                         <label className={styles.resolutionField} htmlFor="pose-to-image-pose-resolution">
-                            <span>DWPose 解析度</span>
-                            <select
+                            <span>DWPose 解析度：{poseResolution} px</span>
+                            <input
                                 id="pose-to-image-pose-resolution"
+                                type="range"
+                                min={512}
+                                max={1024}
+                                step={256}
                                 value={poseResolution}
-                                onChange={(event) => setPoseResolution(Number(event.target.value))}
-                            >
-                                <option value={512}>512 · 快速</option>
-                                <option value={768}>768 · 建議</option>
-                                <option value={1024}>1024 · 精細</option>
-                            </select>
+                                aria-label="DWPose 解析度滑桿"
+                                onInput={(event) => setPoseResolution(Number(event.currentTarget.value))}
+                            />
+                            <span className={styles.resolutionTicks} aria-hidden="true"><span>512 · 快速</span><span>768 · 建議</span><span>1024 · 精細</span></span>
+                            <small>調整後按「重新擷取骨架」套用到預覽。</small>
                         </label>
                     </div>
                     <div className={styles.seedField}>
@@ -397,12 +400,12 @@ function EmptyState({ title, note }: { title: string; note: string }) {
     return <div className={styles.empty}><strong>{title}</strong><span>{note}</span></div>;
 }
 
-async function requestPosePreview(file: File) {
+async function requestPosePreview(file: File, resolution: number) {
     const imageData = await imageFileToDataUrl(file, 1536);
     const response = await fetch("/app/api/img2img/pose-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageData, resolution: 768 }),
+        body: JSON.stringify({ imageData, resolution }),
     });
     const payload = await response.json().catch(() => ({})) as PosePreviewPayload;
     if (!response.ok || !payload.previewDataUrl) throw new Error(apiError(payload, "骨架擷取失敗。"));

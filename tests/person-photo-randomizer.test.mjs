@@ -35,30 +35,47 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
   assert.equal(summary.clothingOptions.swimwear.length, 100);
   assert.equal(summary.swimwearCount, 100);
   assert.equal(summary.clothingOptions.miniskirt.length, 20);
-  assert.equal(summary.clothingOptions.bra.length, 100);
-  assert.equal(summary.clothingOptions.panties.length, 100);
-  assert.equal(summary.clothingOptions.underwearSet.length, 100);
+  assert.equal(summary.clothingOptions.bra.length, 103);
+  assert.equal(summary.clothingOptions.panties.length, 103);
+  assert.equal(summary.clothingOptions.underwearSet.length, 103);
   assert.equal(summary.miniskirtCount, 20);
-  assert.equal(summary.braCount, 100);
-  assert.equal(summary.pantyCount, 100);
-  assert.equal(summary.underwearSetCount, 100);
+  assert.equal(summary.braCount, 103);
+  assert.equal(summary.pantyCount, 103);
+  assert.equal(summary.underwearSetCount, 103);
   assert.deepEqual(Object.keys(summary.clothingOptions).sort(), ['bottom', 'bra', 'custom', 'hosiery', 'miniskirt', 'outerwear', 'outfit', 'panties', 'shoes', 'swimwear', 'top', 'underwearSet']);
   assert.match(summary.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(library.clothing.outfits[0].id, 'C001');
   assert.equal(library.clothing.outfits.at(-1).id, 'C520');
   assert.deepEqual(library.clothing.swimwear.map(({ id }) => id), Array.from({ length: 100 }, (_, index) => `SW${String(index + 1).padStart(2, '0')}`));
   assert.deepEqual(library.clothing.miniskirts.map(({ id }) => id), Array.from({ length: 20 }, (_, index) => `MS${String(index + 1).padStart(2, '0')}`));
-  assert.deepEqual(library.clothing.bras.map(({ id }) => id), Array.from({ length: 100 }, (_, index) => `BR${String(index + 1).padStart(2, '0')}`));
-  assert.deepEqual(library.clothing.panties.map(({ id }) => id), Array.from({ length: 100 }, (_, index) => `PT${String(index + 1).padStart(2, '0')}`));
-  assert.deepEqual(library.clothing.underwearSets.map(({ id }) => id), Array.from({ length: 100 }, (_, index) => `UW${String(index + 1).padStart(2, '0')}`));
-  for (const category of ['swimwear', 'bras', 'panties']) {
+  assert.deepEqual(library.clothing.bras.map(({ id }) => id), Array.from({ length: 103 }, (_, index) => `BR${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.clothing.panties.map(({ id }) => id), Array.from({ length: 103 }, (_, index) => `PT${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(library.clothing.underwearSets.map(({ id }) => id), Array.from({ length: 103 }, (_, index) => `UW${String(index + 1).padStart(2, '0')}`));
+  assert.deepEqual(Object.fromEntries(['classic', 'sexy', 'sensual'].map((group) => [group, library.clothing.swimwear.filter((item) => item.group === group).length])), {
+    classic: 50, sexy: 25, sensual: 25,
+  });
+  for (const category of ['bras', 'panties']) {
     assert.deepEqual(Object.fromEntries(['classic', 'sexy', 'sensual'].map((group) => [group, library.clothing[category].filter((item) => item.group === group).length])), {
-      classic: 50, sexy: 25, sensual: 25,
+      classic: 50, sexy: 28, sensual: 25,
     });
   }
   assert.deepEqual(summary.clothingOptions.swimwear.slice(49, 51).map(({ id, group }) => ({ id, group })), [{ id: 'SW50', group: 'classic' }, { id: 'SW51', group: 'sexy' }]);
   assert.deepEqual(summary.clothingOptions.bra.slice(74, 76).map(({ id, group }) => ({ id, group })), [{ id: 'BR75', group: 'sexy' }, { id: 'BR76', group: 'sensual' }]);
   assert.deepEqual(summary.clothingOptions.underwearSet.slice(74, 76).map(({ id, group }) => ({ id, group })), [{ id: 'UW75', group: 'sexy' }, { id: 'UW76', group: 'sensual' }]);
+  assert.deepEqual(library.clothing.underwearSets.slice(-3), [
+    {
+      id: 'UW101', text: '象牙白透膚花卉蕾絲低脊心薄杯內衣 + 象牙白透膚花卉蕾絲細側帶丁字內褲', group: 'sexy',
+      braId: 'BR101', pantiesId: 'PT101', bra: '象牙白透膚花卉蕾絲低脊心薄杯內衣', panties: '象牙白透膚花卉蕾絲細側帶丁字內褲',
+    },
+    {
+      id: 'UW102', text: '淡粉紫扇貝花卉蕾絲四分之三罩杯內衣 + 淡粉紫低腰全蕾絲丁字內褲', group: 'sexy',
+      braId: 'BR102', pantiesId: 'PT102', bra: '淡粉紫扇貝花卉蕾絲四分之三罩杯內衣', panties: '淡粉紫低腰全蕾絲丁字內褲',
+    },
+    {
+      id: 'UW103', text: '粉藍薄襯花卉蕾絲四分之三罩杯內衣 + 粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）', group: 'sexy',
+      braId: 'BR103', pantiesId: 'PT103', bra: '粉藍薄襯花卉蕾絲四分之三罩杯內衣', panties: '粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）',
+    },
+  ]);
   assert.equal(summary.poseOptions.length, 168);
   assert.equal(summary.poseOptions.filter((item) => item.group === 'classic').length, 82);
   assert.equal(summary.poseOptions.filter((item) => item.group === 'lifestyle').length, 35);
@@ -111,7 +128,7 @@ test('loads the canonical 15-document library with stable clothing IDs', async (
   assert.match(sexyBedTemplate.capturePreset.rearViewPriority, /只可看見後腦、背部、後肩、後腰、臀部/);
   assert.ok(sexyBedTemplate.capturePreset?.locks);
   assert.deepEqual(sexyBedTemplate.capturePreset.fixedRealism, ['imageGoal.真實度.013', 'imageGoal.真實度.025']);
-  assert.match(library.libraryVersion, /^person-photo-v13-reference-pose-skill-/);
+  assert.match(library.libraryVersion, /^person-photo-v14-reference-pose-skill-/);
   assert.deepEqual(summary.photoGoals, {
     photoTypeCount: 50,
     styleCount: 40,
@@ -360,7 +377,7 @@ test('all miniskirt styles are selectable and compose a complete outfit', async 
   assert.equal(whiteSocks.validation.passed, true);
 });
 
-test('all 100 bras and 100 panties are selectable with a complete coherent set', async () => {
+test('all 103 bras and 103 panties are selectable with a complete coherent set', async () => {
   const library = await loadPersonPhotoLibrary();
   for (const [category, options] of [['bra', library.clothing.bras], ['panties', library.clothing.panties]]) {
     for (const option of options) {
@@ -399,7 +416,7 @@ test('sexy and sensual underwear always resolve to a matching style group', asyn
   ] }), { code: 'PERSON_PHOTO_REQUIREMENT_CONFLICT' });
 });
 
-test('all 100 underwear sets lock both components and remain traceable', async () => {
+test('all 103 underwear sets lock both components and remain traceable', async () => {
   const library = await loadPersonPhotoLibrary();
   for (const option of library.clothing.underwearSets) {
     const { recipes: [recipe] } = await randomizePersonPhotoRecipes({ seed: option.id, clothingRequirements: [{ category: 'underwearSet', optionId: option.id, applyToAll: true }] });

@@ -129,8 +129,13 @@ export async function fetchUnifiedJob(jobId: string, sourceHint?: string): Promi
     const message = typeof payload.error === "string" ? payload.error : payload.error?.message || `Unable to load ${sourceHint} job.`;
     return { job: null, sourceError: { source: sourceHint || "", status: response.status, code: payload.code || `HTTP_${response.status}`, message } };
   }
-  const raw = payload.job && typeof payload.job === "object"
-    ? { ...payload.job, ...(Array.isArray(payload.events) ? { events: payload.events } : {}) }
+  const rawRecord = payload.job && typeof payload.job === "object"
+    ? payload.job
+    : payload.batch && typeof payload.batch === "object"
+      ? payload.batch
+      : null;
+  const raw = rawRecord
+    ? { ...rawRecord, ...(Array.isArray(payload.events) ? { events: payload.events } : {}) }
     : payload;
   let job = adaptJob(raw, spec.source) as UnifiedJob;
   job = await enrichLongChildElapsed(job);
@@ -143,6 +148,8 @@ export async function fetchUnifiedJob(jobId: string, sourceHint?: string): Promi
 export async function performJobAction(job: UnifiedJob, action: "cancel" | "pause" | "resume" | "retry", retryOverrides?: VideoRetryOverrides) {
   if (job.source === "video" && action === "cancel") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/cancel`, "POST");
   if (job.source === "video" && action === "retry") return request(`${BRIDGE_URL}/api/jobs/${encodeURIComponent(job.id)}/retry`, "POST", retryOverrides);
+  if (job.source === "video-character" && action === "cancel") return request(`${BRIDGE_URL}/api/video-character/jobs/${encodeURIComponent(job.id)}/cancel`, "POST");
+  if (job.source === "text2img-batch" && action === "cancel") return request(`${BRIDGE_URL}/api/text2img/batches/${encodeURIComponent(job.id)}/cancel`, "POST");
   if (job.source === "long" && ["cancel", "pause", "resume"].includes(action)) return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/${action}`, "POST");
   if (job.source === "long" && action === "retry") return request(`${BRIDGE_URL}/api/sequences/${encodeURIComponent(job.id)}/start`, "POST");
   if (job.source === "lora" && (action === "cancel" || action === "retry")) {

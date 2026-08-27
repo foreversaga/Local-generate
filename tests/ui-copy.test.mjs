@@ -27,6 +27,8 @@ test("shared UI copy keeps navigation, actions, fields, and sources in zh-TW", (
   assert.equal(FIELD_LABELS.seed, "隨機種子（Seed）");
   assert.equal(sourceLabel("training"), "訓練資料");
   assert.equal(sourceLabel("text2img"), "文字生圖");
+  assert.equal(sourceLabel("video-character"), "影片人物");
+  assert.equal(sourceLabel("text2img-batch"), "文字生圖批次");
   assert.equal(sourceLabel("output"), "生成結果");
 });
 
@@ -48,6 +50,8 @@ test("shared UI copy maps backend statuses and tool domains", () => {
   };
   for (const [status, label] of Object.entries(expected)) assert.equal(jobStatusLabel(status), label);
   assert.equal(jobStatusLabel("running", "video"), "生成中");
+  assert.equal(jobStatusLabel("running", "video-character"), "生成中");
+  assert.equal(jobStatusLabel("running", "text2img-batch"), "生成中");
   assert.equal(jobStatusLabel("running", "upscale"), "升頻中");
   assert.equal(jobStatusLabel("running", "text2img"), "生成中");
   assert.equal(jobStatusLabel("running", "img2img"), "生成中");
@@ -64,5 +68,7 @@ test("shared UI copy presents English without changing backend values", () => {
   assert.equal(jobStatusLabel("needs_attention", undefined, "en"), "Needs attention");
   assert.equal(sourceLabel("long", "en"), "Long video");
   assert.equal(sourceLabel("text2img", "en"), "Text to Image");
+  assert.equal(sourceLabel("video-character", "en"), "Video character");
+  assert.equal(sourceLabel("text2img-batch", "en"), "Text-to-image batch");
   assert.equal(readinessLabel("ready", "en"), "Ready");
 });

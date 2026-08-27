@@ -1229,12 +1229,14 @@ export function LongCreateForm() {
               <label className={`${styles.field} ${attempted && issuesByField.get("width") ? styles.fieldInvalid : ""}`}>
                 <span className={styles.helper}>寬</span>
                 <input id="long-width" className={styles.input} type="number" min={32} max={2048} step={32} inputMode="numeric" value={width} aria-label="影片寬度" onChange={(event) => updateResolutionDimension("width", numberDraft(event.target.value))} />
+                <input className={styles.range} type="range" min={32} max={2048} step={32} value={width === "" ? 32 : width} aria-label="影片寬度滑桿" onInput={(event) => updateResolutionDimension("width", numberDraft(event.currentTarget.value))} />
                 <InlineError id="long-width-error" message={attempted ? issuesByField.get("width") : ""} />
               </label>
               <button type="button" className={styles.iconButton} onClick={swapResolution} aria-label="交換影片寬度與高度" title="交換寬高">↔</button>
               <label className={`${styles.field} ${attempted && issuesByField.get("height") ? styles.fieldInvalid : ""}`}>
                 <span className={styles.helper}>高</span>
                 <input id="long-height" className={styles.input} type="number" min={32} max={2048} step={32} inputMode="numeric" value={height} aria-label="影片高度" onChange={(event) => updateResolutionDimension("height", numberDraft(event.target.value))} />
+                <input className={styles.range} type="range" min={32} max={2048} step={32} value={height === "" ? 32 : height} aria-label="影片高度滑桿" onInput={(event) => updateResolutionDimension("height", numberDraft(event.currentTarget.value))} />
                 <InlineError id="long-height-error" message={attempted ? issuesByField.get("height") : ""} />
               </label>
             </div>

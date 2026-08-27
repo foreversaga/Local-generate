@@ -231,6 +231,22 @@
     font: inherit;
 }
 
+.resolutionField input[type="range"] {
+    width: 100%;
+    min-height: 34px;
+    padding: 10px 0;
+    accent-color: var(--lime);
+    cursor: pointer;
+}
+
+.resolutionTicks {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
 .seedField > div {
     display: grid;
     grid-template-columns: 1fr auto;

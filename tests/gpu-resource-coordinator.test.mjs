@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createGpuResourceCoordinator } from "../server/runtime/gpu-resource-coordinator.mjs";
+import { createGpuResourceCoordinator, GPU_WORKLOAD_TYPES } from "../server/runtime/gpu-resource-coordinator.mjs";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -28,6 +28,16 @@ test("GPU coordinator serializes workload types and exposes queue positions", as
   imageLease.release();
   await coordinator.waitForIdle();
   assert.equal(coordinator.hasWork(), false);
+});
+
+test("GPU coordinator admits the video-character workload used by its controller", async () => {
+  assert.ok(GPU_WORKLOAD_TYPES.includes("video-character"));
+  const coordinator = createGpuResourceCoordinator();
+  const admission = coordinator.request({ jobId: "video-character-1", workloadType: "video-character", runtime: "local" });
+  const lease = await admission.granted;
+  assert.equal(coordinator.active().workloadType, "video-character");
+  lease.release();
+  await coordinator.waitForIdle();
 });
 
 test("queued cancellation removes a request without blocking the next lease", async () => {

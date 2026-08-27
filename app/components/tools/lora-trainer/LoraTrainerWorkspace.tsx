@@ -891,6 +891,7 @@ export function LoraTrainerWorkspace() {
                <NumberField label="學習率" value={config.overrides?.learningRate} min={0.000001} max={0.01} step={0.000001} onChange={(value) => patchOverride("learningRate", value)} />
                <NumberField label="訓練輪數" value={config.overrides?.epochs} min={1} max={100} onChange={(value) => patchOverride("epochs", value)} />
                <NumberField label="批次大小" value={config.overrides?.batchSize} min={1} max={16} onChange={(value) => patchOverride("batchSize", value)} />
+               <NumberField label="訓練解析度" value={config.overrides?.resolution} min={256} max={2048} step={64} slider onChange={(value) => patchOverride("resolution", value)} />
                <NumberField label={FIELD_LABELS.seed} value={config.overrides?.seed} min={0} max={2147483647} onChange={(value) => patchOverride("seed", value)} />
              </div></details>
             {preflight && <div className={styles.checks} aria-live="polite">{preflight.checks.map((check, index) => <div key={check.id || check.name || index} data-status={check.status}><strong>{check.label || check.name || `檢查 ${index + 1}`}</strong><span>{check.message || check.status}</span></div>)}</div>}
@@ -918,8 +919,8 @@ export function LoraTrainerWorkspace() {
   );
 }
 
-function NumberField({ label, value, min, max, step = 1, onChange }: { label: string; value?: number; min: number; max: number; step?: number; onChange: (value: string) => void }) {
-  return <label className={styles.field}><span>{label}</span><input type="number" value={value ?? ""} min={min} max={max} step={step} onChange={(event) => onChange(event.target.value)} /></label>;
+function NumberField({ label, value, min, max, step = 1, slider = false, onChange }: { label: string; value?: number; min: number; max: number; step?: number; slider?: boolean; onChange: (value: string) => void }) {
+  return <label className={styles.field}><span>{label}</span><input type="number" value={value ?? ""} min={min} max={max} step={step} onChange={(event) => onChange(event.target.value)} />{slider && <input className={styles.range} type="range" min={min} max={max} step={step} value={value ?? min} aria-label={`${label}滑桿`} onInput={(event) => onChange(event.currentTarget.value)} />}</label>;
 }
 
 function Meta({ label, value, wide = false }: { label: string; value?: string | number; wide?: boolean }) {

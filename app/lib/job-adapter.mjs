@@ -24,6 +24,8 @@ const STATUS_MAP = new Map([
   ["extracting_tail", "running"],
   ["captioning", "running"],
   ["training", "running"],
+  ["prompting", "running"],
+  ["generating", "running"],
   ["installing", "running"],
   ["queued", "queued"],
   ["pending", "queued"],
@@ -56,6 +58,10 @@ export function adaptJob(raw, source = "video") {
     : null;
   const progress = source === "lora"
     ? loraTrainingProgress(raw, status)
+    : source === "video-character"
+      ? videoCharacterProgress(raw, status)
+      : source === "text2img-batch"
+        ? text2ImgBatchProgress(raw, status)
     : clampProgress(raw?.progress ?? raw?.segmentProgress ?? batchProgress ?? (status === "complete" ? 100 : 0));
   const artifact = artifactRef(raw, source);
   const output = outputRef(raw, source, artifact);
@@ -69,20 +75,26 @@ export function adaptJob(raw, source = "video") {
     description: jobDescription(raw, source),
     prompt: typeof raw?.prompt === "string"
       ? raw.prompt
+      : source === "video-character" && typeof raw?.settings?.prompt === "string"
+        ? raw.settings.prompt
       : source === "long" && typeof raw?.inputText === "string"
         ? raw.inputText
         : "",
-    negativePrompt: typeof raw?.negativePrompt === "string" ? raw.negativePrompt : "",
+    negativePrompt: typeof raw?.negativePrompt === "string"
+      ? raw.negativePrompt
+      : source === "video-character" && typeof raw?.settings?.negativePrompt === "string"
+        ? raw.settings.negativePrompt
+        : "",
     modelProfile: source === "text2img" && typeof raw?.modelLabel === "string"
       ? raw.modelLabel
       : typeof raw?.modelProfile === "string" ? raw.modelProfile : typeof raw?.model === "string" ? raw.model : "",
-    width: numericOrNull(raw?.width),
-    height: numericOrNull(raw?.height),
+    width: numericOrNull(raw?.width ?? (source === "video-character" ? raw?.settings?.width : null)),
+    height: numericOrNull(raw?.height ?? (source === "video-character" ? raw?.settings?.height : null)),
     duration: numericOrNull(raw?.duration),
-    steps: numericOrNull(raw?.steps),
+    steps: numericOrNull(raw?.steps ?? (source === "video-character" ? raw?.settings?.steps : null)),
     cfg: numericOrNull(raw?.cfg),
-    seed: numericOrNull(raw?.seed),
-    timeoutSeconds: numericOrNull(raw?.timeoutSeconds),
+    seed: numericOrNull(raw?.seed ?? (source === "video-character" ? raw?.settings?.seed : null)),
+    timeoutSeconds: numericOrNull(raw?.timeoutSeconds ?? (source === "video-character" ? raw?.settings?.timeoutSeconds : null)),
     outputName: typeof raw?.outputName === "string" ? raw.outputName : "",
     attempt: numericOrNull(raw?.attempt) || 1,
     inputRefs: raw?.inputRefs && typeof raw.inputRefs === "object" ? raw.inputRefs : {},
@@ -95,6 +107,8 @@ export function adaptJob(raw, source = "video") {
     comfyNodeTitle: typeof raw?.comfyNodeTitle === "string" ? raw.comfyNodeTitle : "",
     nativeCurrent: numericOrNull(raw?.nativeCurrent),
     nativeMaximum: numericOrNull(raw?.nativeMaximum),
+    chunkIndex: numericOrNull(raw?.chunkIndex),
+    chunkCount: numericOrNull(raw?.chunkCount),
     activeSegmentIndex: numericOrNull(raw?.activeSegmentIndex),
     segmentProgress: numericOrNull(raw?.segmentProgress),
     segmentStage: typeof raw?.segmentStage === "string" ? raw.segmentStage : "",
@@ -146,6 +160,33 @@ function clampProgress(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function videoCharacterProgress(raw, status) {
+  if (status === "complete") return 100;
+  const current = Number(raw?.nativeCurrent);
+  const maximum = Number(raw?.nativeMaximum);
+  if (!Number.isFinite(current) || !Number.isFinite(maximum) || maximum <= 0) {
+    return clampProgress(raw?.progress);
+  }
+  const phaseProgress = Math.max(0, Math.min(1, current / maximum));
+  const chunkIndex = Number(raw?.chunkIndex);
+  const chunkCount = Number(raw?.chunkCount);
+  if (String(raw?.phase || "") === "generation" && Number.isInteger(chunkIndex) && Number.isInteger(chunkCount) && chunkCount > 0) {
+    return clampProgress((chunkIndex + phaseProgress) / chunkCount * 100);
+  }
+  return clampProgress(phaseProgress * 100);
+}
+
+function text2ImgBatchProgress(raw, status) {
+  if (status === "complete") return 100;
+  const total = Number(raw?.total);
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  const prompted = Math.max(0, Number(raw?.prompted) || 0);
+  const terminal = Math.max(0, Number(raw?.completed) || 0)
+    + Math.max(0, Number(raw?.failed) || 0)
+    + Math.max(0, Number(raw?.cancelled) || 0);
+  return clampProgress((prompted + terminal) / (total * 2) * 100);
 }
 
 function nonNegativeInteger(value) {
@@ -254,6 +295,8 @@ function jobDescription(raw, source) {
 }
 
 function jobTitle(raw, source) {
+  if (source === "video-character") return raw?.mode === "dwpose" ? "DWPose 動作生成" : "原場景換人物";
+  if (source === "text2img-batch") return `文字生圖批次 · ${positiveInteger(raw?.total) || 0} 張`;
   if (source === "long") return raw?.title || "長影片";
   if (source === "upscale") {
     const sourceName = String(raw?.sourceName || "");
@@ -275,6 +318,20 @@ function jobTitle(raw, source) {
 }
 
 function jobSubtitle(raw, source) {
+  if (source === "video-character") {
+    const settings = raw?.settings && typeof raw.settings === "object" ? raw.settings : {};
+    const resolution = settings.width && settings.height ? `${settings.width}×${settings.height}` : "";
+    const fps = settings.fps ? `${settings.fps} FPS` : "";
+    const references = Array.isArray(raw?.references) && raw.references.length ? `${raw.references.length} 張參考圖` : "";
+    return [resolution, fps, references].filter(Boolean).join(" · ");
+  }
+  if (source === "text2img-batch") {
+    const completed = nonNegativeInteger(raw?.completed);
+    const failed = nonNegativeInteger(raw?.failed);
+    const cancelled = nonNegativeInteger(raw?.cancelled);
+    const total = positiveInteger(raw?.total) || 0;
+    return [`${completed}/${total} 張完成`, failed ? `${failed} 張失敗` : "", cancelled ? `${cancelled} 張取消` : "", raw?.promptModel || ""].filter(Boolean).join(" · ");
+  }
   if (source === "long") {
     const segments = Array.isArray(raw?.segments) ? raw.segments : [];
     const total = Number(raw?.segmentCount ?? segments.length) || 0;
@@ -342,6 +399,8 @@ export function outputAvailability(output, availableKeys = null) {
 function canCancel(raw, source) {
   const status = String(raw?.status || "").toLowerCase();
   if (source === "video") return ["queued", "running", "cancelling"].includes(status);
+  if (source === "video-character") return ["queued", "running", "cancelling"].includes(status);
+  if (source === "text2img-batch") return ["queued", "prompting", "generating", "cancelling"].includes(status);
   if (source === "long") return ["queued", "running", "paused", "assembling", "recovering"].includes(status);
   if (source === "upscale") return ["queued", "running", "cancelling"].includes(status);
   if (source === "img2img") return ["queued", "running", "cancelling"].includes(status);

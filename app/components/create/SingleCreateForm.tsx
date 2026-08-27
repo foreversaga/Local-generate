@@ -1184,6 +1184,16 @@ export function SingleCreateForm() {
                       onBlur={() => markTouched("width")}
                       onChange={(event) => updateResolutionDimension("width", numberDraft(event.target.value))}
                     />
+                    <input
+                      className={styles.range}
+                      type="range"
+                      min={32}
+                      max={2048}
+                      step={mode === "replace" ? 16 : 32}
+                      value={width === "" ? 32 : width}
+                      aria-label="影片寬度滑桿"
+                      onInput={(event) => updateResolutionDimension("width", numberDraft(event.currentTarget.value))}
+                    />
                     <FieldError id="single-width-error" message={visibleFieldError("width")} />
                   </label>
                   <button type="button" className={styles.iconButton} onClick={swapResolution} aria-label="交換影片寬度與高度" title="交換寬高">
@@ -1205,6 +1215,16 @@ export function SingleCreateForm() {
                       aria-describedby={visibleFieldError("height") ? "single-height-error" : undefined}
                       onBlur={() => markTouched("height")}
                       onChange={(event) => updateResolutionDimension("height", numberDraft(event.target.value))}
+                    />
+                    <input
+                      className={styles.range}
+                      type="range"
+                      min={32}
+                      max={2048}
+                      step={mode === "replace" ? 16 : 32}
+                      value={height === "" ? 32 : height}
+                      aria-label="影片高度滑桿"
+                      onInput={(event) => updateResolutionDimension("height", numberDraft(event.currentTarget.value))}
                     />
                     <FieldError id="single-height-error" message={visibleFieldError("height")} />
                   </label>
@@ -1674,15 +1694,29 @@ function SourceFields({
               <span className={styles.fieldLabel}>結束時間（秒）</span>
               <input id="single-reference-video-end" className={styles.input} type="number" min={0.5} max={sourceVideoDuration ?? undefined} step={0.001} value={referenceVideoEnd} onChange={(event) => onReferenceVideoRangeChange("end", numberDraft(event.target.value))} />
             </label>
-            <label className={styles.field}>
-              <span className={styles.fieldLabel}>參考影片解析度</span>
-              <select id="single-reference-video-resolution" className={styles.select} value={referenceVideoMaxDimension} onChange={(event) => onReferenceVideoMaxDimensionChange(Number(event.target.value))}>
-                <option value={480}>低負載 · 最長邊 480 px</option>
-                <option value={720}>建議 · 最長邊 720 px</option>
-                <option value={960}>高細節 · 最長邊 960 px</option>
-                <option value={0}>保留來源解析度（OOM 風險）</option>
-              </select>
-            </label>
+            <div className={styles.field}>
+              <span className={styles.rangeHeader}>
+                <span className={styles.fieldLabel}>參考影片解析度</span>
+                <span className={styles.rangeValue}>{referenceVideoMaxDimension === 0 ? "來源" : `${referenceVideoMaxDimension} px`}</span>
+              </span>
+              <input
+                id="single-reference-video-resolution"
+                className={styles.range}
+                type="range"
+                min={480}
+                max={960}
+                step={240}
+                value={referenceVideoMaxDimension === 0 ? 720 : referenceVideoMaxDimension}
+                disabled={referenceVideoMaxDimension === 0}
+                aria-label="參考影片最長邊解析度"
+                onInput={(event) => onReferenceVideoMaxDimensionChange(Number(event.currentTarget.value))}
+              />
+              <span className={styles.scaleTicks} aria-hidden="true"><span>480 px</span><span>720 px</span><span>960 px</span></span>
+              <label className={styles.lockToggle}>
+                <input type="checkbox" checked={referenceVideoMaxDimension === 0} onChange={(event) => onReferenceVideoMaxDimensionChange(event.target.checked ? 0 : 720)} />
+                <span>保留來源解析度（OOM 風險）</span>
+              </label>
+            </div>
           </div>
           <p className={styles.clipSummary}>實際參考長度：{Math.max(0, referenceVideoEnd - referenceVideoStart).toFixed(3)} 秒；輸出影片長度會同步此片段。</p>
         </div>

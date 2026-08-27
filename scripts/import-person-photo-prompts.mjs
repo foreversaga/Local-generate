@@ -335,6 +335,12 @@ const BRA_STYLES = groupedClothingStyles('BR', [
     '黑色 cage 風線條內衣', '酒紅色繃帶風罩杯內衣', '銀色金屬環連接內衣', '黑色緞帶束身式內衣', '寶石紅幾何鏤空有內襯內衣',
     '紫色蕾絲頸帶連接內衣', '黑色吊帶元素下圍內衣', '珍珠白細鏈裝飾內衣', '海軍藍後背束帶長版內衣', '黑紅撞色不透明內襯情趣風內衣',
   ]],
+  // Reference: https://x.com/jpcccce/status/2092460460788605314
+  ['sexy', [
+    '象牙白透膚花卉蕾絲低脊心薄杯內衣',
+    '淡粉紫扇貝花卉蕾絲四分之三罩杯內衣',
+    '粉藍薄襯花卉蕾絲四分之三罩杯內衣',
+  ]],
 ]);
 
 const PANTY_STYLES = groupedClothingStyles('PT', [
@@ -363,6 +369,12 @@ const PANTY_STYLES = groupedClothingStyles('PT', [
     '紅色網紗拼接不透明底襯內褲', '黑色側腰綁帶高衩內褲', '香檳色金屬環緞光內褲', '祖母綠束腰輪廓高腰內褲', '白色多帶不對稱內褲',
     '黑色 cage 風腰線內褲', '酒紅色繃帶風內褲', '銀色金屬環連接內褲', '黑色緞帶束腰式內褲', '寶石紅幾何鏤空有內襯內褲',
     '紫色蕾絲吊帶元素內褲', '黑色吊襪帶元素腰帶內褲', '珍珠白細鏈裝飾內褲', '海軍藍後腰束帶內褲', '黑紅撞色不透明底襯情趣風內褲',
+  ]],
+  // The three entries keep the front and rear construction paired with BR101–BR103.
+  ['sexy', [
+    '象牙白透膚花卉蕾絲細側帶丁字內褲',
+    '淡粉紫低腰全蕾絲丁字內褲',
+    '粉藍低腰細側帶內褲（平滑正面、蕾絲丁字背面）',
   ]],
 ]);
 
@@ -468,11 +480,11 @@ export function importPersonPhotoPrompts(sourcePath) {
     if (clothing.outfits[0].id !== 'C001' || clothing.outfits.at(-1).id !== 'C520') throw new Error('Outfit IDs are not contiguous C001-C520');
     if (clothing.swimwear.length !== 100 || clothing.swimwear[0].id !== 'SW01' || clothing.swimwear.at(-1).id !== 'SW100') throw new Error('Expected contiguous swimwear IDs SW01-SW100');
     if (clothing.miniskirts.length !== 20 || clothing.miniskirts[0].id !== 'MS01' || clothing.miniskirts.at(-1).id !== 'MS20') throw new Error('Expected contiguous miniskirt IDs MS01-MS20');
-    if (clothing.bras.length !== 100 || clothing.bras[0].id !== 'BR01' || clothing.bras.at(-1).id !== 'BR100') throw new Error('Expected contiguous bra IDs BR01-BR100');
-    if (clothing.panties.length !== 100 || clothing.panties[0].id !== 'PT01' || clothing.panties.at(-1).id !== 'PT100') throw new Error('Expected contiguous panty IDs PT01-PT100');
-    if (clothing.underwearSets.length !== 100 || clothing.underwearSets[0].id !== 'UW01' || clothing.underwearSets.at(-1).id !== 'UW100') throw new Error('Expected contiguous underwear set IDs UW01-UW100');
+    if (clothing.bras.length !== 103 || clothing.bras[0].id !== 'BR01' || clothing.bras.at(-1).id !== 'BR103') throw new Error('Expected contiguous bra IDs BR01-BR103');
+    if (clothing.panties.length !== 103 || clothing.panties[0].id !== 'PT01' || clothing.panties.at(-1).id !== 'PT103') throw new Error('Expected contiguous panty IDs PT01-PT103');
+    if (clothing.underwearSets.length !== 103 || clothing.underwearSets[0].id !== 'UW01' || clothing.underwearSets.at(-1).id !== 'UW103') throw new Error('Expected contiguous underwear set IDs UW01-UW103');
     if (categories.pose.生活感姿勢.length !== 35 || categories.pose.性感姿勢.length !== 26 || categories.pose.情慾姿勢.length !== 25) throw new Error('Expected 35 lifestyle, 26 sexy and 25 sensual pose options');
-    return { schemaVersion: 1, libraryVersion: `person-photo-v13-reference-pose-skill-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
+    return { schemaVersion: 1, libraryVersion: `person-photo-v14-reference-pose-skill-${sourceSha256.slice(0, 12)}`, source: basename(absolute), sourceSha256, markdownFileCount: files.length, categories, clothing };
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 

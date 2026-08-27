@@ -1,0 +1,44 @@
+.workspace { display: grid; gap: 18px; }
+.layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.panel, .output { min-width: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 22px; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.header h2 { margin: 6px 0 0; color: var(--text); font-size: 20px; }
+.eyebrow { color: var(--muted-2); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.health { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.healthReady { color: var(--lime); }
+.healthBlocked { color: #ff9b8a; }
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.wide { grid-column: 1 / -1; }
+.field { display: grid; gap: 7px; min-width: 0; }
+.field > span { color: var(--text); font-size: 12px; font-weight: 700; }
+.field small, .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.field input, .field select, .field textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-elevated); padding: 10px 11px; color: var(--text); font: inherit; font-size: 13px; }
+.range { min-height: 34px !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; padding: 10px 0 !important; accent-color: var(--lime); cursor: pointer; }
+.lockToggle { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.lockToggle input { width: auto; accent-color: var(--lime); }
+.field textarea { min-height: 86px; resize: vertical; }
+.file { border: 1px dashed var(--line); border-radius: 12px; background: var(--bg-elevated); padding: 14px; color: var(--muted); font-size: 12px; }
+.file strong { display: block; color: var(--text); margin-bottom: 4px; }
+.assetActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.uploadButton { display: inline-flex; min-height: 38px; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 0 13px; color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer; }
+.uploadButton:has(input:disabled) { cursor: not-allowed; opacity: .55; }
+.uploadButton input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.refList { display: grid; gap: 6px; margin-top: 10px; }
+.refItem { display: flex; min-width: 0; gap: 7px; overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.refItem b { flex: 0 0 auto; color: var(--lime); font-size: 10px; letter-spacing: .08em; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.primary, .secondary { min-height: 42px; border-radius: 10px; padding: 0 15px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.primary { border: 0; background: var(--lime); color: #10150c; }
+.secondary { border: 1px solid var(--line); background: var(--bg-elevated); color: var(--text); }
+.primary:disabled, .secondary:disabled { cursor: not-allowed; opacity: .55; }
+.progress { height: 8px; overflow: hidden; border-radius: 999px; background: var(--bg-elevated); }
+.progress > span { display: block; height: 100%; background: var(--lime); transition: width .25s ease; }
+.progress .indeterminate { width: 38%; animation: video-character-progress 1.25s ease-in-out infinite; }
+.status { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.status strong { color: var(--text); }
+.output video { display: block; width: 100%; max-height: 560px; border-radius: 10px; background: #000; }
+.empty { display: grid; min-height: 220px; place-items: center; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
+.error { margin-top: 12px; color: #ff9b8a; font-size: 12px; line-height: 1.5; }
+@keyframes video-character-progress { 0% { transform: translateX(-120%); } 100% { transform: translateX(300%); } }
+@media (max-width: 820px) { .layout, .fields { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+@media (prefers-reduced-motion: reduce) { .progress .indeterminate { animation: none; width: 100%; } }
