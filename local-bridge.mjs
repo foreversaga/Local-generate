@@ -49,7 +49,10 @@ import { createGpuResourceCoordinator } from "./server/runtime/gpu-resource-coor
 import { createBridgeDomainRouter } from "./server/routes/bridge-domain-routes.mjs";
 import { createSingleVideoJobStore } from "./server/video-generation/single-job-store.mjs";
 import { inspectComfyPrompt } from "./server/video-generation/comfy-prompt-recovery.mjs";
-import { inspectSingleVideoReadiness } from "./server/video-generation/readiness.mjs";
+import {
+  ALPHA_T1_FAST_PROFILE,
+  inspectSingleVideoReadiness,
+} from "./server/video-generation/readiness.mjs";
 import {
   combineEta,
   estimateHistoricalDuration,
@@ -3438,6 +3441,7 @@ function publicJob(job) {
     steps: job.steps,
     timeoutSeconds: job.timeoutSeconds ?? 3600,
     modelProfile: job.modelProfile,
+    ...(job.accelerationProfile ? { accelerationProfile: job.accelerationProfile } : {}),
     dimensions: { width: job.width, height: job.height },
     inputRefs: job.inputRefs ? structuredClone(job.inputRefs) : {},
     promptId: job.promptId || "",
@@ -3808,6 +3812,18 @@ function resolveGenerationModelProfile(mode, value, options = {}) {
   return profile;
 }
 
+function resolveAccelerationProfile(mode, value) {
+  const requested = String(value || "standard").trim().toLowerCase();
+  if (requested === "standard" || requested === "") return "standard";
+  if (requested === ALPHA_T1_FAST_PROFILE) {
+    if (mode !== "i2v") {
+      throw makeRuntimeError("ACCELERATION_PROFILE_MODE_UNSUPPORTED", "ALPHA-T1 快速工作流只支援參考圖生片（I2V）。", 422, { mode, accelerationProfile: requested });
+    }
+    return ALPHA_T1_FAST_PROFILE;
+  }
+  throw makeRuntimeError("ACCELERATION_PROFILE_UNSUPPORTED", `Unsupported acceleration profile: ${requested}.`, 422, { accelerationProfile: requested });
+}
+
 async function startGeneration(payload, internal = {}) {
   await timingHistoryReady;
   const requestedMode = String(payload.mode || "").trim().toLowerCase();
@@ -3821,6 +3837,7 @@ async function startGeneration(payload, internal = {}) {
     return await createImg2ImgPrompt(payload);
   }
   const mode = promptMode(payload.mode);
+  const accelerationProfile = resolveAccelerationProfile(mode, payload.accelerationProfile);
   const latentContinuation = payload.latentContinuation === true || internal.latentContinuation === true;
   if (latentContinuation && mode === "replace") {
     throw makeRuntimeError("LATENT_CONTEXT_MODE_INVALID", "Latent continuation is only supported for H3 video generation.", 422);
@@ -3836,11 +3853,19 @@ async function startGeneration(payload, internal = {}) {
       throw makeRuntimeError("LATENT_CHECKPOINT_INDEX_INVALID", "Latent continuation must load the immediately preceding clip checkpoint.", 400);
     }
   }
-  const modelProfile = resolveGenerationModelProfile(mode, payload.modelProfile);
+  const modelProfile = accelerationProfile === ALPHA_T1_FAST_PROFILE
+    ? "int8_convrot_quality"
+    : resolveGenerationModelProfile(mode, payload.modelProfile);
   const h3Selection = resolveH3LoraSelection(payload, mode);
+  if (accelerationProfile === ALPHA_T1_FAST_PROFILE && h3Selection.selected) {
+    throw makeRuntimeError("ACCELERATION_PROFILE_LORA_CONFLICT", "ALPHA-T1 已內建 LightX2V Turbo LoRA，不能再套用其他 H3 LoRA。", 422);
+  }
   const requestedCharacterLora = ["replace", "t2v", "i2v", "fl2v", "l2v", "ref2v"].includes(mode)
     ? (h3Selection.selected ? h3Selection.name : String(payload.characterLoraId || payload.characterLoraName || "").trim())
     : "";
+  if (accelerationProfile === ALPHA_T1_FAST_PROFILE && requestedCharacterLora) {
+    throw makeRuntimeError("ACCELERATION_PROFILE_LORA_CONFLICT", "ALPHA-T1 已內建 LightX2V Turbo LoRA，不能再套用其他 H3 LoRA。", 422);
+  }
   if (requestedCharacterLora && mode === "ref2v" && !h3Selection.selected) {
     throw makeRuntimeError("CHARACTER_LORA_MODE_UNSUPPORTED", "Character LoRA is not supported for Ref2VA/multi-reference generation.", 422);
   }
@@ -3931,6 +3956,9 @@ async function startGeneration(payload, internal = {}) {
       inputImagePath = await resolveInputMedia(payload.inputImageName, "image", payload.inputImageRoot);
     }
   }
+  if (accelerationProfile === ALPHA_T1_FAST_PROFILE && !inputImagePath) {
+    throw makeRuntimeError("ACCELERATION_PROFILE_INPUT_REQUIRED", "ALPHA-T1 快速工作流需要參考圖片。", 400);
+  }
   if (mode === "fl2v" || mode === "l2v") {
     lastImagePath = await resolveInputMedia(payload.lastImageName, "image", payload.lastImageRoot);
   }
@@ -4000,7 +4028,12 @@ async function startGeneration(payload, internal = {}) {
 
   const width = Math.round(clampNumber(payload.width, mode === "replace" ? 832 : 736, 32, 2048));
   const height = Math.round(clampNumber(payload.height, mode === "replace" ? 480 : 416, 32, 2048));
-  const steps = Math.round(clampNumber(payload.steps, mode === "replace" ? 6 : 20, 1, 80));
+  const steps = Math.round(clampNumber(
+    accelerationProfile === ALPHA_T1_FAST_PROFILE ? 12 : payload.steps,
+    mode === "replace" ? 6 : 20,
+    1,
+    80,
+  ));
   const seed = Math.round(clampNumber(payload.seed, 12345, 0, 2147483647));
   const timeoutSeconds = Math.round(clampNumber(payload.timeoutSeconds, 3600, 60, 86400));
   if (characterLoraName && mode !== "replace" && !["nvfp4_blackwell", "int8_convrot_quality", "ref2va_pruned_nvfp4", "ref2va_pruned_int8_convrot"].includes(modelProfile)) {
@@ -4051,6 +4084,7 @@ async function startGeneration(payload, internal = {}) {
     negativePrompt,
     model: modelProfile,
     modelProfile,
+    ...(accelerationProfile !== "standard" ? { accelerationProfile } : {}),
     width,
     height,
     dimensions: { width, height },
@@ -4136,6 +4170,7 @@ async function startGeneration(payload, internal = {}) {
     timeoutSeconds,
     model: modelProfile,
     modelProfile,
+    ...(accelerationProfile !== "standard" ? { accelerationProfile } : {}),
     ...(characterLoraName ? {
       characterLoraName,
       characterLoraStrength,
@@ -4262,6 +4297,7 @@ async function startGeneration(payload, internal = {}) {
       "--comfy-url",
       runtimeContext.comfyUrl,
     ];
+    if (accelerationProfile !== "standard") args.push("--acceleration-profile", accelerationProfile);
     if (!runtimeContext.isRemote) args.push("--no-cpu-text-encoder");
     if (runtimeContext.isRemote) {
       args.push("--remote-comfy", "--sage-attention", "sageattn3");

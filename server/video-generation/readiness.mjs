@@ -12,6 +12,19 @@ const WAN_ANIMATE_NODES = Object.freeze([
   "VAEDecode", "ImageFromBatch", "CreateVideo", "SaveVideo",
 ]);
 
+export const ALPHA_T1_FAST_PROFILE = "alpha_t1_fast";
+export const ALPHA_T1_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors";
+export const ALPHA_T1_CLIP = "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf";
+export const ALPHA_T1_TURBO_LORA = "minimax_h3_fl2v_lightx2v_turbo_4step_v1.0_768p_resized_avg_rank_31_bf16.safetensors";
+const ALPHA_T1_NODES = Object.freeze([
+  ...COMMON_H3_NODES.filter((name) => name !== "CLIPLoader"),
+  "MiniMaxH3ImageToVideo",
+  "LoraLoaderModelOnly",
+  "MiniMaxH3FusedModulation",
+  "MiniMaxH3MemoryEfficientSolAttentionPatch",
+  "CLIPLoaderGGUF",
+]);
+
 export const SINGLE_VIDEO_PROFILE_MODELS = Object.freeze({
   nvfp4_blackwell: "minimax_h3_fl2va_pruned_nvfp4.safetensors",
   int8_convrot_quality: "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
@@ -23,6 +36,14 @@ export const SINGLE_VIDEO_PROFILE_MODELS = Object.freeze({
 function comboValues(objectInfo, nodeName, inputName) {
   const value = objectInfo?.[nodeName]?.input?.required?.[inputName]?.[0];
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function comboValuesAny(objectInfo, nodeName, inputNames) {
+  for (const inputName of inputNames) {
+    const values = comboValues(objectInfo, nodeName, inputName);
+    if (values.length) return values;
+  }
+  return [];
 }
 
 function missingNodes(objectInfo, required) {
@@ -64,11 +85,45 @@ export function inspectSingleVideoReadiness(objectInfo, { comfyOnline = Boolean(
     return [id, { available, profiles: profileIds, availableProfiles, reason }];
   }));
 
+  const alphaMissingNodes = missingNodes(objectInfo, ALPHA_T1_NODES);
+  const alphaModelNames = new Set(comboValues(objectInfo, "UNETLoader", "unet_name"));
+  const alphaLoraNames = new Set(comboValuesAny(objectInfo, "LoraLoaderModelOnly", ["lora_name", "lora_name1"]));
+  const alphaClipNames = new Set(comboValues(objectInfo, "CLIPLoaderGGUF", "clip_name"));
+  const alphaSchedulers = new Set(comboValues(objectInfo, "BasicScheduler", "scheduler"));
+  const alphaMissingModels = [
+    ...(alphaModelNames.has(ALPHA_T1_MODEL) ? [] : [ALPHA_T1_MODEL]),
+    ...(alphaClipNames.has(ALPHA_T1_CLIP) ? [] : [ALPHA_T1_CLIP]),
+    ...(alphaLoraNames.has(ALPHA_T1_TURBO_LORA) ? [] : [ALPHA_T1_TURBO_LORA]),
+  ];
+  const alphaMissingComponents = alphaSchedulers.has("bong_tangent") ? [] : ["BasicScheduler:bong_tangent"];
+  const alphaAvailable = comfyOnline
+    && alphaMissingNodes.length === 0
+    && alphaMissingModels.length === 0
+    && alphaMissingComponents.length === 0;
+  const accelerations = {
+    [ALPHA_T1_FAST_PROFILE]: {
+      available: alphaAvailable,
+      mode: "i2v",
+      modelProfile: "int8_convrot_quality",
+      model: ALPHA_T1_MODEL,
+      defaults: { width: 704, height: 384, duration: 7, steps: 12 },
+      missingNodes: alphaMissingNodes,
+      missingModels: alphaMissingModels,
+      missingComponents: alphaMissingComponents,
+      reason: !comfyOnline
+        ? "ComfyUI 未連線"
+        : alphaMissingNodes.length || alphaMissingModels.length || alphaMissingComponents.length
+          ? "ALPHA-T1 所需節點、模型或 scheduler 尚未就緒"
+          : "",
+    },
+  };
+
   return {
     ready: Object.values(modes).some((item) => item.available),
     comfyUi: comfyOnline,
     generator: { lastFrame },
     modes,
     profiles,
+    accelerations,
   };
 }

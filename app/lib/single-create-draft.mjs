@@ -11,6 +11,7 @@ const DEFAULT_DRAFT = Object.freeze({
   prompt: "",
   negativePrompt: "",
   modelProfile: "nvfp4_blackwell",
+  accelerationProfile: "standard",
   width: 736,
   height: 416,
   duration: SINGLE_RENDER_DURATION_DEFAULT_SECONDS,
@@ -41,13 +42,15 @@ const DEFAULT_DRAFT = Object.freeze({
  * @param {Omit<typeof DEFAULT_DRAFT, "version"> & Record<string, unknown>} input
  */
 export function createSingleCreateDraft(input) {
+  const mode = normalizeMode(input.mode);
   return {
     version: SINGLE_CREATE_DRAFT_VERSION,
-    mode: normalizeMode(input.mode),
+    mode,
     initialDescription: normalizeString(input.initialDescription),
     prompt: normalizeString(input.prompt),
     negativePrompt: normalizeString(input.negativePrompt),
     modelProfile: normalizeNonEmptyString(input.modelProfile, DEFAULT_DRAFT.modelProfile),
+    accelerationProfile: mode === "i2v" && input.accelerationProfile === "alpha_t1_fast" ? "alpha_t1_fast" : "standard",
     width: normalizeNumberDraft(input.width, DEFAULT_DRAFT.width),
     height: normalizeNumberDraft(input.height, DEFAULT_DRAFT.height),
     duration: normalizeFiniteNumber(input.duration, DEFAULT_DRAFT.duration),
@@ -108,6 +111,7 @@ export function createSingleCreateDraftFromJob(job) {
     prompt: job?.prompt ?? request.prompt,
     negativePrompt: job?.negativePrompt ?? request.negativePrompt,
     modelProfile: job?.modelProfile ?? job?.model ?? request.modelProfile ?? request.model,
+    accelerationProfile: job?.accelerationProfile ?? request.accelerationProfile,
     width: job?.width ?? request.width,
     height: job?.height ?? request.height,
     duration: job?.duration ?? request.duration,

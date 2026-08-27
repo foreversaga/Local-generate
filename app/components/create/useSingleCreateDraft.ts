@@ -12,6 +12,7 @@ export type SingleCreateDraftInput = {
   prompt: string;
   negativePrompt: string;
   modelProfile: string;
+  accelerationProfile: "standard" | "alpha_t1_fast";
   width: number | "";
   height: number | "";
   duration: number;

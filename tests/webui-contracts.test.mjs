@@ -354,6 +354,15 @@ test("single render duration accepts 60 seconds and rejects values above the new
   assert.match(messages(validSingleInput({ duration: 60.5 }))[0], /60/);
 });
 
+test("ALPHA-T1 request carries its explicit acceleration profile without changing standard payloads", () => {
+  const payload = buildSingleRenderRequest(validRequestInput({
+    mode: "i2v",
+    modelProfile: "int8_convrot_quality",
+    accelerationProfile: "alpha_t1_fast",
+  }));
+  assert.equal(payload.accelerationProfile, "alpha_t1_fast");
+});
+
 test("ref2v request preserves video input and caps reference images at nine", () => {
   const referenceImageNames = Array.from({ length: 12 }, (_, index) => `ref-${index + 1}.png`);
   const referenceImageRoots = Array.from({ length: 12 }, (_, index) => index % 2 ? "input" : "output");

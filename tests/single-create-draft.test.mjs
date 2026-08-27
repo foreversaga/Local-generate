@@ -15,6 +15,7 @@ function draftInput(overrides = {}) {
     prompt: "A cinematic tracking shot.",
     negativePrompt: "flicker",
     modelProfile: "nvfp4_blackwell",
+    accelerationProfile: "standard",
     width: 736,
     height: 416,
     duration: 5,
@@ -54,6 +55,12 @@ test("Single Create draft contract keeps only stable form state and asset keys",
 test("Single Create draft round-trips valid state", () => {
   const source = createSingleCreateDraft(draftInput({ width: "", seed: "" }));
   assert.deepEqual(parseSingleCreateDraft(JSON.stringify(source)), source);
+});
+
+test("Single Create draft keeps ALPHA-T1 only for I2V", () => {
+  const alpha = createSingleCreateDraft(draftInput({ mode: "i2v", accelerationProfile: "alpha_t1_fast" }));
+  assert.equal(alpha.accelerationProfile, "alpha_t1_fast");
+  assert.equal(createSingleCreateDraft(draftInput({ accelerationProfile: "alpha_t1_fast" })).accelerationProfile, "standard");
 });
 
 test("Single retry draft restores persisted job parameters and the initial description", () => {
@@ -144,6 +151,7 @@ test("Single Create draft rejects unknown versions and sanitizes corrupted field
     prompt: "",
     negativePrompt: "",
     modelProfile: "nvfp4_blackwell",
+    accelerationProfile: "standard",
     width: 736,
     height: 832,
     duration: 5,

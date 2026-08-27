@@ -35,6 +35,7 @@ export const H3_LORA_SUPPORTED_MODES = Object.freeze(["t2v", "i2v", "fl2v", "l2v
  *   h3LoraPreset?: string | null;
  *   characterLoraTrigger?: string | null;
  *   modelProfile: string;
+ *   accelerationProfile?: "standard" | "alpha_t1_fast";
  *   width: number;
  *   height: number;
  *   duration: number;
@@ -75,6 +76,9 @@ export function buildSingleRenderRequest(input) {
     referenceImageName,
     referenceImageRoot: input.referenceImageRoot || "",
     modelProfile: input.modelProfile,
+    ...(input.accelerationProfile && input.accelerationProfile !== "standard"
+      ? { accelerationProfile: input.accelerationProfile }
+      : {}),
     width: input.width,
     height: input.height,
     duration: input.duration,

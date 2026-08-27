@@ -135,7 +135,7 @@ function safeOutput(value) {
 function safeRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const allowed = [
-    "mode", "initialDescription", "prompt", "negativePrompt", "model", "modelProfile", "width", "height", "dimensions",
+    "mode", "initialDescription", "prompt", "negativePrompt", "model", "modelProfile", "accelerationProfile", "width", "height", "dimensions",
     "duration", "steps", "seed", "timeoutSeconds", "inputImageName", "lastImageName", "inputVideoName",
     "inputImageRoot", "lastImageRoot", "inputVideoRoot", "referenceImageRoot",
     "referenceImageName", "referenceImageNames", "referenceImageRoots", "referenceImageRoles", "ref2vWorkflow",
@@ -166,7 +166,7 @@ function safeRequest(value) {
       if (text) result[key] = text;
     } else if (key === "initialDescription" || key === "prompt" || key === "negativePrompt") {
       result[key] = safePrompt(child);
-    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "characterLoraId" || key === "batchId" || key === "h3LoraPreset" || key === "characterLoraTrigger" || key === "ref2vWorkflow" || key === "clothingMode" || key === "sequenceId" || key === "segmentId" || key === "attemptId" || key === "childJobId") {
+    } else if (key === "mode" || key === "model" || key === "modelProfile" || key === "accelerationProfile" || key === "characterLoraId" || key === "batchId" || key === "h3LoraPreset" || key === "characterLoraTrigger" || key === "ref2vWorkflow" || key === "clothingMode" || key === "sequenceId" || key === "segmentId" || key === "attemptId" || key === "childJobId") {
       result[key] = safeText(child);
     } else if (key === "clothingDescription") {
       result[key] = safePrompt(child);
@@ -243,6 +243,7 @@ function canonicalJob(input = {}) {
     negativePrompt: safePrompt(input.negativePrompt || request.negativePrompt),
     model: safeText(input.model || input.modelProfile || request.model || request.modelProfile),
     modelProfile: safeText(input.modelProfile || input.model || request.modelProfile || request.model),
+    ...(input.accelerationProfile || request.accelerationProfile ? { accelerationProfile: safeText(input.accelerationProfile || request.accelerationProfile) } : {}),
     dimensions: { width, height },
     width,
     height,

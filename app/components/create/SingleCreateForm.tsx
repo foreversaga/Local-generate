@@ -39,6 +39,7 @@ const H3_PROMPT_MAX_CHARS = 7000;
 const MAX_REF2V_IMAGES = 9;
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "ref2v_motion" | "replace";
+type AccelerationProfile = "standard" | "alpha_t1_fast";
 type NumberDraft = number | "";
 type AssetKind = "image" | "video";
 type ResolutionStatus = "default" | "loading" | "auto" | "adjusted" | "manual" | "error";
@@ -71,12 +72,13 @@ type ApiErrorPayload = {
   error?: string | { code?: string; message?: string };
   code?: string;
 };
-type CapabilityState = { available: boolean; reason?: string; missingNodes?: string[]; missingModels?: string[] };
+type CapabilityState = { available: boolean; reason?: string; missingNodes?: string[]; missingModels?: string[]; missingComponents?: string[] };
 type ServiceState = {
   bridge: boolean;
   comfy: boolean;
   modes: Partial<Record<Mode, CapabilityState>>;
   profiles: Record<string, CapabilityState>;
+  accelerations: Partial<Record<AccelerationProfile, CapabilityState>>;
 };
 type ModeOption = { value: Mode; label: string; note: string; icon: IconName };
 type ModelOption = { value: string; label: string; note: string; description: string };
@@ -104,7 +106,7 @@ export function SingleCreateForm() {
   const { FIELD_LABELS } = localizedCopy(locale);
   const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false, modes: {}, profiles: {} });
+  const [serviceState, setServiceState] = useState<ServiceState>({ bridge: false, comfy: false, modes: {}, profiles: {}, accelerations: {} });
   const [healthLoading, setHealthLoading] = useState(true);
   const [mode, setMode] = useState<Mode>("t2v");
   const [initialDescription, setInitialDescription] = useState("");
@@ -112,6 +114,7 @@ export function SingleCreateForm() {
   const [ollamaPromptReceipt, setOllamaPromptReceipt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
   const [modelProfile, setModelProfile] = useState("nvfp4_blackwell");
+  const [accelerationProfile, setAccelerationProfile] = useState<AccelerationProfile>("standard");
   const [width, setWidth] = useState<NumberDraft>(736);
   const [height, setHeight] = useState<NumberDraft>(416);
   const [resolutionStatus, setResolutionStatus] = useState<ResolutionStatus>("default");
@@ -155,11 +158,15 @@ export function SingleCreateForm() {
   const selectedModel = availableModels.find((option) => option.value === modelProfile) || availableModels[0];
   const selectedModeCapability = serviceState.modes[mode];
   const selectedProfileCapability = serviceState.profiles[modelProfile];
+  const selectedAccelerationCapability = accelerationProfile === "alpha_t1_fast"
+    ? serviceState.accelerations[accelerationProfile]
+    : null;
   const runtimeReady = !healthLoading
     && serviceState.bridge
     && serviceState.comfy
     && selectedModeCapability?.available === true
-    && selectedProfileCapability?.available === true;
+    && selectedProfileCapability?.available === true
+    && (accelerationProfile === "standard" || selectedAccelerationCapability?.available === true);
   const runtimeReadinessMessage = healthLoading
     ? "正在檢查所選工作流、模型與節點…"
     : !serviceState.bridge || !serviceState.comfy
@@ -168,6 +175,8 @@ export function SingleCreateForm() {
         ? selectedModeCapability?.reason || "所選生成模式目前無法使用。"
         : selectedProfileCapability?.available !== true
           ? `所選模型尚未就緒${selectedProfileCapability?.missingModels?.length ? `：${selectedProfileCapability.missingModels.join(", ")}` : "。"}`
+          : accelerationProfile !== "standard" && selectedAccelerationCapability?.available !== true
+            ? selectedAccelerationCapability?.reason || "所選加速工作流尚未就緒。"
           : "所選模式與模型已就緒。";
   const isRef2VMode = mode === "ref2v" || mode === "ref2v_motion";
   const isCharacterMotion = mode === "ref2v_motion";
@@ -352,6 +361,7 @@ export function SingleCreateForm() {
     prompt,
     negativePrompt,
     modelProfile,
+    accelerationProfile,
     width,
     height,
     duration,
@@ -383,6 +393,7 @@ export function SingleCreateForm() {
     lastFrameImage,
     mode,
     modelProfile,
+    accelerationProfile,
     negativePrompt,
     outputName,
     characterLoraName,
@@ -427,15 +438,16 @@ export function SingleCreateForm() {
     try {
       const response = await fetch(`${BRIDGE_URL}/api/video/health`);
       if (!response.ok) throw new Error("bridge unavailable");
-      const payload = (await response.json()) as { comfyUi?: boolean; modes?: ServiceState["modes"]; profiles?: ServiceState["profiles"] };
+      const payload = (await response.json()) as { comfyUi?: boolean; modes?: ServiceState["modes"]; profiles?: ServiceState["profiles"]; accelerations?: ServiceState["accelerations"] };
       setServiceState({
         bridge: true,
         comfy: Boolean(payload.comfyUi),
         modes: payload.modes || {},
         profiles: payload.profiles || {},
+        accelerations: payload.accelerations || {},
       });
     } catch {
-      setServiceState({ bridge: false, comfy: false, modes: {}, profiles: {} });
+      setServiceState({ bridge: false, comfy: false, modes: {}, profiles: {}, accelerations: {} });
     } finally {
       setHealthLoading(false);
     }
@@ -505,6 +517,7 @@ export function SingleCreateForm() {
     setPrompt(draft.prompt);
     setNegativePrompt(draft.negativePrompt);
     setModelProfile(nextModelProfile);
+    setAccelerationProfile(draftMode === "i2v" && draft.accelerationProfile === "alpha_t1_fast" ? "alpha_t1_fast" : "standard");
     setWidth(draft.width);
     setHeight(draft.height);
     setDuration(draft.duration);
@@ -560,6 +573,7 @@ export function SingleCreateForm() {
     resetResolutionToDefault(nextMode);
     setMode(nextMode);
     if (nextMode === "replace") {
+      setAccelerationProfile("standard");
       setH3LoraEnabled(false);
       setH3LoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
       setModelProfile("wan22_animate_fp8");
@@ -569,12 +583,14 @@ export function SingleCreateForm() {
       return;
     }
     if (nextMode === "ref2v" || nextMode === "ref2v_motion") {
+      setAccelerationProfile("standard");
       setModelProfile(modelProfile === "int8_convrot_quality" || modelProfile === "ref2va_pruned_int8_convrot" ? "ref2va_pruned_int8_convrot" : "ref2va_pruned_nvfp4");
       setWidth(736);
       setHeight(416);
       setSteps(20);
       return;
     }
+    if (nextMode !== "i2v") setAccelerationProfile("standard");
     if (modelProfile === "wan22_animate_fp8" || modelProfile === "ref2va_pruned_nvfp4" || modelProfile === "ref2va_pruned_int8_convrot") {
       setModelProfile(modelProfile === "ref2va_pruned_int8_convrot" ? "int8_convrot_quality" : "nvfp4_blackwell");
       setWidth(736);
@@ -631,6 +647,7 @@ export function SingleCreateForm() {
     setOllamaPromptReceipt("");
     setNegativePrompt("");
     setModelProfile("nvfp4_blackwell");
+    setAccelerationProfile("standard");
     resetResolutionToDefault("t2v");
     setDuration(SINGLE_RENDER_DURATION_DEFAULT_SECONDS);
     setSteps(20);
@@ -861,6 +878,7 @@ export function SingleCreateForm() {
             characterLoraStrength: mode === "replace" ? Number(characterLoraStrength) : Number(h3LoraStrength),
             h3LoraEnabled: mode === "replace" ? undefined : h3LoraEnabled,
             modelProfile,
+            accelerationProfile,
             width: submittedWidth,
             height: submittedHeight,
             duration,
@@ -1080,6 +1098,49 @@ export function SingleCreateForm() {
                 <span className={styles.helper} role="status">{runtimeReadinessMessage}</span>
               </label>
 
+              {mode === "i2v" && (
+                <label className={styles.field}>
+                  <span className={styles.fieldLabel}>加速工作流</span>
+                  <select
+                    id="single-acceleration-profile"
+                    className={styles.select}
+                    value={accelerationProfile}
+                    onChange={(event) => {
+                      const next = event.target.value === "alpha_t1_fast" ? "alpha_t1_fast" : "standard";
+                      setAccelerationProfile(next);
+                      if (next === "alpha_t1_fast") {
+                        setModelProfile("int8_convrot_quality");
+                        setH3LoraEnabled(false);
+                        setH3LoraStrength(H3_REALISM_PEOPLE_DEFAULT_STRENGTH);
+                        setWidth(704);
+                        setHeight(384);
+                        setSteps(12);
+                        setResolutionStatus("default");
+                      }
+                    }}
+                    disabled={!canInteract || healthLoading}
+                  >
+                    <option value="standard">標準 H3 · 可調 steps</option>
+                    <option
+                      value="alpha_t1_fast"
+                      disabled={serviceState.accelerations.alpha_t1_fast?.available !== true}
+                    >
+                      ALPHA-T1 快速 I2V · 單階段 12 steps{serviceState.accelerations.alpha_t1_fast?.available === false ? " · 依賴未就緒" : ""}
+                    </option>
+                  </select>
+                  <span className={styles.helper}>
+                    {accelerationProfile === "alpha_t1_fast"
+                      ? "INT8 + Turbo LoRA 0.5 + Fused Modulation + Sol-Attn；預設 704 × 384、7 秒、12 steps。"
+                      : "保留現有 H3／Ref2VA 生成圖；ALPHA-T1 只適用參考圖生片。"}
+                  </span>
+                  {accelerationProfile === "alpha_t1_fast" && selectedAccelerationCapability?.available === false && (
+                    <span className={styles.helper} role="status">
+                      {selectedAccelerationCapability.reason || "請先安裝 ALPHA-T1 所需節點與模型。"}
+                    </span>
+                  )}
+                </label>
+              )}
+
               {mode !== "replace" && (
                 <>
                   <label className={styles.field}>
@@ -1089,6 +1150,7 @@ export function SingleCreateForm() {
                       className={styles.select}
                       value={h3LoraEnabled ? "h3-realism-people" : "none"}
                       onChange={(event) => setH3LoraEnabled(event.target.value === "h3-realism-people")}
+                      disabled={!canInteract || accelerationProfile === "alpha_t1_fast"}
                     >
                       <option value="none">不套用</option>
                       <option value="h3-realism-people">套用 H3 Realism People</option>
@@ -1366,6 +1428,7 @@ export function SingleCreateForm() {
           <AssetPreview asset={previewAsset} />
           <div className={styles.summaryRows}>
             <SummaryRow label="模式" value={modeOption.label} />
+            {mode === "i2v" && <SummaryRow label="工作流" value={accelerationProfile === "alpha_t1_fast" ? "ALPHA-T1 快速 I2V" : "標準 H3 I2V"} />}
             <SummaryRow label="模型" value={selectedModel?.label || modelProfile} />
             <SummaryRow label="尺寸" value={`${width || "—"} × ${height || "—"}`} />
             <SummaryRow label="長度" value={`${duration.toFixed(1)} 秒`} />
