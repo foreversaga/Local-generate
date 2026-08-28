@@ -2,111 +2,105 @@
   display: block;
 }
 
-.optionalControls {
+.experienceBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
   margin: 0 0 18px;
-  padding: 14px;
+  padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: var(--panel);
+  background: linear-gradient(135deg, var(--panel), var(--bg-elevated));
   color: var(--text);
 }
 
-.optionalHeading {
+.experienceCopy {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.optionalHeading > div {
-  display: grid;
-  gap: 2px;
-}
-
-.optionalHeading strong {
-  font-size: 0.92rem;
-  line-height: 1.25;
-}
-
-.optionalHeading span {
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.4;
-}
-
-.toggleGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.toggle {
-  appearance: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
   min-width: 0;
-  min-height: 54px;
-  padding: 9px 11px;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.experienceCopy > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.experienceCopy strong {
+  font-size: 0.92rem;
+  line-height: 1.3;
+}
+
+.experienceCopy span:not(.eyebrow) {
+  max-width: 720px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.eyebrow {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: var(--lime);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.professionalToggle {
+  display: flex;
+  min-width: 210px;
+  min-height: 52px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   background: var(--bg-elevated);
+  padding: 8px 10px 8px 12px;
   color: var(--text);
   text-align: left;
-  cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
-.toggle:hover {
-  border-color: #3a4a57;
+.professionalToggle:hover {
+  border-color: color-mix(in srgb, var(--lime) 34%, var(--line));
   background: var(--panel-hover);
 }
 
-.toggle:active {
+.professionalToggle:active {
   transform: translateY(1px);
 }
 
-.toggle:focus-visible {
-  outline: 2px solid currentColor;
-  outline-offset: 2px;
-}
-
-.toggleActive {
-  border-color: rgba(200, 241, 105, 0.44);
-  background: rgba(200, 241, 105, 0.08);
-}
-
-.toggleCopy {
+.professionalToggle > span:first-child {
   display: grid;
-  min-width: 0;
   gap: 2px;
 }
 
-.toggleCopy strong {
-  overflow: hidden;
+.professionalToggle strong {
   font-size: 0.82rem;
   line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.toggleCopy small {
-  overflow: hidden;
+.professionalToggle small {
   color: var(--muted);
-  font-size: 0.7rem;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.69rem;
+  line-height: 1.3;
+}
+
+.professionalToggleActive {
+  border-color: color-mix(in srgb, var(--lime) 46%, var(--line));
+  background: color-mix(in srgb, var(--lime) 8%, var(--bg-elevated));
 }
 
 .switchTrack {
   position: relative;
   flex: 0 0 auto;
-  width: 34px;
-  height: 20px;
+  width: 36px;
+  height: 22px;
   border-radius: 999px;
   background: var(--panel-hover);
   transition: background 140ms ease;
@@ -116,90 +110,89 @@
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   background: var(--muted);
-  transition: transform 140ms ease;
+  transition: transform 140ms ease, background 140ms ease;
 }
 
-.toggleActive .switchTrack {
+.professionalToggleActive .switchTrack {
   background: var(--lime-dark);
 }
 
-.toggleActive .switchThumb {
+.professionalToggleActive .switchThumb {
   background: var(--lime);
   transform: translateX(14px);
 }
 
-/* The page-level section jump bar duplicates the form's own visual hierarchy. */
+/* The form jump bar duplicates the card hierarchy in this compact flow. */
 .root :global(nav[aria-label="Single Create sections"]) {
   display: none;
 }
 
-/* Keep the main H3 prompt visible; only the final optional Negative Prompt field is collapsed. */
-.root[data-show-negative-prompt="false"] :global(#single-prompt-section > div + div > label:last-of-type) {
+/* Basic mode keeps creation-oriented controls and removes technical choices. */
+.root[data-professional="false"] :global(section[aria-labelledby="script-library-title"]) {
   display: none;
 }
 
-/* Script management is useful, but not part of the primary generation path. */
-.root[data-show-script-library="false"] :global(section[aria-labelledby="script-library-title"]) {
+.root[data-professional="false"] :global(#single-prompt-section > div + div > label:last-of-type) {
   display: none;
 }
 
-/* Provider/model/reasoning remain mounted so their selected values are preserved while hidden. */
-.root[data-show-prompt-settings="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> div[role="group"][aria-label="提示詞生成來源"])) {
+.root[data-professional="false"] :global(#single-setup-section label:has(#single-acceleration-profile)),
+.root[data-professional="false"] :global(#single-setup-section label:has(#single-h3-lora)),
+.root[data-professional="false"] :global(#single-setup-section label:has(#single-h3-lora-strength)),
+.root[data-professional="false"] :global(#single-setup-section label:has(#single-character-lora)),
+.root[data-professional="false"] :global(#single-setup-section label:has(#single-character-lora-strength)),
+.root[data-professional="false"] :global(#single-setup-section div:has(> .field):has(#single-width)),
+.root[data-professional="false"] :global(#single-setup-section div:has(#single-steps):has(#single-seed)),
+.root[data-professional="false"] :global(#single-source-fields > div:has(#single-reference-video-start)) {
   display: none;
 }
 
-.root[data-show-prompt-settings="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> div[role="group"][aria-label="提示詞生成來源"]) + label),
-.root[data-show-prompt-settings="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> div[role="group"][aria-label="提示詞生成來源"]) + div) {
+/* Keep model/profile state mounted, but visually move it out of the basic path. */
+.root[data-professional="false"] :global(#single-setup-section > div + div > div:first-child) {
   display: none;
 }
 
-/* In setup, keep Duration visible and progressively disclose everything else. */
-.root[data-show-advanced-generation="false"] :global(#single-setup-section > div + div > div:first-child),
-.root[data-show-advanced-generation="false"] :global(#single-setup-section > div + div > div:nth-of-type(2)),
-.root[data-show-advanced-generation="false"] :global(#single-setup-section > div + div > label:last-child) {
+/* The full summary is available in professional mode; basic mode focuses on blockers and CTA. */
+.root[data-professional="false"] :global(#single-review-section > section:first-child) {
   display: none;
 }
 
-/* Ref2V motion preprocessing is mode-specific and stays hidden until explicitly requested. */
-.root[data-show-mode-advanced="false"] :global(#single-source-fields > div:has(#single-reference-video-start)) {
-  display: none;
-}
-
-/* The right-side summary repeats values already visible in the form. */
-.root :global(#single-review-section > section:first-child) {
-  display: none;
-}
-
-/* Healthy validation/service/draft messages are noise during the normal path. Errors remain visible. */
-.root :global(#single-validation-summary > div:first-child),
-.root :global(#single-validation-summary > div:nth-of-type(2)),
-.root :global(#single-validation-summary > div:nth-of-type(3)),
-.root :global(#single-validation-summary > ul:not(:has(button))) {
+.root[data-professional="false"] :global(#single-validation-summary .serviceState),
+.root[data-professional="false"] :global(#single-validation-summary .draftActions) {
   display: none;
 }
 
 @media (max-width: 760px) {
-  .optionalControls {
+  .experienceBar {
+    display: grid;
+    gap: 12px;
     margin-bottom: 12px;
-    padding: 10px;
+    padding: 12px;
     border-radius: 13px;
   }
 
-  .optionalHeading span {
+  .experienceCopy {
+    gap: 10px;
+  }
+
+  .experienceCopy span:not(.eyebrow) {
     display: none;
   }
 
-  .toggleGrid {
-    grid-template-columns: 1fr;
-    gap: 6px;
+  .professionalToggle {
+    width: 100%;
+    min-width: 0;
   }
+}
 
-  .toggle {
-    min-height: 48px;
-    padding: 8px 10px;
+@media (prefers-reduced-motion: reduce) {
+  .professionalToggle,
+  .switchTrack,
+  .switchThumb {
+    transition: none;
   }
 }
