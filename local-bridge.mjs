@@ -176,6 +176,15 @@ const DEFAULT_ORNITH_MODEL = String(process.env.ORNITH_PROMPT_MODEL || "ornith-s
 const ORNITH_TEXT2IMG_MODEL_PREFIX = "ornith:";
 const OLLAMA_CAPTION_MODEL = process.env.OLLAMA_CAPTION_MODEL?.trim()
   || GEMMA4_12B_OLLAMA_MODEL;
+const TEXT2IMG_OLLAMA_PROMPT_MODEL = String(process.env.TEXT2IMG_OLLAMA_PROMPT_MODEL || "").trim();
+const TEXT2IMG_EXTERNAL_PROMPT_ASSISTANT_CONFIGURED = [
+  process.env.VLLM_URL,
+  process.env.SGLANG_URL,
+  process.env.VLLM_PROMPT_MODEL,
+  process.env.SGLANG_PROMPT_MODEL,
+  process.env.ORNITH_URL,
+  process.env.ORNITH_PROMPT_MODEL,
+].some((value) => String(value || "").trim());
 const defaultOllamaModel = () => GEMMA4_12B_OLLAMA_MODEL;
 const CODEX_CLI = process.env.CODEX_CLI_PATH || (process.platform === "win32" ? "codex.cmd" : "codex");
 const CODEX_HOME = path.resolve(
@@ -256,6 +265,7 @@ const recoveredSingleVideoMonitors = new Map();
 const inspectedTerminalSingleVideoRecords = new Set();
 const generationQueue = [];
 const reservedOutputPaths = new Set();
+const preparedReferenceVideoClips = new Map();
 const recoverPersistedSingleVideoJobs = !process.env.NODE_TEST_CONTEXT
   || process.env.MINIMAX_H3_TEST_ENABLE_SINGLE_VIDEO_RECOVERY === "1";
 const singleVideoStoreReady = (recoverPersistedSingleVideoJobs
@@ -750,6 +760,54 @@ function safePath(root, relativeName) {
     throw new Error("不允許存取這個檔案路徑。");
   }
   return candidate;
+}
+
+async function unlinkOwnedFile(filePath, rootPath) {
+  if (!filePath || !rootPath) return false;
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(String(filePath));
+  if (candidate === root || !pathContained(root, candidate)) return false;
+  const stat = await fs.lstat(candidate).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) return false;
+  await fs.unlink(candidate);
+  return true;
+}
+
+function retainPreparedReferenceVideoClip(prepared) {
+  const candidate = path.resolve(String(prepared?.outputPath || ""));
+  if (!prepared?.outputPath) return null;
+  const entry = preparedReferenceVideoClips.get(candidate) || { count: 0, owned: false };
+  entry.count += 1;
+  entry.owned ||= prepared.created === true;
+  preparedReferenceVideoClips.set(candidate, entry);
+  return candidate;
+}
+
+async function releasePreparedReferenceVideoClip(filePath) {
+  if (!filePath) return false;
+  const candidate = path.resolve(String(filePath));
+  const entry = preparedReferenceVideoClips.get(candidate);
+  if (!entry) return false;
+  entry.count -= 1;
+  if (entry.count > 0) return false;
+  preparedReferenceVideoClips.delete(candidate);
+  if (!entry.owned) return false;
+  try {
+    return await unlinkOwnedFile(candidate, INPUT_ROOT);
+  } catch (error) {
+    console.warn("[single-video] reference clip cleanup skipped", error?.message || error);
+    return false;
+  }
+}
+
+async function cleanupAllocatedOutputPath(outputPath) {
+  if (!outputPath || !reservedOutputPaths.has(outputPath)) return false;
+  try {
+    return await unlinkOwnedFile(outputPath, OUTPUT_ROOT);
+  } catch (error) {
+    console.warn("[single-video] partial output cleanup skipped", error?.message || error);
+    return false;
+  }
 }
 
 function classifyFile(fileName) {
@@ -3381,17 +3439,19 @@ function outputFileName(value) {
   const raw = path.basename(String(value || "h3-render"));
   const withoutExtension = raw.replace(/\.[^.]+$/, "");
   const clean = withoutExtension.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return (clean || "h3-render") + ".mp4";
+  return `video/${clean || "h3-render"}.mp4`;
 }
 
 async function allocateOutputPath(requestedName) {
-  const parsed = path.parse(requestedName);
+  const parsed = path.posix.parse(String(requestedName || "").replaceAll("\\", "/"));
+  const directory = parsed.dir || "video";
   for (let index = 0; index < 1000; index += 1) {
     const suffix = index === 0 ? "" : "-" + index;
-    const candidateName = parsed.name + suffix + parsed.ext;
+    const candidateName = path.posix.join(directory, parsed.name + suffix + parsed.ext);
     const candidatePath = safePath(OUTPUT_ROOT, candidateName);
     if (reservedOutputPaths.has(candidatePath)) continue;
     if (await fs.stat(candidatePath).catch(() => null)) continue;
+    await fs.mkdir(path.dirname(candidatePath), { recursive: true });
     reservedOutputPaths.add(candidatePath);
     return { name: candidateName, path: candidatePath };
   }
@@ -3399,9 +3459,8 @@ async function allocateOutputPath(requestedName) {
 }
 
 // Sequence output paths are intentionally separate from the single-render
-// allocator above.  The latter always strips directories; this adapter allows
-// only a validated path beneath ComfyUI/output and never changes single-shot
-// behavior.
+// allocator above. The latter places normal single-shot videos under video/;
+// this adapter allows only a validated explicit path beneath ComfyUI/output.
 async function allocateSequenceOutputMediaPath(relativeName) {
   const clean = String(relativeName || "").replaceAll("\\", "/").replace(/^\/+/, "");
   if (!clean || clean.split("/").some((part) => !part || part === "." || part === ".." || /[<>:"|?*]/.test(part) || Array.from(part).some((character) => character.charCodeAt(0) < 32))) {
@@ -3940,6 +3999,7 @@ async function startGeneration(payload, internal = {}) {
   let referenceImagePaths = [];
   let lastImagePath = null;
   let inputVideoPath = null;
+  let preparedReferenceVideoPath = null;
   if (mode === "i2v" || mode === "fl2v") {
     if (internal.inputImagePath) {
       const candidate = path.resolve(String(internal.inputImagePath));
@@ -4003,7 +4063,10 @@ async function startGeneration(payload, internal = {}) {
         end: payload.referenceVideoEnd,
         maxDimension: payload.referenceVideoMaxDimension,
       });
+      preparedReferenceVideoPath = retainPreparedReferenceVideoClip(prepared);
       if (Math.abs(prepared.plan.duration - duration) > 0.05) {
+        await releasePreparedReferenceVideoClip(preparedReferenceVideoPath);
+        preparedReferenceVideoPath = null;
         throw makeRuntimeError("REFERENCE_VIDEO_DURATION_MISMATCH", "Generation duration must match the selected reference-video interval.", 400, { generationDuration: duration, clipDuration: prepared.plan.duration });
       }
       inputVideoPath = prepared.outputPath;
@@ -4014,15 +4077,24 @@ async function startGeneration(payload, internal = {}) {
     const ref2vaModelName = REF2VA_MODEL_NAMES[modelProfile] || REF2VA_MODEL_NAME;
     const ref2vaModelPath = path.join(COMFY_ROOT, "models", "diffusion_models", ref2vaModelName);
     if (!runtimeContext.isRemote && !(await fs.stat(ref2vaModelPath).catch(() => null))) {
+      await releasePreparedReferenceVideoClip(preparedReferenceVideoPath);
+      preparedReferenceVideoPath = null;
       throw new Error(
         `尚未安裝 Ref2VA diffusion model：${ref2vaModelName}。現有 FL2VA NVFP4 權重不能用於原生 Ref2VA。`,
       );
     }
   }
 
-  const output = payload.sequenceOutputPath
-    ? await allocateSequenceOutputMediaPath(payload.sequenceOutputPath)
-    : await allocateOutputPath(requestedOutputName);
+  let output;
+  try {
+    output = payload.sequenceOutputPath
+      ? await allocateSequenceOutputMediaPath(payload.sequenceOutputPath)
+      : await allocateOutputPath(requestedOutputName);
+  } catch (error) {
+    await releasePreparedReferenceVideoClip(preparedReferenceVideoPath);
+    preparedReferenceVideoPath = null;
+    throw error;
+  }
   const outputName = output.name;
   const outputPath = output.path;
 
@@ -4219,6 +4291,9 @@ async function startGeneration(payload, internal = {}) {
   try {
     await singleVideoJobStore.create(job, { id: job.id, createdAt });
   } catch (error) {
+    await cleanupAllocatedOutputPath(outputPath);
+    await releasePreparedReferenceVideoClip(preparedReferenceVideoPath);
+    preparedReferenceVideoPath = null;
     reservedOutputPaths.delete(outputPath);
     throw error;
   }
@@ -4413,6 +4488,12 @@ async function startGeneration(payload, internal = {}) {
         // Keep the source admitted until output/toAsset registration has
         // completed.  DELETE and the next generation admission cannot slip
         // between completion and this cleanup.
+        const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(job.status);
+        if (terminal && job.status !== "completed") await cleanupAllocatedOutputPath(outputPath);
+        if (terminal && preparedReferenceVideoPath) {
+          await releasePreparedReferenceVideoClip(preparedReferenceVideoPath);
+          preparedReferenceVideoPath = null;
+        }
         jobProcesses.delete(job.id);
         reservedOutputPaths.delete(outputPath);
         trimJobs();
@@ -5195,7 +5276,12 @@ async function stageSequenceInputImages(payload) {
 
 async function removeStagedSequenceInput(staged) {
   if (!staged?.path) return;
-  await fs.unlink(staged.path).catch(() => {});
+  const inputRoot = path.resolve(INPUT_ROOT);
+  const candidate = path.resolve(String(staged.path));
+  if (candidate === inputRoot || !pathContained(inputRoot, candidate)) return;
+  const stat = await fs.lstat(candidate).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) return;
+  await fs.unlink(candidate).catch(() => {});
 }
 
 async function reportSequenceInputStage(payload, event) {
@@ -5273,17 +5359,20 @@ export function sequenceGenerationReferenceFields(payload = {}, stagedReferences
 async function startSequenceGeneration(payload) {
   const timeoutSeconds = longVideoSegmentTimeoutSeconds(payload.timeoutSeconds);
   const sequenceH3Selection = resolveH3LoraSelection(payload, payload.mode);
-  const stagedInput = payload.mode === "i2v"
-    ? await stageSequenceInputImage(payload)
-    : null;
-  const stagedContinuation = payload.mode === "ref2v" && payload.continuationFramePath
-    ? await stageSequenceInputImage({ ...payload, inputImagePath: payload.continuationFramePath })
-    : null;
-  const stagedVideo = payload.mode === "ref2v" && payload.inputVideoPath
-    ? await stageSequenceInputVideo(payload)
-    : null;
+  let stagedInput = null;
+  let stagedContinuation = null;
+  let stagedVideo = null;
   let stagedReferences = [];
   try {
+    stagedInput = payload.mode === "i2v"
+      ? await stageSequenceInputImage(payload)
+      : null;
+    stagedContinuation = payload.mode === "ref2v" && payload.continuationFramePath
+      ? await stageSequenceInputImage({ ...payload, inputImagePath: payload.continuationFramePath })
+      : null;
+    stagedVideo = payload.mode === "ref2v" && payload.inputVideoPath
+      ? await stageSequenceInputVideo(payload)
+      : null;
     stagedReferences = payload.mode === "ref2v"
       ? await stageSequenceInputImages(payload)
       : [];
@@ -5850,8 +5939,8 @@ function createText2ImgControllerForRuntime() {
     outputRoot: OUTPUT_ROOT,
     toAsset,
     ollamaCoordinator,
-    preferredOllamaModel: defaultOllamaModel(),
-    promptAssistant: {
+    preferredOllamaModel: TEXT2IMG_OLLAMA_PROMPT_MODEL,
+    promptAssistant: TEXT2IMG_EXTERNAL_PROMPT_ASSISTANT_CONFIGURED ? {
       provider: "vllm",
       status: text2ImgPromptAssistantStatus,
       generate: async ({ model, system, prompt, signal }) => {
@@ -5871,7 +5960,7 @@ function createText2ImgControllerForRuntime() {
           responseFormat: { type: "json_object" },
         });
       },
-    },
+    } : null,
     gpuCoordinator: gpuResourceCoordinator,
     gpuRuntime: runtimeContext.mode,
   });
@@ -6388,4 +6477,5 @@ export {
   resolveGenerationModelProfile,
   elapsedMilliseconds,
   markComfyExecutionStarted,
+  outputFileName,
 };

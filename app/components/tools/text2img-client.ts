@@ -4,6 +4,7 @@ const BRIDGE_URL = "/app";
 
 export type Text2ImgHealth = {
   ready: boolean;
+  disabled?: boolean;
   comfyUi: boolean;
   remote: boolean;
   modelId: string;

@@ -49,6 +49,16 @@ type SeedVR2HelpCopy = {
     colorCorrection: Record<SeedVR2ColorCorrection, string>;
     sampler: Record<SeedVR2SamplerName, string>;
     scheduler: Record<SeedVR2Scheduler, string>;
+    video: {
+        chunkingMode: string;
+        batchSize: string;
+        temporalOverlap: string;
+        vaeTileSize: string;
+        vaeTileOverlap: string;
+        vaeTemporalSize: string;
+        vaeTemporalOverlap: string;
+        note: string;
+    };
     detail: SeedVR2DetailHelpCopy;
 };
 
@@ -89,6 +99,16 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
         ddim_uniform: "使用 DDIM 類型的均勻步驟配置，行為較規則，主要用於多步或相容性實驗。",
         beta: "依 Beta 分布安排噪聲步驟，使取樣密度偏向特定區段；屬於進階實驗選項。",
     },
+    video: {
+        chunkingMode: "Auto 會依可用 VRAM 估算可容納的最大分塊；Manual 則固定每批處理的幀數。Manual 較容易預估記憶體，但可能較慢。",
+        batchSize: "每個時間分塊要送入模型的幀數，只在 Manual 生效；請使用 1、5、9、13…（4n+1）。數值越大通常越快，但 VRAM 峰值也越高。",
+        temporalOverlap: "模型 temporal overlap：相鄰時間分塊共享的 latent 幀數，並在合併時交叉淡化；1 是目前流程的相容預設，增加可減少接縫但會變慢。",
+        vaeTileSize: "VAE 空間 Tile 邊長，單位為像素；降低可降低 VRAM 峰值，但會增加 Tile 數與處理時間。",
+        vaeTileOverlap: "VAE 空間 Tile 之間的重疊寬度，單位為像素；提高可降低接縫，但會增加運算量。",
+        vaeTemporalSize: "VAE 時間 Tile 一次編碼／解碼的影格數，單位為幀；降低可降低 VRAM 峰值，影片處理會更慢。",
+        vaeTemporalOverlap: "VAE 時間 Tile 之間的重疊數，單位為幀；提高可減少時間接縫，但會增加運算量。",
+        note: "這些欄位會直接寫入目前原生 SeedVR2 影片 graph。現行 NVFP4 graph 沒有可安全接上的 BlockSwap、模型 offload 或 attention selector，因此不顯示會被忽略的假控件。",
+    },
     detail: {
         sectionTitle: "細節重建 / Tiled detail",
         sectionSummaryDefault: "預設關閉細節增強",
@@ -113,9 +133,12 @@ const ZH_TW_HELP: SeedVR2HelpCopy = {
         antiAliasingStrength: "細節保留優先時使用 0；提高會平滑鋸齒，也可能把皮膚高頻紋理一起柔化。",
         maskBlur: "tile 混合遮罩的模糊程度。細節保留優先使用 0；提高可柔化接縫但也可能降低局部清晰度。",
         blendingMethod: {
+            auto: "依 mask blur 自動選擇混合方式；想快速使用安全預設時可選。",
             multiband: "以多頻段混合 tile，通常最能兼顧接縫與高頻細節；皮膚細節建議。",
+            bilateral: "以保邊濾波混合 tile，能降低接縫同時盡量保留輪廓。",
+            content_aware: "依局部結構調整混合，複雜材質可測試但速度較慢。",
             linear: "線性混合重疊區，速度與行為較單純，但複雜材質可能較容易看出接縫。",
-            gaussian: "以高斯權重柔和混合 tile，接縫自然但可能比 Multiband 更柔。",
+            simple: "以像素平均混合 tile，速度快但細節與接縫控制較簡單。",
         },
         tilingStrategy: {
             chess: "棋盤式分批處理相鄰 tile，降低邊界互相干擾；細節模式建議。",
@@ -171,6 +194,16 @@ const EN_HELP: SeedVR2HelpCopy = {
         ddim_uniform: "Uses a DDIM-style uniform step schedule with regular spacing, mainly for multi-step or compatibility experiments.",
         beta: "Distributes noise steps with a beta schedule so density favors selected regions; an advanced experimental option.",
     },
+    video: {
+        chunkingMode: "Auto predicts the largest chunk that fits available VRAM; Manual fixes the number of frames per batch. Manual is more predictable but can be slower.",
+        batchSize: "Only used in Manual mode; use 1, 5, 9, 13… (4n+1). Larger values are usually faster but raise peak VRAM use.",
+        temporalOverlap: "Latent frames shared by adjacent temporal chunks and crossfaded at merge. 1 preserves the current compatible default; higher values can reduce seams at extra cost.",
+        vaeTileSize: "Spatial tile edge length processed by the VAE. Lower values reduce peak VRAM but create more tiles and take longer.",
+        vaeTileOverlap: "Pixel overlap between spatial VAE tiles. Higher values can reduce seams but add compute.",
+        vaeTemporalSize: "Number of frames encoded/decoded by the VAE at once. Lower values reduce peak VRAM but slow video processing.",
+        vaeTemporalOverlap: "Temporal overlap between adjacent VAE tiles. Higher values can reduce temporal seams but add compute.",
+        note: "These fields are written directly into the current native SeedVR2 video graph. The current NVFP4 graph has no safe BlockSwap, model-offload, or attention selector to connect, so the UI does not show controls that would be ignored.",
+    },
     detail: {
         sectionTitle: "Detail reconstruction / Tiled detail",
         sectionSummaryDefault: "Detail enhancement off by default",
@@ -195,9 +228,12 @@ const EN_HELP: SeedVR2HelpCopy = {
         antiAliasingStrength: "Use 0 when fine detail preservation is the priority. Higher values smooth jagged edges but may also soften skin texture.",
         maskBlur: "Controls tile blend-mask blur. Use 0 for maximum detail; higher values can hide seams while softening local detail.",
         blendingMethod: {
+            auto: "Automatically selects a blend mode from mask blur; a safe starting point when you do not need to tune it.",
             multiband: "Blends tiles across frequency bands and usually preserves fine detail while hiding seams; recommended for skin detail.",
+            bilateral: "Uses edge-preserving filtering to reduce seams while retaining contours.",
+            content_aware: "Adapts blending to local structure; useful for complex materials but slower.",
             linear: "Linearly blends overlap regions. It is simple and predictable, but complex textures can reveal seams more easily.",
-            gaussian: "Uses Gaussian weighting for softer transitions; seams can look natural but results may be softer than Multiband.",
+            simple: "A fast pixel-average blend with simpler seam and detail control.",
         },
         tilingStrategy: {
             chess: "Processes neighboring tiles in a chess pattern to reduce boundary interference; recommended for detail reconstruction.",

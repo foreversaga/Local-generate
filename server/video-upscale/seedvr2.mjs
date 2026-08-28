@@ -41,10 +41,31 @@ export const SEEDVR2_DEFAULT_CFG = 1;
 export const SEEDVR2_DEFAULT_SAMPLER_NAME = "euler";
 export const SEEDVR2_DEFAULT_SCHEDULER = "simple";
 export const SEEDVR2_DEFAULT_DENOISE = 1;
+export const SEEDVR2_CHUNKING_MODES = Object.freeze(["auto", "manual"]);
+export const SEEDVR2_DEFAULT_CHUNKING_MODE = "auto";
+export const SEEDVR2_DEFAULT_BATCH_SIZE = 21;
+export const SEEDVR2_DEFAULT_TEMPORAL_OVERLAP = 1;
+export const SEEDVR2_DEFAULT_VAE_TILE_SIZE = 512;
+export const SEEDVR2_DEFAULT_VAE_TILE_OVERLAP = 64;
+export const SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE = 16;
+export const SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP = 4;
+export const SEEDVR2_DEFAULT_VIDEO = Object.freeze({
+  chunkingMode: SEEDVR2_DEFAULT_CHUNKING_MODE,
+  batchSize: SEEDVR2_DEFAULT_BATCH_SIZE,
+  temporalOverlap: SEEDVR2_DEFAULT_TEMPORAL_OVERLAP,
+  vaeTileSize: SEEDVR2_DEFAULT_VAE_TILE_SIZE,
+  vaeTileOverlap: SEEDVR2_DEFAULT_VAE_TILE_OVERLAP,
+  vaeTemporalSize: SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE,
+  vaeTemporalOverlap: SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP,
+});
 export const SEEDVR2_DETAIL_NODE = "SeedVR2TilingUpscaler";
 export const SEEDVR2_DETAIL_DIT_LOADER_NODE = "SeedVR2LoadDiTModel";
 export const SEEDVR2_DETAIL_VAE_LOADER_NODE = "SeedVR2LoadVAEModel";
-export const SEEDVR2_DETAIL_FP16_UNET_NAME = SEEDVR2_FP16_UNET_NAME;
+// The current official loader reads SeedVR2 checkpoints from models/SEEDVR2.
+// Keep the public profile id for compatibility, but point tiled detail at the
+// installed sharp Q4 checkpoint instead of the removed legacy diffusion_models
+// filename.
+export const SEEDVR2_DETAIL_FP16_UNET_NAME = "seedvr2_ema_7b_sharp-Q4_K_M.gguf";
 export const SEEDVR2_DETAIL_VAE_NAME = "ema_vae_fp16.safetensors";
 export const SEEDVR2_DEFAULT_DETAIL = Object.freeze({
   detailPreset: "default",
@@ -72,7 +93,7 @@ export const SEEDVR2_SKIN_DETAIL_SETTINGS = Object.freeze({
   detailPreset: "skin_detail",
   inputNoiseScale: 0.035,
 });
-export const SEEDVR2_BLENDING_METHODS = Object.freeze(["multiband", "linear", "gaussian"]);
+export const SEEDVR2_BLENDING_METHODS = Object.freeze(["auto", "multiband", "bilateral", "content_aware", "linear", "simple"]);
 export const SEEDVR2_TILING_STRATEGIES = Object.freeze(["chess", "grid"]);
 export const SEEDVR2_DETAIL_PRESETS = Object.freeze(["default", "skin_detail"]);
 export const SEEDVR2_DETAIL_NODE_INPUT_TYPES = Object.freeze({
@@ -81,18 +102,19 @@ export const SEEDVR2_DETAIL_NODE_INPUT_TYPES = Object.freeze({
   vae: "SEEDVR2_VAE",
   seed: "INT",
   new_resolution: "INT",
-  upscale_factor: "FLOAT",
   color_correction: "COMBO",
-  input_noise_scale: "FLOAT",
-  latent_noise_scale: "FLOAT",
   tile_width: "INT",
   tile_height: "INT",
   tile_padding: "INT",
   tile_upscale_resolution: "INT",
   blending_method: "COMBO",
   anti_aliasing_strength: "FLOAT",
-  mask_blur: "FLOAT",
+  mask_blur: "INT",
   tiling_strategy: "COMBO",
+  resolution_target: "COMBO",
+  tile_batch_size: "INT",
+  input_noise_scale: "FLOAT",
+  latent_noise_scale: "FLOAT",
 });
 export const SEEDVR2_DETAIL_NODE_INPUTS = Object.freeze(Object.keys(SEEDVR2_DETAIL_NODE_INPUT_TYPES));
 export const SEEDVR2_SAMPLER_NAMES = Object.freeze([
@@ -463,7 +485,9 @@ function seedVR2UnetName(profile) {
 }
 
 function seedVR2DetailUnetName(unetName) {
-  return unetName === SEEDVR2_FP16_UNET_NAME ? SEEDVR2_DETAIL_FP16_UNET_NAME : "";
+  return [SEEDVR2_FP16_UNET_NAME, SEEDVR2_DETAIL_FP16_UNET_NAME].includes(unetName)
+    ? SEEDVR2_DETAIL_FP16_UNET_NAME
+    : "";
 }
 
 function profileShortName(profile) {
@@ -631,6 +655,94 @@ function sourceKindFromName(value) {
   return IMAGE_EXTENSIONS.has(path.posix.extname(String(value || "")).toLowerCase()) ? "image" : "video";
 }
 
+function validImageDimensions(width, height) {
+  return Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0;
+}
+
+function parseJpegDimensions(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  const sofMarkers = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+    0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+  ]);
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length) break;
+    const marker = bytes[offset++];
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) break;
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) break;
+    if (sofMarkers.has(marker) && segmentLength >= 7) {
+      const height = bytes.readUInt16BE(offset + 3);
+      const width = bytes.readUInt16BE(offset + 5);
+      return validImageDimensions(width, height) ? { width, height } : null;
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function parseWebpDimensions(bytes) {
+  if (bytes.length < 16 || bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") return null;
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const chunkType = bytes.toString("ascii", offset, offset + 4);
+    const chunkSize = bytes.readUInt32LE(offset + 4);
+    const data = offset + 8;
+    if (data + chunkSize > bytes.length) break;
+    if (chunkType === "VP8X" && chunkSize >= 10) {
+      const width = 1 + bytes[data + 4] + (bytes[data + 5] << 8) + (bytes[data + 6] << 16);
+      const height = 1 + bytes[data + 7] + (bytes[data + 8] << 8) + (bytes[data + 9] << 16);
+      return validImageDimensions(width, height) ? { width, height } : null;
+    }
+    if (chunkType === "VP8 " && chunkSize >= 10 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
+      const width = bytes[data + 6] | (bytes[data + 7] << 8);
+      const height = bytes[data + 8] | (bytes[data + 9] << 8);
+      return validImageDimensions(width & 0x3fff, height & 0x3fff) ? { width: width & 0x3fff, height: height & 0x3fff } : null;
+    }
+    if (chunkType === "VP8L" && chunkSize >= 5 && bytes[data] === 0x2f) {
+      const width = 1 + bytes[data + 1] + ((bytes[data + 2] & 0x3f) << 8);
+      const height = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0xf) << 10));
+      return validImageDimensions(width, height) ? { width, height } : null;
+    }
+    offset = data + chunkSize + (chunkSize % 2);
+  }
+  return null;
+}
+
+function parseImageDimensions(bytes) {
+  if (bytes.length >= 24
+      && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+      && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    const width = bytes.readUInt32BE(16);
+    const height = bytes.readUInt32BE(20);
+    return validImageDimensions(width, height) ? { width, height } : null;
+  }
+  return parseJpegDimensions(bytes) || parseWebpDimensions(bytes);
+}
+
+export function seedVR2DetailTargetResolution({ width, height, scale = SEEDVR2_DEFAULT_SCALE } = {}) {
+  if (!validImageDimensions(width, height) || !Number.isFinite(Number(scale)) || Number(scale) < SEEDVR2_MIN_SCALE || Number(scale) > SEEDVR2_MAX_SCALE) {
+    throw makeError("SeedVR2 tiled detail requires valid source image dimensions and scale.", 422, "SOURCE_DIMENSIONS_INVALID");
+  }
+  const target = Math.ceil(Math.max(width, height) * Number(scale) / 16) * 16;
+  if (target > 16384) throw makeError("The requested tiled detail output exceeds ComfyUI's 16384-pixel limit.", 422, "DETAIL_RESOLUTION_TOO_LARGE");
+  return target;
+}
+
+async function readSeedVR2ImageDimensions(filePath, fsApi) {
+  const bytes = await fsApi.readFile(filePath);
+  const dimensions = parseImageDimensions(bytes);
+  if (!dimensions) throw makeError("Unable to read the source image dimensions for tiled detail reconstruction.", 422, "SOURCE_DIMENSIONS_UNREADABLE");
+  return dimensions;
+}
+
 function nodeInputSpec(nodeInfo, key) {
   return nodeInfo?.input?.required?.[key] ?? nodeInfo?.input?.optional?.[key];
 }
@@ -691,7 +803,9 @@ export function evaluateSeedVR2Readiness(objectInfo, {
       nodeInputSpec(nodeInfo, key) && nodeInputType(nodeInfo, key) !== SEEDVR2_DETAIL_NODE_INPUT_TYPES[key]
     ));
     const mappedTilingStrategy = detailSettings.tilingStrategy === "chess" ? "Chess" : "Linear";
+    const sourceUnsupported = sourceKind !== "image";
     const unsupported = {
+      sourceKind: sourceUnsupported ? [sourceKind] : [],
       resizeMethod: detailSettings.resizeMethod === "lanczos" ? [] : [detailSettings.resizeMethod],
       colorCorrection: comboValues(nodeInfo, "color_correction").includes(detailSettings.colorCorrection) ? [] : [detailSettings.colorCorrection],
       steps: detailSettings.steps === 1 ? [] : [detailSettings.steps],
@@ -702,12 +816,14 @@ export function evaluateSeedVR2Readiness(objectInfo, {
       blendingMethod: comboValues(nodeInfo, "blending_method").includes(detailSettings.blendingMethod) ? [] : [detailSettings.blendingMethod],
       tilingStrategy: comboValues(nodeInfo, "tiling_strategy").includes(mappedTilingStrategy) ? [] : [detailSettings.tilingStrategy],
       detailPreset: SEEDVR2_DETAIL_PRESETS.includes(detailSettings.detailPreset) ? [] : [detailSettings.detailPreset],
+      resolutionTarget: comboValues(nodeInfo, "resolution_target").includes("longest") ? [] : ["longest"],
+      tileBatchSize: nodeInputSpec(nodeInfo, "tile_batch_size") && nodeInputType(nodeInfo, "tile_batch_size") === "INT" ? [] : [1],
     };
     const schemaReady = missingInputs.length === 0 && invalidInputs.length === 0 && Object.values(unsupported).every((values) => values.length === 0);
     detail = {
       requested: true,
       node: SEEDVR2_DETAIL_NODE,
-      available: Boolean(nodeInfo) && schemaReady,
+      available: !sourceUnsupported && Boolean(nodeInfo) && schemaReady,
       missingInputs,
       invalidInputs,
       unsupported,
@@ -772,7 +888,7 @@ function link(node, output = 0) {
  */
 export function buildSeedVR2Prompt({
   sourceName,
-  filenamePrefix = "seedvr2_upscaled",
+  filenamePrefix = "seedvr2/seedvr2_upscaled",
   unetName = SEEDVR2_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
@@ -784,11 +900,37 @@ export function buildSeedVR2Prompt({
   samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
   scheduler = SEEDVR2_DEFAULT_SCHEDULER,
   denoise = SEEDVR2_DEFAULT_DENOISE,
+  chunkingMode = SEEDVR2_DEFAULT_CHUNKING_MODE,
+  batchSize = SEEDVR2_DEFAULT_BATCH_SIZE,
+  temporalOverlap = SEEDVR2_DEFAULT_TEMPORAL_OVERLAP,
+  vaeTileSize = SEEDVR2_DEFAULT_VAE_TILE_SIZE,
+  vaeTileOverlap = SEEDVR2_DEFAULT_VAE_TILE_OVERLAP,
+  vaeTemporalSize = SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE,
+  vaeTemporalOverlap = SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP,
 } = {}) {
   const file = normalizeVideoAssetName(sourceName);
-  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const safePrefix = sanitizeOutputPrefix(filenamePrefix, "seedvr2/seedvr2_upscaled");
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
-  const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection, steps, cfg, samplerName, scheduler, denoise });
+  const settings = normalizeSeedVR2Settings({
+    scale,
+    resizeMethod,
+    colorCorrection,
+    steps,
+    cfg,
+    samplerName,
+    scheduler,
+    denoise,
+    chunkingMode,
+    batchSize,
+    temporalOverlap,
+    vaeTileSize,
+    vaeTileOverlap,
+    vaeTemporalSize,
+    vaeTemporalOverlap,
+  });
+  const chunkingInputs = settings.chunkingMode === "manual"
+    ? { chunking_mode: "manual", "chunking_mode.frames_per_chunk": settings.batchSize }
+    : { chunking_mode: "auto" };
   return {
     "1": { class_type: "LoadVideo", inputs: { file } },
     "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
@@ -808,15 +950,15 @@ export function buildSeedVR2Prompt({
       inputs: {
         pixels: link(4),
         vae: link(5),
-        tile_size: 512,
-        overlap: 64,
-        temporal_size: 16,
-        temporal_overlap: 4,
+        tile_size: settings.vaeTileSize,
+        overlap: settings.vaeTileOverlap,
+        temporal_size: settings.vaeTemporalSize,
+        temporal_overlap: settings.vaeTemporalOverlap,
       },
     },
     "7": { class_type: "UNETLoader", inputs: { unet_name: unetName, weight_dtype: "default" } },
     "8": { class_type: "SeedVR2Conditioning", inputs: { model: link(7), vae_conditioning: link(9) } },
-    "9": { class_type: "SeedVR2TemporalChunk", inputs: { latent: link(6), temporal_overlap: 1, chunking_mode: "auto" } },
+    "9": { class_type: "SeedVR2TemporalChunk", inputs: { latent: link(6), temporal_overlap: settings.temporalOverlap, ...chunkingInputs } },
     "10": {
       class_type: "KSampler",
       inputs: {
@@ -838,10 +980,10 @@ export function buildSeedVR2Prompt({
       inputs: {
         samples: link(11),
         vae: link(5),
-        tile_size: 512,
-        overlap: 64,
-        temporal_size: 16,
-        temporal_overlap: 4,
+        tile_size: settings.vaeTileSize,
+        overlap: settings.vaeTileOverlap,
+        temporal_size: settings.vaeTemporalSize,
+        temporal_overlap: settings.vaeTemporalOverlap,
       },
     },
     "13": { class_type: "SeedVR2PostProcessing", inputs: { images: link(12), original_resized_images: link(3), color_correction_method: settings.colorCorrection } },
@@ -862,7 +1004,7 @@ export function buildSeedVR2Prompt({
 
 export function buildSeedVR2ImagePrompt({
   sourceName,
-  filenamePrefix = "seedvr2_image_upscaled",
+  filenamePrefix = "seedvr2/seedvr2_image_upscaled",
   unetName = SEEDVR2_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
@@ -879,7 +1021,7 @@ export function buildSeedVR2ImagePrompt({
   if (sourceKindFromName(file) !== "image") {
     throw makeError("SeedVR2 image upscale requires a PNG, JPEG, or WebP source.", 415, "SOURCE_KIND_INVALID");
   }
-  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const safePrefix = sanitizeOutputPrefix(filenamePrefix, "seedvr2/seedvr2_image_upscaled");
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
   const settings = normalizeSeedVR2Settings({ scale, resizeMethod, colorCorrection, steps, cfg, samplerName, scheduler, denoise });
   return {
@@ -919,15 +1061,19 @@ export function buildSeedVR2ImagePrompt({
 
 export function buildSeedVR2DetailPrompt({
   sourceName,
-  filenamePrefix = "seedvr2_detail_upscaled",
+  filenamePrefix = "seedvr2/seedvr2_detail_upscaled",
   unetName = SEEDVR2_FP16_UNET_NAME,
   vaeName = SEEDVR2_VAE_NAME,
   seed,
+  newResolution = null,
   ...input
 } = {}) {
   const file = normalizeUpscaleAssetName(sourceName);
   const sourceKind = sourceKindFromName(file);
-  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  if (sourceKind !== "image") {
+    throw makeError("SeedVR2 tiled detail reconstruction currently supports image sources only.", 415, "SEEDVR2_DETAIL_IMAGE_ONLY");
+  }
+  const safePrefix = sanitizeOutputPrefix(filenamePrefix, "seedvr2/seedvr2_detail_upscaled");
   const samplerSeed = Number.isSafeInteger(seed) && seed >= 0 ? seed : Math.floor(Math.random() * 2_147_483_647);
   const settings = normalizeSeedVR2Settings(input);
   if (!usesSeedVR2Detail(settings)) {
@@ -941,6 +1087,9 @@ export function buildSeedVR2DetailPrompt({
       || settings.samplerName !== "euler" || settings.scheduler !== "simple" || settings.denoise !== 1) {
     throw makeError("Tiled detail reconstruction supports the native one-step Lanczos sampling contract only.", 400, "SEEDVR2_DETAIL_SAMPLING_UNSUPPORTED");
   }
+  const targetResolution = newResolution === null || newResolution === undefined
+    ? settings.tileUpscaleResolution
+    : normalizeSeedVR2Integer(newResolution, settings.tileUpscaleResolution, 16, 16384, "detail output resolution", "DETAIL_RESOLUTION_INVALID", 16);
   const ditInputs = {
     model: detailUnetName,
     device: "cuda:0",
@@ -968,7 +1117,7 @@ export function buildSeedVR2DetailPrompt({
     dit: link(ditNode),
     vae: link(vaeNode),
     seed: samplerSeed,
-    new_resolution: settings.tileUpscaleResolution,
+    new_resolution: targetResolution,
     input_noise_scale: settings.inputNoiseScale,
     latent_noise_scale: settings.latentNoiseScale,
     tile_width: settings.tileWidth,
@@ -982,7 +1131,6 @@ export function buildSeedVR2DetailPrompt({
     color_correction: settings.colorCorrection,
     resolution_target: "longest",
     tile_batch_size: 1,
-    upscale_factor: settings.scale,
   });
   if (sourceKind === "image") {
     return {
@@ -993,30 +1141,11 @@ export function buildSeedVR2DetailPrompt({
       "5": { class_type: "SaveImage", inputs: { images: link(4), filename_prefix: safePrefix } },
     };
   }
-  return {
-    "1": { class_type: "LoadVideo", inputs: { file } },
-    "2": { class_type: "GetVideoComponents", inputs: { video: link(1) } },
-    "3": { class_type: SEEDVR2_DETAIL_DIT_LOADER_NODE, inputs: ditInputs },
-    "4": { class_type: SEEDVR2_DETAIL_VAE_LOADER_NODE, inputs: vaeInputs },
-    "5": { class_type: SEEDVR2_DETAIL_NODE, inputs: detailInputs(2, 3, 4) },
-    "6": { class_type: "CreateVideo", inputs: { images: link(5), fps: link(2, 2), audio: link(2, 1) } },
-    "7": {
-      class_type: "SaveVideo",
-      inputs: {
-        video: link(6),
-        filename_prefix: safePrefix,
-        format: "mp4",
-        codec: "h264",
-        "codec.encoding": "re-encode",
-        "codec.encoding.crf": 18,
-      },
-    },
-  };
 }
 
 export function buildH3LatentPrompt({
   sourceName,
-  filenamePrefix = "h3latent_upscaled",
+  filenamePrefix = "h3latent/h3latent_upscaled",
   diffusionName = H3_LATENT_DIFFUSION_NAMES[0],
   encoderName = H3_LATENT_ENCODER_NAME,
   vaeName = H3_LATENT_VAE_NAME,
@@ -1029,7 +1158,7 @@ export function buildH3LatentPrompt({
   seed = 0,
 } = {}) {
   const file = normalizeVideoAssetName(sourceName);
-  const safePrefix = sanitizeFilenamePrefix(filenamePrefix);
+  const safePrefix = sanitizeOutputPrefix(filenamePrefix, "h3latent/h3latent_upscaled");
   const samplerSeed = boundedSeed(seed, 0);
   const pass2Seed = boundedSeed(samplerSeed + 1, samplerSeed);
   return {
@@ -1133,6 +1262,18 @@ export function sanitizeFilenamePrefix(value) {
     .replace(/^\.+/, "")
     .slice(0, 120);
   return raw || "seedvr2_upscaled";
+}
+
+function sanitizeOutputPrefix(value, fallback) {
+  const parts = String(value || fallback || "seedvr2/seedvr2_upscaled")
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((part) => part
+      .replace(/[^A-Za-z0-9_.-]+/g, "_")
+      .replace(/^\.+/, "")
+      .slice(0, 120))
+    .filter(Boolean);
+  return parts.length ? parts.join("/") : sanitizeFilenamePrefix(fallback);
 }
 
 function historyRecord(payload, promptId) {
@@ -1292,6 +1433,13 @@ function publicJob(job, gpuCoordinator = null, gpuWorkloadType = "seedvr2-upscal
       samplerName: job.samplerName || SEEDVR2_DEFAULT_SAMPLER_NAME,
       scheduler: job.scheduler || SEEDVR2_DEFAULT_SCHEDULER,
       denoise: job.denoise ?? SEEDVR2_DEFAULT_DENOISE,
+      chunkingMode: job.chunkingMode || SEEDVR2_DEFAULT_CHUNKING_MODE,
+      batchSize: job.batchSize ?? SEEDVR2_DEFAULT_BATCH_SIZE,
+      temporalOverlap: job.temporalOverlap ?? SEEDVR2_DEFAULT_TEMPORAL_OVERLAP,
+      vaeTileSize: job.vaeTileSize ?? SEEDVR2_DEFAULT_VAE_TILE_SIZE,
+      vaeTileOverlap: job.vaeTileOverlap ?? SEEDVR2_DEFAULT_VAE_TILE_OVERLAP,
+      vaeTemporalSize: job.vaeTemporalSize ?? SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE,
+      vaeTemporalOverlap: job.vaeTemporalOverlap ?? SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP,
       detailPreset: job.detailPreset || SEEDVR2_DEFAULT_DETAIL.detailPreset,
       inputNoiseScale: job.inputNoiseScale ?? SEEDVR2_DEFAULT_DETAIL.inputNoiseScale,
       latentNoiseScale: job.latentNoiseScale ?? SEEDVR2_DEFAULT_DETAIL.latentNoiseScale,
@@ -1371,6 +1519,14 @@ function normalizeSeedVR2Integer(value, fallback, min, max, field, code, multipl
   return normalized;
 }
 
+function normalizeSeedVR2BatchSize(value, fallback = SEEDVR2_DEFAULT_BATCH_SIZE) {
+  const normalized = value === undefined || value === null || value === "" ? fallback : Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 1 || normalized > 16_384 || (normalized !== 1 && (normalized - 1) % 4 !== 0)) {
+    throw makeError("SeedVR2 batch size must be 1 or 4n+1 between 1 and 16384.", 400, "BATCH_SIZE_INVALID");
+  }
+  return normalized;
+}
+
 function normalizeSeedVR2Decimal(value, fallback, min, max, field, code, precision = 2) {
   const numeric = value === undefined || value === null || value === "" ? fallback : Number(value);
   if (!Number.isFinite(numeric) || numeric < min || numeric > max) {
@@ -1383,6 +1539,15 @@ function normalizeSeedVR2Decimal(value, fallback, min, max, field, code, precisi
 function hasSeedVR2SamplingOverride(input = {}) {
   return ["steps", "cfg", "samplerName", "scheduler", "denoise"]
     .some((key) => Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined);
+}
+
+const SEEDVR2_VIDEO_KEYS = Object.freeze([
+  "chunkingMode", "batchSize", "temporalOverlap", "vaeTileSize", "vaeTileOverlap",
+  "vaeTemporalSize", "vaeTemporalOverlap",
+]);
+
+function hasSeedVR2VideoOverride(input = {}) {
+  return SEEDVR2_VIDEO_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined);
 }
 
 const SEEDVR2_DETAIL_KEYS = Object.freeze([
@@ -1426,8 +1591,8 @@ export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) 
     colorCorrection: normalizeSeedVR2Choice(input.colorCorrection, SEEDVR2_COLOR_CORRECTION_METHODS, defaults.colorCorrection, "color correction", "COLOR_CORRECTION_INVALID"),
   };
   if (isH3VideoProfile(normalizedProfile)) {
-    if (hasSeedVR2SamplingOverride(input) || hasSeedVR2DetailOverride(input)) {
-      throw makeError(`SeedVR2 sampling and detail settings are not supported by ${profileLabel(normalizedProfile)}.`, 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
+    if (hasSeedVR2SamplingOverride(input) || hasSeedVR2DetailOverride(input) || hasSeedVR2VideoOverride(input)) {
+      throw makeError(`SeedVR2 sampling, video, and detail settings are not supported by ${profileLabel(normalizedProfile)}.`, 400, "SEEDVR2_SETTINGS_UNSUPPORTED");
     }
     return base;
   }
@@ -1438,6 +1603,13 @@ export function normalizeSeedVR2Settings(input = {}, profile = SEEDVR2_PROFILE) 
     samplerName: normalizeSeedVR2Choice(input.samplerName, SEEDVR2_SAMPLER_NAMES, defaults.samplerName, "sampler", "SAMPLER_INVALID"),
     scheduler: normalizeSeedVR2Choice(input.scheduler, SEEDVR2_SCHEDULERS, defaults.scheduler, "scheduler", "SCHEDULER_INVALID"),
     denoise: normalizeSeedVR2Decimal(input.denoise, defaults.denoise, SEEDVR2_MIN_DENOISE, SEEDVR2_MAX_DENOISE, "denoise", "DENOISE_INVALID"),
+    chunkingMode: normalizeSeedVR2Choice(input.chunkingMode, SEEDVR2_CHUNKING_MODES, SEEDVR2_DEFAULT_CHUNKING_MODE, "chunking mode", "CHUNKING_MODE_INVALID"),
+    batchSize: normalizeSeedVR2BatchSize(input.batchSize),
+    temporalOverlap: normalizeSeedVR2Integer(input.temporalOverlap, SEEDVR2_DEFAULT_TEMPORAL_OVERLAP, 0, 16_384, "temporal overlap", "TEMPORAL_OVERLAP_INVALID"),
+    vaeTileSize: normalizeSeedVR2Integer(input.vaeTileSize, SEEDVR2_DEFAULT_VAE_TILE_SIZE, 64, 4096, "VAE tile size", "VAE_TILE_SIZE_INVALID", 64),
+    vaeTileOverlap: normalizeSeedVR2Integer(input.vaeTileOverlap, SEEDVR2_DEFAULT_VAE_TILE_OVERLAP, 0, 4096, "VAE tile overlap", "VAE_TILE_OVERLAP_INVALID", 32),
+    vaeTemporalSize: normalizeSeedVR2Integer(input.vaeTemporalSize, SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE, 8, 4096, "VAE temporal size", "VAE_TEMPORAL_SIZE_INVALID", 4),
+    vaeTemporalOverlap: normalizeSeedVR2Integer(input.vaeTemporalOverlap, SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP, 4, 4096, "VAE temporal overlap", "VAE_TEMPORAL_OVERLAP_INVALID", 4),
     detailPreset,
     inputNoiseScale: normalizeSeedVR2Decimal(input.inputNoiseScale, defaults.inputNoiseScale, 0, 0.2, "input noise scale", "INPUT_NOISE_SCALE_INVALID", 3),
     latentNoiseScale: normalizeSeedVR2Decimal(input.latentNoiseScale, defaults.latentNoiseScale, 0, 0.2, "latent noise scale", "LATENT_NOISE_SCALE_INVALID", 3),
@@ -1524,6 +1696,8 @@ export function createSeedVR2Controller({
       [SEEDVR2_FP16_PROFILE]: path.join(comfyRootPath, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME),
     },
     vae: path.join(comfyRootPath, "models", "vae", SEEDVR2_VAE_NAME),
+    seedvr2DetailUnet: path.join(comfyRootPath, "models", "SEEDVR2", SEEDVR2_DETAIL_FP16_UNET_NAME),
+    seedvr2DetailVae: path.join(comfyRootPath, "models", "SEEDVR2", SEEDVR2_DETAIL_VAE_NAME),
     h3Diffusion: Object.fromEntries(H3_LATENT_DIFFUSION_NAMES.map((name) => [
       name,
       path.join(comfyRootPath, "models", "diffusion_models", name),
@@ -1674,7 +1848,9 @@ export function createSeedVR2Controller({
       requestJson("/object_info").catch(() => null),
       Promise.all(config.modelFiles.map((key) => {
         const [, configuredNames] = config.modelPaths[key];
-        const names = Array.isArray(configuredNames) ? configuredNames : [configuredNames];
+        const names = detailMode
+          ? [key === "unet" ? SEEDVR2_DETAIL_FP16_UNET_NAME : SEEDVR2_DETAIL_VAE_NAME]
+          : (Array.isArray(configuredNames) ? configuredNames : [configuredNames]);
         const candidates = isH3VideoProfile(profile)
           ? key === "diffusion"
             ? names.map((name) => modelPaths.h3Diffusion[name])
@@ -1683,7 +1859,9 @@ export function createSeedVR2Controller({
               : key === "videoVae"
                 ? [modelPaths.h3Vae]
                 : [modelPaths.h3AudioVae]
-          : [key === "unet" ? modelPaths.seedvr2Unet[profile] : modelPaths.vae];
+          : [key === "unet"
+            ? detailMode ? modelPaths.seedvr2DetailUnet : modelPaths.seedvr2Unet[profile]
+            : detailMode ? modelPaths.seedvr2DetailVae : modelPaths.vae];
         return Promise.all(candidates.map((candidate, index) => (
           fileExists(candidate, fsApi).then((available) => [names[index], available])
         ))).then((entries) => [key, key === "diffusion" ? Object.fromEntries(entries) : Boolean(entries[0]?.[1])]);
@@ -1779,6 +1957,10 @@ export function createSeedVR2Controller({
     return sanitizeFilenamePrefix(`${profileShortName(job.profile)}_${stem}_${job.id.slice(0, 8)}`);
   }
 
+  function comfyOutputPrefix(job) {
+    return `${profileShortName(job.profile)}/${outputPrefix(job)}`;
+  }
+
   async function artifactAsset(relativeName) {
     const clean = artifactRelativeName({ filename: relativeName });
     if (!clean) throw makeError("ComfyUI returned an unsafe output artifact.", 502, "OUTPUT_ARTIFACT_INVALID");
@@ -1817,12 +1999,21 @@ export function createSeedVR2Controller({
     if (!isInside(outputReal, parentReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
     const existingReal = await fsApi.realpath(candidate).catch(() => null);
     if (existingReal && !isInside(outputReal, existingReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
-    await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
-    const createdReal = await fsApi.realpath(candidate).catch(() => null);
-    if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
-    assertNotCancelled(job);
-    if (typeof toAsset === "function") return await toAsset("output", localName);
-    return { name: localName, root: "output", kind: sourceKindFromName(localName) };
+    const existed = Boolean(existingReal);
+    try {
+      await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
+      const createdReal = await fsApi.realpath(candidate).catch(() => null);
+      if (!createdReal || !isInside(outputReal, createdReal)) throw makeError("Downloaded media path escaped its output root.", 500, "OUTPUT_PATH_INVALID");
+      assertNotCancelled(job);
+      if (typeof toAsset === "function") return await toAsset("output", localName);
+      return { name: localName, root: "output", kind: sourceKindFromName(localName) };
+    } catch (error) {
+      if (!existed) {
+        const stat = await fsApi.lstat(candidate).catch(() => null);
+        if (stat?.isFile() && !stat.isSymbolicLink()) await fsApi.unlink(candidate).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   async function waitForHistory(job, promptId, signal, runtime = null) {
@@ -1895,20 +2086,30 @@ export function createSeedVR2Controller({
       const readiness = await checkReadiness(profile, sourceKind, job);
       assertNotCancelled(job);
       if (!readiness.ready) {
+        const detailImageOnly = readiness.detail?.unsupported?.sourceKind?.length > 0;
         throw makeError(
-          `${label} is unavailable: required ComfyUI nodes or model files are missing.`,
-          503,
+          detailImageOnly
+            ? "SeedVR2 tiled detail reconstruction currently supports image sources only."
+            : `${label} is unavailable: required ComfyUI nodes or model files are missing.`,
+          detailImageOnly ? 415 : 503,
           profile === MMH3_ULTIMATE_PROFILE
             ? "MMH3_ULTIMATE_NOT_READY"
             : profile === H3_LATENT_PROFILE
               ? "H3_LATENT_NOT_READY"
-              : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
+              : detailImageOnly ? "SEEDVR2_DETAIL_IMAGE_ONLY"
+                : readiness.detail?.requested ? "SEEDVR2_DETAIL_NOT_READY" : "SEEDVR2_NOT_READY",
         );
       }
 
       await updateJob(job, { progress: 12, stage: `Validating source ${sourceKind}` });
       const source = await resolveAsset(job.sourceRoot, job.sourceName);
       assertNotCancelled(job);
+      const detailTargetResolution = usesSeedVR2Detail(job)
+        ? seedVR2DetailTargetResolution({
+          ...(await readSeedVR2ImageDimensions(source.path, fsApi)),
+          scale: job.scale,
+        })
+        : null;
       let loadName = source.cleanName;
       if (remote) {
         await updateJob(job, { progress: 16, stage: `Uploading source ${sourceKind}` });
@@ -1924,7 +2125,7 @@ export function createSeedVR2Controller({
       const prompt = profile === MMH3_ULTIMATE_PROFILE
         ? buildMMH3UltimatePrompt({
           sourceName: loadName,
-          filenamePrefix: outputPrefix(job),
+          filenamePrefix: comfyOutputPrefix(job),
           diffusionName: readiness.models?.diffusion?.name,
           encoderName: readiness.models?.encoder?.name,
           vaeName: readiness.models?.videoVae?.name,
@@ -1934,7 +2135,7 @@ export function createSeedVR2Controller({
         : profile === H3_LATENT_PROFILE
         ? buildH3LatentPrompt({
           sourceName: loadName,
-          filenamePrefix: outputPrefix(job),
+          filenamePrefix: comfyOutputPrefix(job),
           diffusionName: readiness.models?.diffusion?.name,
           encoderName: readiness.models?.encoder?.name,
           vaeName: readiness.models?.videoVae?.name,
@@ -1943,15 +2144,16 @@ export function createSeedVR2Controller({
         })
         : usesSeedVR2Detail(job) ? buildSeedVR2DetailPrompt({
           ...job,
-          sourceName: loadName,
-          filenamePrefix: outputPrefix(job),
-          unetName: readiness.models?.unet?.name,
-          vaeName: readiness.models?.vae?.name,
-          seed: job.seed,
-        })
+           sourceName: loadName,
+           filenamePrefix: comfyOutputPrefix(job),
+           unetName: readiness.models?.unet?.name,
+           vaeName: readiness.models?.vae?.name,
+           seed: job.seed,
+           newResolution: detailTargetResolution,
+         })
         : sourceKind === "image" ? buildSeedVR2ImagePrompt({
           sourceName: loadName,
-          filenamePrefix: outputPrefix(job),
+          filenamePrefix: comfyOutputPrefix(job),
           unetName: readiness.models?.unet?.name,
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
@@ -1965,7 +2167,7 @@ export function createSeedVR2Controller({
           denoise: job.denoise,
         }) : buildSeedVR2Prompt({
           sourceName: loadName,
-          filenamePrefix: outputPrefix(job),
+          filenamePrefix: comfyOutputPrefix(job),
           unetName: readiness.models?.unet?.name,
           vaeName: SEEDVR2_VAE_NAME,
           seed: job.seed,
@@ -1977,6 +2179,13 @@ export function createSeedVR2Controller({
           samplerName: job.samplerName,
           scheduler: job.scheduler,
           denoise: job.denoise,
+          chunkingMode: job.chunkingMode,
+          batchSize: job.batchSize,
+          temporalOverlap: job.temporalOverlap,
+          vaeTileSize: job.vaeTileSize,
+          vaeTileOverlap: job.vaeTileOverlap,
+          vaeTemporalSize: job.vaeTemporalSize,
+          vaeTemporalOverlap: job.vaeTemporalOverlap,
         });
       await updateJob(job, { prompt, progress: 20, stage: "Submitting ComfyUI workflow" });
       assertNotCancelled(job);
@@ -2080,6 +2289,13 @@ export function createSeedVR2Controller({
     samplerName = SEEDVR2_DEFAULT_SAMPLER_NAME,
     scheduler = SEEDVR2_DEFAULT_SCHEDULER,
     denoise = SEEDVR2_DEFAULT_DENOISE,
+    chunkingMode = SEEDVR2_DEFAULT_CHUNKING_MODE,
+    batchSize = SEEDVR2_DEFAULT_BATCH_SIZE,
+    temporalOverlap = SEEDVR2_DEFAULT_TEMPORAL_OVERLAP,
+    vaeTileSize = SEEDVR2_DEFAULT_VAE_TILE_SIZE,
+    vaeTileOverlap = SEEDVR2_DEFAULT_VAE_TILE_OVERLAP,
+    vaeTemporalSize = SEEDVR2_DEFAULT_VAE_TEMPORAL_SIZE,
+    vaeTemporalOverlap = SEEDVR2_DEFAULT_VAE_TEMPORAL_OVERLAP,
     detailPreset = SEEDVR2_DEFAULT_DETAIL.detailPreset,
     inputNoiseScale = SEEDVR2_DEFAULT_DETAIL.inputNoiseScale,
     latentNoiseScale = SEEDVR2_DEFAULT_DETAIL.latentNoiseScale,
@@ -2103,6 +2319,13 @@ export function createSeedVR2Controller({
       samplerName,
       scheduler,
       denoise,
+      chunkingMode,
+      batchSize,
+      temporalOverlap,
+      vaeTileSize,
+      vaeTileOverlap,
+      vaeTemporalSize,
+      vaeTemporalOverlap,
       detailPreset,
       inputNoiseScale,
       latentNoiseScale,
@@ -2173,6 +2396,9 @@ export function createSeedVR2Controller({
     const sourceKind = sourceKindFromName(cleanName);
     if (sourceKind === "image" && isH3VideoProfile(profile)) {
       throw makeError(`${profileLabel(profile)} accepts video assets only; use SeedVR2 7B for images.`, 415, "SOURCE_KIND_INVALID");
+    }
+    if (usesSeedVR2Detail(settings) && sourceKind !== "image") {
+      throw makeError("SeedVR2 tiled detail reconstruction currently supports image sources only.", 415, "SEEDVR2_DETAIL_IMAGE_ONLY");
     }
     const seed = boundedSeed(input.seed, Math.floor(Math.random() * 2_147_483_648));
     await resolveAsset(sourceRoot, cleanName);
@@ -2280,6 +2506,13 @@ export function createSeedVR2Controller({
         samplerName: source.samplerName,
         scheduler: source.scheduler,
         denoise: source.denoise,
+        chunkingMode: source.chunkingMode,
+        batchSize: source.batchSize,
+        temporalOverlap: source.temporalOverlap,
+        vaeTileSize: source.vaeTileSize,
+        vaeTileOverlap: source.vaeTileOverlap,
+        vaeTemporalSize: source.vaeTemporalSize,
+        vaeTemporalOverlap: source.vaeTemporalOverlap,
         detailPreset: source.detailPreset,
         inputNoiseScale: source.inputNoiseScale,
         latentNoiseScale: source.latentNoiseScale,
@@ -2361,11 +2594,18 @@ export function createSeedVR2Controller({
         if (sourceKind === "image" && isH3VideoProfile(profile)) {
           throw makeError(`${profileLabel(profile)} accepts video assets only; use SeedVR2 7B for images.`, 415, "SOURCE_KIND_INVALID");
         }
+        if (usesSeedVR2Detail(settings) && sourceKind !== "image") {
+          throw makeError("SeedVR2 tiled detail reconstruction currently supports image sources only.", 415, "SEEDVR2_DETAIL_IMAGE_ONLY");
+        }
         const readiness = await checkReadiness(profile, sourceKind, settings);
         if (!readiness.ready) {
+          const detailImageOnly = readiness.detail?.unsupported?.sourceKind?.length > 0;
           respond(res, 503, {
-            error: `${profileLabel(profile)} is not ready.`,
-            code: profile === MMH3_ULTIMATE_PROFILE
+            error: detailImageOnly
+              ? "SeedVR2 tiled detail reconstruction currently supports image sources only."
+              : `${profileLabel(profile)} is not ready.`,
+            code: detailImageOnly ? "SEEDVR2_DETAIL_IMAGE_ONLY"
+              : profile === MMH3_ULTIMATE_PROFILE
               ? "MMH3_ULTIMATE_NOT_READY"
               : profile === H3_LATENT_PROFILE
                 ? "H3_LATENT_NOT_READY"

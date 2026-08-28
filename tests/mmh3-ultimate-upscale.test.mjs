@@ -63,6 +63,14 @@ test("builds an isolated MMH3 tiled 2x workflow", () => {
   assert.deepEqual(graph["23"].inputs.spatial_split_param, ["20", 0]);
   assert.equal(graph["22"].inputs.sigmas, MMH3_ULTIMATE_PASS2_SIGMAS);
   assert.equal(graph["27"].inputs.filename_prefix, "h3ultimate/test");
+  const defaultGraph = buildMMH3UltimatePrompt({
+    sourceName: "clips/source.mp4",
+    diffusionName: H3_LATENT_DIFFUSION_NAMES[0],
+    encoderName: H3_LATENT_ENCODER_NAME,
+    vaeName: H3_LATENT_VAE_NAME,
+    audioVaeName: H3_LATENT_AUDIO_VAE_NAME,
+  });
+  assert.equal(defaultGraph["27"].inputs.filename_prefix, "h3ultimate/h3ultimate_upscaled");
   assert.equal(classTypes.includes("MMH3UltimateUpscale"), true);
   assert.equal(classTypes.includes("MiniMaxH3LatentUpscale"), false);
   assert.equal(classTypes.includes("H3CleanLatentUpscale2x"), false);

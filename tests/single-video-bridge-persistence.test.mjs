@@ -193,6 +193,11 @@ async function waitFor(predicate, timeoutMs = 2000) {
   return await predicate();
 }
 
+test("single video output names are assigned to the video folder", () => {
+  assert.equal(bridge.outputFileName("retry-me.mp4"), "video/retry-me.mp4");
+  assert.equal(bridge.outputFileName("../unsafe name.mp4"), "video/unsafe-name.mp4");
+});
+
 test("Jobs API reads durable history and recovery never exposes a ghost running job", async () => {
   const failedUpdatedAt = (await store.read("sv-failed-api")).updatedAt;
   const response = await invoke(getRequest("/api/jobs"));
@@ -269,7 +274,7 @@ test("completed video jobs can create an edited retry attempt", async () => {
   assert.equal(response.body.job.retryOf, "sv-completed-api");
   assert.equal(response.body.job.attempt, 2);
   assert.equal(response.body.job.seed, 99);
-  assert.equal(response.body.job.outputName, "completed-retry.mp4");
+  assert.equal(response.body.job.outputName, "video/completed-retry.mp4");
 
   const cancelled = await invoke(postRequest(`/api/jobs/${encodeURIComponent(response.body.job.id)}/cancel`));
   assert.equal(cancelled.status, 200);
@@ -316,7 +321,7 @@ test("retry creates a new attempt with edited prompt and render parameters", asy
   assert.equal(Object.hasOwn(retried.provenance.request, "referenceImageName"), false);
   assert.equal(retried.provenance.request.inputRefs.inputImage, "legacy-reference.png");
   assert.deepEqual(retried.provenance.request.inputRefs.referenceImages, []);
-  assert.equal(retried.outputName, edited.outputName);
+  assert.equal(retried.outputName, "video/retry-edited.mp4");
 
   const cancelled = await invoke(postRequest(`/api/jobs/${encodeURIComponent(retried.id)}/cancel`));
   assert.equal(cancelled.status, 200);

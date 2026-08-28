@@ -1,6 +1,6 @@
 import "./test-isolation.mjs";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1185,17 +1185,22 @@ test("runner failure preserves attempt prompt, settings, generation id and media
   process.env.H3_SEQUENCE_DATA_ROOT = path.join(root, "data");
   process.env.COMFYUI_OUTPUT_ROOT = path.join(root, "output");
   const output = path.join(root, "output", "attempt-failure");
+  await mkdir(output, { recursive: true });
   const job = {
     id: "attempt-failure", inputType: "text", outputPath: output, outputFolder: "attempt-failure", status: "ready", revision: 1,
     width: 736, height: 416, steps: 12, seed: 42, modelProfile: "profile-x", negativePrompt: "no blur", continuityBible: {},
     segments: [{ id: "s1", start: 0, end: 5, duration: 5, description: "opening" }, { id: "s2", start: 5, end: 10, duration: 5, description: "ending" }],
   };
   await assert.rejects(() => runSequence(job, {
-    generate: async (payload) => ({ rawPath: payload.outputPath, id: "generation-123" }),
+    generate: async (payload) => {
+      await writeFile(payload.outputPath, "partial raw output");
+      return { rawPath: payload.outputPath, id: "generation-123" };
+    },
     normalize: async () => { throw Object.assign(new Error("fake ffmpeg failed"), { code: "FFMPEG_FAILED", details: { stderrTail: "stderr tail", exitCode: 7 } }); },
     updateJob: async (target, patch) => Object.assign(target, patch),
     updateSegment: async (target, index, patch) => Object.assign(target.segments[index], patch),
   }), { message: "fake ffmpeg failed" });
+  await assert.rejects(() => readFile(path.join(output, "segment-001-attempt-001-raw.mp4")), { code: "ENOENT" });
   const attempt = JSON.parse(await readFile(sequenceAttemptFile(job.id, 0, 1), "utf8"));
   assert.equal(attempt.status, "failed");
   assert.equal(attempt.mode, "t2v");

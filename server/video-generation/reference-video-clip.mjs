@@ -71,7 +71,7 @@ export async function prepareReferenceVideoClip({
   if (!outputPath.startsWith(resolvedRoot + path.sep)) throw new LongVideoError("REFERENCE_VIDEO_OUTPUT_INVALID", "Reference clip path is outside the input root.", 500);
   await fs.mkdir(folder, { recursive: true });
   const cached = await fs.stat(outputPath).catch(() => null);
-  if (cached?.isFile() && cached.size) return { outputPath, plan, probe, response: null, cached: true };
+  if (cached?.isFile() && cached.size) return { outputPath, plan, probe, response: null, cached: true, created: false };
   const args = [
     "-y", "-ss", plan.start.toFixed(3), "-i", inputPath, "-t", plan.duration.toFixed(3),
     "-map", "0:v:0", "-an", "-r", "24",
@@ -80,15 +80,21 @@ export async function prepareReferenceVideoClip({
     outputPath,
   ];
   let response;
+  let created = false;
   try {
-    response = await run(executables.ffmpeg, args);
-  } catch (error) {
-    throw new LongVideoError("REFERENCE_VIDEO_FFMPEG_UNAVAILABLE", `Unable to preprocess the reference video: ${error.message}`, 503);
+    try {
+      response = await run(executables.ffmpeg, args);
+    } catch (error) {
+      throw new LongVideoError("REFERENCE_VIDEO_FFMPEG_UNAVAILABLE", `Unable to preprocess the reference video: ${error.message}`, 503);
+    }
+    if (response.exitCode !== 0) {
+      throw new LongVideoError("REFERENCE_VIDEO_PREPROCESS_FAILED", "FFmpeg failed while trimming or resizing the reference video.", 502, { stderrTail: String(response.stderr || "").slice(-2000) });
+    }
+    const stat = await fs.stat(outputPath).catch(() => null);
+    if (!stat?.isFile() || !stat.size) throw new LongVideoError("REFERENCE_VIDEO_OUTPUT_MISSING", "Reference video preprocessing produced no output.", 502);
+    created = true;
+    return { outputPath, plan, probe, response, cached: false, created };
+  } finally {
+    if (!created) await fs.unlink(outputPath).catch(() => {});
   }
-  if (response.exitCode !== 0) {
-    throw new LongVideoError("REFERENCE_VIDEO_PREPROCESS_FAILED", "FFmpeg failed while trimming or resizing the reference video.", 502, { stderrTail: String(response.stderr || "").slice(-2000) });
-  }
-  const stat = await fs.stat(outputPath).catch(() => null);
-  if (!stat?.isFile() || !stat.size) throw new LongVideoError("REFERENCE_VIDEO_OUTPUT_MISSING", "Reference video preprocessing produced no output.", 502);
-  return { outputPath, plan, probe, response };
 }

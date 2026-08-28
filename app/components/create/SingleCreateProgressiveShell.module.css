@@ -1,5 +1,6 @@
 .root {
   display: block;
+  color-scheme: dark;
 }
 
 .experienceBar {
@@ -66,13 +67,18 @@
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
-.professionalToggle:hover {
+.professionalToggle:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--lime) 34%, var(--line));
   background: var(--panel-hover);
 }
 
-.professionalToggle:active {
+.professionalToggle:active:not(:disabled) {
   transform: translateY(1px);
+}
+
+.professionalToggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .professionalToggle > span:first-child {

@@ -24,6 +24,21 @@ function fileFor(folder, name) {
   return sequenceOutputFile(folder, name);
 }
 
+async function removeOutputIntermediate(filePath) {
+  if (!filePath) return false;
+  const root = path.resolve(outputRoot());
+  const candidate = path.resolve(String(filePath));
+  if (candidate === root || !candidate.startsWith(root + path.sep)) return false;
+  const stat = await fs.lstat(candidate).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) return false;
+  await fs.unlink(candidate).catch(() => {});
+  return true;
+}
+
+async function cleanupAttemptIntermediates(paths) {
+  for (const filePath of new Set(paths || [])) await removeOutputIntermediate(filePath);
+}
+
 function combinedNegativePrompt(globalValue, segmentValue) {
   return mergeLongVideoNegativePrompt(globalValue, segmentValue);
 }
@@ -353,6 +368,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
   let previousContext = null;
   let activeSegmentIndex = -1;
   let activeAttemptRecord = null;
+  let activeAttemptIntermediates = null;
   const runnerStartedAt = new Date().toISOString();
   const sequenceStartedAt = job.startedAt || runnerStartedAt;
   await setJob(job, { status: "running", progress: 1, stage: "sequence.start", startedAt: sequenceStartedAt, completedAt: null, elapsedMs: null, error: null }, deps);
@@ -411,6 +427,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
       const normalizedPath = fileFor(folder, `${prefix}.mp4`);
       const tailPath = fileFor(folder, `${prefix}-tail.png`);
       const contextPath = fileFor(folder, `${prefix}-context.mp4`);
+      activeAttemptIntermediates = new Set([rawPath, normalizedPath, tailPath, contextPath]);
       const multiReference = job.referenceMode === "multi_reference";
       const hasStaticReferences = staticReferenceAssets(job).length > 0;
       const mode = multiReference || index > 0 && (motionContext || legacyLatentContext || (contextPin || firstFrame) && hasStaticReferences)
@@ -720,6 +737,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
         },
       });
       const producedRawPath = generationResultPath(generated, rawPath);
+      if (path.resolve(producedRawPath) === path.resolve(rawPath)) activeAttemptIntermediates.add(rawPath);
       const generationJobId = generated?.id || generated?.job?.id;
       activeAttemptRecord = {
         ...activeAttemptRecord,
@@ -751,6 +769,7 @@ export async function runSequence(sequenceOrId, deps = {}) {
       let overlapTrimFrames = 0;
       if (firstFrame && index > 0) {
         completedPath = fileFor(folder, `${prefix}-seam-trimmed.mp4`);
+        activeAttemptIntermediates.add(completedPath);
         const trimmed = await trimOverlap({ inputPath: normalizedPath, outputPath: completedPath, frames: 1, fps: 24, tools: deps.tools, run: deps.run, logger: (event) => logEvent(id, { ...event, segmentIndex: index, segmentId: segment.id, attempt }, deps) });
         overlapTrimFrames = Number(trimmed?.trimmedFrames || 1);
       }
@@ -776,11 +795,13 @@ export async function runSequence(sequenceOrId, deps = {}) {
       await setSegment(job, index, { checkpoint: "tail_verified", tailAsset: outputAssetRef(tailPath) }, deps);
       previousTail = tailPath;
       normalizedPaths.push(completedPath);
+      await cleanupAttemptIntermediates([rawPath, ...(completedPath === normalizedPath ? [] : [normalizedPath])]);
       const segmentCompletedAt = new Date().toISOString();
       const childElapsedMs = childElapsedMilliseconds(generated);
       const segmentElapsedMs = elapsedBetween(startedAt, segmentCompletedAt);
       await setSegment(job, index, { status: "completed", checkpoint: "segment_completed", completedAt: segmentCompletedAt, childElapsedMs, elapsedMs: segmentElapsedMs, renderedDuration, overlapTrimFrames, normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), outputRelative: path.relative(outputRoot(), completedPath).replaceAll("\\", "/") }, deps);
       if (/^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id || ""))) await writeAttempt(id, index, attempt, { ...activeAttemptRecord, attempt, segmentIndex: index, status: "completed", prompt: persistedAttemptPrompt(prompt, [previousTail, previousContext, producedRawPath, completedPath, tailPath, contextPath]), rawAsset: outputAssetRef(producedRawPath), normalizedAsset: outputAssetRef(completedPath), tailAsset: outputAssetRef(tailPath), overlapTrimFrames, ...(motionContext && index < job.segments.length - 1 ? { contextAsset: outputAssetRef(contextPath) } : {}), generationJobId, finishedAt: segmentCompletedAt, childElapsedMs, elapsedMs: segmentElapsedMs }).catch(() => {});
+      activeAttemptIntermediates = null;
       activeAttemptRecord = null;
       await setJob(job, {
         activeAttempt: null,
@@ -827,6 +848,9 @@ export async function runSequence(sequenceOrId, deps = {}) {
       if (releaseLeaseOnExit && deps.lease) await releaseSequenceLease(id, deps.lease).catch(() => {});
       throw error;
     }
+    const failedAttemptIntermediates = activeAttemptIntermediates;
+    activeAttemptIntermediates = null;
+    await cleanupAttemptIntermediates(failedAttemptIntermediates);
     let persistenceError = null;
     try {
       const durableJob = id && /^[A-Za-z0-9][A-Za-z0-9_-]{2,120}$/.test(String(id))

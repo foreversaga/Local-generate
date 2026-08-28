@@ -46,9 +46,12 @@ export const SEEDVR2_DETAIL_PRESETS = [
 ] as const;
 
 export const SEEDVR2_BLENDING_METHODS = [
+    { id: "auto", label: "Auto（依遮罩自動選擇）" },
     { id: "multiband", label: "Multiband" },
+    { id: "bilateral", label: "Bilateral（保留邊緣）" },
+    { id: "content_aware", label: "Content-aware（依內容）" },
     { id: "linear", label: "Linear" },
-    { id: "gaussian", label: "Gaussian" },
+    { id: "simple", label: "Simple（像素平均）" },
 ] as const;
 
 export const SEEDVR2_TILING_STRATEGIES = [
@@ -62,6 +65,21 @@ export const SEEDVR2_DEFAULT_SAMPLING = {
     samplerName: "euler",
     scheduler: "simple",
     denoise: 1,
+} as const;
+
+export const SEEDVR2_CHUNKING_MODES = [
+    { id: "auto", label: "Auto（依可用 VRAM）" },
+    { id: "manual", label: "Manual（固定每批幀數）" },
+] as const;
+
+export const SEEDVR2_DEFAULT_VIDEO = {
+    chunkingMode: "auto",
+    batchSize: 21,
+    temporalOverlap: 1,
+    vaeTileSize: 512,
+    vaeTileOverlap: 64,
+    vaeTemporalSize: 16,
+    vaeTemporalOverlap: 4,
 } as const;
 
 export const SEEDVR2_DEFAULT_DETAIL = {
@@ -100,6 +118,7 @@ export type SeedVR2ResizeMethod = typeof SEEDVR2_RESIZE_METHODS[number]["id"];
 export type SeedVR2ColorCorrection = typeof SEEDVR2_COLOR_CORRECTIONS[number]["id"];
 export type SeedVR2SamplerName = typeof SEEDVR2_SAMPLERS[number]["id"];
 export type SeedVR2Scheduler = typeof SEEDVR2_SCHEDULERS[number]["id"];
+export type SeedVR2ChunkingMode = typeof SEEDVR2_CHUNKING_MODES[number]["id"];
 export type SeedVR2DetailPreset = typeof SEEDVR2_DETAIL_PRESETS[number]["id"];
 export type SeedVR2BlendingMethod = typeof SEEDVR2_BLENDING_METHODS[number]["id"];
 export type SeedVR2TilingStrategy = typeof SEEDVR2_TILING_STRATEGIES[number]["id"];
@@ -114,6 +133,13 @@ export type SeedVR2Settings = {
     samplerName?: SeedVR2SamplerName;
     scheduler?: SeedVR2Scheduler;
     denoise?: number;
+    chunkingMode?: SeedVR2ChunkingMode;
+    batchSize?: number;
+    temporalOverlap?: number;
+    vaeTileSize?: number;
+    vaeTileOverlap?: number;
+    vaeTemporalSize?: number;
+    vaeTemporalOverlap?: number;
     detailPreset?: SeedVR2DetailPreset;
     inputNoiseScale?: number;
     latentNoiseScale?: number;
@@ -177,6 +203,13 @@ export type UpscaleJob = {
     samplerName?: SeedVR2SamplerName;
     scheduler?: SeedVR2Scheduler;
     denoise?: number;
+    chunkingMode?: SeedVR2ChunkingMode;
+    batchSize?: number;
+    temporalOverlap?: number;
+    vaeTileSize?: number;
+    vaeTileOverlap?: number;
+    vaeTemporalSize?: number;
+    vaeTemporalOverlap?: number;
     detailPreset?: SeedVR2DetailPreset;
     inputNoiseScale?: number;
     latentNoiseScale?: number;

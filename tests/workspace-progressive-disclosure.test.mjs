@@ -24,6 +24,10 @@ test("jobs workspace keeps filters and technical details out of the default view
   assert.match(detail, /<summary>技術資訊<\/summary>/);
   assert.match(detail, /ComfyUI Node/);
   assert.match(detail, /預估總時間/);
+  assert.match(detail, /aria-label="影片生成細項"/);
+  assert.match(detail, /採樣進度/);
+  assert.match(detail, /ComfyUI 連線/);
+  assert.match(detail, /進度來源/);
   assert.doesNotMatch(detail, /Edit parameters and retry/);
   assert.doesNotMatch(detail, /RETRY_PROFILES/);
 });

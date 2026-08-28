@@ -116,7 +116,7 @@ export function parseSeedVR2DetailDraft(
         tileUpscaleResolution: parseInteger(draft.tileUpscaleResolution, 512, 4096, messages.tileUpscaleResolution, 64),
         blendingMethod: draft.blendingMethod,
         antiAliasingStrength: parseDecimal(draft.antiAliasingStrength, 0, 1, messages.antiAliasingStrength),
-        maskBlur: parseDecimal(draft.maskBlur, 0, 64, messages.maskBlur),
+        maskBlur: parseInteger(draft.maskBlur, 0, 64, messages.maskBlur),
         tilingStrategy: draft.tilingStrategy,
     };
 }

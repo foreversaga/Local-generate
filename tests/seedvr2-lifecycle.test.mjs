@@ -8,7 +8,7 @@ import test from "node:test";
 import {
   SEEDVR2_PROFILE,
   SEEDVR2_REQUIRED_NODES,
-  SEEDVR2_DETAIL_REQUIRED_NODES,
+  SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES,
   SEEDVR2_DETAIL_NODE,
   SEEDVR2_DETAIL_DIT_LOADER_NODE,
   SEEDVR2_DETAIL_VAE_LOADER_NODE,
@@ -43,14 +43,15 @@ function objectInfo() {
 }
 
 function detailObjectInfo() {
-  const info = Object.fromEntries(SEEDVR2_DETAIL_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
+  const info = Object.fromEntries(SEEDVR2_DETAIL_IMAGE_REQUIRED_NODES.map((name) => [name, { input: { required: {} } }]));
   const inputs = Object.fromEntries(SEEDVR2_DETAIL_NODE_INPUTS.map((name) => [
     name,
     SEEDVR2_DETAIL_NODE_INPUT_TYPES[name] === "COMBO" ? [["placeholder"], {}] : [SEEDVR2_DETAIL_NODE_INPUT_TYPES[name], {}],
   ]));
   inputs.color_correction = [["wavelet", "lab", "adain", "none"], {}];
-  inputs.blending_method = [["multiband", "linear", "gaussian"], {}];
+  inputs.blending_method = [["auto", "multiband", "bilateral", "content_aware", "linear", "simple"], {}];
   inputs.tiling_strategy = [["Chess", "Linear"], {}];
+  inputs.resolution_target = [["longest", "shortest"], {}];
   info[SEEDVR2_DETAIL_NODE].input.required = inputs;
   info[SEEDVR2_DETAIL_DIT_LOADER_NODE].input.required.model = [[SEEDVR2_DETAIL_FP16_UNET_NAME], {}];
   info[SEEDVR2_DETAIL_VAE_LOADER_NODE].input.required.model = [[SEEDVR2_DETAIL_VAE_NAME], {}];
@@ -169,20 +170,27 @@ test("SeedVR2 serializes concurrent updates to the same SQLite record", async (t
   assert.equal(saved.stage, "Sampling");
 });
 
-async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job", webSocketImpl = null, onPrompt = null, objectInfoPayload = objectInfo() } = {}) {
+async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job", webSocketImpl = null, onPrompt = null, objectInfoPayload = objectInfo(), sourceKind = "video" } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "h3-seedvr2-lifecycle-"));
   const inputRoot = path.join(root, "input");
   const outputRoot = path.join(root, "output");
   const store = createSeedVR2JobStore({ root: path.join(root, "jobs") });
   await fs.mkdir(path.join(root, "models", "diffusion_models"), { recursive: true });
   await fs.mkdir(path.join(root, "models", "vae"), { recursive: true });
+  await fs.mkdir(path.join(root, "models", "SEEDVR2"), { recursive: true });
   await fs.mkdir(inputRoot, { recursive: true });
   await fs.mkdir(outputRoot, { recursive: true });
   await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_UNET_NAME), "model");
   await fs.writeFile(path.join(root, "models", "diffusion_models", SEEDVR2_FP16_UNET_NAME), "model");
   await fs.writeFile(path.join(root, "models", "vae", SEEDVR2_VAE_NAME), "vae");
-  await fs.writeFile(path.join(inputRoot, "source.mp4"), "source");
-  await fs.writeFile(path.join(outputRoot, "seedvr2-result.mp4"), "result");
+  await fs.writeFile(path.join(root, "models", "SEEDVR2", SEEDVR2_DETAIL_FP16_UNET_NAME), "model");
+  await fs.writeFile(path.join(root, "models", "SEEDVR2", SEEDVR2_DETAIL_VAE_NAME), "vae");
+  const sourceName = sourceKind === "image" ? "source.png" : "source.mp4";
+  const outputName = sourceKind === "image" ? "seedvr2-result.png" : "seedvr2-result.mp4";
+  await fs.writeFile(path.join(inputRoot, sourceName), sourceKind === "image"
+    ? Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
+    : "source");
+  await fs.writeFile(path.join(outputRoot, outputName), "result");
 
   const state = {
     historyMode,
@@ -191,6 +199,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
     interruptCount: 0,
     prompts: [],
     assets: [],
+    sourceKind,
   };
   const fetchImpl = async (url, init = {}) => {
     if (url.endsWith("/system_stats")) return response({ devices: [] });
@@ -212,7 +221,9 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
       const mode = typeof state.historyMode === "function" ? state.historyMode(state.promptCount, promptId) : state.historyMode;
       if (mode === "pending") return response({ [promptId]: { status: { status_str: "running" } } });
       if (mode === "failed") return response({ [promptId]: { status: { status_str: "error", messages: [["execution_error", { exception_message: "fake failure" }]] } } });
-      return response({ [promptId]: { status: { completed: true }, outputs: { "15": { videos: [{ filename: "seedvr2-result.mp4", subfolder: "", type: "output" }] } } } });
+      const key = state.sourceKind === "image" ? "images" : "videos";
+      const filename = state.sourceKind === "image" ? "seedvr2-result.png" : "seedvr2-result.mp4";
+      return response({ [promptId]: { status: { completed: true }, outputs: { "15": { [key]: [{ filename, subfolder: "", type: "output" }] } } } });
     }
     throw new Error(`unexpected endpoint ${url}`);
   };
@@ -229,7 +240,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
     pollIntervalMs: 1,
     toAsset: async (assetRoot, name) => {
       state.assets.push({ root: assetRoot, name });
-      return { root: assetRoot, name, kind: "video", url: `/media?root=${assetRoot}&name=${encodeURIComponent(name)}` };
+      return { root: assetRoot, name, kind: state.sourceKind, url: `/media?root=${assetRoot}&name=${encodeURIComponent(name)}` };
     },
   });
   await controller.ready();
@@ -239,7 +250,7 @@ async function fixture({ historyMode = "success", idFactory = () => "seedvr2-job
 test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, and provenance", async (t) => {
   const value = await fixture();
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2.5, profile: SEEDVR2_PROFILE, seed: 42, resizeMethod: "bicubic", colorCorrection: "lab", steps: 6, cfg: 2.25, samplerName: "dpmpp_2m", scheduler: "karras", denoise: 0.7 });
+  const queued = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 2.5, profile: SEEDVR2_PROFILE, seed: 42, resizeMethod: "bicubic", colorCorrection: "lab", steps: 6, cfg: 2.25, samplerName: "dpmpp_2m", scheduler: "karras", denoise: 0.7, chunkingMode: "manual", batchSize: 13, temporalOverlap: 2, vaeTileSize: 1024, vaeTileOverlap: 96, vaeTemporalSize: 32, vaeTemporalOverlap: 8 });
   const completed = await waitFor(() => value.store.read(queued.id), (job) => job?.status === "completed");
 
   assert.equal(completed.source.name, "source.mp4");
@@ -254,6 +265,13 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(completed.samplerName, "dpmpp_2m");
   assert.equal(completed.scheduler, "karras");
   assert.equal(completed.denoise, 0.7);
+  assert.equal(completed.chunkingMode, "manual");
+  assert.equal(completed.batchSize, 13);
+  assert.equal(completed.temporalOverlap, 2);
+  assert.equal(completed.vaeTileSize, 1024);
+  assert.equal(completed.vaeTileOverlap, 96);
+  assert.equal(completed.vaeTemporalSize, 32);
+  assert.equal(completed.vaeTemporalOverlap, 8);
   assert.equal(completed.prompt["3"].inputs["resize_type.multiplier"], 2.5);
   assert.equal(completed.prompt["3"].inputs.scale_method, "bicubic");
   assert.equal(completed.prompt["13"].inputs.color_correction_method, "lab");
@@ -263,6 +281,14 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(completed.prompt["10"].inputs.sampler_name, "dpmpp_2m");
   assert.equal(completed.prompt["10"].inputs.scheduler, "karras");
   assert.equal(completed.prompt["10"].inputs.denoise, 0.7);
+  assert.equal(completed.prompt["6"].inputs.tile_size, 1024);
+  assert.equal(completed.prompt["6"].inputs.overlap, 96);
+  assert.equal(completed.prompt["6"].inputs.temporal_size, 32);
+  assert.equal(completed.prompt["6"].inputs.temporal_overlap, 8);
+  assert.equal(completed.prompt["9"].inputs.chunking_mode, "manual");
+  assert.equal(completed.prompt["9"].inputs["chunking_mode.frames_per_chunk"], 13);
+  assert.equal(completed.prompt["9"].inputs.temporal_overlap, 2);
+  assert.equal(completed.prompt["12"].inputs.tile_size, 1024);
   assert.equal(completed.stage, "Completed");
   assert.equal(completed.progress, 100);
   assert.equal(completed.output.name, "seedvr2-result.mp4");
@@ -275,6 +301,13 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
   assert.equal(completed.provenance.request.samplerName, "dpmpp_2m");
   assert.equal(completed.provenance.request.scheduler, "karras");
   assert.equal(completed.provenance.request.denoise, 0.7);
+  assert.equal(completed.provenance.request.chunkingMode, "manual");
+  assert.equal(completed.provenance.request.batchSize, 13);
+  assert.equal(completed.provenance.request.temporalOverlap, 2);
+  assert.equal(completed.provenance.request.vaeTileSize, 1024);
+  assert.equal(completed.provenance.request.vaeTileOverlap, 96);
+  assert.equal(completed.provenance.request.vaeTemporalSize, 32);
+  assert.equal(completed.provenance.request.vaeTemporalOverlap, 8);
   assert.equal(completed.provenance.attempt, 1);
   assert.equal(completed.attempt, 1);
   assert.ok(completed.createdAt && completed.updatedAt && completed.completedAt);
@@ -290,12 +323,13 @@ test("SeedVR2 persistence keeps request, prompt, progress, output, timestamps, a
 test("detail settings survive persistence, public output, failure, and retry reconstruction", async (t) => {
   const value = await fixture({
     objectInfoPayload: detailObjectInfo(),
+    sourceKind: "image",
     historyMode: (promptCount) => promptCount === 1 ? "failed" : "success",
     idFactory: (() => { const ids = ["detail-failed", "detail-retry"]; return () => ids.shift(); })(),
   });
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
   const settings = {
-    sourceName: "source.mp4",
+    sourceName: "source.png",
     sourceRoot: "input",
     profile: SEEDVR2_FP16_PROFILE,
     seed: 88,
@@ -314,9 +348,9 @@ test("detail settings survive persistence, public output, failure, and retry rec
     tileHeight: 1024,
     tilePadding: 96,
     tileUpscaleResolution: 2560,
-    blendingMethod: "gaussian",
+    blendingMethod: "content_aware",
     antiAliasingStrength: 0.2,
-    maskBlur: 2.5,
+    maskBlur: 2,
     tilingStrategy: "grid",
   };
   const queued = await value.controller.enqueue(settings);
@@ -328,9 +362,9 @@ test("detail settings survive persistence, public output, failure, and retry rec
     assert.deepEqual(failed[key], settings[key], key);
     assert.deepEqual(failed.provenance.request[key], settings[key], `provenance.${key}`);
   }
-  assert.equal(failed.prompt["5"].class_type, SEEDVR2_DETAIL_NODE);
-  assert.equal(failed.prompt["5"].inputs.input_noise_scale, 0.035);
-  assert.equal(failed.prompt["5"].inputs.tile_upscale_resolution, 2560);
+  assert.equal(failed.prompt["4"].class_type, SEEDVR2_DETAIL_NODE);
+  assert.equal(failed.prompt["4"].inputs.input_noise_scale, 0.035);
+  assert.equal(failed.prompt["4"].inputs.tile_upscale_resolution, 2560);
 
   const result = apiResponse();
   await value.controller.handleRoute({ method: "POST", url: `/api/upscale/jobs/${failed.id}/retry` }, result);
@@ -344,8 +378,8 @@ test("detail settings survive persistence, public output, failure, and retry rec
     assert.deepEqual(retried.provenance.request[key], settings[key], `retry.provenance.${key}`);
   }
   const completed = await waitFor(() => value.store.read(retried.id), (job) => job?.status === "completed");
-  assert.equal(completed.prompt["5"].inputs.latent_noise_scale, 0.012);
-  assert.equal(completed.prompt["5"].inputs.blending_method, "gaussian");
+  assert.equal(completed.prompt["4"].inputs.latent_noise_scale, 0.012);
+  assert.equal(completed.prompt["4"].inputs.blending_method, "content_aware");
 });
 
 test("SeedVR2 prefers matching ComfyUI WebSocket progress and still reads the history artifact", async (t) => {
@@ -540,7 +574,7 @@ test("active cancel interrupts ComfyUI, prevents output registration, and persis
 test("retry creates a new attempt while preserving SeedVR2 provenance", async (t) => {
   const value = await fixture({ historyMode: (promptCount) => promptCount === 1 ? "failed" : "success", idFactory: (() => { const ids = ["failed-job", "retry-job"]; return () => ids.shift(); })() });
   t.after(async () => { value.store.close(); await fs.rm(value.root, { recursive: true, force: true }); });
-  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 3, profile: SEEDVR2_PROFILE, seed: 77, resizeMethod: "area", colorCorrection: "none", steps: 4, cfg: 1.75, samplerName: "heun", scheduler: "normal", denoise: 0.8 });
+  const failed = await value.controller.enqueue({ sourceName: "source.mp4", sourceRoot: "input", scale: 3, profile: SEEDVR2_PROFILE, seed: 77, resizeMethod: "area", colorCorrection: "none", steps: 4, cfg: 1.75, samplerName: "heun", scheduler: "normal", denoise: 0.8, chunkingMode: "manual", batchSize: 9, temporalOverlap: 0, vaeTileSize: 256, vaeTileOverlap: 32, vaeTemporalSize: 20, vaeTemporalOverlap: 4 });
   await waitFor(() => value.store.read(failed.id), (job) => job?.status === "failed");
   const result = apiResponse();
   await value.controller.handleRoute({ method: "POST", url: `/api/upscale/jobs/${failed.id}/retry` }, result);
@@ -568,9 +602,18 @@ test("retry creates a new attempt while preserving SeedVR2 provenance", async (t
   assert.equal(retried.samplerName, "heun");
   assert.equal(retried.scheduler, "normal");
   assert.equal(retried.denoise, 0.8);
+  assert.equal(retried.chunkingMode, "manual");
+  assert.equal(retried.batchSize, 9);
+  assert.equal(retried.temporalOverlap, 0);
+  assert.equal(retried.vaeTileSize, 256);
+  assert.equal(retried.vaeTileOverlap, 32);
+  assert.equal(retried.vaeTemporalSize, 20);
+  assert.equal(retried.vaeTemporalOverlap, 4);
   assert.equal(retried.seed, 77);
   const completed = await waitFor(() => value.store.read(retried.id), (job) => job?.status === "completed");
   assert.equal(completed.attempt, 2);
+  assert.equal(completed.prompt["9"].inputs["chunking_mode.frames_per_chunk"], 9);
+  assert.equal(completed.prompt["6"].inputs.tile_size, 256);
   assert.equal((await value.store.read(failed.id)).attempt, 1);
 });
 
@@ -592,6 +635,16 @@ test("legacy SeedVR2 records backfill official advanced sampling defaults", () =
   assert.equal(job.provenance.request.samplerName, "euler");
   assert.equal(job.provenance.request.scheduler, "simple");
   assert.equal(job.provenance.request.denoise, 1);
+  assert.equal(job.chunkingMode, "auto");
+  assert.equal(job.batchSize, 21);
+  assert.equal(job.temporalOverlap, 1);
+  assert.equal(job.vaeTileSize, 512);
+  assert.equal(job.vaeTileOverlap, 64);
+  assert.equal(job.vaeTemporalSize, 16);
+  assert.equal(job.vaeTemporalOverlap, 4);
+  assert.equal(job.provenance.request.chunkingMode, "auto");
+  assert.equal(job.provenance.request.batchSize, 21);
+  assert.equal(job.provenance.request.temporalOverlap, 1);
   for (const [key, value] of Object.entries({
     detailPreset: "default",
     inputNoiseScale: 0,

@@ -34,8 +34,13 @@ export const SINGLE_VIDEO_PROFILE_MODELS = Object.freeze({
 });
 
 function comboValues(objectInfo, nodeName, inputName) {
-  const value = objectInfo?.[nodeName]?.input?.required?.[inputName]?.[0];
-  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+  const definition = objectInfo?.[nodeName]?.input?.required?.[inputName];
+  const options = Array.isArray(definition?.[1]?.options)
+    ? definition[1].options
+    : Array.isArray(definition?.[0])
+      ? definition[0]
+      : [];
+  return options.map((item) => String(item));
 }
 
 function comboValuesAny(objectInfo, nodeName, inputNames) {

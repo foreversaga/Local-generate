@@ -38,3 +38,20 @@ test("prepares a silent H.264 clip with explicit trim and scale arguments", asyn
   assert.ok(calls[0].args.includes("scale=480:270"));
   assert.equal(result.plan.duration, 4.5);
 });
+
+test("removes a partial reference clip when preprocessing fails", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ref2v-clip-failure-"));
+  const inputPath = path.join(root, "source.mp4");
+  await fs.writeFile(inputPath, "source");
+  await assert.rejects(() => prepareReferenceVideoClip({
+    inputPath,
+    outputRoot: root,
+    end: 2,
+    tools: { executables: { ffmpeg: "ffmpeg-test" }, probe: async () => ({ format: { duration: 10 }, video: { width: 1280, height: 720 } }) },
+    run: async (_executable, args) => {
+      await fs.writeFile(args.at(-1), "partial");
+      return { exitCode: 7, stdout: "", stderr: "failed" };
+    },
+  }), { code: "REFERENCE_VIDEO_PREPROCESS_FAILED" });
+  assert.deepEqual(await fs.readdir(path.join(root, "h3-studio-ref2v-clips")), []);
+});
