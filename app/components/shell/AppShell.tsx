@@ -37,6 +37,10 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className={styles.shell}>
+      <a className={styles.skipLink} href="#main-content">
+        {locale === "zh-TW" ? "跳到主要內容" : "Skip to main content"}
+      </a>
+
       <aside className={styles.desktopSidebar} aria-label={t("shell.primaryNav")}>
         <a className={styles.brand} href="/app/create">
           <span className={styles.brandMark} aria-hidden="true">
@@ -83,7 +87,7 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </header>
 
-        <main className={styles.content}>{children}</main>
+        <main id="main-content" className={styles.content} tabIndex={-1}>{children}</main>
       </div>
 
       <nav className={styles.mobileNav} aria-label={t("shell.primaryNav")}>
