@@ -8,7 +8,9 @@
 .grid>span,.grid>div{display:grid;gap:3px;border:1px solid var(--line-soft);border-radius:8px;background:var(--bg);padding:8px 9px}
 .grid small,.grid span{color:var(--muted-2);font-size:9px;text-transform:uppercase;letter-spacing:.05em}
 .grid strong{overflow-wrap:anywhere;font-size:11px}
+.panel[aria-label="影片生成細項"]>div:nth-child(n+4):nth-child(-n+7){border-color:transparent;background:transparent;padding-block:6px;opacity:.68}
+.panel[aria-label="影片生成細項"]>div:nth-child(n+4):nth-child(-n+7) strong{color:var(--muted);font-size:10px;font-weight:650}
 .track{height:7px;overflow:hidden;border-radius:999px;background:var(--line-soft)}
 .track span{display:block;height:100%;border-radius:inherit;background:var(--lime);transition:width 180ms ease}
-@media(max-width:560px){.grid{grid-template-columns:1fr}}
+@media(max-width:560px){.grid{grid-template-columns:1fr}.panel[aria-label="影片生成細項"]>div:nth-child(n+4):nth-child(-n+7){padding-block:5px}}
 @media(prefers-reduced-motion:reduce){.track span{transition:none}}
