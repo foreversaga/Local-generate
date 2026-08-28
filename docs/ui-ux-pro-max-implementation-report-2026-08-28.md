@@ -23,10 +23,11 @@
 ### Single Create
 
 - 將原本多個選填/技術開關收斂成單一 `專業設定` switch。
-- 基礎模式優先保留素材、描述、H3 prompt、片段長度、輸出名稱、validation 與 Generate CTA。
-- 模型 profile、ALPHA-T1、LoRA、解析度、steps、seed、batch、prompt provider/model、camera planning、reference-video preprocessing 與完整技術摘要移到專業層。
+- 基礎模式優先保留素材、描述、H3 prompt、片段長度、validation 與 Generate CTA。
+- 模型 profile、ALPHA-T1、LoRA、解析度、steps、seed、batch、輸出檔名、prompt provider/model、camera planning、reference-video preprocessing、draft/runtime controls 與完整技術摘要移到專業層。
 - 草稿包含非預設專業值時自動展開專業設定。
 - 隱藏的專業欄位發生 validation error 時，自動展開以避免錯誤不可見。
+- 新增的 Basic / Professional 說明支援中英文 locale。
 - 保留所有既有 mode、profile 與生成 request contract。
 - 更新 progressive disclosure tests。
 
