@@ -137,7 +137,7 @@
 .root[data-professional="false"] :global(#single-setup-section > div + div > div:first-child),
 .root[data-professional="false"] :global(#single-setup-section > div + div > div:nth-of-type(2)),
 .root[data-professional="false"] :global(#single-source-fields > div:has(#single-reference-video-start)),
-.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> div[role="group"][aria-label="提示詞生成來源"])),
+.root[data-professional="false"] :global(div[role="group"][aria-label="提示詞生成來源"]),
 .root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > label:has(select)),
 .root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> strong)),
 .root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(select)),
