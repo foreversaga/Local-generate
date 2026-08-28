@@ -160,7 +160,7 @@ function JobRow({ job }: { job: UnifiedJob }) {
       ? t("jobs.eta", { duration: formatDuration(Number(job.etaMs), t) })
       : t("jobs.etaEstimating");
   const active = job.status === "queued" || job.status === "running";
-  const nextAction = jobActionCopy(job.status, locale);
+  const actionLabel = jobActionLabel(job.status, locale);
 
   return (
     <article className={styles.jobCard} data-status={job.status}>
@@ -183,11 +183,11 @@ function JobRow({ job }: { job: UnifiedJob }) {
         {job.error && <p className={styles.jobError}>{job.error}</p>}
       </div>
       <a
-        className={`${styles.detailLink} ${nextAction.primary ? styles.detailLinkPrimary : ""}`}
+        className={styles.detailLink}
         href={`/app/jobs/${encodeURIComponent(job.id)}?source=${encodeURIComponent(job.source)}`}
-        aria-label={`${nextAction.label}: ${job.title}`}
+        aria-label={`${actionLabel}: ${job.title}`}
       >
-        {nextAction.label} <span aria-hidden="true">→</span>
+        {actionLabel} <span aria-hidden="true">→</span>
       </a>
     </article>
   );
@@ -198,13 +198,13 @@ export function StatusBadge({ status, source }: { status: string; source?: strin
   return <span className={`${styles.badge} ${styles[`badge_${status}`] || ""}`}>{jobStatusLabel(status, source, locale)}</span>;
 }
 
-function jobActionCopy(status: string, locale: string) {
+function jobActionLabel(status: string, locale: string) {
   const zh = locale.toLowerCase().startsWith("zh");
-  if (status === "complete") return { label: zh ? "開啟結果" : "Open result", primary: true };
-  if (status === "partial") return { label: zh ? "檢查可用結果" : "Review available output", primary: true };
-  if (status === "error") return { label: zh ? "檢查錯誤" : "Review error", primary: true };
-  if (status === "queued" || status === "running") return { label: zh ? "查看進度" : "View progress", primary: true };
-  return { label: zh ? "查看詳情" : "View details", primary: false };
+  if (status === "complete") return zh ? "開啟結果" : "Open result";
+  if (status === "partial") return zh ? "檢查可用結果" : "Review available output";
+  if (status === "error") return zh ? "檢查錯誤" : "Review error";
+  if (status === "queued" || status === "running") return zh ? "查看進度" : "View progress";
+  return zh ? "查看詳情" : "View details";
 }
 
 function workspaceCopy(locale: string) {
