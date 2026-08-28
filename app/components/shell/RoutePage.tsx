@@ -26,6 +26,7 @@ type RouteCardProps = {
   href: string;
   actionLabel?: TranslationKey;
   actionText?: string;
+  headingLevel?: 2 | 3;
 };
 
 function resolveCopy(
@@ -75,17 +76,19 @@ export function RouteCard({
   href,
   actionLabel = "action.openTool",
   actionText,
+  headingLevel = 2,
 }: RouteCardProps) {
   const { t } = useI18n();
   const resolvedTitle = resolveCopy(t, title, titleText);
   const resolvedDescription = resolveCopy(t, description, descriptionText);
   const resolvedAction = actionText?.trim() || t(actionLabel);
+  const CardHeading = headingLevel === 3 ? "h3" : "h2";
 
   return (
     <a className={styles.card} href={href}>
       <div>
         <span className={styles.cardCode}>{code}</span>
-        <h2 className={styles.cardTitle}>{resolvedTitle}</h2>
+        <CardHeading className={styles.cardTitle}>{resolvedTitle}</CardHeading>
         <p className={styles.cardDescription}>{resolvedDescription}</p>
       </div>
       <span className={styles.cardAction}>
