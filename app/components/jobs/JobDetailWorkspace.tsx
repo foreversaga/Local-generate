@@ -160,6 +160,9 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
   const upscaleTileProgress = isUpscaleTileProgress
     ? Math.min(100, Math.max(0, Math.round(nativeCurrent / nativeMaximum * 100)))
     : 0;
+  const comfyQueueText = Number.isFinite(job.comfyQueueRemaining)
+    ? Number(job.comfyQueueRemaining) === 0 ? "目前沒有其他等待工作" : `${job.comfyQueueRemaining} 個工作等待中`
+    : "尚未回報";
 
   return (
     <div className={styles.detailLayout}>
@@ -195,6 +198,17 @@ export function JobDetailWorkspace({ jobId, sourceHint }: { jobId: string; sourc
             </div>
           )}
         </section>
+
+        {job.source === "video" && <section className={`${progressStyles.panel} ${progressStyles.grid}`} aria-label="影片生成細項">
+          <div><span>生成模式</span><strong>{videoModeLabel(job.mode)}</strong></div>
+          <div><span>目前階段</span><strong>{job.stage || "準備中"}</strong></div>
+          <div><span>採樣進度</span><strong>{hasNativeProgress ? `${nativeCurrent} / ${nativeMaximum} steps` : "等待 ComfyUI 回報"}</strong></div>
+          <div><span>目前節點</span><strong>{job.comfyNodeTitle || job.comfyNode || "尚未開始"}</strong></div>
+          <div><span>ComfyUI 連線</span><strong>{connectionStateLabel(job.connectionState)}</strong></div>
+          <div><span>ComfyUI 佇列</span><strong>{comfyQueueText}</strong></div>
+          <div><span>進度來源</span><strong>{progressSourceLabel(job.progressSource)}</strong></div>
+          <div><span>預估剩餘</span><strong>{active ? etaText || "計算中" : "—"}</strong></div>
+        </section>}
 
         {job.source === "long" && longTotalSegments > 0 && <section className={`${progressStyles.panel} ${progressStyles.grid}`} aria-label="長影片分段進度">
           <div><span>目前段落</span><strong>{longActiveIndex >= 0 ? `第 ${longActiveIndex + 1} / ${longTotalSegments} 段` : `${job.segments.filter((segment: { status?: string }) => segment.status === "completed").length} / ${longTotalSegments} 段完成`}</strong></div>
@@ -326,4 +340,28 @@ function formatWorkDuration(ms: number) {
 function formatDate(value: string, locale: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale);
+}
+
+function videoModeLabel(mode: string) {
+  return ({
+    t2v: "T2V · 文字生片",
+    i2v: "I2V · 參考圖生片",
+    fl2v: "FL2V · 首尾幀生片",
+    l2v: "L2V · 尾幀生片",
+    ref2v: "Ref2V · 多參考生片",
+    ref2v_motion: "Ref2V Motion · 角色動作",
+    replace: "Wan Animate · 影片替換",
+  } as Record<string, string>)[mode] || mode || "單影片生成";
+}
+
+function connectionStateLabel(state: string) {
+  return ({
+    queued: "已排入 ComfyUI 佇列",
+    connected: "已連線，收到即時回報",
+    polling: "輪詢 ComfyUI 狀態",
+  } as Record<string, string>)[state] || state || "等待連線";
+}
+
+function progressSourceLabel(source: string) {
+  return source === "native" ? "ComfyUI 原生步數" : source === "estimated" ? "階段估算" : source || "尚未回報";
 }

@@ -19,8 +19,16 @@ const DEFAULT_CFG = 1;
 const DEFAULT_SAMPLER_NAME = "euler";
 const DEFAULT_SCHEDULER = "simple";
 const DEFAULT_DENOISE = 1;
+const CHUNKING_MODES = new Set(["auto", "manual"]);
+const DEFAULT_CHUNKING_MODE = "auto";
+const DEFAULT_BATCH_SIZE = 21;
+const DEFAULT_TEMPORAL_OVERLAP = 1;
+const DEFAULT_VAE_TILE_SIZE = 512;
+const DEFAULT_VAE_TILE_OVERLAP = 64;
+const DEFAULT_VAE_TEMPORAL_SIZE = 16;
+const DEFAULT_VAE_TEMPORAL_OVERLAP = 4;
 const DETAIL_PRESETS = new Set(["default", "skin_detail"]);
-const BLENDING_METHODS = new Set(["multiband", "linear", "gaussian"]);
+const BLENDING_METHODS = new Set(["auto", "multiband", "bilateral", "content_aware", "linear", "simple"]);
 const TILING_STRATEGIES = new Set(["chess", "grid"]);
 const DEFAULT_DETAIL = Object.freeze({
   detailPreset: "default",
@@ -119,6 +127,13 @@ function safeSteps(value) {
   return steps >= 1 && steps <= 20 ? steps : DEFAULT_STEPS;
 }
 
+function safeBatchSize(value) {
+  const batchSize = safeInteger(value, DEFAULT_BATCH_SIZE);
+  return batchSize >= 1 && batchSize <= 16_384 && (batchSize === 1 || (batchSize - 1) % 4 === 0)
+    ? batchSize
+    : DEFAULT_BATCH_SIZE;
+}
+
 function safeRoundedNumber(value, fallback, min, max, precision = 2) {
   const numeric = safeNumber(value, fallback);
   if (numeric < min || numeric > max) return fallback;
@@ -149,8 +164,21 @@ function safeDetailSettings(input = {}, profile = DEFAULT_PROFILE) {
     tileUpscaleResolution: safeBoundedInteger(input.tileUpscaleResolution, defaults.tileUpscaleResolution, 512, 4096, 64),
     blendingMethod: safeChoice(input.blendingMethod, BLENDING_METHODS, defaults.blendingMethod),
     antiAliasingStrength: safeRoundedNumber(input.antiAliasingStrength, defaults.antiAliasingStrength, 0, 1, 3),
-    maskBlur: safeRoundedNumber(input.maskBlur, defaults.maskBlur, 0, 64, 3),
+    maskBlur: safeBoundedInteger(input.maskBlur, defaults.maskBlur, 0, 64),
     tilingStrategy: safeChoice(input.tilingStrategy, TILING_STRATEGIES, defaults.tilingStrategy),
+  };
+}
+
+function safeVideoSettings(input = {}, profile = DEFAULT_PROFILE) {
+  if (!isSeedVR2Profile(profile)) return {};
+  return {
+    chunkingMode: safeChoice(input.chunkingMode, CHUNKING_MODES, DEFAULT_CHUNKING_MODE),
+    batchSize: safeBatchSize(input.batchSize),
+    temporalOverlap: safeBoundedInteger(input.temporalOverlap, DEFAULT_TEMPORAL_OVERLAP, 0, 16_384),
+    vaeTileSize: safeBoundedInteger(input.vaeTileSize, DEFAULT_VAE_TILE_SIZE, 64, 4096, 64),
+    vaeTileOverlap: safeBoundedInteger(input.vaeTileOverlap, DEFAULT_VAE_TILE_OVERLAP, 0, 4096, 32),
+    vaeTemporalSize: safeBoundedInteger(input.vaeTemporalSize, DEFAULT_VAE_TEMPORAL_SIZE, 8, 4096, 4),
+    vaeTemporalOverlap: safeBoundedInteger(input.vaeTemporalOverlap, DEFAULT_VAE_TEMPORAL_OVERLAP, 4, 4096, 4),
   };
 }
 
@@ -210,6 +238,15 @@ function safeProvenance(value, job) {
     maskBlur: request.maskBlur ?? job.maskBlur,
     tilingStrategy: request.tilingStrategy ?? job.tilingStrategy,
   }, profile);
+  const video = safeVideoSettings({
+    chunkingMode: request.chunkingMode ?? job.chunkingMode,
+    batchSize: request.batchSize ?? job.batchSize,
+    temporalOverlap: request.temporalOverlap ?? job.temporalOverlap,
+    vaeTileSize: request.vaeTileSize ?? job.vaeTileSize,
+    vaeTileOverlap: request.vaeTileOverlap ?? job.vaeTileOverlap,
+    vaeTemporalSize: request.vaeTemporalSize ?? job.vaeTemporalSize,
+    vaeTemporalOverlap: request.vaeTemporalOverlap ?? job.vaeTemporalOverlap,
+  }, profile);
   return {
     request: {
       sourceName: safeRelative(request.sourceName || job.sourceName),
@@ -220,6 +257,7 @@ function safeProvenance(value, job) {
       resizeMethod: safeChoice(request.resizeMethod ?? job.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
       colorCorrection: safeChoice(request.colorCorrection ?? job.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
       ...sampling,
+      ...video,
       ...detail,
     },
     attempt: Math.max(1, Math.floor(safeNumber(source.attempt ?? job.attempt, 1))),
@@ -281,6 +319,15 @@ export function canonicalSeedVR2Job(input = {}) {
     maskBlur: input.maskBlur ?? input.provenance?.request?.maskBlur,
     tilingStrategy: input.tilingStrategy ?? input.provenance?.request?.tilingStrategy,
   }, profile);
+  const video = safeVideoSettings({
+    chunkingMode: input.chunkingMode ?? input.provenance?.request?.chunkingMode,
+    batchSize: input.batchSize ?? input.provenance?.request?.batchSize,
+    temporalOverlap: input.temporalOverlap ?? input.provenance?.request?.temporalOverlap,
+    vaeTileSize: input.vaeTileSize ?? input.provenance?.request?.vaeTileSize,
+    vaeTileOverlap: input.vaeTileOverlap ?? input.provenance?.request?.vaeTileOverlap,
+    vaeTemporalSize: input.vaeTemporalSize ?? input.provenance?.request?.vaeTemporalSize,
+    vaeTemporalOverlap: input.vaeTemporalOverlap ?? input.provenance?.request?.vaeTemporalOverlap,
+  }, profile);
   const job = {
     id,
     status: PERSISTED_STATUSES.has(String(input.status || "")) ? String(input.status) : "queued",
@@ -301,6 +348,7 @@ export function canonicalSeedVR2Job(input = {}) {
     resizeMethod: safeChoice(input.resizeMethod ?? input.provenance?.request?.resizeMethod, RESIZE_METHODS, DEFAULT_RESIZE_METHOD),
     colorCorrection: safeChoice(input.colorCorrection ?? input.provenance?.request?.colorCorrection, COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION),
     ...sampling,
+    ...video,
     ...detail,
     prompt: safePrompt(input.prompt),
     output: safeOutput(input.output),

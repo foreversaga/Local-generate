@@ -109,7 +109,7 @@ export function evaluateMMH3UltimateReadiness(objectInfo, {
 
 export function buildMMH3UltimatePrompt({
   sourceName,
-  filenamePrefix = "h3ultimate_upscaled",
+  filenamePrefix = "h3ultimate/h3ultimate_upscaled",
   diffusionName,
   encoderName,
   vaeName,
@@ -220,7 +220,7 @@ export function buildMMH3UltimatePrompt({
       class_type: "SaveVideo",
       inputs: {
         video: link(26),
-        filename_prefix: String(filenamePrefix || "h3ultimate_upscaled"),
+        filename_prefix: sanitizeOutputPrefix(filenamePrefix, "h3ultimate/h3ultimate_upscaled"),
         format: "mp4",
         codec: "h264",
         "codec.encoding": "re-encode",
@@ -228,4 +228,16 @@ export function buildMMH3UltimatePrompt({
       },
     },
   };
+}
+
+function sanitizeOutputPrefix(value, fallback) {
+  const parts = String(value || fallback || "h3ultimate/h3ultimate_upscaled")
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((part) => part
+      .replace(/[^A-Za-z0-9_.-]+/g, "_")
+      .replace(/^\.+/, "")
+      .slice(0, 120))
+    .filter(Boolean);
+  return parts.length ? parts.join("/") : "h3ultimate/h3ultimate_upscaled";
 }

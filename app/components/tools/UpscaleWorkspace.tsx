@@ -21,6 +21,8 @@ import {
     SEEDVR2_SAMPLERS,
     SEEDVR2_SCHEDULERS,
     SEEDVR2_DEFAULT_SAMPLING,
+    SEEDVR2_CHUNKING_MODES,
+    SEEDVR2_DEFAULT_VIDEO,
     SEEDVR2_SKIN_DETAIL_PRESET,
     upscaleAssetHref,
     UpscaleApiError,
@@ -31,6 +33,7 @@ import {
     type SeedVR2ColorCorrection,
     type SeedVR2SamplerName,
     type SeedVR2Scheduler,
+    type SeedVR2ChunkingMode,
     type SeedVR2DetailPreset,
 } from "./upscale-client";
 import { SeedVR2DetailControls } from "./SeedVR2DetailControls";
@@ -61,6 +64,13 @@ export function UpscaleWorkspace() {
     const [samplerName, setSamplerName] = useState<SeedVR2SamplerName>(SEEDVR2_DEFAULT_SAMPLING.samplerName);
     const [scheduler, setScheduler] = useState<SeedVR2Scheduler>(SEEDVR2_DEFAULT_SAMPLING.scheduler);
     const [denoise, setDenoise] = useState(String(SEEDVR2_DEFAULT_SAMPLING.denoise));
+    const [chunkingMode, setChunkingMode] = useState<SeedVR2ChunkingMode>(SEEDVR2_DEFAULT_VIDEO.chunkingMode);
+    const [batchSize, setBatchSize] = useState(String(SEEDVR2_DEFAULT_VIDEO.batchSize));
+    const [temporalOverlap, setTemporalOverlap] = useState(String(SEEDVR2_DEFAULT_VIDEO.temporalOverlap));
+    const [vaeTileSize, setVaeTileSize] = useState(String(SEEDVR2_DEFAULT_VIDEO.vaeTileSize));
+    const [vaeTileOverlap, setVaeTileOverlap] = useState(String(SEEDVR2_DEFAULT_VIDEO.vaeTileOverlap));
+    const [vaeTemporalSize, setVaeTemporalSize] = useState(String(SEEDVR2_DEFAULT_VIDEO.vaeTemporalSize));
+    const [vaeTemporalOverlap, setVaeTemporalOverlap] = useState(String(SEEDVR2_DEFAULT_VIDEO.vaeTemporalOverlap));
     const [detailDraft, setDetailDraft] = useState(createDefaultSeedVR2DetailDraft);
     const [health, setHealth] = useState<UpscaleHealth | null>(null);
     const [healthLoading, setHealthLoading] = useState(true);
@@ -70,7 +80,7 @@ export function UpscaleWorkspace() {
     const [outputAvailable, setOutputAvailable] = useState<boolean | null>(null);
     const sourceKind = source?.kind || "video";
     const isSeedVR2 = profile === "seedvr2_7b_sharp_fp16" || profile === "seedvr2_7b_sharp_nvfp4";
-    const supportsSeedVR2Detail = profile === "seedvr2_7b_sharp_fp16";
+    const supportsSeedVR2Detail = sourceKind === "image" && profile === "seedvr2_7b_sharp_fp16";
     const detailMode = supportsSeedVR2Detail && !isSeedVR2DetailDraftDefault(detailDraft);
     const activeScale = isSeedVR2 ? (scale || "—") : UPSCALE_SCALE;
     const samplingIsDefault = steps.trim() !== ""
@@ -183,6 +193,7 @@ export function UpscaleWorkspace() {
                 throw new Error("隨機種子必須是 0 到 2147483647 的整數，留空則每次隨機。");
             }
             let samplingSettings = {};
+            let videoSettings = {};
             let detailSettings = {};
             if (isSeedVR2) {
                 const parsedSteps = Number(steps);
@@ -204,6 +215,41 @@ export function UpscaleWorkspace() {
                     scheduler,
                     denoise: Math.round(parsedDenoise * 100) / 100,
                 };
+                if (sourceKind === "video") {
+                    const parsedBatchSize = Number(batchSize);
+                    const parsedTemporalOverlap = Number(temporalOverlap);
+                    const parsedVaeTileSize = Number(vaeTileSize);
+                    const parsedVaeTileOverlap = Number(vaeTileOverlap);
+                    const parsedVaeTemporalSize = Number(vaeTemporalSize);
+                    const parsedVaeTemporalOverlap = Number(vaeTemporalOverlap);
+                    if (chunkingMode === "manual" && (!Number.isSafeInteger(parsedBatchSize) || parsedBatchSize < 1 || parsedBatchSize > 16384 || (parsedBatchSize !== 1 && (parsedBatchSize - 1) % 4 !== 0))) {
+                        throw new Error("手動影片批次大小必須是 1、5、9…，且不超過 16384。");
+                    }
+                    if (!Number.isSafeInteger(parsedTemporalOverlap) || parsedTemporalOverlap < 0 || parsedTemporalOverlap > 16384) {
+                        throw new Error("時間重疊幀數必須是 0 到 16384 的整數。");
+                    }
+                    if (!Number.isSafeInteger(parsedVaeTileSize) || parsedVaeTileSize < 64 || parsedVaeTileSize > 4096 || parsedVaeTileSize % 64 !== 0) {
+                        throw new Error("VAE Tile Size 必須是 64 到 4096 之間的 64 倍數。");
+                    }
+                    if (!Number.isSafeInteger(parsedVaeTileOverlap) || parsedVaeTileOverlap < 0 || parsedVaeTileOverlap > 4096 || parsedVaeTileOverlap % 32 !== 0) {
+                        throw new Error("VAE Tile Overlap 必須是 0 到 4096 之間的 32 倍數。");
+                    }
+                    if (!Number.isSafeInteger(parsedVaeTemporalSize) || parsedVaeTemporalSize < 8 || parsedVaeTemporalSize > 4096 || parsedVaeTemporalSize % 4 !== 0) {
+                        throw new Error("VAE Temporal Size 必須是 8 到 4096 之間的 4 倍數。");
+                    }
+                    if (!Number.isSafeInteger(parsedVaeTemporalOverlap) || parsedVaeTemporalOverlap < 4 || parsedVaeTemporalOverlap > 4096 || parsedVaeTemporalOverlap % 4 !== 0) {
+                        throw new Error("VAE Temporal Overlap 必須是 4 到 4096 之間的 4 倍數。");
+                    }
+                    videoSettings = {
+                        chunkingMode,
+                        batchSize: parsedBatchSize,
+                        temporalOverlap: parsedTemporalOverlap,
+                        vaeTileSize: parsedVaeTileSize,
+                        vaeTileOverlap: parsedVaeTileOverlap,
+                        vaeTemporalSize: parsedVaeTemporalSize,
+                        vaeTemporalOverlap: parsedVaeTemporalOverlap,
+                    };
+                }
                 detailSettings = supportsSeedVR2Detail
                     ? parseSeedVR2DetailDraft(detailDraft, seedVR2Help.detail.errors)
                     : {};
@@ -214,6 +260,7 @@ export function UpscaleWorkspace() {
                 resizeMethod,
                 colorCorrection,
                 ...samplingSettings,
+                ...videoSettings,
                 ...detailSettings,
             });
             setJob(next);
@@ -497,6 +544,56 @@ export function UpscaleWorkspace() {
                                     </div>
                                 </div>
                             </details>
+                            {sourceKind === "video" && (
+                                <details className={styles.advancedSampling}>
+                                    <summary>
+                                        <span>影片／VRAM 參數</span>
+                                        <small>{chunkingMode === "auto" ? "Auto · 512 tile" : `Manual · ${batchSize} 幀`}</small>
+                                    </summary>
+                                    <div className={styles.advancedSamplingBody}>
+                                        <div className={styles.parameterGrid}>
+                                            <label className={styles.profileField}>
+                                                <span>時間分塊模式</span>
+                                                <select value={chunkingMode} onChange={(event) => setChunkingMode(event.target.value as SeedVR2ChunkingMode)} disabled={active || Boolean(busy)}>
+                                                    {SEEDVR2_CHUNKING_MODES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                                </select>
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.chunkingMode}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>每個時間分塊的批次幀數（Manual）</span>
+                                                <input type="number" min="1" max="16384" step="4" value={batchSize} onChange={(event) => setBatchSize(event.target.value)} disabled={active || Boolean(busy) || chunkingMode !== "manual"} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.batchSize}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>時間分塊重疊幀數（模型 temporal overlap）</span>
+                                                <input type="number" min="0" max="16384" step="1" value={temporalOverlap} onChange={(event) => setTemporalOverlap(event.target.value)} disabled={active || Boolean(busy)} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.temporalOverlap}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>VAE 空間 Tile 邊長（像素）</span>
+                                                <input type="number" min="64" max="4096" step="64" value={vaeTileSize} onChange={(event) => setVaeTileSize(event.target.value)} disabled={active || Boolean(busy)} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.vaeTileSize}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>VAE 空間 Tile 重疊（像素）</span>
+                                                <input type="number" min="0" max="4096" step="32" value={vaeTileOverlap} onChange={(event) => setVaeTileOverlap(event.target.value)} disabled={active || Boolean(busy)} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.vaeTileOverlap}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>VAE 時間 Tile 大小（幀）</span>
+                                                <input type="number" min="8" max="4096" step="4" value={vaeTemporalSize} onChange={(event) => setVaeTemporalSize(event.target.value)} disabled={active || Boolean(busy)} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.vaeTemporalSize}</small>
+                                            </label>
+                                            <label className={styles.profileField}>
+                                                <span>VAE 時間 Tile 重疊（幀）</span>
+                                                <input type="number" min="4" max="4096" step="4" value={vaeTemporalOverlap} onChange={(event) => setVaeTemporalOverlap(event.target.value)} disabled={active || Boolean(busy)} />
+                                                <small className={styles.fieldHelp}>{seedVR2Help.video.vaeTemporalOverlap}</small>
+                                            </label>
+                                        </div>
+                                        <p className={styles.helper}>{seedVR2Help.video.note}</p>
+                                    </div>
+                                </details>
+                            )}
                             {supportsSeedVR2Detail ? (
                                 <SeedVR2DetailControls
                                     locale={locale}
@@ -508,7 +605,9 @@ export function UpscaleWorkspace() {
                                 />
                             ) : (
                                 <p className={styles.helper} role="note">
-                                    Tiled Detail 與 Skin Detail 目前僅支援 FP16。NVFP4 使用原生快速重建；如需局部細節強化，請切換至 FP16。
+                                    {sourceKind === "video"
+                                        ? "Tiled Detail 目前只支援單張圖片；影片會使用 SeedVR2 原生批次重建。"
+                                        : "Tiled Detail 與 Skin Detail 目前僅支援 FP16。NVFP4 使用原生快速重建；如需局部細節強化，請切換至 FP16。"}
                                 </p>
                             )}
                             {detailMode && health?.detail?.available === false && (

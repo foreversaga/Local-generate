@@ -1611,9 +1611,19 @@ export function createImg2ImgController({
     const candidate = path.resolve(outputRoot, localName);
     if (!inside(outputRoot, candidate)) throw makeError("Downloaded image path is unsafe.", 500, "OUTPUT_PATH_INVALID");
     await fsApi.mkdir(path.dirname(candidate), { recursive: true });
-    await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
-    assertNotCancelled(job);
-    return typeof toAsset === "function" ? toAsset("output", localName) : { root: "output", name: localName, kind: "image" };
+    const existed = Boolean(await fsApi.lstat(candidate).catch(() => null));
+    try {
+      await fsApi.writeFile(candidate, Buffer.from(await response.arrayBuffer()));
+      assertNotCancelled(job);
+      const asset = typeof toAsset === "function" ? await toAsset("output", localName) : { root: "output", name: localName, kind: "image" };
+      return asset;
+    } catch (error) {
+      if (!existed) {
+        const stat = await fsApi.lstat(candidate).catch(() => null);
+        if (stat?.isFile() && !stat.isSymbolicLink()) await fsApi.unlink(candidate).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   function updateParentProgress(job, itemIndex, itemProgress, stage) {

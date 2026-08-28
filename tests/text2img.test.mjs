@@ -157,7 +157,7 @@ test("uses an installed Ollama model to turn a short description into a photogra
       outputRoot,
       fetchImpl,
       ollamaCoordinator,
-      preferredOllamaModel: "missing-default",
+      preferredOllamaModel: installedModel,
       storeRoot: path.join(outputRoot, "jobs"),
     });
     const result = await controller.generatePhotographicPrompt({ description: "成年女性在窗邊喝咖啡" });
@@ -183,6 +183,37 @@ test("uses an installed Ollama model to turn a short description into a photogra
   }
 });
 
+test("reports a missing explicitly selected Ollama Text2Img prompt model", async () => {
+  const outputRoot = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-missing-prompt-model-"));
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/api/tags")) return response({ models: [{ name: "another-installed-model" }] });
+    return response({}, 404);
+  };
+  try {
+    const controller = createText2ImgController({
+      comfyUrl: "http://comfy.test:8188",
+      ollamaUrl: "http://ollama.test:11434",
+      outputRoot,
+      fetchImpl,
+      ollamaCoordinator: { async generate() { throw new Error("not called"); } },
+      preferredOllamaModel: "qwen-9b-configured-tag",
+      storeRoot: path.join(outputRoot, "jobs"),
+    });
+    const status = await controller.checkPromptAssistant();
+    assert.equal(status.ready, false);
+    assert.equal(status.online, true);
+    assert.equal(status.provider, "ollama");
+    assert.equal(status.model, "qwen-9b-configured-tag");
+    assert.equal(status.reason, "OLLAMA_PROMPT_MODEL_MISSING");
+    await assert.rejects(
+      controller.generatePhotographicPrompt({ description: "成人在窗邊喝咖啡" }),
+      (error) => error.code === "OLLAMA_PROMPT_MODEL_MISSING" && /qwen-9b-configured-tag/.test(error.message),
+    );
+  } finally {
+    await rm(outputRoot, { recursive: true, force: true });
+  }
+});
+
 test("reports exact FLUX model and node readiness", () => {
   const ready = evaluateText2ImgReadiness(OBJECT_INFO);
   assert.equal(ready.ready, true);
@@ -196,6 +227,37 @@ test("reports exact FLUX model and node readiness", () => {
   missing.UNETLoader.input.required.unet_name = [["another-model.safetensors"]];
   assert.equal(evaluateText2ImgReadiness(missing).reason, "MODEL_OR_COMPANION_MISSING");
   assert.equal(evaluateText2ImgReadiness(OBJECT_INFO, { remote: true }).reason, "LOCAL_ONLY_MODEL");
+});
+
+test("local disable hides Klein 9B readiness without changing prompt support", () => {
+  const disabled = evaluateText2ImgReadiness(OBJECT_INFO, { disabled: true });
+  assert.equal(disabled.ready, false);
+  assert.equal(disabled.disabled, true);
+  assert.equal(disabled.reason, "TEXT2IMG_KLEIN_9B_DISABLED");
+  assert.deepEqual(disabled.profiles, {});
+});
+
+test("local disable rejects image POST before contacting ComfyUI", async () => {
+  const outputRoot = await mkdtemp(path.join(os.tmpdir(), "h3-text2img-disabled-"));
+  let comfyObjectInfoCalls = 0;
+  try {
+    const controller = createText2ImgController({
+      outputRoot,
+      disableKlein9B: true,
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/object_info")) comfyObjectInfoCalls += 1;
+        return response({}, 404);
+      },
+      storeRoot: path.join(outputRoot, "jobs"),
+    });
+    const result = await invokeText2ImgRoute(controller, "/api/text2img", { method: "POST", body: { prompt: "portrait" } });
+    assert.equal(result.status, 503);
+    assert.equal(result.body.code, "TEXT2IMG_KLEIN_9B_DISABLED");
+    assert.match(result.body.error, /本機未啟用/);
+    assert.equal(comfyObjectInfoCalls, 0);
+  } finally {
+    await rm(outputRoot, { recursive: true, force: true });
+  }
 });
 
 test("parses the SaveImage artifact from ComfyUI history", () => {

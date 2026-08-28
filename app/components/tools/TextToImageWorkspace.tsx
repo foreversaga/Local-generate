@@ -577,6 +577,8 @@ export function TextToImageWorkspace() {
 
   const statusText = healthError
     ? healthError
+    : health?.disabled
+      ? t("text2img.model.klein9b.disabled")
     : !health
       ? t("text2img.health.checking")
       : selectedReady
@@ -614,7 +616,7 @@ export function TextToImageWorkspace() {
           <div>
             <span className={styles.eyebrow}>{t("text2img.model.title")}</span>
             <h2>{t(selectedOption.nameKey)}</h2>
-            <p>{t(selectedOption.noteKey)}</p>
+            <p>{health?.disabled ? t("text2img.model.klein9b.disabled") : t(selectedOption.noteKey)}</p>
           </div>
         </div>
         <div className={styles.modelStatus}>
@@ -758,6 +760,7 @@ export function TextToImageWorkspace() {
                       name="image-model"
                       value={item.id}
                       checked={modelId === item.id}
+                      disabled={Boolean(health?.disabled) || isBusy}
                       onChange={() => {
                         const nextPreset = SIZE_PRESETS_BY_MODEL[item.id][0];
                         setModelId(item.id);

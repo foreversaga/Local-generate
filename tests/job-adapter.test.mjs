@@ -27,6 +27,10 @@ test("job adapter exposes only the actions backed by each source contract", () =
   assert.equal(adaptJob({ id: "vc-failed", status: "failed" }, "video-character").canRetry, false);
 });
 
+test("video jobs preserve their generation mode for progress details", () => {
+  assert.equal(adaptJob({ id: "i2v-progress", mode: "i2v", status: "running" }, "video").mode, "i2v");
+});
+
 test("video character jobs expose their persisted settings and measured progress", () => {
   const job = adaptJob({
     id: "vc-running",

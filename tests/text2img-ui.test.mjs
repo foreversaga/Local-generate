@@ -109,6 +109,9 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.doesNotMatch(workspace, /flux2-dev/);
   assert.match(workspace, /flux2-klein-9b/);
   assert.match(workspace, /text2img\.model\.klein9b\.name/);
+  assert.match(workspace, /text2img\.model\.klein9b\.disabled/);
+  assert.match(workspace, /health\?\.disabled/);
+  assert.match(workspace, /disabled=\{Boolean\(health\?\.disabled\) \|\| isBusy\}/);
   assert.doesNotMatch(workspace, /krea2-turbo/);
   assert.doesNotMatch(workspace, /text2img\.model\.krea\.name/);
   assert.doesNotMatch(workspace, /flux2-klein-4b/);
@@ -195,6 +198,7 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(dictionaries, /"text2img\.description\.copy\.failed"/);
   assert.match(dictionaries, /"text2img\.model\.dev\.name"/);
   assert.match(dictionaries, /"text2img\.model\.klein9b\.name"/);
+  assert.match(dictionaries, /"text2img\.model\.klein9b\.disabled"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.krea\.name"/);
   assert.doesNotMatch(dictionaries, /"text2img\.size\.realisticPortrait"/);
   assert.doesNotMatch(dictionaries, /"text2img\.model\.4b\.name"/);
@@ -222,9 +226,13 @@ test("exposes only FLUX.2 Klein 9B through the existing Studio text-to-image rou
   assert.match(bridge, /ORNITH_PROMPT_MODEL/);
   assert.match(bridge, /requestOrnithPrompt/);
   assert.match(bridge, /text2ImgPromptAssistantStatus/);
+  assert.match(bridge, /TEXT2IMG_OLLAMA_PROMPT_MODEL/);
+  assert.match(bridge, /TEXT2IMG_EXTERNAL_PROMPT_ASSISTANT_CONFIGURED/);
+  assert.match(bridge, /promptAssistant: TEXT2IMG_EXTERNAL_PROMPT_ASSISTANT_CONFIGURED \?/);
   assert.match(envExample, /VLLM_URL=http:\/\/100\.82\.76\.80:8003\/v1/);
   assert.match(envExample, /VLLM_PROMPT_MODEL=\/models\/Qwen3\.8-27B-UD-IQ3_XXS\.gguf/);
   assert.match(envExample, /ORNITH_URL=http:\/\/127\.0\.0\.1:8000\/v1/);
   assert.match(envExample, /ORNITH_PROMPT_MODEL=ornith-sglang/);
+  assert.match(envExample, /TEXT2IMG_OLLAMA_PROMPT_MODEL=/);
   assert.match(settings, /vllmModel: "\/models\/Qwen3\.8-27B-UD-IQ3_XXS\.gguf"/);
 });

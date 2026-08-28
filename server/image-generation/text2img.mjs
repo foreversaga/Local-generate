@@ -20,6 +20,10 @@ export const FLUX2_KLEIN_9B_TEXT_ENCODER = "qwen_3_8b_fp8mixed.safetensors";
 export const FLUX2_KLEIN_9B_VAE = "full_encoder_small_decoder.safetensors";
 export const DEFAULT_TEXT2IMG_MODEL_ID = "flux2-klein-9b";
 export const DEFAULT_TEXT2IMG_ENCODER_ID = "official";
+const TEXT2IMG_KLEIN_DISABLED_ENV = "TEXT2IMG_DISABLE_FLUX2_KLEIN_9B";
+export const TEXT2IMG_KLEIN_9B_DISABLED = /^(?:1|true|yes)$/i.test(
+  String(process.env[TEXT2IMG_KLEIN_DISABLED_ENV] || ""),
+);
 
 export const FLUX2_KLEIN_9B_LORAS = Object.freeze([
   Object.freeze({
@@ -451,7 +455,27 @@ function comboValues(nodeInfo, key) {
   return [];
 }
 
-export function evaluateText2ImgReadiness(objectInfo, { comfyUi = true, remote = false, modelId = DEFAULT_TEXT2IMG_MODEL_ID, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID } = {}) {
+export function evaluateText2ImgReadiness(objectInfo, {
+  comfyUi = true,
+  remote = false,
+  modelId = DEFAULT_TEXT2IMG_MODEL_ID,
+  encoderId = DEFAULT_TEXT2IMG_ENCODER_ID,
+  disabled = TEXT2IMG_KLEIN_9B_DISABLED,
+} = {}) {
+  if (disabled) {
+    return {
+      ready: false,
+      comfyUi: Boolean(comfyUi),
+      remote: Boolean(remote),
+      modelId: "",
+      encoderId: "",
+      nodes: {},
+      models: {},
+      profiles: {},
+      disabled: true,
+      reason: "TEXT2IMG_KLEIN_9B_DISABLED",
+    };
+  }
   const nodes = Object.fromEntries(TEXT2IMG_REQUIRED_NODES.map((name) => [name, Boolean(objectInfo?.[name])]));
   const diffusionModels = comboValues(objectInfo?.UNETLoader, "unet_name");
   const textEncoders = comboValues(objectInfo?.CLIPLoader, "clip_name");
@@ -558,6 +582,7 @@ export function createText2ImgController({
   ollamaCoordinator = null,
   preferredOllamaModel = "",
   promptAssistant = null,
+  disableKlein9B = TEXT2IMG_KLEIN_9B_DISABLED,
   fetchImpl = globalThis.fetch,
   fsApi = fs,
   now = () => new Date(),
@@ -721,7 +746,18 @@ export function createText2ImgController({
         ? payload.models.map((item) => String(item?.name || item?.model || "").trim()).filter(Boolean)
         : [];
       const preferred = String(preferredOllamaModel || "").trim();
-      const model = models.includes(preferred) ? preferred : models[0] || "";
+      if (preferred && !models.includes(preferred)) {
+        return {
+          ready: false,
+          online: true,
+          provider: "ollama",
+          models,
+          model: preferred,
+          profile: NATURE_CAMERA_PROFILE,
+          reason: "OLLAMA_PROMPT_MODEL_MISSING",
+        };
+      }
+      const model = preferred || models[0] || "";
       return {
         ready: Boolean(model),
         online: true,
@@ -749,7 +785,12 @@ export function createText2ImgController({
       : description;
     const unloadPromptModel = !promptAssistant?.generate && input.unloadPromptModel === true;
     const assistant = await checkPromptAssistant();
-    if (!assistant.ready) throw makeError("Photographic prompt model is not ready.", 503, assistant.reason || "PROMPT_MODEL_UNAVAILABLE");
+    if (!assistant.ready) {
+      if (assistant.reason === "OLLAMA_PROMPT_MODEL_MISSING") {
+        throw makeError(`Ollama Text2Img 提示詞模型 ${assistant.model} 未安裝，請設定 TEXT2IMG_OLLAMA_PROMPT_MODEL 為 /api/tags 中的模型 tag。`, 503, assistant.reason);
+      }
+      throw makeError("Photographic prompt model is not ready.", 503, assistant.reason || "PROMPT_MODEL_UNAVAILABLE");
+    }
     const requestedModel = String(input.model || "").trim();
     const model = requestedModel || assistant.model;
     if (!assistant.models.includes(model)) {
@@ -797,12 +838,19 @@ export function createText2ImgController({
   }
 
   async function checkReadiness(modelId = DEFAULT_TEXT2IMG_MODEL_ID, encoderId = DEFAULT_TEXT2IMG_ENCODER_ID) {
+    if (disableKlein9B) {
+      return evaluateText2ImgReadiness({}, { comfyUi: true, remote, modelId, encoderId, disabled: true });
+    }
     if (remote) return evaluateText2ImgReadiness({}, { comfyUi: true, remote: true, modelId, encoderId });
     try {
-      return evaluateText2ImgReadiness(await requestJson("/object_info", {}, 10_000), { comfyUi: true, remote: false, modelId, encoderId });
+      return evaluateText2ImgReadiness(await requestJson("/object_info", {}, 10_000), { comfyUi: true, remote: false, modelId, encoderId, disabled: false });
     } catch {
-      return evaluateText2ImgReadiness({}, { comfyUi: false, remote: false, modelId, encoderId });
+      return evaluateText2ImgReadiness({}, { comfyUi: false, remote: false, modelId, encoderId, disabled: false });
     }
+  }
+
+  function assertKlein9BEnabled() {
+    if (disableKlein9B) throw makeError("本機未啟用 FLUX.2 Klein 9B。", 503, "TEXT2IMG_KLEIN_9B_DISABLED");
   }
 
   async function registerArtifact(artifact) {
@@ -903,6 +951,7 @@ export function createText2ImgController({
 
   async function enqueue(input = {}) {
     await initialize();
+    assertKlein9BEnabled();
     if (remote) throw makeError("Text-to-image models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
     const request = normalizeText2ImgInput(input);
     const profile = resolveText2ImgModel(request.modelId);
@@ -1110,6 +1159,7 @@ export function createText2ImgController({
 
   async function createBatch(input = {}) {
     await initialize();
+    assertKlein9BEnabled();
     if (remote) throw makeError("Text-to-image models are installed on the local runtime only.", 400, "LOCAL_ONLY_MODEL");
     const request = normalizeText2ImgBatchInput(input);
     if (request.clientRequestId) {
@@ -1288,6 +1338,7 @@ export function createText2ImgController({
     }
     if (req.method === "POST" && pathname === "/api/text2img") {
       try {
+        assertKlein9BEnabled();
         const input = await readJson(req);
         const modelId = resolveText2ImgModel(input?.modelId).id;
         const profile = TEXT2IMG_MODEL_PROFILES[modelId];

@@ -13,6 +13,8 @@ test("SeedVR2 UI exposes validated upscale parameters and sends them to the API"
   assert.match(workspace, /SEEDVR2_SCALE_MAX/);
   assert.match(workspace, /SEEDVR2_RESIZE_METHODS/);
   assert.match(workspace, /SEEDVR2_COLOR_CORRECTIONS/);
+  assert.match(workspace, /SEEDVR2_CHUNKING_MODES/);
+  assert.match(workspace, /SEEDVR2_DEFAULT_VIDEO/);
   assert.match(workspace, /seed: parsedSeed/);
   assert.match(workspace, /setScale\(event\.target\.value\)/);
   assert.doesNotMatch(workspace, /setScale\(Number\(event\.target\.value\)\)/);
@@ -41,6 +43,23 @@ test("SeedVR2 advanced sampling UI stays collapsed and preserves string editing 
   assert.match(workspace, /samplerName,/);
   assert.match(workspace, /scheduler,/);
   assert.match(workspace, /denoise: Math\.round\(parsedDenoise \* 100\) \/ 100/);
+  assert.match(workspace, /chunkingMode,/);
+  assert.match(workspace, /batchSize: parsedBatchSize/);
+  assert.match(workspace, /temporalOverlap: parsedTemporalOverlap/);
+  assert.match(workspace, /vaeTileSize: parsedVaeTileSize/);
+  assert.match(workspace, /vaeTileOverlap: parsedVaeTileOverlap/);
+  assert.match(workspace, /vaeTemporalSize: parsedVaeTemporalSize/);
+  assert.match(workspace, /vaeTemporalOverlap: parsedVaeTemporalOverlap/);
+  assert.match(workspace, /影片／VRAM 參數/);
+  assert.match(workspace, /每個時間分塊的批次幀數（Manual）/);
+  assert.match(workspace, /時間分塊重疊幀數（模型 temporal overlap）/);
+  assert.match(workspace, /VAE 空間 Tile 邊長（像素）/);
+  assert.match(workspace, /VAE 空間 Tile 重疊（像素）/);
+  assert.match(workspace, /VAE 時間 Tile 大小（幀）/);
+  assert.match(workspace, /VAE 時間 Tile 重疊（幀）/);
+  for (const field of ["chunkingMode", "batchSize", "temporalOverlap", "vaeTileSize", "vaeTileOverlap", "vaeTemporalSize", "vaeTemporalOverlap"]) {
+    assert.match(client, new RegExp(`${field}\\?:`));
+  }
   assert.match(client, /SEEDVR2_DEFAULT_SAMPLING/);
   assert.match(client, /steps\?: number/);
   assert.match(client, /samplerName\?: SeedVR2SamplerName/);
@@ -121,7 +140,7 @@ test("SeedVR2 detail reconstruction controls expose the complete backend contrac
   assert.match(detailModel, /parseInteger\(draft\.tileWidth, 256, 2048, messages\.tileWidth, 64\)/);
   assert.match(detailModel, /parseInteger\(draft\.tileUpscaleResolution, 512, 4096, messages\.tileUpscaleResolution, 64\)/);
   assert.match(detailModel, /parseDecimal\(draft\.antiAliasingStrength, 0, 1/);
-  assert.match(detailModel, /parseDecimal\(draft\.maskBlur, 0, 64/);
+  assert.match(detailModel, /parseInteger\(draft\.maskBlur, 0, 64/);
 
   assert.match(controls, /Input Noise Scale/);
   assert.match(controls, /Latent Noise Scale/);
@@ -171,6 +190,9 @@ test("SeedVR2 controls explain what each setting and option does", async () => {
   assert.match(detailControls, /help\.blendingMethod\[value\.blendingMethod\]/);
   assert.match(detailControls, /help\.tilingStrategy\[value\.tilingStrategy\]/);
   assert.match(workspace, /seedVR2Help\.denoise/);
+  assert.match(workspace, /seedVR2Help\.video\.chunkingMode/);
+  assert.match(workspace, /seedVR2Help\.video\.vaeTileSize/);
+  assert.match(helpCopy, /Auto 會依可用 VRAM/);
   assert.match(workspace, /styles\.fieldHelp/);
   assert.match(styles, /\.fieldHelp\{/);
 
@@ -179,7 +201,7 @@ test("SeedVR2 controls explain what each setting and option does", async () => {
     "wavelet", "lab", "adain", "none",
     "euler", "euler_ancestral", "heun", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "res_multistep",
     "simple", "normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta",
-    "multiband", "linear", "gaussian", "chess", "grid",
+    "auto", "multiband", "bilateral", "content_aware", "linear", "simple", "chess", "grid",
   ]) {
     assert.match(helpCopy, new RegExp(`${option}:`));
   }
@@ -217,7 +239,7 @@ test("SeedVR2 fails closed and keeps FP16-only detail controls away from NVFP4",
     readFile(new URL("../app/components/tools/upscale-client.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(workspace, /const supportsSeedVR2Detail = profile === "seedvr2_7b_sharp_fp16"/);
+  assert.match(workspace, /const supportsSeedVR2Detail = sourceKind === "image" && profile === "seedvr2_7b_sharp_fp16"/);
   assert.match(workspace, /const detailMode = supportsSeedVR2Detail/);
   assert.match(workspace, /supportsSeedVR2Detail \? \(/);
   assert.match(workspace, /Tiled Detail 與 Skin Detail 目前僅支援 FP16/);

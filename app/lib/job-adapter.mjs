@@ -68,6 +68,7 @@ export function adaptJob(raw, source = "video") {
   return {
     id: String(raw?.id || ""),
     source,
+    mode: typeof raw?.mode === "string" ? raw.mode : "",
     status,
     rawStatus: String(raw?.status || "queued"),
     title: jobTitle(raw, source),
