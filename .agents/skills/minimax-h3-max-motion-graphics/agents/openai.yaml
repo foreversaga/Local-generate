@@ -1,0 +1,4 @@
+interface:
+  display_name: "MiniMax H3 Max Motion Graphics"
+  short_description: "Write H3 Max motion prompts with motion spines and timed transitions"
+  default_prompt: "Use $minimax-h3-max-motion-graphics to turn this idea into a MiniMax H3/H3 Max motion-graphics prompt with exact text layers, a coherent motion spine, timed passages, and seamless inherited transitions."
