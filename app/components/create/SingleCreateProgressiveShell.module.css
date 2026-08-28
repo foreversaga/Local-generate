@@ -126,43 +126,27 @@
   transform: translateX(14px);
 }
 
-/* The form jump bar duplicates the card hierarchy in this compact flow. */
+/* The jump bar duplicates the visible card hierarchy in this focused flow. */
 .root :global(nav[aria-label="Single Create sections"]) {
   display: none;
 }
 
-/* Basic mode keeps creation-oriented controls and removes technical choices. */
-.root[data-professional="false"] :global(section[aria-labelledby="script-library-title"]) {
+/* Basic mode keeps creation inputs visible and moves reusable/technical controls out of the first pass. */
+.root[data-professional="false"] :global(section[aria-labelledby="script-library-title"]),
+.root[data-professional="false"] :global(#single-prompt-section > div + div > label:last-of-type),
+.root[data-professional="false"] :global(#single-setup-section > div + div > div:first-child),
+.root[data-professional="false"] :global(#single-setup-section > div + div > div:nth-of-type(2)),
+.root[data-professional="false"] :global(#single-source-fields > div:has(#single-reference-video-start)),
+.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> div[role="group"][aria-label="提示詞生成來源"])),
+.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > label:has(select)),
+.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(> strong)),
+.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(select)),
+.root[data-professional="false"] :global(section[aria-labelledby="single-prompt-assistant-title"] > div:has(label input[aria-controls="ref2v-camera-settings-panel"])) {
   display: none;
 }
 
-.root[data-professional="false"] :global(#single-prompt-section > div + div > label:last-of-type) {
-  display: none;
-}
-
-.root[data-professional="false"] :global(#single-setup-section label:has(#single-acceleration-profile)),
-.root[data-professional="false"] :global(#single-setup-section label:has(#single-h3-lora)),
-.root[data-professional="false"] :global(#single-setup-section label:has(#single-h3-lora-strength)),
-.root[data-professional="false"] :global(#single-setup-section label:has(#single-character-lora)),
-.root[data-professional="false"] :global(#single-setup-section label:has(#single-character-lora-strength)),
-.root[data-professional="false"] :global(#single-setup-section div:has(> .field):has(#single-width)),
-.root[data-professional="false"] :global(#single-setup-section div:has(#single-steps):has(#single-seed)),
-.root[data-professional="false"] :global(#single-source-fields > div:has(#single-reference-video-start)) {
-  display: none;
-}
-
-/* Keep model/profile state mounted, but visually move it out of the basic path. */
-.root[data-professional="false"] :global(#single-setup-section > div + div > div:first-child) {
-  display: none;
-}
-
-/* The full summary is available in professional mode; basic mode focuses on blockers and CTA. */
+/* Basic review shows blockers and the primary action; the technical summary stays available in Professional. */
 .root[data-professional="false"] :global(#single-review-section > section:first-child) {
-  display: none;
-}
-
-.root[data-professional="false"] :global(#single-validation-summary .serviceState),
-.root[data-professional="false"] :global(#single-validation-summary .draftActions) {
   display: none;
 }
 
