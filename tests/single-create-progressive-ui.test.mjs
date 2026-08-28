@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("single-video Create uses progressive disclosure for optional settings", async () => {
+test("single-video Create exposes one professional-settings disclosure", async () => {
   const [page, shell, css] = await Promise.all([
     readFile(new URL("../app/(studio)/create/single/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/create/SingleCreateProgressiveShell.tsx", import.meta.url), "utf8"),
@@ -12,42 +12,39 @@ test("single-video Create uses progressive disclosure for optional settings", as
   assert.match(page, /SingleCreateProgressiveShell/);
   assert.doesNotMatch(page, /<SingleCreateForm\s*\/>/);
 
-  assert.match(shell, /negativePrompt: false/);
-  assert.match(shell, /promptSettings: false/);
-  assert.match(shell, /scriptLibrary: false/);
-  assert.match(shell, /advancedGeneration: false/);
-  assert.match(shell, /modeAdvanced: false/);
+  assert.match(shell, /const \[professional, setProfessional\] = useState\(false\)/);
   assert.match(shell, /role="switch"/);
+  assert.match(shell, /aria-checked=\{professional\}/);
+  assert.match(shell, /專業設定/);
+  assert.doesNotMatch(shell, /promptSettings: false/);
+  assert.doesNotMatch(shell, /advancedGeneration: false/);
 
   assert.match(shell, /parseSingleCreateDraft/);
-  assert.match(shell, /negativePrompt: Boolean\(draft\.negativePrompt\?\.trim\(\)\)/);
-  assert.match(shell, /advancedGeneration: hasAdvancedGenerationValues\(draft\)/);
-  assert.match(shell, /modeAdvanced: hasModeAdvancedValues\(draft\)/);
+  assert.match(shell, /hasProfessionalValues\(draft\)/);
   assert.match(shell, /\[aria-invalid='true'\]/);
+  assert.match(shell, /PROFESSIONAL_FIELD_IDS/);
 
-  assert.match(css, /data-show-negative-prompt="false"/);
-  assert.match(css, /data-show-prompt-settings="false"/);
-  assert.match(css, /data-show-script-library="false"/);
-  assert.match(css, /data-show-advanced-generation="false"/);
-  assert.match(css, /data-show-mode-advanced="false"/);
-  assert.match(css, /#single-review-section > section:first-child/);
-  assert.match(css, /#single-validation-summary > ul:not\(:has\(button\)\)/);
-  assert.doesNotMatch(css, /\bCanvas(?:Text)?\b/);
-  assert.match(css, /background:\s*var\(--panel\)/);
+  assert.match(css, /data-professional="false"/);
+  assert.match(css, /#single-setup-section/);
+  assert.match(css, /#single-source-fields/);
+  assert.match(css, /section\[aria-labelledby="script-library-title"\]/);
+  assert.doesNotMatch(css, /data-show-prompt-settings/);
+  assert.doesNotMatch(css, /data-show-advanced-generation/);
+  assert.match(css, /background:\s*linear-gradient/);
   assert.match(css, /color:\s*var\(--text\)/);
 });
 
-test("single-video advanced controls stay mounted when collapsed", async () => {
-  const css = await readFile(
-    new URL("../app/components/create/SingleCreateProgressiveShell.module.css", import.meta.url),
+test("single-video professional values automatically reopen advanced controls", async () => {
+  const shell = await readFile(
+    new URL("../app/components/create/SingleCreateProgressiveShell.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.doesNotMatch(css, /visibility:\s*collapse/i);
-  assert.match(css, /display:\s*none/);
-  assert.match(css, /#single-setup-section/);
-  assert.match(css, /section\[aria-labelledby="script-library-title"\]/);
-  assert.match(css, /section\[aria-labelledby="single-prompt-assistant-title"\]/);
+  assert.match(shell, /draft\.negativePrompt\?\.trim\(\)/);
+  assert.match(shell, /draft\.h3LoraEnabled/);
+  assert.match(shell, /Number\(draft\.steps\) !== 20/);
+  assert.match(shell, /Number\(draft\.seed\) !== 12345/);
+  assert.match(shell, /Math\.abs\(end - duration\) > 0\.001/);
 });
 
 test("single-video UI disables modes and profiles that runtime health marks unavailable", async () => {
