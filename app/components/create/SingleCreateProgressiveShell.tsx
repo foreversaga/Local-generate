@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../../i18n/I18nProvider";
 import {
   parseSingleCreateDraft,
   SINGLE_CREATE_DRAFT_STORAGE_KEY,
@@ -43,8 +44,25 @@ const PROFESSIONAL_FIELD_IDS = new Set([
 ]);
 
 export function SingleCreateProgressiveShell() {
+  const { locale } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const [professional, setProfessional] = useState(false);
+  const zh = locale.toLowerCase().startsWith("zh");
+  const copy = zh
+    ? {
+      heading: "先完成作品，再調技術參數",
+      description: "基本模式保留素材、提示詞、片段長度與檢查；模型、LoRA、解析度、Steps、Seed 與 Provider 收在專業設定。",
+      professional: "專業設定",
+      open: "已展開完整控制",
+      closed: "需要時再展開",
+    }
+    : {
+      heading: "Create first, tune technical controls when needed",
+      description: "Basic mode keeps assets, prompts, duration, and validation in focus. Models, LoRA, resolution, steps, seed, and providers live under Professional settings.",
+      professional: "Professional settings",
+      open: "Full controls expanded",
+      closed: "Expand when needed",
+    };
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -96,8 +114,8 @@ export function SingleCreateProgressiveShell() {
         <div className={styles.experienceCopy}>
           <span className={styles.eyebrow}>SINGLE CREATE</span>
           <div>
-            <strong id="single-experience-heading">先完成作品，再調技術參數</strong>
-            <span>基本模式保留素材、提示詞、片段長度與檢查；模型、LoRA、解析度、Steps、Seed 與 Provider 收在專業設定。</span>
+            <strong id="single-experience-heading">{copy.heading}</strong>
+            <span>{copy.description}</span>
           </div>
         </div>
         <button
@@ -109,8 +127,8 @@ export function SingleCreateProgressiveShell() {
           onClick={() => setProfessional((current) => !current)}
         >
           <span>
-            <strong>專業設定</strong>
-            <small>{professional ? "已展開完整控制" : "需要時再展開"}</small>
+            <strong>{copy.professional}</strong>
+            <small>{professional ? copy.open : copy.closed}</small>
           </span>
           <span className={styles.switchTrack} aria-hidden="true">
             <span className={styles.switchThumb} />
