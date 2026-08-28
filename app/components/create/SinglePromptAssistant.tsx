@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildSinglePromptRequest } from "../../lib/single-prompt-request.mjs";
 import { validateSingleRenderAssets } from "../../lib/single-render-validation.mjs";
 import { localizedCopy } from "../../lib/ui-copy.mjs";
@@ -24,6 +24,7 @@ const QWEN35_HAUHAUCS_OLLAMA_MODEL = "qwen3.5-hauhaucs-aggressive:9b-q6_k";
 
 type Mode = "t2v" | "i2v" | "fl2v" | "l2v" | "ref2v" | "ref2v_motion" | "replace";
 type PromptProvider = "ollama" | "sglang" | "codex";
+type SelectedPromptProvider = PromptProvider | "";
 type Asset = {
   name: string;
   root: "input" | "output";
@@ -138,6 +139,8 @@ const REASONING_OPTIONS = [
   { value: "ultra", label: "極致", note: "自動分工" },
 ] as const;
 
+const PROVIDER_FALLBACK_ORDER: readonly PromptProvider[] = ["sglang", "ollama", "codex"];
+
 export function SinglePromptAssistant({
   mode,
   duration,
@@ -160,7 +163,8 @@ export function SinglePromptAssistant({
   const { locale } = useI18n();
   const { FIELD_LABELS } = localizedCopy(locale);
   const [health, setHealth] = useState<Health | null>(null);
-  const [provider, setProvider] = useState<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
+  const [provider, setProvider] = useState<SelectedPromptProvider>("");
+  const preferredProviderRef = useRef<PromptProvider>(STUDIO_SETTINGS_DEFAULTS.promptProvider as PromptProvider);
   const [ollamaModel, setOllamaModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.ollamaModel);
   const [vllmModel, setVllmModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.vllmModel);
   const [codexModel, setCodexModel] = useState<string>(STUDIO_SETTINGS_DEFAULTS.codexModel);
@@ -200,7 +204,7 @@ export function SinglePromptAssistant({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const stored = reconcileStudioSettings(loadStudioSettings());
-      setProvider(stored.promptProvider as PromptProvider);
+      preferredProviderRef.current = stored.promptProvider as PromptProvider;
       setOllamaModel(stored.ollamaModel);
       setVllmModel(stored.vllmModel);
       setCodexModel(stored.codexModel);
@@ -209,25 +213,6 @@ export function SinglePromptAssistant({
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
-
-  useEffect(() => {
-    if (!settingsHydrated || !health) return;
-    const timer = window.setTimeout(() => {
-      const next = reconcileStudioSettings({
-        promptProvider: provider,
-        ollamaModel,
-        vllmModel,
-        codexModel,
-        codexReasoningEffort: reasoningEffort,
-      }, health);
-      setProvider(next.promptProvider as PromptProvider);
-      setOllamaModel(next.ollamaModel);
-      setVllmModel(next.vllmModel);
-      setCodexModel(next.codexModel);
-      setReasoningEffort(next.codexReasoningEffort);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [codexModel, health, ollamaModel, provider, reasoningEffort, settingsHydrated, vllmModel]);
 
   const ollamaModels = health?.ollama?.models;
   const visibleModels = useMemo(() => ollamaModels || [], [ollamaModels]);
@@ -269,11 +254,39 @@ export function SinglePromptAssistant({
   const effectiveCodexModel = selectedCodexModel?.value || codexModel;
   const formatLabel = promptFormatLabel(mode);
   const briefError = attempted && !brief.trim() ? "請先輸入提示詞描述。" : "";
-  const providerReady = provider === "ollama"
-    ? Boolean(health?.ollama?.online && visibleModels.length)
-    : provider === "sglang"
-      ? Boolean((health?.sglang?.online || health?.vllm?.online) && vllmModels.length)
-      : Boolean(health?.codex?.online && health?.codex?.skill);
+  const providerAvailability = useMemo<Record<PromptProvider, boolean>>(() => ({
+    ollama: Boolean(health?.ollama?.online && visibleModels.length),
+    sglang: Boolean((health?.sglang?.online || health?.vllm?.online) && vllmModels.length),
+    codex: Boolean(health?.codex?.online && health?.codex?.skill),
+  }), [health?.ollama?.online, health?.sglang?.online, health?.vllm?.online, health?.codex?.online, health?.codex?.skill, visibleModels.length, vllmModels.length]);
+  const availableProviders = useMemo(
+    () => PROVIDER_FALLBACK_ORDER.filter((option) => providerAvailability[option]),
+    [providerAvailability],
+  );
+  const providerReady = Boolean(provider && providerAvailability[provider]);
+
+  useEffect(() => {
+    if (!settingsHydrated || !health) return;
+    const timer = window.setTimeout(() => {
+      const next = reconcileStudioSettings({
+        promptProvider: provider || preferredProviderRef.current,
+        ollamaModel,
+        vllmModel,
+        codexModel,
+        codexReasoningEffort: reasoningEffort,
+      }, health);
+      setOllamaModel(next.ollamaModel);
+      setVllmModel(next.vllmModel);
+      setCodexModel(next.codexModel);
+      setReasoningEffort(next.codexReasoningEffort);
+      setProvider((current) => {
+        if (current && providerAvailability[current]) return current;
+        const preferred = next.promptProvider as PromptProvider;
+        return providerAvailability[preferred] ? preferred : availableProviders[0] || "";
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [availableProviders, codexModel, health, ollamaModel, preferredProviderRef, provider, providerAvailability, reasoningEffort, settingsHydrated, vllmModel]);
 
   async function refreshHealth() {
     try {
@@ -304,6 +317,11 @@ export function SinglePromptAssistant({
 
     if (!brief.trim()) return;
 
+    if (!provider) {
+      setError("目前沒有可用的提示詞提供者。");
+      return;
+    }
+
     const assetIssues = validateSingleRenderAssets({
       mode: requestMode,
       referenceImage,
@@ -325,6 +343,10 @@ export function SinglePromptAssistant({
       return;
     }
 
+    if (!providerAvailability[provider]) {
+      setError("所選提示詞提供者目前無法使用，請重新檢查服務狀態。");
+      return;
+    }
     if (provider === "ollama") {
       if (!health?.ollama?.online) {
         setError("Ollama 尚未連線。");
@@ -491,19 +513,19 @@ export function SinglePromptAssistant({
 
       <div className={styles.providerRow}>
         <div className={styles.providerSwitch} role="group" aria-label="提示詞生成來源">
-          <button type="button" className={provider === "ollama" ? styles.providerActive : ""} aria-pressed={provider === "ollama"} onClick={() => { setProvider("ollama"); setError(""); }}>
+          <button type="button" className={provider === "ollama" ? styles.providerActive : ""} aria-pressed={provider === "ollama"} aria-label={`Ollama：${providerAvailability.ollama ? "可用" : "不可用"}`} disabled={!providerAvailability.ollama || busy} onClick={() => { setProvider("ollama"); setError(""); }}>
             Ollama
           </button>
-          <button type="button" className={provider === "sglang" ? styles.providerActive : ""} aria-pressed={provider === "sglang"} onClick={() => { setProvider("sglang"); setError(""); }}>
+          <button type="button" className={provider === "sglang" ? styles.providerActive : ""} aria-pressed={provider === "sglang"} aria-label={`Qwen3.8：${providerAvailability.sglang ? "可用" : "不可用"}`} disabled={!providerAvailability.sglang || busy} onClick={() => { setProvider("sglang"); setError(""); }}>
             Qwen3.8
           </button>
-          <button type="button" className={provider === "codex" ? styles.providerActive : ""} aria-pressed={provider === "codex"} onClick={() => { setProvider("codex"); setError(""); }}>
+          <button type="button" className={provider === "codex" ? styles.providerActive : ""} aria-pressed={provider === "codex"} aria-label={`Codex CLI：${providerAvailability.codex ? "可用" : "不可用"}`} disabled={!providerAvailability.codex || busy} onClick={() => { setProvider("codex"); setError(""); }}>
             Codex CLI
           </button>
         </div>
         <span className={`${styles.status} ${providerReady ? styles.statusReady : ""}`}>
           <span className={styles.statusDot} aria-hidden="true" />
-          {providerReady ? "已就緒" : "無法使用"}
+          {!health ? "尚未確認" : providerReady ? "已就緒" : "無法使用"}
         </span>
       </div>
 
@@ -520,7 +542,7 @@ export function SinglePromptAssistant({
           <span className={styles.label}>Qwen3.8 模型</span>
           <strong>{vllmModels.length ? effectiveVllmModel : "尚未回報模型"}</strong>
         </div>
-      ) : (
+      ) : provider === "codex" ? (
         <div className={styles.providerFields}>
           <label className={styles.field}>
             <span className={styles.label}>Codex 模型</span>
@@ -537,7 +559,7 @@ export function SinglePromptAssistant({
             </select>
           </label>
         </div>
-      )}
+      ) : null}
 
       <button type="button" className={styles.generateButton} disabled={busy || !providerReady} onClick={() => void generatePrompt()}>
         <Icon name="spark" />
@@ -648,8 +670,8 @@ function promptFormatLabel(mode: Mode) {
   return "Wan Animate";
 }
 
-function providerLabel(provider: PromptProvider) {
-  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "Qwen3.8" : "Ollama";
+function providerLabel(provider: SelectedPromptProvider) {
+  return provider === "codex" ? "Codex CLI" : provider === "sglang" ? "Qwen3.8" : provider === "ollama" ? "Ollama" : "提示詞提供者";
 }
 
 function assetUrl(asset: Asset) {

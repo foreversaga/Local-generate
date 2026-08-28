@@ -13,13 +13,22 @@ test("Create prompt consumers hydrate persisted prompt defaults and reconcile he
     assert.match(source, /loadStudioSettings/);
     assert.match(source, /reconcileStudioSettings/);
     assert.match(source, /settingsHydrated/);
-    assert.match(source, /set(?:Prompt)?Provider\(stored\.promptProvider/);
     assert.match(source, /setOllamaModel\(stored\.ollamaModel/);
     assert.match(source, /setCodexModel\(stored\.codexModel/);
     assert.match(source, /set(?:ReasoningEffort|reasoningEffort)\(stored\.codexReasoningEffort/);
   }
 
-  assert.match(singleAssistant, /reconcileStudioSettings\(\{[\s\S]*promptProvider: provider[\s\S]*\}, health\)/);
+  assert.match(longForm, /set(?:Prompt)?Provider\(stored\.promptProvider/);
+  assert.match(singleAssistant, /preferredProviderRef\.current = stored\.promptProvider/);
+  assert.match(singleAssistant, /const providerAvailability = useMemo<Record<PromptProvider, boolean>>/);
+  assert.match(singleAssistant, /const PROVIDER_FALLBACK_ORDER/);
+  assert.match(singleAssistant, /if \(!settingsHydrated \|\| !health\) return/);
+  assert.match(singleAssistant, /return providerAvailability\[preferred\] \? preferred : availableProviders\[0\] \|\| ""/);
+  assert.match(singleAssistant, /disabled=\{!providerAvailability\.ollama \|\| busy\}/);
+  assert.match(singleAssistant, /disabled=\{!providerAvailability\.sglang \|\| busy\}/);
+  assert.match(singleAssistant, /disabled=\{!providerAvailability\.codex \|\| busy\}/);
+  assert.match(singleAssistant, /if \(!provider\)/);
+  assert.match(singleAssistant, /if \(!providerAvailability\[provider\]\)/);
   assert.match(singleAssistant, /new Map<string, \(typeof PROMPT_MODEL_CATALOG\)\[number\]>/);
   assert.match(singleAssistant, /Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M/);
   assert.match(singleAssistant, /Gemma 4 26B-A4B QAT Balanced MTP Q4_K_M/);

@@ -109,6 +109,11 @@
   color: var(--text);
 }
 
+.providerSwitch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .providerSwitch .providerActive {
   background: color-mix(in srgb, var(--lime) 10%, var(--panel-soft));
   color: var(--lime);
