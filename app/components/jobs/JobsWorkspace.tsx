@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { jobStatusLabel, localizedCopy, sourceLabel } from "../../lib/ui-copy.mjs";
+import { jobStatusLabel, sourceLabel } from "../../lib/ui-copy.mjs";
 import { useI18n } from "../../i18n/I18nProvider";
 import { fetchUnifiedJobs, type JobSourceError, type UnifiedJob } from "./job-client";
 import styles from "./JobsWorkspace.module.css";
@@ -145,7 +145,6 @@ function FilterGroup({ title, children }: { title: string; children: ReactNode }
 
 function JobRow({ job }: { job: UnifiedJob }) {
   const { locale, t } = useI18n();
-  const { ACTION_LABELS } = localizedCopy(locale);
   const progress = Math.min(100, Math.max(0, Math.round(Number(job.progress) || 0)));
   const elapsedText = t("jobs.elapsed", { duration: formatDuration(Number(job.elapsedMs) || 0, t) });
   const hasEta = Number.isFinite(job.etaMs);
@@ -161,9 +160,10 @@ function JobRow({ job }: { job: UnifiedJob }) {
       ? t("jobs.eta", { duration: formatDuration(Number(job.etaMs), t) })
       : t("jobs.etaEstimating");
   const active = job.status === "queued" || job.status === "running";
+  const nextAction = jobActionCopy(job.status, locale);
 
   return (
-    <article className={styles.jobCard}>
+    <article className={styles.jobCard} data-status={job.status}>
       <div className={styles.jobMain}>
         <div className={styles.jobHeader}>
           <StatusBadge status={job.status} source={job.source} />
@@ -182,7 +182,13 @@ function JobRow({ job }: { job: UnifiedJob }) {
         )}
         {job.error && <p className={styles.jobError}>{job.error}</p>}
       </div>
-      <a className={styles.detailLink} href={`/app/jobs/${encodeURIComponent(job.id)}?source=${encodeURIComponent(job.source)}`}>{ACTION_LABELS.details} <span aria-hidden="true">→</span></a>
+      <a
+        className={`${styles.detailLink} ${nextAction.primary ? styles.detailLinkPrimary : ""}`}
+        href={`/app/jobs/${encodeURIComponent(job.id)}?source=${encodeURIComponent(job.source)}`}
+        aria-label={`${nextAction.label}: ${job.title}`}
+      >
+        {nextAction.label} <span aria-hidden="true">→</span>
+      </a>
     </article>
   );
 }
@@ -190,6 +196,15 @@ function JobRow({ job }: { job: UnifiedJob }) {
 export function StatusBadge({ status, source }: { status: string; source?: string }) {
   const { locale } = useI18n();
   return <span className={`${styles.badge} ${styles[`badge_${status}`] || ""}`}>{jobStatusLabel(status, source, locale)}</span>;
+}
+
+function jobActionCopy(status: string, locale: string) {
+  const zh = locale.toLowerCase().startsWith("zh");
+  if (status === "complete") return { label: zh ? "開啟結果" : "Open result", primary: true };
+  if (status === "partial") return { label: zh ? "檢查可用結果" : "Review available output", primary: true };
+  if (status === "error") return { label: zh ? "檢查錯誤" : "Review error", primary: true };
+  if (status === "queued" || status === "running") return { label: zh ? "查看進度" : "View progress", primary: true };
+  return { label: zh ? "查看詳情" : "View details", primary: false };
 }
 
 function workspaceCopy(locale: string) {
