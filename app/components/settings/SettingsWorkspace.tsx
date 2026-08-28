@@ -191,7 +191,7 @@ export function SettingsWorkspace() {
         <div className={styles.runtimeGrid}>
           <div className={styles.runtimeCopy}>
             <strong>{runtimeMode === "remote" ? "Vast RTX 5090" : "本機 GPU"}</strong>
-            <span>{runtimeMode === "remote" ? "ComfyUI 18188 · Ollama 11435" : "ComfyUI 8188 · Ollama 11434"}</span>
+            <span>{runtimeMode === "remote" ? "使用遠端 GPU 執行生成工作" : "使用本機 GPU 執行生成工作"}</span>
             {activeOperations > 0 && <small>目前有 {activeOperations} 個執行中工作，切換可能被拒絕。</small>}
           </div>
           <div className={styles.runtimeButtons} role="group" aria-label="模型執行位置">
@@ -213,15 +213,32 @@ export function SettingsWorkspace() {
         {statusError && <p className={styles.error} role="alert">{statusError}</p>}
         <dl className={styles.statusGrid}>
           <div><dt>本機橋接服務</dt><dd><StatusBadge value={health?.bridge} pending={statusLoading} /></dd></div>
-          <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd><small>{health?.comfy?.url || "—"}</small></div>
-          <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd><small>{health?.ollama?.url || "—"}</small></div>
-          <div><dt>Qwen3.8</dt><dd><StatusBadge value={health?.sglang?.online || health?.vllm?.online} pending={statusLoading} /></dd><small>{health?.sglang?.url || health?.vllm?.url || "—"}</small></div>
-          <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd><small>{health?.codex?.version || (health?.codex?.skill ? "技能已就緒" : "—")}</small></div>
+          <div><dt>ComfyUI</dt><dd><StatusBadge value={health?.comfy?.online} pending={statusLoading} /></dd></div>
+          <div><dt>Ollama</dt><dd><StatusBadge value={health?.ollama?.online} pending={statusLoading} /></dd></div>
+          <div><dt>Qwen3.8</dt><dd><StatusBadge value={health?.sglang?.online || health?.vllm?.online} pending={statusLoading} /></dd></div>
+          <div><dt>Codex CLI</dt><dd><StatusBadge value={codexReady} pending={statusLoading} /></dd></div>
         </dl>
-        <div className={styles.deviceList}>
-          <strong>ComfyUI 裝置</strong>
-          {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `裝置 ${index + 1}`} · 可用 {formatVram(device.vram_free ?? device.free_memory)} / 總計 {formatVram(device.vram_total ?? device.total_memory)}</span>) : <span>尚未回報 GPU 資訊</span>}
-        </div>
+
+        <details className={styles.technicalDetails}>
+          <summary>
+            <span>技術詳情</span>
+            <small>端點、模型與 GPU 診斷</small>
+          </summary>
+          <div className={styles.technicalDetailsBody}>
+            <dl className={styles.endpointGrid}>
+              <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
+              <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
+              <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
+              <div><dt>Qwen3.8</dt><dd>{health?.sglang?.model || health?.vllm?.model || "—"}</dd></div>
+              <div><dt>Codex CLI</dt><dd>{health?.codex?.version || (health?.codex?.skill ? "skill ready" : "—")}</dd></div>
+              <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
+            </dl>
+            <div className={styles.deviceList}>
+              <strong>ComfyUI 裝置</strong>
+              {comfyDevices.length ? comfyDevices.map((device, index) => <span key={`${device.name || "device"}-${index}`}>{device.name || `裝置 ${index + 1}`} · 可用 {formatVram(device.vram_free ?? device.free_memory)} / 總計 {formatVram(device.vram_total ?? device.total_memory)}</span>) : <span>尚未回報 GPU 資訊</span>}
+            </div>
+          </div>
+        </details>
       </section>
 
       <section className={styles.panel} aria-labelledby="defaults-title">
@@ -274,22 +291,6 @@ export function SettingsWorkspace() {
             <small>會依所選 Codex 模型支援程度自動調整。</small>
           </label>}
         </div>
-      </section>
-
-      <section className={styles.panel} aria-labelledby="runtime-details-title">
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>執行環境詳情</span>
-            <h2 id="runtime-details-title">目前端點</h2>
-          </div>
-        </div>
-        <dl className={styles.endpointGrid}>
-          <div><dt>目前模式</dt><dd>{runtimeMode === "remote" ? "Vast 遠端" : "本機"}</dd></div>
-          <div><dt>ComfyUI</dt><dd>{runtime?.comfyUrl || health?.comfy?.url || "—"}</dd></div>
-          <div><dt>Ollama</dt><dd>{runtime?.ollamaUrl || health?.ollama?.url || "—"}</dd></div>
-          <div><dt>Qwen3.8</dt><dd>{health?.sglang?.model || health?.vllm?.model || "—"}</dd></div>
-          <div><dt>執行中工作</dt><dd>{activeOperations}</dd></div>
-        </dl>
       </section>
     </div>
   );
