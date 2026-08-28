@@ -26,6 +26,7 @@ export default function ToolsPage() {
           description="tools.text2img.description"
           href="/app/tools/text-to-image"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
         <RouteCard
           code="02 / POSE TO IMAGE"
@@ -35,6 +36,7 @@ export default function ToolsPage() {
             : "Extract a DWPose skeleton from a character image, then generate a new image from the pose and description."}
           href="/app/tools/pose-to-image"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
       </ToolGroup>
 
@@ -49,6 +51,7 @@ export default function ToolsPage() {
           description="tools.img2img.description"
           href="/app/tools/image-to-image"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
         <RouteCard
           code="04 / UPSCALE"
@@ -56,6 +59,7 @@ export default function ToolsPage() {
           description="tools.upscale.description"
           href="/app/tools/upscale"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
         <RouteCard
           code="05 / VIDEO CHARACTER"
@@ -65,6 +69,7 @@ export default function ToolsPage() {
             : "Replace a person in an existing video, or generate character video from DWPose motion and identity references."}
           href="/app/tools/video-character"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
       </ToolGroup>
 
@@ -79,6 +84,7 @@ export default function ToolsPage() {
           description="tools.lora.description"
           href="/app/tools/lora-trainer"
           actionLabel="action.openTool"
+          headingLevel={3}
         />
       </ToolGroup>
     </RoutePage>
