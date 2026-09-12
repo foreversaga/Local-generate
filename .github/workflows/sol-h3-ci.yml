@@ -1,0 +1,38 @@
+name: Sol-H3 CI
+
+on:
+  push:
+    branches:
+      - ai-persona-video
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Sol-H3 quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sol-H3 contract tests
+        run: node --import ./tests/test-isolation.mjs --test --test-concurrency=1 tests/sol-h3-*.test.mjs
+
+      - name: Sol-H3 targeted lint
+        run: npx eslint server/sol-h3 app/components/create/SolH3Workspace.tsx app/components/create/sol-h3-client.ts tests/sol-h3-*.test.mjs
+
+      - name: Build WebUI
+        run: npm run build

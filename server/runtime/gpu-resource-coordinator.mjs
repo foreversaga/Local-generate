@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export const GPU_WORKLOAD_TYPES = Object.freeze([
   "video-generation",
+  "sol-h3",
   "long-video-segment",
   "img2img",
   "seedvr2-upscale",

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { startProdServer } from "vinext/server/prod-server";
 import { installProcessErrorBoundary } from "./process-error-boundary.mjs";
+import { shutdownSolH3Controllers } from "./sol-h3/lifecycle.mjs";
 
 const processErrorBoundary = installProcessErrorBoundary();
 const { route: h3ApiRoute, startLongVideoRecovery } = await import("../local-bridge.mjs");
@@ -68,6 +69,21 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ error: error instanceof Error ? error.message : "H3 API request failed." }));
   });
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[production-web] Received ${signal}; shutting down Sol-H3 workers and HTTP server.`);
+  server.close();
+  await shutdownSolH3Controllers().catch((error) => {
+    console.error("[sol-h3] shutdown failed", error?.message || error);
+  });
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+process.once("SIGINT", () => { void shutdown("SIGINT"); });
 
 server.listen(PUBLIC_PORT, PUBLIC_HOST, () => {
   console.log(`[production-web] H3 Studio production server running at http://${PUBLIC_HOST}:${PUBLIC_PORT}${WEB_BASE_PATH}`);

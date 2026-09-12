@@ -77,6 +77,8 @@ import { prepareReferenceVideoClip } from "./server/video-generation/reference-v
 import { createScriptLibrary, handleScriptLibraryRoute } from "./server/scripts/script-library.mjs";
 import { createLongScriptLibrary, handleLongScriptLibraryRoute } from "./server/long-scripts/long-script-library.mjs";
 import { createVideoCharacterController } from "./server/video-character/controller.mjs";
+import { createSolH3Controller } from "./server/sol-h3/controller.mjs";
+import { createSolH3RuntimeConfig } from "./server/sol-h3/runtime-config.mjs";
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const H3_ROOT = path.resolve(
@@ -104,6 +106,7 @@ const VIDEO_CHARACTER_DATA_ROOT = path.resolve(
 const VIDEO_CHARACTER_RUNTIME_ROOT = path.resolve(
   process.env.MINIMAX_H3_WORKFLOW_ROOT || path.join(PROJECT_ROOT, "..", "minimax-workflow"),
 );
+const SOL_H3_RUNTIME_CONFIG = createSolH3RuntimeConfig({ projectRoot: PROJECT_ROOT });
 const SINGLE_VIDEO_OWNER_ID = String(process.env.MINIMAX_H3_SINGLE_VIDEO_OWNER_ID || `bridge-${process.pid}`);
 const singleVideoJobStore = createSingleVideoJobStore({
   root: SINGLE_VIDEO_JOBS_ROOT,
@@ -5981,6 +5984,11 @@ const videoCharacterController = createVideoCharacterController({
   getPython: requireBridgePython,
   runWithGpu: (jobId, operation) => withGpuResource("video-character", jobId, operation, { phase: "video-character" }),
 });
+const solH3Controller = createSolH3Controller({
+  config: SOL_H3_RUNTIME_CONFIG,
+  resolveMediaPath,
+  gpuCoordinator: gpuResourceCoordinator,
+});
 
 function longVideoChildOutputPath(child) {
   const relative = String(child?.outputRelativeName || child?.outputName || child?.output?.name || "").replaceAll("\\", "/").replace(/^\/+/, "");
@@ -6130,6 +6138,7 @@ const domainRouter = createBridgeDomainRouter({
   withAssetLifecycleLock,
   withRuntimeOperation,
   videoCharacterController,
+  solH3Controller,
 });
 
 async function route(req, res) {
