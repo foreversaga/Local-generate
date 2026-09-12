@@ -10,6 +10,7 @@ import {
   normalizeSolH3Request,
   SOL_H3_OUTPUT_SPEC,
   solH3Error,
+  toInternalSolH3MediaRoot,
 } from "./request.mjs";
 import { DEFAULT_SOL_H3_RUNTIME_CONFIG } from "./runtime-config.mjs";
 import { createSolH3JobStore } from "./job-store.mjs";
@@ -393,6 +394,7 @@ export function createSolH3Controller({
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let killTimer = null;
       const append = (value, chunk) => (value + String(chunk)).slice(-256 * 1024);
       child.stdout?.on("data", (chunk) => {
         stdout = append(stdout, chunk);
@@ -403,18 +405,23 @@ export function createSolH3Controller({
         if (job) String(chunk).split(/\r?\n/u).forEach((line) => updateFromLine(job, line));
       });
       const timer = setTimeout(() => {
-        if (!settled) child.kill("SIGTERM");
+        if (settled) return;
+        child.kill("SIGTERM");
+        killTimer = setTimeout(() => { if (!settled) child.kill("SIGKILL"); }, CANCEL_GRACE_MS);
+        killTimer.unref?.();
       }, timeoutMs);
       child.once("error", (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         reject(error);
       });
       child.once("close", (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         resolve({ code, signal, stdout, stderr });
       });
     });
@@ -461,7 +468,7 @@ export function createSolH3Controller({
 
   async function stageMedia(locator, destination, expectedKinds) {
     const normalized = normalizeSolH3MediaLocator(locator, "input");
-    const sourcePath = await resolveMediaPath(normalized.root, normalized.relativePath);
+    const sourcePath = await resolveMediaPath(toInternalSolH3MediaRoot(normalized.root), normalized.relativePath);
     return await mediaValidator.stage({ sourcePath, destination, locator: normalized, expectedKinds });
   }
 
@@ -624,19 +631,25 @@ export function createSolH3Controller({
 
     return await new Promise((resolve, reject) => {
       let settled = false;
+      let killTimer = null;
       const timer = setTimeout(() => {
-        if (!settled) terminateProcessGroup(child, "SIGTERM");
+        if (settled) return;
+        terminateProcessGroup(child, "SIGTERM");
+        killTimer = setTimeout(() => { if (!settled) terminateProcessGroup(child, "SIGKILL"); }, CANCEL_GRACE_MS);
+        killTimer.unref?.();
       }, PROCESS_TIMEOUT_MS);
       child.once("error", (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         reject(error);
       });
       child.once("close", (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         children.delete(job.id);
         resolve({ code, signal, logTail });
       });
@@ -648,6 +661,7 @@ export function createSolH3Controller({
     let releaseLock;
     let heartbeat;
     try {
+      if (isSolH3TerminalState(job.status)) return;
       if (job.cancelRequested || job.status === "cancel_requested") {
         await transition(job, "cancelled", { stage: "已取消", finishedAt: clock() });
         return;
@@ -664,6 +678,7 @@ export function createSolH3Controller({
       await transition(job, "waiting_gpu");
       lease = admission ? await admission.granted : null;
       if (lease?.heartbeat) heartbeat = setInterval(() => lease.heartbeat(), 60_000);
+      heartbeat?.unref?.();
       if (job.cancelRequested) throw solH3Error("SOL_H3_CANCELLED", "Sol-H3 job was cancelled.", 499);
 
       const currentHealth = await preflight(job.request.mode);
