@@ -1,6 +1,7 @@
 import { RouteCard, RouteGrid, RoutePage } from "../../components/shell/RoutePage";
 
 export default function ToolsPage() {
+  const solH3Enabled = !/^(?:0|false|no|off)$/i.test(String(process.env.SOL_H3_ENABLED || "1"));
   return (
     <RoutePage
       eyebrow="page.tools.eyebrow"
@@ -50,6 +51,13 @@ export default function ToolsPage() {
           href="/app/tools/video-character"
           actionLabel="action.openTool"
         />
+        {solH3Enabled && <RouteCard
+          code="07 / SOL-H3-SPARK"
+          titleText="Sol-H3 官方影片＋音訊"
+          descriptionText="使用官方兩階段 H3 → LTX pipeline，支援文字、首尾幀與單一參考素材模式。"
+          href="/app/create/sol-h3"
+          actionLabel="action.openTool"
+        />}
       </RouteGrid>
     </RoutePage>
   );
