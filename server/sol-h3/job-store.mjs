@@ -38,7 +38,9 @@ async function atomicWriteJson(filePath, value, fsApi) {
 }
 
 function stateRecord(job) {
-  const { request: _request, events: _events, ...state } = job;
+  const state = { ...job };
+  delete state.request;
+  delete state.events;
   return state;
 }
 
