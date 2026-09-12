@@ -8,16 +8,20 @@ import {
   cancelSolH3Job,
   createSolH3Job,
   fetchSolH3Jobs,
+  fetchSolH3Capabilities,
   fetchSolH3Readiness,
   pollSolH3JobEvents,
+  retrySolH3Job,
   subscribeSolH3JobEvents,
   type SolH3Job,
   type SolH3Mode,
   type SolH3Readiness,
+  type SolH3Capabilities,
 } from "./sol-h3-client";
 import styles from "./SolH3Workspace.module.css";
 
 const ACTIVE = new Set(["queued", "waiting_gpu", "preparing", "qwen_running", "stage1_running", "upscaling", "adapting", "stage2_running", "validating", "cancel_requested"]);
+const RETRYABLE = new Set(["failed", "interrupted"]);
 
 const MODE_COPY: Record<SolH3Mode, { label: string; help: string }> = {
   t2va: { label: "T2VA｜文字 → 影片＋音訊", help: "只輸入提示詞；Stage 1 不載入 input VAE。" },
@@ -53,17 +57,63 @@ function createIdempotencyKey() {
   return `sol-ui-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+function timestampMs(value: string | null) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatElapsed(milliseconds: number | null, fallback = "—") {
+  if (milliseconds === null) return fallback;
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours} 小時`);
+  if (minutes || hours) parts.push(`${String(minutes).padStart(2, "0")} 分`);
+  parts.push(`${String(seconds).padStart(2, "0")} 秒`);
+  return parts.join(" ");
+}
+
+function jobTiming(job: SolH3Job, nowMs: number) {
+  const created = timestampMs(job.createdAt);
+  const started = timestampMs(job.startedAt);
+  const finished = timestampMs(job.finishedAt);
+  const end = finished ?? (ACTIVE.has(job.status) ? nowMs : null);
+  const queueEnd = started ?? end;
+  const startupAndWarmupMs = job.timing?.startupAndWarmupMs ?? null;
+  const formalGenerationMs = job.timing?.formalGenerationMs ?? null;
+  const observedTotalMs = created !== null && end !== null ? Math.max(0, end - created) : null;
+  const observedQueueMs = created !== null && queueEnd !== null ? Math.max(0, queueEnd - created) : null;
+  const postProcessMs = observedTotalMs !== null && observedQueueMs !== null
+    && startupAndWarmupMs !== null && formalGenerationMs !== null
+    ? Math.max(0, observedTotalMs - observedQueueMs - startupAndWarmupMs - formalGenerationMs)
+    : null;
+  return {
+    queueMs: observedQueueMs,
+    startupAndWarmupMs,
+    formalGenerationMs,
+    postProcessMs,
+    totalMs: observedTotalMs,
+  };
+}
+
 export function SolH3Workspace() {
   const [mode, setMode] = useState<SolH3Mode>("t2va");
+  const [durationSeconds, setDurationSeconds] = useState<5 | 10>(5);
+  const [refImageMatch, setRefImageMatch] = useState<"stage1" | "stage2">("stage1");
+  const [refStage1Attn, setRefStage1Attn] = useState<"dense" | "sol">("dense");
   const [prompt, setPrompt] = useState("傍晚海邊，一名成年人沿岸慢跑；鏡頭自然跟拍，遠處有海浪與海鳥聲。");
   const [seed, setSeed] = useState("");
   const [firstFrame, setFirstFrame] = useState<StudioAsset | null>(null);
   const [lastFrame, setLastFrame] = useState<StudioAsset | null>(null);
   const [reference, setReference] = useState<StudioAsset | null>(null);
   const [readiness, setReadiness] = useState<SolH3Readiness | null>(null);
+  const [capabilities, setCapabilities] = useState<SolH3Capabilities | null>(null);
   const [job, setJob] = useState<SolH3Job | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const pendingIdempotencyKey = useRef<string | null>(null);
 
   const promptLength = useMemo(() => [...prompt].length, [prompt]);
@@ -74,7 +124,12 @@ export function SolH3Workspace() {
 
   const refreshReadiness = useCallback(async () => {
     try {
-      setReadiness(await fetchSolH3Readiness());
+      const [readinessResult, capabilitiesResult] = await Promise.allSettled([
+        fetchSolH3Readiness(), fetchSolH3Capabilities(),
+      ]);
+      if (readinessResult.status === "rejected") throw readinessResult.reason;
+      setReadiness(readinessResult.value);
+      if (capabilitiesResult.status === "fulfilled") setCapabilities(capabilitiesResult.value);
       setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "無法檢查 Sol-H3 readiness。");
@@ -96,6 +151,12 @@ export function SolH3Workspace() {
   }, []);
 
   const active = Boolean(job && ACTIVE.has(job.status));
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
   useEffect(() => {
     if (!job?.id || !active) return;
     let disposed = false;
@@ -125,6 +186,13 @@ export function SolH3Workspace() {
 
   const selectedKeys = useMemo(() => (asset: StudioAsset | null) => asset ? [assetKey(asset)] : [], []);
   const currentModeReady = Boolean(readiness?.modes?.[mode]?.ready);
+  const durationProfiles = capabilities?.durationProfiles?.length
+    ? capabilities.durationProfiles
+    : (readiness?.durationProfiles || []);
+  const selectedProfile = durationProfiles.find((profile) => profile.durationSeconds === durationSeconds);
+  const selectedOutputFrames = selectedProfile?.frames || (durationSeconds === 10 ? 241 : 121);
+  const retryable = Boolean(job && RETRYABLE.has(job.status));
+  const timing = job ? jobTiming(job, nowMs) : null;
 
   function selectSingle(setter: (asset: StudioAsset | null) => void, allowed: Array<"image" | "video">, assets: StudioAsset[]) {
     const selected = assets.find((asset) => allowed.includes(asset.kind) && (asset.root === "input" || asset.root === "output"));
@@ -180,7 +248,9 @@ export function SolH3Workspace() {
         schemaVersion: 1,
         mode,
         prompt: prompt.trim(),
+        durationSeconds,
         ...(parsedSeed === undefined ? {} : { seed: parsedSeed }),
+        ...(mode === "ref2va" ? { refImageMatch, refStage1Attn } : {}),
         audio: { generate: true },
         inputs,
       }, { idempotencyKey: key });
@@ -199,6 +269,20 @@ export function SolH3Workspace() {
     try { setJob(await cancelSolH3Job(job.id)); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "無法取消 Sol-H3 工作。"); }
     finally { setBusy(false); }
+  }
+
+  async function retry() {
+    if (!job || !retryable || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      pendingIdempotencyKey.current = null;
+      setJob(await retrySolH3Job(job.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "無法重新生成 Sol-H3 工作。");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -223,10 +307,12 @@ export function SolH3Workspace() {
         <div className={styles.fields}>
           <label className={styles.field + " " + styles.wide}><span>Prompt（同時描述畫面、動作與聲音）</span><textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); resetPendingSubmit(); }} disabled={busy || active} aria-invalid={promptLength > 4000} /><small className={promptLength > 4000 ? styles.overLimit : undefined}>{promptLength} / 4000 Unicode code points</small></label>
           <label className={styles.field}><span>Seed（可選）</span><input value={seed} onChange={(event) => { setSeed(event.target.value); resetPendingSubmit(); }} inputMode="numeric" placeholder="42" disabled={busy || active} /></label>
-          <div className={styles.spec}><span>固定輸出</span><strong>1344 × 768 · 121 frames · 24 FPS</strong><small>MP4 · AAC · 原生 H3 音訊</small></div>
+          <label className={styles.field}><span>生成長度</span><select value={durationSeconds} onChange={(event) => { setDurationSeconds(Number(event.target.value) as 5 | 10); resetPendingSubmit(); }} disabled={busy || active}><option value={5}>5 秒（121 frames）</option><option value={10}>10 秒（241 frames）</option></select><small>官方已驗證的兩個 frame profile；解析度、FPS 與 distilled steps 固定。</small></label>
+          <div className={styles.spec}><span>輸出規格</span><strong>1344 × 768 · {selectedOutputFrames} frames · 24 FPS</strong><small>{durationSeconds} 秒 · MP4 · AAC · 原生 H3 音訊</small></div>
 
           {mode === "fl2va" && <><div className={styles.assetField}><strong>首幀</strong><span>{displayAsset(firstFrame)}</span><AssetPickerButton triggerId="sol-h3-first-frame-picker" allowedRoots={["input", "output"]} kind="image" selectedKeys={selectedKeys(firstFrame)} onSelect={(assets) => selectSingle(setFirstFrame, ["image"], assets)} label="選擇首幀" /></div><div className={styles.assetField}><strong>尾幀</strong><span>{displayAsset(lastFrame)}</span><AssetPickerButton triggerId="sol-h3-last-frame-picker" allowedRoots={["input", "output"]} kind="image" selectedKeys={selectedKeys(lastFrame)} onSelect={(assets) => selectSingle(setLastFrame, ["image"], assets)} label="選擇尾幀" /></div></>}
           {mode === "ref2va" && <div className={styles.assetField + " " + styles.wide}><strong>參考素材（MVP 一個）</strong><span>{displayAsset(reference)}</span><AssetPickerButton triggerId="sol-h3-reference-picker" allowedRoots={["input", "output"]} allowedKinds={["image", "video"]} selectedKeys={selectedKeys(reference)} onSelect={(assets) => selectSingle(setReference, ["image", "video"], assets)} label="選擇圖片或影片" /></div>}
+          {mode === "ref2va" && <><label className={styles.field}><span>參考圖尺寸匹配</span><select value={refImageMatch} onChange={(event) => { setRefImageMatch(event.target.value as "stage1" | "stage2"); resetPendingSubmit(); }} disabled={busy || active}><option value="stage1">Stage 1 草稿畫布</option><option value="stage2">Stage 2 最終畫布</option></select><small>官方 Ref2VA 選項。</small></label><label className={styles.field}><span>Stage 1 attention</span><select value={refStage1Attn} onChange={(event) => { setRefStage1Attn(event.target.value as "dense" | "sol"); resetPendingSubmit(); }} disabled={busy || active}><option value="dense">FA4 dense（預設）</option><option value="sol">Sol-Attn sink</option></select><small>只影響 Ref2VA Stage 1；Stage 2 固定。</small></label></>}
         </div>
 
         {readiness && <div className={styles.readiness}>
@@ -241,7 +327,21 @@ export function SolH3Workspace() {
 
       <section className={styles.output}>
         <div className={styles.header}><div><p className={styles.eyebrow}>JOB STATUS</p><h2>Sol-H3 工作狀態</h2></div>{job && <span className={styles.badge}>{statusLabel(job.status)}</span>}</div>
-        {job ? <><div className={styles.jobMeta}><strong>{job.stage}</strong><span>{job.id}</span></div><div className={styles.progress} role="progressbar" aria-label="Sol-H3 工作進度" aria-valuemin={0} aria-valuemax={100} {...(job.progress === null ? {} : { "aria-valuenow": job.progress })}>{job.progress === null ? <i /> : <span style={{ width: Math.max(0, Math.min(100, job.progress)) + "%" }} />}</div><div className={styles.timeline}>{job.events.slice(-8).map((event, index) => <div key={(event.seq ?? event.at) + "-" + index}><time>{new Date(event.at).toLocaleTimeString()}</time><span>{event.stage || event.status || "狀態更新"}</span></div>)}</div>{job.output ? <><video className={styles.video} controls playsInline src={"/app" + job.output.url}><track kind="captions" /></video><p className={styles.success}>MP4＋AAC、{job.outputSpec.width}×{job.outputSpec.height}、{job.outputSpec.frames} frames、{job.outputSpec.fps} FPS 已通過 server 驗證。{job.outputMetadata?.artifact?.sha256 ? ` SHA-256 ${job.outputMetadata.artifact.sha256.slice(0, 16)}…` : ""}</p><div className={styles.actions}><a className={styles.secondary} href={"/app" + job.output.url} download={job.output.name}>下載影片</a></div></> : <div className={styles.empty}>完成後影片會顯示在這裡</div>}{job.error && <p className={styles.error}>{job.errorCode ? job.errorCode + ": " : ""}{job.error}</p>}</> : <div className={styles.empty}>尚未建立工作<br /><small>先完成 runtime readiness，再選擇模式與素材。</small></div>}
+        {job ? <>
+          <div className={styles.jobMeta}><strong>{job.stage}</strong><span>{job.id} · {job.durationSeconds || 5} 秒 · {job.outputSpec.frames} frames</span></div>
+          <div className={styles.progress} role="progressbar" aria-label="Sol-H3 工作進度" aria-valuemin={0} aria-valuemax={100} {...(job.progress === null ? {} : { "aria-valuenow": job.progress })}>{job.progress === null ? <i /> : <span style={{ width: Math.max(0, Math.min(100, job.progress)) + "%" }} />}</div>
+          {timing && <div className={styles.timing} aria-label="Sol-H3 時間統計">
+            <div><span>GPU 排隊</span><strong>{formatElapsed(timing.queueMs)}</strong></div>
+            <div><span>冷啟動＋warmup</span><strong>{formatElapsed(timing.startupAndWarmupMs, active ? "執行中" : "未記錄")}</strong></div>
+            <div><span>正式生成</span><strong>{formatElapsed(timing.formalGenerationMs, active ? "執行中" : "未記錄")}</strong></div>
+            <div><span>其他收尾</span><strong>{formatElapsed(timing.postProcessMs, active ? "執行中" : "未記錄")}</strong></div>
+            <div><span>總耗時</span><strong>{formatElapsed(timing.totalMs)}</strong></div>
+          </div>}
+          <div className={styles.timeline}>{job.events.slice(-8).map((event, index) => <div key={(event.seq ?? event.at) + "-" + index}><time>{new Date(event.at).toLocaleTimeString()}</time><span>{event.phase ? `${event.phase} · ` : ""}{event.stage || event.status || "狀態更新"}</span></div>)}</div>
+          {job.output ? <><video className={styles.video} controls playsInline src={"/app" + job.output.url}><track kind="captions" /></video><p className={styles.success}>MP4＋AAC、{job.outputSpec.width}×{job.outputSpec.height}、{job.outputSpec.frames} frames、{job.outputSpec.fps} FPS 已通過 server 驗證。{job.outputMetadata?.artifact?.sha256 ? ` SHA-256 ${job.outputMetadata.artifact.sha256.slice(0, 16)}…` : ""}</p><div className={styles.actions}><a className={styles.secondary} href={"/app" + job.output.url} download={job.output.name}>下載影片</a></div></> : <div className={styles.empty}>{retryable ? "生成失敗，可重新生成" : "完成後影片會顯示在這裡"}</div>}
+          {job.error && <p className={styles.error}>{job.errorCode ? job.errorCode + ": " : ""}{job.error}</p>}
+          {retryable && <div className={styles.actions}><button className={styles.secondary} type="button" onClick={() => void retry()} disabled={busy}>重新生成</button><span className={styles.retryHint}>沿用原本 Prompt、Seed 與素材</span></div>}
+        </> : <div className={styles.empty}>尚未建立工作<br /><small>先完成 runtime readiness，再選擇模式與素材。</small></div>}
       </section>
     </div>
   );

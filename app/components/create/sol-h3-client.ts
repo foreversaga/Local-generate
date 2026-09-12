@@ -21,11 +21,36 @@ export type SolH3OutputMetadata = {
   };
 };
 
+export type SolH3DurationProfile = {
+  durationSeconds: number;
+  sourceFrames: number;
+  width: number;
+  height: number;
+  frames: number;
+  fps: number;
+  container: string;
+  audioCodec: string;
+};
+
+export type SolH3Timing = {
+  source: string;
+  startupAndWarmupMs: number | null;
+  formalGenerationMs: number | null;
+  qwenMs: number | null;
+  stage1Ms: number | null;
+  stage2Ms: number | null;
+  stage2PhasesMs: Record<string, number>;
+  requestCount: number;
+};
+
 export type SolH3Job = {
   id: string;
   mode: SolH3Mode;
   prompt: string;
   seed: number | null;
+  durationSeconds?: number;
+  refImageMatch?: "stage1" | "stage2" | null;
+  refStage1Attn?: "dense" | "sol" | null;
   status: string;
   stage: string;
   progress: number | null;
@@ -33,13 +58,15 @@ export type SolH3Job = {
   updatedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  retryOf?: string | null;
+  timing?: SolH3Timing | null;
   cancelRequested?: boolean;
   output: { id: string; name: string; url: string; kind: "video" } | null;
   outputSpec: { width: number; height: number; frames: number; fps: number; container: string; audioCodec: string };
   outputMetadata?: SolH3OutputMetadata | null;
   error: string;
   errorCode?: string | null;
-  events: Array<{ seq?: number; at: string; status?: string; stage?: string; progress?: number | null }>;
+  events: Array<{ seq?: number; at: string; status?: string; stage?: string; progress?: number | null; phase?: string; detail?: unknown }>;
 };
 
 export type SolH3Readiness = {
@@ -56,6 +83,15 @@ export type SolH3Readiness = {
   managerLock?: { held: boolean };
   conflictPolicy?: string;
   output?: SolH3Job["outputSpec"];
+  durationProfiles?: SolH3DurationProfile[];
+};
+
+export type SolH3Capabilities = {
+  enabled: boolean;
+  schemaVersion: number;
+  durationProfiles: SolH3DurationProfile[];
+  controls?: Record<string, unknown>;
+  fixedRecipe?: Record<string, unknown>;
 };
 
 const BRIDGE_URL = "/app";
@@ -91,6 +127,10 @@ export function assetLocator(asset: { root: "input" | "output" | "training"; nam
 
 export async function fetchSolH3Readiness() {
   return await json<SolH3Readiness>("/api/sol-h3/readiness");
+}
+
+export async function fetchSolH3Capabilities() {
+  return await json<SolH3Capabilities>("/api/sol-h3/capabilities");
 }
 
 export async function fetchSolH3Jobs() {
@@ -142,7 +182,10 @@ export async function createSolH3Job(request: {
   schemaVersion: 1;
   mode: SolH3Mode;
   prompt: string;
+  durationSeconds?: 5 | 10;
   seed?: number;
+  refImageMatch?: "stage1" | "stage2";
+  refStage1Attn?: "dense" | "sol";
   audio: { generate: true };
   inputs: Record<string, SolH3Locator | SolH3Locator[]>;
 }, options: { idempotencyKey?: string } = {}) {
@@ -158,5 +201,10 @@ export async function createSolH3Job(request: {
 
 export async function cancelSolH3Job(id: string) {
   const payload = await json<{ job: SolH3Job }>("/api/sol-h3/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+  return payload.job;
+}
+
+export async function retrySolH3Job(id: string) {
+  const payload = await json<{ job: SolH3Job }>("/api/sol-h3/jobs/" + encodeURIComponent(id) + "/retry", { method: "POST" });
   return payload.job;
 }

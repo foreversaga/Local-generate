@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { SOL_H3_MODES, SOL_H3_OUTPUT_SPEC } from "./request.mjs";
+import { SOL_H3_DURATION_PROFILES, SOL_H3_MODES, SOL_H3_OUTPUT_SPEC } from "./request.mjs";
 import { DEFAULT_SOL_H3_RUNTIME_CONFIG } from "./runtime-config.mjs";
 
 async function lstat(fsApi, filePath) {
@@ -125,6 +125,7 @@ export async function inspectSolH3Readiness(
       gpu: gpu || { active: null, queue: [], activeCount: 0, queuedCount: 0, totalCount: 0 },
       conflicts: [...conflicts],
       output: { ...SOL_H3_OUTPUT_SPEC },
+      durationProfiles: Object.values(SOL_H3_DURATION_PROFILES).map((profile) => ({ ...profile })),
     };
   }
 
@@ -224,6 +225,7 @@ export async function inspectSolH3Readiness(
     gpu: gpu || { active: null, queue: [], activeCount: 0, queuedCount: 0, totalCount: 0 },
     conflicts: [...conflicts],
     output: { ...SOL_H3_OUTPUT_SPEC },
+    durationProfiles: Object.values(SOL_H3_DURATION_PROFILES).map((profile) => ({ ...profile })),
   };
 }
 

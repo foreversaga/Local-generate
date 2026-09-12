@@ -7,7 +7,9 @@ import {
   inferSolH3MediaKind,
   normalizeSolH3MediaLocator,
   normalizeSolH3Request,
+  SOL_H3_DURATION_PROFILES,
   SOL_H3_OUTPUT_SPEC,
+  solH3OutputSpec,
   solH3Error,
   toInternalSolH3MediaRoot,
 } from "./request.mjs";
@@ -24,6 +26,7 @@ import { createSolH3MediaValidator } from "./media-validation.mjs";
 import { createSolH3OutputValidator } from "./output-validation.mjs";
 import { createSolH3RunnerClient } from "./runner-client.mjs";
 import { registerSolH3Lifecycle } from "./lifecycle.mjs";
+import { parseSolH3RunnerTiming } from "./timing.mjs";
 
 const PIPELINE_STATES = Object.freeze([
   "queued",
@@ -89,12 +92,16 @@ function publicJob(job) {
       kind: "video",
     }
     : null;
+  const durationSeconds = Number.isInteger(job.request?.durationSeconds) ? job.request.durationSeconds : 5;
   return {
     id: job.id,
     schemaVersion: job.request?.schemaVersion || 1,
     mode: job.request?.mode || job.mode,
     prompt: job.request?.prompt || "",
     seed: job.request?.seed ?? null,
+    durationSeconds,
+    refImageMatch: job.request?.refImageMatch || null,
+    refStage1Attn: job.request?.refStage1Attn || null,
     status: job.status,
     stage: job.stage,
     progress: Number.isFinite(Number(job.progress)) ? Number(job.progress) : null,
@@ -102,8 +109,10 @@ function publicJob(job) {
     updatedAt: job.updatedAt,
     startedAt: job.startedAt || null,
     finishedAt: job.finishedAt || null,
+    retryOf: job.retryOf || null,
+    timing: job.timing || null,
     output,
-    outputSpec: { ...SOL_H3_OUTPUT_SPEC },
+    outputSpec: solH3OutputSpec(durationSeconds),
     outputMetadata: job.outputMetadata || null,
     error: job.error ? publicError(job.error) : "",
     errorCode: job.errorCode || null,
@@ -267,9 +276,16 @@ export function createSolH3Controller({
     config,
     fsApi,
     ...(spawnApi ? { spawnApi } : {}),
-    onProgress: (jobId, stage) => {
+    onProgress: (jobId, stage, details = {}) => {
       const job = jobs.get(jobId);
-      if (job) void advanceTo(job, stage, {}, { source: "runner-log" }).catch(() => {});
+      const target = PIPELINE_STATES.includes(stage) ? stage : null;
+      if (job && target) {
+        void advanceTo(job, target, {}, {
+          source: details.source || "runner",
+          ...(details.phase ? { phase: details.phase } : {}),
+          ...(details.detail !== undefined ? { detail: details.detail } : {}),
+        }).catch(() => {});
+      }
     },
   });
   const mediaValidator = createSolH3MediaValidator({ fsApi, probeMedia: runner.probeMedia });
@@ -401,6 +417,7 @@ export function createSolH3Controller({
       prompt: request.prompt,
       seed: request.seed,
       task: request.mode,
+      ...(request.durationSeconds === undefined ? {} : { duration_seconds: request.durationSeconds }),
     };
 
     if (request.mode === "fl2va") {
@@ -432,6 +449,9 @@ export function createSolH3Controller({
     const record = {
       schemaVersion: 1,
       mode: job.request.mode,
+      ...(job.request.durationSeconds === undefined ? {} : { durationSeconds: job.request.durationSeconds }),
+      ...(job.request.refImageMatch ? { refImageMatch: job.request.refImageMatch } : {}),
+      ...(job.request.refStage1Attn ? { refStage1Attn: job.request.refStage1Attn } : {}),
       sanaCommit: currentHealth.code?.sanaCommit || null,
       h3Revision: currentHealth.paths?.h3Revision || config.pinnedH3Revision,
       pathsManifestSha256: sha256(pathsBytes),
@@ -448,7 +468,7 @@ export function createSolH3Controller({
     return pipelineFingerprint;
   }
 
-  async function findFormalOutput(outputRoot) {
+  async function findFormalOutput(outputRoot, outputSpec) {
     const candidates = [];
     async function walk(directory) {
       const entries = await fsApi.readdir(directory, { withFileTypes: true }).catch(() => []);
@@ -462,7 +482,8 @@ export function createSolH3Controller({
     await walk(outputRoot);
     const formal = candidates.filter((candidate) => {
       const relative = path.relative(outputRoot, candidate).split(path.sep);
-      return relative[0] === "generation" && path.basename(candidate) === "refined_1344x768_121f.mp4";
+      return relative[0] === "generation"
+        && path.basename(candidate) === `refined_${outputSpec.width}x${outputSpec.height}_${outputSpec.frames}f.mp4`;
     });
     if (formal.length !== 1) {
       throw solH3Error("SOL_H3_OUTPUT_COUNT_INVALID", "Sol-H3 job did not produce exactly one formal MP4 output.", 502, {
@@ -509,9 +530,11 @@ export function createSolH3Controller({
       const caseFile = await stageRequest(job);
       const pathsFilePath = await runner.pathsFile(job.request.mode);
       const pipelineFingerprint = await writePipelineFingerprint(job, pathsFilePath, currentHealth);
-      const outputRoot = path.join(store.directory(job.id), "outputs");
-      await transition(job, "qwen_running");
-
+      // The job store owns the stable outputs/ directory, while the official
+      // Pipeline requires its output root itself to be new (exist_ok=False).
+      // Give each invocation a private child root and keep final.mp4 at the
+      // job-scoped outputs/ level after validation below.
+      const outputRoot = path.join(store.directory(job.id), "outputs", "run");
       const exit = await runner.run({
         jobId: job.id,
         mode: job.request.mode,
@@ -519,6 +542,9 @@ export function createSolH3Controller({
         outputRoot,
         logFile: path.join(store.directory(job.id), "logs", "runner.log"),
         pathsFilePath,
+        durationSeconds: job.request.durationSeconds || 5,
+        refImageMatch: job.request.refImageMatch || null,
+        refStage1Attn: job.request.refStage1Attn || null,
       });
       if (job.cancelRequested) throw solH3Error("SOL_H3_CANCELLED", "Sol-H3 job was cancelled.", 499);
       if (exit.code !== 0) {
@@ -529,11 +555,23 @@ export function createSolH3Controller({
         });
       }
 
+      const runnerReport = await fsApi.readFile(path.join(outputRoot, "results.json"), "utf8")
+        .then((value) => JSON.parse(value))
+        .catch(() => null);
+      const timing = parseSolH3RunnerTiming(runnerReport);
+      if (timing) {
+        job.timing = timing;
+        await store.save(job);
+      }
+
       await advanceTo(job, "validating");
-      const sourceOutput = await findFormalOutput(outputRoot);
-      const finalOutput = path.join(outputRoot, "final.mp4");
+      const outputSpec = solH3OutputSpec(job.request.durationSeconds || 5);
+      const sourceOutput = await findFormalOutput(outputRoot, outputSpec);
+      const finalOutput = path.join(store.directory(job.id), "outputs", "final.mp4");
       if (sourceOutput !== finalOutput) await fsApi.rename(sourceOutput, finalOutput);
-      const outputMetadata = await outputValidator.validate(finalOutput, { pipelineFingerprint });
+      const outputMetadata = await outputValidator.validate(finalOutput, {
+        pipelineFingerprint, outputSpec,
+      });
       await fsApi.writeFile(
         path.join(outputRoot, "manifest.json"),
         JSON.stringify({ schemaVersion: 1, outputId: "final", ...outputMetadata }, null, 2) + "\n",
@@ -576,7 +614,7 @@ export function createSolH3Controller({
     }
   }
 
-  async function create(payload, { idempotencyKey: rawIdempotencyKey = null } = {}) {
+  async function create(payload, { idempotencyKey: rawIdempotencyKey = null, retryOf = null } = {}) {
     await ensureInitialized();
     const request = normalizeSolH3Request(payload);
     const idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
@@ -603,6 +641,7 @@ export function createSolH3Controller({
       updatedAt: clock(),
       startedAt: null,
       finishedAt: null,
+      retryOf: retryOf || null,
       cancelRequested: false,
       eventSeq: 0,
       events: [],
@@ -610,6 +649,7 @@ export function createSolH3Controller({
       errorCode: null,
       outputMetadata: null,
       pipelineFingerprint: null,
+      timing: null,
     };
     await store.create(job);
     jobs.set(id, job);
@@ -652,6 +692,17 @@ export function createSolH3Controller({
       await transition(job, "cancelled", { stage: "已取消", finishedAt: clock(), error: "", errorCode: null });
     }
     return publicJob(job);
+  }
+
+  async function retry(id) {
+    await ensureInitialized();
+    const cleanId = safeId(id);
+    const source = jobs.get(cleanId);
+    if (!source) throw solH3Error("SOL_H3_JOB_NOT_FOUND", "Sol-H3 job not found.", 404);
+    if (!["failed", "interrupted"].includes(source.status)) {
+      throw solH3Error("SOL_H3_RETRY_NOT_ALLOWED", "Only failed or interrupted Sol-H3 jobs can be retried.", 409, { status: source.status });
+    }
+    return await create(source.request, { retryOf: source.id });
   }
 
   async function output(id, outputId, req, res) {
@@ -759,6 +810,16 @@ export function createSolH3Controller({
       enabled: config.enabled,
       schemaVersion: config.schemaVersion,
       mediaRoots: ["comfyui-input", "comfyui-output"],
+      durationProfiles: Object.values(SOL_H3_DURATION_PROFILES).map((profile) => ({ ...profile })),
+      controls: {
+        durationSeconds: { type: "enum", values: [5, 10], default: 5 },
+        seed: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 42 },
+        refImageMatch: { type: "enum", values: ["stage1", "stage2"], modes: ["ref2va"] },
+        refStage1Attn: { type: "enum", values: ["dense", "sol"], modes: ["ref2va"] },
+      },
+      fixedRecipe: { stage1Updates: 4, stage2Updates: 3, width: 1344, height: 768, fps: 24,
+        audio: "native H3 PCM → AAC stereo", resolutionEditable: false, fpsEditable: false,
+        stepsEditable: false },
       modes: {
         t2va: { label: "文字 → 影片＋音訊", inputs: "none", output: { ...SOL_H3_OUTPUT_SPEC } },
         fl2va: { label: "首幀＋尾幀 → 影片＋音訊", inputs: "firstFrame+lastFrame", output: { ...SOL_H3_OUTPUT_SPEC } },
@@ -794,7 +855,7 @@ export function createSolH3Controller({
 
       const outputMatch = pathname.match(/^\/api\/sol-h3\/jobs\/([^/]+)\/outputs\/([^/]+)$/u);
       if (outputMatch && req.method === "GET") return await output(outputMatch[1], outputMatch[2], req, res);
-      const actionMatch = pathname.match(/^\/api\/sol-h3\/jobs\/([^/]+)(?:\/(cancel|events))?$/u);
+      const actionMatch = pathname.match(/^\/api\/sol-h3\/jobs\/([^/]+)(?:\/(cancel|retry|events))?$/u);
       if (!actionMatch) return false;
       const id = actionMatch[1];
 
@@ -806,6 +867,10 @@ export function createSolH3Controller({
       }
       if (actionMatch[2] === "cancel" && req.method === "POST") {
         sendJson(res, 202, { job: await cancel(id) });
+        return true;
+      }
+      if (actionMatch[2] === "retry" && req.method === "POST") {
+        sendJson(res, 202, { job: await retry(id) });
         return true;
       }
       if (actionMatch[2] === "events" && req.method === "GET") {
@@ -831,5 +896,5 @@ export function createSolH3Controller({
   }
 
   unregisterLifecycle = registerSolH3Lifecycle(close);
-  return Object.freeze({ handleRoute, capabilities, health, create, get, list, cancel, close });
+  return Object.freeze({ handleRoute, capabilities, health, create, get, list, cancel, retry, close });
 }

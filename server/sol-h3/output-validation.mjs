@@ -66,13 +66,14 @@ export function createSolH3OutputValidator({ fsApi = fs, probeMedia, decodeMedia
     throw new TypeError("Sol-H3 output validator requires probeMedia and decodeMedia.");
   }
 
-  async function validate(filePath, { producer = "official-sol-h3-infer", pipelineFingerprint = null } = {}) {
+  async function validate(filePath, { producer = "official-sol-h3-infer", pipelineFingerprint = null,
+                                      outputSpec = spec } = {}) {
     const stat = await fsApi.lstat(filePath).catch(() => null);
     if (!stat?.isFile() || stat.isSymbolicLink() || stat.size <= 0) {
       throw solH3Error("SOL_H3_OUTPUT_INVALID", "Sol-H3 output must be a non-empty regular file.", 502);
     }
     const metadata = await probeMedia(filePath);
-    const contract = validateSolH3OutputMetadata(metadata, spec);
+    const contract = validateSolH3OutputMetadata(metadata, outputSpec);
     await decodeMedia(filePath);
     const sha256 = await sha256File(filePath);
     return {

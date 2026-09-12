@@ -8,6 +8,19 @@ export const SOL_H3_OUTPUT_SPEC = Object.freeze({
   container: "mp4",
   audioCodec: "aac",
 });
+export const SOL_H3_DURATION_PROFILES = Object.freeze({
+  5: Object.freeze({ ...SOL_H3_OUTPUT_SPEC, durationSeconds: 5, sourceFrames: 124 }),
+  10: Object.freeze({ ...SOL_H3_OUTPUT_SPEC, durationSeconds: 10, frames: 241, sourceFrames: 243 }),
+});
+
+export function solH3OutputSpec(durationSeconds = 5) {
+  const spec = SOL_H3_DURATION_PROFILES[durationSeconds];
+  if (!spec) throw solH3Error("SOL_H3_DURATION_INVALID", "durationSeconds must be 5 or 10.");
+  const output = { ...spec };
+  delete output.durationSeconds;
+  delete output.sourceFrames;
+  return { ...output };
+}
 
 const PUBLIC_MEDIA_ROOT_BY_INPUT = Object.freeze({
   "comfyui-input": "comfyui-input",
@@ -130,6 +143,22 @@ function ensureSeed(value) {
   return value;
 }
 
+function ensureDuration(value) {
+  const duration = value === undefined || value === null || value === "" ? 5 : value;
+  if (!Number.isSafeInteger(duration) || !Object.hasOwn(SOL_H3_DURATION_PROFILES, duration)) {
+    fail("SOL_H3_DURATION_INVALID", "durationSeconds must be one of the validated Sol-H3 profiles: 5 or 10.");
+  }
+  return duration;
+}
+
+function ensureChoice(value, choices, field) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !choices.includes(value)) {
+    fail("SOL_H3_OPTION_INVALID", field + " is not supported for the selected Sol-H3 profile.");
+  }
+  return value;
+}
+
 function ensurePlainObject(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("SOL_H3_INPUTS_INVALID", field + " must be an object.");
   return value;
@@ -145,7 +174,8 @@ export function normalizeSolH3Request(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     fail("SOL_H3_REQUEST_INVALID", "Sol-H3 request must be a JSON object.");
   }
-  const allowedTopLevel = ["schemaVersion", "mode", "prompt", "seed", "audio", "inputs"];
+  const allowedTopLevel = ["schemaVersion", "mode", "prompt", "seed", "audio", "inputs",
+    "durationSeconds", "refImageMatch", "refStage1Attn"];
   rejectExtraKeys(payload, allowedTopLevel, "request");
   const schemaVersion = payload.schemaVersion === undefined ? 1 : payload.schemaVersion;
   if (schemaVersion !== 1) fail("SOL_H3_SCHEMA_UNSUPPORTED", "Unsupported Sol-H3 request schemaVersion.");
@@ -153,16 +183,23 @@ export function normalizeSolH3Request(payload) {
   if (!SOL_H3_MODES.includes(mode)) fail("SOL_H3_MODE_INVALID", "mode must be t2va, fl2va, or ref2va.");
   const prompt = ensurePrompt(payload.prompt);
   const seed = ensureSeed(payload.seed);
+  const durationSeconds = ensureDuration(payload.durationSeconds);
+  const refImageMatch = ensureChoice(payload.refImageMatch, ["stage1", "stage2"], "refImageMatch");
+  const refStage1Attn = ensureChoice(payload.refStage1Attn, ["dense", "sol"], "refStage1Attn");
   const audio = payload.audio === undefined ? {} : ensurePlainObject(payload.audio, "audio");
   rejectExtraKeys(audio, ["generate"], "audio");
   if (audio.generate !== undefined && audio.generate !== true) {
     fail("SOL_H3_AUDIO_REQUIRED", "Sol-H3 WebUI output always generates native audio.");
   }
   const inputs = payload.inputs === undefined ? {} : ensurePlainObject(payload.inputs, "inputs");
+  const profileFields = payload.durationSeconds === undefined ? {} : { durationSeconds };
 
   if (mode === "t2va") {
     if (Object.keys(inputs).length) fail("SOL_H3_T2VA_INPUTS_UNSUPPORTED", "t2va does not accept media inputs.");
-    return { schemaVersion, mode, prompt, seed, audio: { generate: true }, inputs: {} };
+    if (refImageMatch !== undefined || refStage1Attn !== undefined) {
+      fail("SOL_H3_REF_OPTIONS_UNSUPPORTED", "Reference matching options require ref2va.");
+    }
+    return { schemaVersion, mode, prompt, seed, ...profileFields, audio: { generate: true }, inputs: {} };
   }
 
   if (mode === "fl2va") {
@@ -170,11 +207,15 @@ export function normalizeSolH3Request(payload) {
     if (!inputs.firstFrame || !inputs.lastFrame) {
       fail("SOL_H3_FL2VA_FRAMES_REQUIRED", "fl2va requires one firstFrame and one lastFrame.");
     }
+    if (refImageMatch !== undefined || refStage1Attn !== undefined) {
+      fail("SOL_H3_REF_OPTIONS_UNSUPPORTED", "Reference matching options require ref2va.");
+    }
     return {
       schemaVersion,
       mode,
       prompt,
       seed,
+      ...profileFields,
       audio: { generate: true },
       inputs: {
         firstFrame: normalizeSolH3MediaLocator(inputs.firstFrame, "inputs.firstFrame"),
@@ -192,6 +233,9 @@ export function normalizeSolH3Request(payload) {
     mode,
     prompt,
     seed,
+    ...profileFields,
+    ...(refImageMatch === undefined ? {} : { refImageMatch }),
+    ...(refStage1Attn === undefined ? {} : { refStage1Attn }),
     audio: { generate: true },
     inputs: {
       references: [normalizeSolH3MediaLocator(inputs.references[0], "inputs.references[0]")],

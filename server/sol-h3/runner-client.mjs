@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -55,6 +56,8 @@ export function createSolH3RunnerClient({
     throw new TypeError("Sol-H3 runner config is incomplete.");
   }
   const children = new Map();
+  const sessions = new Map();
+  let activeSession = null;
 
   function runCommand(command, args, { cwd, env, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {
@@ -152,15 +155,20 @@ export function createSolH3RunnerClient({
     return String(manifest?.stage2_python || manifest?.qwen_python || "python3").trim() || "python3";
   }
 
-  async function run({ jobId, mode, caseFile, outputRoot, logFile, pathsFilePath }) {
+  async function runOnce({ jobId, mode, caseFile, outputRoot, logFile, pathsFilePath,
+                           durationSeconds = 5, refImageMatch = null, refStage1Attn = null }) {
+    await fsApi.mkdir(path.dirname(logFile), { recursive: true }).catch(() => {});
     const command = await python(pathsFilePath);
     const args = [
       config.inferPath,
       "--paths", pathsFilePath,
       "--prompts", caseFile,
       "--task", mode,
+      "--duration", String(durationSeconds),
       "--output-dir", outputRoot,
     ];
+    if (refImageMatch) args.push("--ref-image-match", refImageMatch);
+    if (refStage1Attn) args.push("--ref-stage1-attn", refStage1Attn);
     const child = spawnApi(command, args, {
       cwd: config.sanaPackageRoot,
       env: {
@@ -218,6 +226,165 @@ export function createSolH3RunnerClient({
     });
   }
 
+  function profileKey({ mode, durationSeconds = 5, refImageMatch = null, refStage1Attn = null }) {
+    return [mode, durationSeconds, refImageMatch || "default", refStage1Attn || "default"].join(":");
+  }
+
+  async function appendLog(logFile, value) {
+    await fsApi.appendFile(logFile, value, "utf8").catch(() => {});
+  }
+
+  function handleSessionOutput(session, chunk, fallbackJobId) {
+    const value = String(chunk);
+    session.logTail = appendTail(session.logTail, value, 128 * 1024);
+    session.buffer += value;
+    const lines = session.buffer.split(/\r?\n/u);
+    session.buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let event;
+      try { event = JSON.parse(line); } catch {
+        const stage = inferProgressStage(line);
+        if (stage) onProgress(fallbackJobId, stage, { source: "daemon-log", line });
+        continue;
+      }
+      if (event.type === "progress" && event.requestId) {
+        onProgress(event.requestId, event.stage, event);
+      } else if (event.type === "ready") {
+        onProgress(fallbackJobId, "preparing", { source: "sol-h3-daemon", ...event });
+      }
+      if ((event.type === "result" || event.type === "error") && event.requestId) {
+        const pending = session.pending.get(event.requestId);
+        if (!pending) continue;
+        session.pending.delete(event.requestId);
+        if (event.type === "result" && event.status === "ok") {
+          pending.resolve({ code: 0, signal: null, logTail: session.logTail,
+                            persistent: true, result: event.result,
+                            sessionReused: Boolean(event.sessionReused) });
+        } else {
+          pending.resolve({ code: 1, signal: null,
+                            logTail: appendTail(session.logTail,
+                              event.message || "Sol-H3 daemon reported an error."),
+                            persistent: true });
+        }
+      }
+    }
+    void appendLog(session.logFile, value);
+  }
+
+  function waitForSessionResult(session, jobId) {
+    return new Promise((resolve) => session.pending.set(jobId, { resolve }));
+  }
+
+  async function stopSession(session) {
+    if (!session) return;
+    sessions.delete(session.key);
+    if (activeSession === session) activeSession = null;
+    const child = session.child;
+    if (child?.exitCode === null) {
+      try {
+        child.stdin?.write(JSON.stringify({ v: 1, type: "close" }) + "\n");
+        child.stdin?.end?.();
+      } catch {
+        // The child may already have exited; its close handler will settle it.
+      }
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          terminateProcessGroup(child, "SIGTERM");
+          const killTimer = setTimeout(() => terminateProcessGroup(child, "SIGKILL"), CANCEL_GRACE_MS);
+          killTimer.unref?.();
+          resolve();
+        }, 30_000);
+        timer.unref?.();
+        child.once?.("close", () => { clearTimeout(timer); resolve(); });
+      });
+    }
+    for (const [jobId, pending] of session.pending) {
+      pending.resolve({ code: 1, signal: "SIGTERM", logTail: session.logTail, persistent: true });
+      session.pending.delete(jobId);
+      children.delete(jobId);
+    }
+  }
+
+  async function runPersistent({ jobId, mode, caseFile, outputRoot, logFile, pathsFilePath,
+                                 durationSeconds = 5, refImageMatch = null, refStage1Attn = null }) {
+    const key = profileKey({ mode, durationSeconds, refImageMatch, refStage1Attn });
+    if (activeSession && activeSession.key !== key) await stopSession(activeSession);
+    let session = activeSession;
+    if (!session || session.child?.exitCode !== null) {
+      await fsApi.mkdir(path.dirname(logFile), { recursive: true }).catch(() => {});
+      const command = await python(pathsFilePath);
+      const daemonPath = config.daemonPath || path.join(config.sanaPackageRoot, "runtime", "daemon.py");
+      const sessionRoot = path.join(config.runtimeRoot, "persistent-sessions",
+        key.replace(/[^A-Za-z0-9_.-]/gu, "_") + "-" + randomUUID());
+      const args = [daemonPath, "--paths", pathsFilePath, "--task", mode,
+        "--duration", String(durationSeconds), "--case-file", caseFile,
+        "--output-root", outputRoot, "--session-root", sessionRoot,
+        "--request-id", jobId];
+      if (refImageMatch) args.push("--ref-image-match", refImageMatch);
+      if (refStage1Attn) args.push("--ref-stage1-attn", refStage1Attn);
+      const child = spawnApi(command, args, {
+        cwd: config.sanaPackageRoot,
+        env: {
+          ...process.env,
+          HF_HUB_OFFLINE: "1",
+          TRANSFORMERS_OFFLINE: "1",
+          HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
+          PYTHONUNBUFFERED: "1",
+          PYTHONPATH: [config.sanaPackageRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
+        },
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+        windowsHide: true,
+      });
+      session = { key, child, buffer: "", logTail: "", pending: new Map(), logFile };
+      activeSession = session;
+      sessions.set(key, session);
+      children.set(jobId, child);
+      child.stdout?.on("data", (chunk) => handleSessionOutput(session, chunk, jobId));
+      child.stderr?.on("data", (chunk) => {
+        session.logTail = appendTail(session.logTail, chunk, 128 * 1024);
+        void appendLog(session.logFile, chunk);
+      });
+      child.once?.("error", () => {});
+      child.once?.("close", (code, signal) => {
+        sessions.delete(key);
+        if (activeSession === session) activeSession = null;
+        for (const [pendingId, pending] of session.pending) {
+          pending.resolve({ code: code ?? 1, signal, logTail: session.logTail, persistent: true });
+          children.delete(pendingId);
+        }
+        session.pending.clear();
+      });
+      const result = await waitForSessionResult(session, jobId);
+      children.delete(jobId);
+      if (result.code !== 0) await stopSession(session);
+      return result;
+    }
+
+    session.logFile = logFile;
+    children.set(jobId, session.child);
+    const result = await new Promise((resolve) => {
+      session.pending.set(jobId, { resolve });
+      try {
+        session.child.stdin.write(JSON.stringify({ v: 1, type: "generate", requestId: jobId,
+          caseFile, outputRoot }) + "\n");
+      } catch {
+        session.pending.delete(jobId);
+        resolve({ code: 1, signal: null, logTail: session.logTail, persistent: true });
+      }
+    });
+    children.delete(jobId);
+    if (result.code !== 0) await stopSession(session);
+    return result;
+  }
+
+  async function run(options) {
+    if (config.persistentRunner === true) return await runPersistent(options);
+    return await runOnce(options);
+  }
+
   function cancel(jobId) {
     const child = children.get(jobId);
     if (!child) return false;
@@ -232,6 +399,7 @@ export function createSolH3RunnerClient({
   }
 
   async function close() {
+    for (const session of [...sessions.values()]) await stopSession(session);
     for (const child of children.values()) terminateProcessGroup(child, "SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, 50));
     for (const child of children.values()) terminateProcessGroup(child, "SIGKILL");

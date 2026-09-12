@@ -39,6 +39,7 @@ export function createSolH3RuntimeConfig({ env = process.env, projectRoot = MODU
     path.join(sanaRoot, "models", "minimax_h3", "Sol-H3-Spark", "infer.py"),
   );
   const inferPython = String(env.SOL_H3_INFER_PYTHON || "").trim();
+  const persistentRunner = envFlag(env.SOL_H3_PERSISTENT_RUNNER, true);
   const conflictUrls = splitUrls(env.SOL_H3_CONFLICT_URLS || env.VLLM_URL || env.SGLANG_URL || "");
 
   return Object.freeze({
@@ -54,6 +55,8 @@ export function createSolH3RuntimeConfig({ env = process.env, projectRoot = MODU
     promptCache,
     inferPath,
     inferPython,
+    persistentRunner,
+    daemonPath: path.join(sanaRoot, "models", "minimax_h3", "Sol-H3-Spark", "runtime", "daemon.py"),
     hostLockFile: path.join(runtimeRoot, "sol-h3.lock"),
     conflictUrls,
     sanaPackageRoot: path.join(sanaRoot, "models", "minimax_h3", "Sol-H3-Spark"),

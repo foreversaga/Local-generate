@@ -1,6 +1,6 @@
 # Sol-H3-Spark 整合 WebUI 實作規畫
 
-狀態：實作前規畫與驗收合約  
+狀態：已落地並完成三模式 GPU 驗收；hardening 尚待補強（2026-09-12 更新）
 目標分支：ai-persona-video  
 產生方式：由獨立、未繼承主對話上下文的 sol xhigh 子代理完成初稿，再由主代理依本機現況核對。
 
@@ -14,7 +14,7 @@
 - t2va、fl2va、ref2va 三種模式。
 - 獨立工具頁、API、durable job、worker protocol、GPU/UMA 互斥。
 - 輸入素材安全驗證與 comfyui-input/comfyui-output root staging。
-- MP4、121 frames、24 FPS、AAC 音軌的結果驗收。
+- 5 秒／10 秒兩個官方 frame profile；MP4、24 FPS、AAC 音軌的結果驗收。
 - Browser、既有流程 regression、回滾與 Git 提交驗收。
 
 本文件是實作合約；任何未經官方程式或實機確認的能力都保持關閉，不以同名 ComfyUI node 或模型檔名推測相容性。
@@ -103,15 +103,16 @@ Sol-H3 不經過 ComfyUI，不加入既有 model/profile 下拉選單，也不�
 | fl2va | 首幀＋尾幀到影片＋音訊 | transformer＋原生 H3 VAE＋VSA | 恰好一張首幀、一張尾幀 |
 | ref2va | 參考素材到影片＋音訊 | transformer_ref＋原生 H3 VAE＋Ref2VA LoRA | backend 保留一個圖片／影片／音訊 locator；目前 WebUI picker 暴露圖片或影片 |
 
-MVP 固定輸出：
+目前可由 request/UI 選擇的輸出 profile：
 
 - 1344×768
-- 121 frames
+- 5 秒：H3 Stage 1 產生 124 frames，最終輸出 121 frames
+- 10 秒：H3 Stage 1 產生 243 frames，最終輸出 241 frames
 - 24 FPS
 - MP4
 - audio.generate = true
 
-MVP 不接受 client 覆寫解析度、FPS、frame count 或任意模型組合。ref2va 的多參考、混合媒體、獨立 audio prompt、任意輸入 codec 必須等官方程式和 GPU 實測確認後才可擴充。
+目前不接受 client 覆寫解析度、FPS、frame count、distilled steps 或任意模型組合。可選 durationSeconds 僅限 5 與 10，並由官方 runtime recipe 同步更新 Stage 1、upscaler、adapter、Stage 2 與輸出驗證的 temporal geometry。ref2va 的多參考、混合媒體、獨立 audio prompt、任意輸入 codec 必須等官方程式和 GPU 實測確認後才可擴充。
 
 ### 4.1 Request schema
 
@@ -123,6 +124,7 @@ MVP 不接受 client 覆寫解析度、FPS、frame count 或任意模型組合�
   "mode": "t2va",
   "prompt": "同時描述畫面、動作與聲音",
   "seed": 123456789,
+  "durationSeconds": 5,
   "audio": { "generate": true },
   "inputs": {}
 }
@@ -134,6 +136,8 @@ MVP 不接受 client 覆寫解析度、FPS、frame count 或任意模型組合�
 - mode 僅允許 t2va、fl2va、ref2va。
 - prompt 必填，產品上限暫定 4,000 Unicode code points；保留原始 Unicode 與換行。
 - seed 可選，必須是官方 pipeline 接受的整數。
+- durationSeconds 可選，僅接受已驗證的 5 或 10；省略時使用 5 秒 profile。
+- refImageMatch（stage1/stage2）與 refStage1Attn（dense/sol）只對 ref2va 開放。
 - 只拒絕不安全控制字元；不得把 prompt 插入 shell command。
 - 在官方支援前，audio.prompt 等未知欄位回傳 422，不得偷偷串接到主 prompt。
 
@@ -397,7 +401,7 @@ ownerId: <job-id>
 1. t2va、fl2va、ref2va 模式選擇。
 2. prompt（明確提示同時描述畫面、動作、聲音）。
 3. 模式對應的素材欄位。
-4. 固定輸出摘要 1344×768 / 121 / 24 FPS / native audio。
+4. duration 5/10 秒與對應 121/241 frames；固定 1344×768 / 24 FPS / native audio。
 5. readiness：code、三個 runtime、各模式 checkpoints、cache、GPU conflict。
 6. 排他 GPU/UMA 警告。
 7. stage timeline、取消、reload 後 job 恢復。
@@ -462,14 +466,15 @@ tests/sol-h3-gpu-exclusion.test.mjs
 
 ### 10.3 本次 WebUI adapter 的落地範圍
 
-第一版 WebUI adapter 已採用 job-scoped staging、獨立 job state、全域 GPU coordinator lease、host lock 與官方 infer.py argv 執行器。它不會在 HTTP request 中下載權重，也不會繞過 readiness gate。這個 one-shot runner 是為了先固定 WebUI/API 與官方 CLI 的資料契約；只有完成 GPU smoke test、取消和 restart recovery 的實測後，才可升級為可重用的三個 persistent worker session。
+WebUI adapter 已採用 job-scoped staging、獨立 job state、全域 GPU coordinator lease、host lock 與官方 runtime。它不會在 HTTP request 中下載權重，也不會繞過 readiness gate。正式 runner 已由 one-shot CLI wrapper 升級為按 mode、duration、Ref2VA 參數隔離的 persistent JSONL daemon：第一次 request 完成 Stage 1/Qwen/Stage 2 warmup，後續相同 profile 的 request 重用常駐 worker；切換 profile 會先關閉舊 session，再建立正確組件。daemon 會回報實際 Qwen、Stage 1、Stage 2 邊界，job report 會保存官方 results.json 的 warmup、正式 E2E 與分階段時間。
 
 因此目前的成功條件是：
 
-- SOL_H3_RUNTIME_READY=1 只在三個 runtime 的 import/load probe 通過後設定。
-- SOL_H3_CHECKPOINTS_VERIFIED=1 只在官方 manifest 的 size/hash lock 完成後設定。
+- SOL_H3_RUNTIME_READY=1 只在三個 runtime 的 import/load probe 通過後設定；目前 live readiness 已通過。
+- SOL_H3_CHECKPOINTS_VERIFIED=1 只在官方 manifest 的 size/hash lock 完成後設定；目前仍保留 provisioning 的 operator verification 邊界。
 - prompt cache 完整且 offline 可讀。
-- 官方 runner 產生的檔案通過 MP4、AAC、1344×768、121 frames、24 FPS 驗證。
+- 官方 runner 產生的檔案通過 MP4、AAC、1344×768、24 FPS，以及所選 5 秒／10 秒 profile 的 121／241 frames 驗證。
+- UI 顯示所選 duration、frame count、目前 runtime 階段、GPU 排隊、cold start/warmup、正式生成、收尾與總耗時；失敗 job 可用原 request retry。
 
 未滿足上述條件時，工具頁仍可顯示模式與缺口，但 submit 必須被禁用；這不是把未驗證環境宣稱為可生成。
 
@@ -519,12 +524,16 @@ GPU busy 不等於 checkpoint not ready，兩者不可合併成模糊的 availab
 
 ### Phase 1：t2va
 
-- durable job store、狀態機、取消和 recovery。
+目前狀態：已完成 persistent daemon、duration profile、計時、retry 與 t2va GPU E2E。
+
+- durable job store、狀態機與 retry；取消和 restart recovery 的 live 驗收列在 Phase 4。
 - global GPU lease、ComfyUI/vLLM conflict gate。
 - worker protocol 和 t2va UI/API。
 - 一次完整實機輸出，證明無 input VAE，驗證 MP4/AAC。
 
 ### Phase 2：fl2va
+
+目前狀態：已完成首幀／尾幀 staging、native H3 VAE 與 fl2va GPU E2E。
 
 - 首幀／尾幀具名 selector。
 - 兩個 ComfyUI media roots 的安全 staging。
@@ -533,11 +542,15 @@ GPU busy 不等於 checkpoint not ready，兩者不可合併成模糊的 availab
 
 ### Phase 3：ref2va
 
-- 圖片、影片、音訊各一個單參考 E2E。
+目前狀態：已完成單圖片 reference、Ref2VA LoRA 實際載入與 ref2va GPU E2E；影片／音訊 reference 仍未在 WebUI 暴露。
+
+- 單圖片 reference E2E；影片／音訊 reference 的 backend contract 保留，但 WebUI MVP 不暴露 picker。
 - 證明 transformer_ref、native VAE、Ref2VA LoRA 實際載入。
 - 官方多參考能力確認後才提高上限。
 
 ### Phase 4：hardening
+
+目前狀態：尚待完成 restart recovery、各階段取消與 worker crash recovery 的 live 驗收。
 
 - restart recovery、各階段取消、worker crash/invalid JSONL。
 - artifact fingerprint、Stage 2 resume gate。
@@ -579,7 +592,7 @@ GPU busy 不等於 checkpoint not ready，兩者不可合併成模糊的 availab
 
 - video stream 恰好符合預期。
 - 1344×768。
-- 121 frames，而不是只用 duration 推估。
+- 所選 profile 的 frames：5 秒為 121、10 秒為 241，而不是只用 duration 推估。
 - 24 FPS。
 - 至少一條 audio stream，最終 codec 為 AAC。
 - A/V duration 在實測容許範圍。
@@ -599,6 +612,8 @@ build 和重啟前先等既有 queue 清空。主代理執行正式 build，只�
 - 既有 single video 仍送到 ComfyUI。
 - Sol-H3 期間既有 ComfyUI flow 顯示排他狀態。
 
+本次 live Browser 已確認 Sol-H3 頁面、三種 mode、5／10 秒切換、ref2va 參數、readiness gate、stage timeline、計時卡與 retry 顯示；尚未把取消中的 job recovery 當成已驗收。
+
 ## 14. 回滾
 
 1. 設定 SOL_H3_ENABLED=false。
@@ -610,20 +625,21 @@ build 和重啟前先等既有 queue 清空。主代理執行正式 build，只�
 
 回滾不得 reset/checkout ahead 4 commits，不得刪除目前 dirty work、下載中的權重或使用者生成內容。
 
-## 15. 目前尚待主代理現場核實
+## 15. 尚待補強或持續監控
 
-- Sana sol-engine 實際 commit SHA。
+- Sana sol-engine 實際 commit SHA 已記錄為 `8e0db4fa562d727ea28b8d63015c196db7d97cae`。
 - 官方 manifest 全部相對路徑、LFS OID、SHA-256 和完成大小。
 - Qwen/upscaler 是否與官方權重完全相同；同名檔案不算證明。
-- 三個 runtime 的 import/load、CUDA/PyTorch 版本與套件相容性。
+- 三個 runtime 的 import/load、CUDA/PyTorch 版本與套件相容性已通過目前機器的 readiness/probe；仍需把版本與 manifest 指紋固化成可重現報告。
 - upscaler、adapter 的實際 runtime 歸屬。
+- t2va、fl2va、ref2va 已各完成一次 persistent-daemon GPU E2E；三模式的 restart/cancel recovery 仍待驗收。
 - ref2va 參考數、混合媒體、audio prompt 和輸入 codec 上限。
-- fl2va 是否嚴格要求首尾兩張圖。
-- 三種 mode 的 peak UMA、載入／卸載時間和最低安全 MemAvailable。
+- fl2va 缺首幀／尾幀的拒絕與雙圖 E2E 已驗證；其他輸入 codec 上限仍待補測。
+- 三種 mode 的 peak UMA 與載入／卸載時間已留存於 job evidence；最低安全 MemAvailable 閾值仍待長期壓測。
 - 現在 vLLM listener、process/container 的實際 owner 和安全 lifecycle。
 - ComfyUI drain/unload/stop/restart hook。
 - LTX 原始輸出 codec、AAC mux 是否額外需要 ffmpeg。
 - offline cache 在禁止網路環境的完整性。
 - 下載後剩餘 SSD 是否仍保有安全 headroom。
 
-在上述條件完成前，任何 UI/API readiness 必須如實標示 partial/not-ready，不得以 listener、檔案存在或 CPU tests 通過宣稱可生成。
+尚待補強項目不影響目前已通過的 live readiness；但不得把 operator verification 當成獨立 hash 證明，也不得把未完成的 restart/cancel recovery 宣稱為已驗收。

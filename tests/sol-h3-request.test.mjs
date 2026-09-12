@@ -105,3 +105,13 @@ test("infers the official reference media kinds", () => {
   assert.equal(inferSolH3MediaKind("source.webm"), "video");
   assert.equal(inferSolH3MediaKind("voice.wav"), "audio");
 });
+
+test("exposes only the validated five and ten second profiles", () => {
+  const request = normalizeSolH3Request({ mode: "t2va", prompt: "x", durationSeconds: 10 });
+  assert.equal(request.durationSeconds, 10);
+  assert.throws(() => normalizeSolH3Request({ mode: "t2va", prompt: "x", durationSeconds: 8 }), { code: "SOL_H3_DURATION_INVALID" });
+  const reference = normalizeSolH3Request({ mode: "ref2va", prompt: "x", refImageMatch: "stage2", refStage1Attn: "sol", inputs: { references: [{ root: "comfyui-input", relativePath: "x.png" }] } });
+  assert.equal(reference.refImageMatch, "stage2");
+  assert.equal(reference.refStage1Attn, "sol");
+  assert.throws(() => normalizeSolH3Request({ mode: "t2va", prompt: "x", refImageMatch: "stage1" }), { code: "SOL_H3_REF_OPTIONS_UNSUPPORTED" });
+});
