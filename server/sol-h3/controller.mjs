@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 
 import { createSolH3Readiness } from "./readiness.mjs";
 import {
@@ -14,22 +13,17 @@ import {
 } from "./request.mjs";
 import { DEFAULT_SOL_H3_RUNTIME_CONFIG } from "./runtime-config.mjs";
 import { createSolH3JobStore } from "./job-store.mjs";
-import {
-  assertSolH3JobTransition,
-  isSolH3TerminalState,
-} from "./state-machine.mjs";
+import { assertSolH3JobTransition, isSolH3TerminalState } from "./state-machine.mjs";
 import {
   assertIdempotentReplay,
   fingerprintSolH3Request,
   normalizeIdempotencyKey,
 } from "./idempotency.mjs";
-import {
-  writeSolH3SseComment,
-  writeSolH3SseEvent,
-  writeSolH3SseHeaders,
-} from "./sse.mjs";
+import { writeSolH3SseComment, writeSolH3SseEvent, writeSolH3SseHeaders } from "./sse.mjs";
 import { createSolH3MediaValidator } from "./media-validation.mjs";
 import { createSolH3OutputValidator } from "./output-validation.mjs";
+import { createSolH3RunnerClient } from "./runner-client.mjs";
+import { registerSolH3Lifecycle } from "./lifecycle.mjs";
 
 const PIPELINE_STATES = Object.freeze([
   "queued",
@@ -58,8 +52,6 @@ const STAGE_META = Object.freeze({
 });
 
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]);
-const CANCEL_GRACE_MS = 10_000;
-const PROCESS_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const SSE_KEEPALIVE_MS = 15_000;
 
 function now() {
@@ -74,10 +66,16 @@ function safeId(value) {
   return id;
 }
 
+function redactAbsolutePaths(value) {
+  return String(value)
+    .replace(/[A-Za-z]:[\\/]\S+/g, "[redacted path]")
+    .replace(/\\\\\S+/g, "[redacted path]")
+    .replace(/\/(?:home|tmp|var|opt|usr|mnt|srv|root)\/\S+/g, "[redacted path]");
+}
+
 function publicError(error) {
-  return String(error?.message || error || "Sol-H3 job failed.")
-    .replace(/Bearer\s+[^\s,;]+/giu, "Bearer [redacted]")
-    .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?:home|tmp|var|opt|usr|mnt|srv|root)\/)[^\s,;:'\"]+/gu, "[redacted path]")
+  return redactAbsolutePaths(error?.message || error || "Sol-H3 job failed.")
+    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]")
     .slice(-2000);
 }
 
@@ -126,7 +124,7 @@ async function checkConflictUrls(urls, fetcher = fetch) {
       const response = await fetcher(commandBase(url) + "/models", { signal: AbortSignal.timeout(1200) });
       if (response.ok) conflicts.push(url);
     } catch {
-      // An unavailable configured conflict service is not a conflict.
+      // Unavailable configured conflict services do not consume the accelerator.
     }
   }
   return conflicts;
@@ -142,7 +140,7 @@ async function processAlive(pid) {
   }
 }
 
-function hashBytes(value) {
+function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -158,7 +156,7 @@ function nextPipelineState(status) {
 export function createSolH3Controller({
   config = DEFAULT_SOL_H3_RUNTIME_CONFIG,
   fsApi = fs,
-  spawnApi = spawn,
+  spawnApi,
   fetcher = fetch,
   resolveMediaPath,
   gpuCoordinator = null,
@@ -171,14 +169,15 @@ export function createSolH3Controller({
   const readiness = createSolH3Readiness({ config, fsApi });
   const store = createSolH3JobStore({ root: config.jobRoot, fsApi, clock });
   const jobs = new Map();
-  const children = new Map();
   const admissions = new Map();
+  const leases = new Map();
   const idempotency = new Map();
   const mutationTails = new Map();
   const listeners = new Map();
   const managerLockFile = path.join(config.runtimeRoot, "sol-h3-manager.lock");
   let initialized;
   let managerLockOwned = false;
+  let unregisterLifecycle = () => {};
 
   function notify(job, event) {
     const callbacks = listeners.get(job.id);
@@ -264,6 +263,22 @@ export function createSolH3Controller({
     });
   }
 
+  const runner = createSolH3RunnerClient({
+    config,
+    fsApi,
+    ...(spawnApi ? { spawnApi } : {}),
+    onProgress: (jobId, stage) => {
+      const job = jobs.get(jobId);
+      if (job) void advanceTo(job, stage, {}, { source: "runner-log" }).catch(() => {});
+    },
+  });
+  const mediaValidator = createSolH3MediaValidator({ fsApi, probeMedia: runner.probeMedia });
+  const outputValidator = createSolH3OutputValidator({
+    fsApi,
+    probeMedia: runner.probeMedia,
+    decodeMedia: runner.decodeMedia,
+  });
+
   async function readLock(filePath) {
     return await fsApi.readFile(filePath, "utf8").then(JSON.parse).catch(() => null);
   }
@@ -308,24 +323,18 @@ export function createSolH3Controller({
         if (job.idempotencyKey && job.requestFingerprint) {
           idempotency.set(job.idempotencyKey, { jobId: job.id, requestFingerprint: job.requestFingerprint });
         }
-        const result = await store.recover(job);
-        if (result.action === "reload") recovered.push(job);
+        const recovery = await store.recover(job);
+        if (recovery.action === "reload") recovered.push(job);
       }
-      for (const job of recovered) {
-        setImmediate(() => { void run(job); });
-      }
+      for (const job of recovered) setImmediate(() => { void run(job); });
       return true;
     })();
     return initialized;
   }
 
-  async function inspectConflicts() {
-    return await checkConflictUrls(config.conflictUrls, fetcher);
-  }
-
   async function health() {
     await ensureInitialized();
-    const conflicts = await inspectConflicts();
+    const conflicts = await checkConflictUrls(config.conflictUrls, fetcher);
     const gpu = gpuCoordinator?.snapshot?.() || { active: null, queue: [], activeCount: 0, queuedCount: 0, totalCount: 0 };
     const result = await readiness.inspect({ gpu, conflicts });
     const lock = await clearStaleLock(config.hostLockFile);
@@ -357,172 +366,6 @@ export function createSolH3Controller({
     return result;
   }
 
-  function updateFromLine(job, line) {
-    const text = String(line || "").trim();
-    if (!text || isSolH3TerminalState(job.status) || job.status === "cancel_requested") return;
-    const lower = text.toLowerCase();
-    const stages = [
-      ["qwen", "qwen_running"],
-      ["stage1", "stage1_running"],
-      ["stage 1", "stage1_running"],
-      ["upscal", "upscaling"],
-      ["adapter", "adapting"],
-      ["stage2", "stage2_running"],
-      ["stage 2", "stage2_running"],
-      ["mux", "validating"],
-    ];
-    const selected = stages.find(([needle]) => lower.includes(needle));
-    if (!selected) return;
-    void advanceTo(job, selected[1], {}, { source: "runner-log" }).catch(() => {});
-  }
-
-  function runCommand(command, args, { cwd, env, timeoutMs = 60_000, job = null } = {}) {
-    return new Promise((resolve, reject) => {
-      let child;
-      try {
-        child = spawnApi(command, args, {
-          cwd,
-          env,
-          shell: false,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-      } catch (error) {
-        reject(error);
-        return;
-      }
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      let killTimer = null;
-      const append = (value, chunk) => (value + String(chunk)).slice(-256 * 1024);
-      child.stdout?.on("data", (chunk) => {
-        stdout = append(stdout, chunk);
-        if (job) String(chunk).split(/\r?\n/u).forEach((line) => updateFromLine(job, line));
-      });
-      child.stderr?.on("data", (chunk) => {
-        stderr = append(stderr, chunk);
-        if (job) String(chunk).split(/\r?\n/u).forEach((line) => updateFromLine(job, line));
-      });
-      const timer = setTimeout(() => {
-        if (settled) return;
-        child.kill("SIGTERM");
-        killTimer = setTimeout(() => { if (!settled) child.kill("SIGKILL"); }, CANCEL_GRACE_MS);
-        killTimer.unref?.();
-      }, timeoutMs);
-      child.once("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        reject(error);
-      });
-      child.once("close", (code, signal) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        resolve({ code, signal, stdout, stderr });
-      });
-    });
-  }
-
-  async function probeMedia(filePath) {
-    const ffprobe = String(process.env.FFPROBE_PATH || "ffprobe");
-    const result = await runCommand(ffprobe, [
-      "-v", "error",
-      "-count_frames",
-      "-show_entries", "stream=index,codec_type,codec_name,width,height,nb_read_frames,nb_frames,r_frame_rate,avg_frame_rate,duration",
-      "-show_entries", "format=format_name,duration",
-      "-of", "json",
-      filePath,
-    ], { timeoutMs: 60_000 }).catch((error) => {
-      throw solH3Error("SOL_H3_FFPROBE_UNAVAILABLE", "ffprobe is required to validate Sol-H3 media.", 503, { cause: publicError(error) });
-    });
-    if (result.code !== 0) {
-      throw solH3Error("SOL_H3_MEDIA_DECODE_FAILED", "ffprobe could not decode Sol-H3 media.", 422, { stderr: publicError(result.stderr) });
-    }
-    try { return JSON.parse(result.stdout); }
-    catch { throw solH3Error("SOL_H3_MEDIA_DECODE_FAILED", "ffprobe returned invalid media metadata.", 422); }
-  }
-
-  async function decodeMedia(filePath) {
-    const ffmpeg = String(process.env.FFMPEG_PATH || "ffmpeg");
-    const result = await runCommand(ffmpeg, [
-      "-v", "error",
-      "-i", filePath,
-      "-map", "0:v:0?",
-      "-map", "0:a:0?",
-      "-f", "null",
-      "-",
-    ], { timeoutMs: 10 * 60_000 }).catch((error) => {
-      throw solH3Error("SOL_H3_FFMPEG_UNAVAILABLE", "ffmpeg is required for full Sol-H3 output decode validation.", 503, { cause: publicError(error) });
-    });
-    if (result.code !== 0) {
-      throw solH3Error("SOL_H3_OUTPUT_DECODE_FAILED", "Sol-H3 output failed full decode validation.", 502, { stderr: publicError(result.stderr) });
-    }
-  }
-
-  const mediaValidator = createSolH3MediaValidator({ fsApi, probeMedia });
-  const outputValidator = createSolH3OutputValidator({ fsApi, probeMedia, decodeMedia });
-
-  async function stageMedia(locator, destination, expectedKinds) {
-    const normalized = normalizeSolH3MediaLocator(locator, "input");
-    const sourcePath = await resolveMediaPath(toInternalSolH3MediaRoot(normalized.root), normalized.relativePath);
-    return await mediaValidator.stage({ sourcePath, destination, locator: normalized, expectedKinds });
-  }
-
-  async function stageRequest(job, request) {
-    const inputsRoot = path.join(store.directory(job.id), "inputs");
-    const casesRoot = path.join(store.directory(job.id), "intermediates");
-    const caseFile = path.join(casesRoot, "request.jsonl");
-    const caseRecord = {
-      case_id: "generation",
-      prompt: request.prompt,
-      seed: request.seed,
-      task: request.mode,
-    };
-
-    if (request.mode === "fl2va") {
-      const firstExtension = path.extname(request.inputs.firstFrame.relativePath).toLowerCase();
-      const lastExtension = path.extname(request.inputs.lastFrame.relativePath).toLowerCase();
-      const first = await stageMedia(request.inputs.firstFrame, path.join(inputsRoot, "first-frame" + firstExtension), ["image"]);
-      const last = await stageMedia(request.inputs.lastFrame, path.join(inputsRoot, "last-frame" + lastExtension), ["image"]);
-      caseRecord.first_frame = first.path;
-      caseRecord.last_frame = last.path;
-    }
-
-    if (request.mode === "ref2va") {
-      const reference = request.inputs.references[0];
-      const extension = path.extname(reference.relativePath).toLowerCase();
-      const referenceKind = inferSolH3MediaKind(reference.relativePath, reference.kind);
-      if (!referenceKind || (referenceKind === "audio" && !AUDIO_EXTENSIONS.has(extension))) {
-        throw solH3Error("SOL_H3_REFERENCE_KIND_UNKNOWN", "ref2va reference must be an image, video, or supported audio file.", 422);
-      }
-      const staged = await stageMedia(reference, path.join(inputsRoot, "reference" + extension), ["image", "video", "audio"]);
-      caseRecord.references = [{ type: staged.kind, path: staged.path }];
-    }
-
-    await fsApi.writeFile(caseFile, JSON.stringify(caseRecord) + "\n", "utf8");
-    return { caseFile };
-  }
-
-  async function runnerPathsFile(task) {
-    const requiredKey = task === "ref2va" ? "ref2va_lora" : "vsa_lora";
-    const candidates = [config.taskPaths?.[task], config.pathsFile, config.fallbackCheckpointPathsFile].filter(Boolean);
-    for (const candidate of candidates) {
-      const manifest = await fsApi.readFile(candidate, "utf8").then(JSON.parse).catch(() => null);
-      if (manifest && typeof manifest[requiredKey] === "string" && manifest[requiredKey].trim()) return candidate;
-    }
-    throw solH3Error("SOL_H3_PATHS_NOT_READY", "No task-compatible Sol-H3 path manifest is prepared.", 503, { task });
-  }
-
-  async function runnerPython(pathsFile) {
-    if (config.inferPython) return config.inferPython;
-    const manifest = await fsApi.readFile(pathsFile, "utf8").then(JSON.parse).catch(() => null);
-    return String(manifest?.stage2_python || manifest?.qwen_python || "python3").trim() || "python3";
-  }
-
   async function acquireHostLock(job) {
     await fsApi.mkdir(config.runtimeRoot, { recursive: true });
     await clearStaleLock(config.hostLockFile);
@@ -543,21 +386,83 @@ export function createSolH3Controller({
     };
   }
 
-  async function findFormalMp4(outputRoot) {
+  async function stageMedia(locator, destination, expectedKinds) {
+    const normalized = normalizeSolH3MediaLocator(locator, "input");
+    const sourcePath = await resolveMediaPath(toInternalSolH3MediaRoot(normalized.root), normalized.relativePath);
+    return await mediaValidator.stage({ sourcePath, destination, locator: normalized, expectedKinds });
+  }
+
+  async function stageRequest(job) {
+    const request = job.request;
+    const inputsRoot = path.join(store.directory(job.id), "inputs");
+    const caseFile = path.join(store.directory(job.id), "intermediates", "request.jsonl");
+    const record = {
+      case_id: "generation",
+      prompt: request.prompt,
+      seed: request.seed,
+      task: request.mode,
+    };
+
+    if (request.mode === "fl2va") {
+      const firstExtension = path.extname(request.inputs.firstFrame.relativePath).toLowerCase();
+      const lastExtension = path.extname(request.inputs.lastFrame.relativePath).toLowerCase();
+      const first = await stageMedia(request.inputs.firstFrame, path.join(inputsRoot, "first-frame" + firstExtension), ["image"]);
+      const last = await stageMedia(request.inputs.lastFrame, path.join(inputsRoot, "last-frame" + lastExtension), ["image"]);
+      record.first_frame = first.path;
+      record.last_frame = last.path;
+    }
+
+    if (request.mode === "ref2va") {
+      const reference = request.inputs.references[0];
+      const extension = path.extname(reference.relativePath).toLowerCase();
+      const referenceKind = inferSolH3MediaKind(reference.relativePath, reference.kind);
+      if (!referenceKind || (referenceKind === "audio" && !AUDIO_EXTENSIONS.has(extension))) {
+        throw solH3Error("SOL_H3_REFERENCE_KIND_UNKNOWN", "ref2va reference must be an image, video, or supported audio file.", 422);
+      }
+      const staged = await stageMedia(reference, path.join(inputsRoot, "reference" + extension), ["image", "video", "audio"]);
+      record.references = [{ type: staged.kind, path: staged.path }];
+    }
+
+    await fsApi.writeFile(caseFile, JSON.stringify(record) + "\n", "utf8");
+    return caseFile;
+  }
+
+  async function writePipelineFingerprint(job, pathsFilePath, currentHealth) {
+    const pathsBytes = await fsApi.readFile(pathsFilePath);
+    const record = {
+      schemaVersion: 1,
+      mode: job.request.mode,
+      sanaCommit: currentHealth.code?.sanaCommit || null,
+      h3Revision: currentHealth.paths?.h3Revision || config.pinnedH3Revision,
+      pathsManifestSha256: sha256(pathsBytes),
+      createdAt: clock(),
+    };
+    const pipelineFingerprint = sha256(JSON.stringify(record));
+    await fsApi.writeFile(
+      path.join(store.directory(job.id), "checkpoint-fingerprint.json"),
+      JSON.stringify({ ...record, pipelineFingerprint }, null, 2) + "\n",
+      { encoding: "utf8", flag: "wx" },
+    );
+    job.pipelineFingerprint = pipelineFingerprint;
+    await store.save(job);
+    return pipelineFingerprint;
+  }
+
+  async function findFormalOutput(outputRoot) {
     const candidates = [];
     async function walk(directory) {
       const entries = await fsApi.readdir(directory, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
-        const file = path.join(directory, entry.name);
-        if (entry.isDirectory()) await walk(file);
-        else if (entry.isFile() && path.extname(entry.name).toLowerCase() === ".mp4") candidates.push(file);
+        const candidate = path.join(directory, entry.name);
+        if (entry.isDirectory()) await walk(candidate);
+        else if (entry.isFile() && path.extname(entry.name).toLowerCase() === ".mp4") candidates.push(candidate);
       }
     }
     await walk(outputRoot);
-    const formal = candidates.filter((file) => {
-      const relative = path.relative(outputRoot, file).split(path.sep);
-      return relative[0] === "generation" && path.basename(file) === "refined_1344x768_121f.mp4";
+    const formal = candidates.filter((candidate) => {
+      const relative = path.relative(outputRoot, candidate).split(path.sep);
+      return relative[0] === "generation" && path.basename(candidate) === "refined_1344x768_121f.mp4";
     });
     if (formal.length !== 1) {
       throw solH3Error("SOL_H3_OUTPUT_COUNT_INVALID", "Sol-H3 job did not produce exactly one formal MP4 output.", 502, {
@@ -568,97 +473,9 @@ export function createSolH3Controller({
     return formal[0];
   }
 
-  async function writePipelineFingerprint(job, pathsFile, currentHealth) {
-    const pathsBytes = await fsApi.readFile(pathsFile);
-    const record = {
-      schemaVersion: 1,
-      mode: job.request.mode,
-      sanaCommit: currentHealth.code?.sanaCommit || null,
-      h3Revision: currentHealth.paths?.h3Revision || config.pinnedH3Revision,
-      pathsManifestSha256: hashBytes(pathsBytes),
-      createdAt: clock(),
-    };
-    const fingerprint = hashBytes(JSON.stringify(record));
-    const value = { ...record, pipelineFingerprint: fingerprint };
-    await fsApi.writeFile(
-      path.join(store.directory(job.id), "checkpoint-fingerprint.json"),
-      JSON.stringify(value, null, 2) + "\n",
-      { encoding: "utf8", flag: "wx" },
-    );
-    job.pipelineFingerprint = fingerprint;
-    await store.save(job);
-    return fingerprint;
-  }
-
-  function terminateProcessGroup(child, signal) {
-    if (!child?.pid) return false;
-    try {
-      if (process.platform !== "win32") process.kill(-child.pid, signal);
-      else child.kill(signal);
-      return true;
-    } catch {
-      try { return child.kill(signal); } catch { return false; }
-    }
-  }
-
-  async function waitForOfficialRunner(job, command, args) {
-    const logFile = path.join(store.directory(job.id), "logs", "runner.log");
-    const child = spawnApi(command, args, {
-      cwd: config.sanaPackageRoot,
-      env: {
-        ...process.env,
-        HF_HUB_OFFLINE: "1",
-        TRANSFORMERS_OFFLINE: "1",
-        HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
-        PYTHONUNBUFFERED: "1",
-        PYTHONPATH: [config.sanaPackageRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
-      },
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    });
-    children.set(job.id, child);
-    let logTail = "";
-    const handleOutput = (chunk) => {
-      const text = String(chunk);
-      logTail = (logTail + text).slice(-128 * 1024);
-      text.split(/\r?\n/u).forEach((line) => updateFromLine(job, line));
-      void fsApi.appendFile(logFile, text, "utf8").catch(() => {});
-    };
-    child.stdout?.on("data", handleOutput);
-    child.stderr?.on("data", handleOutput);
-
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      let killTimer = null;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        terminateProcessGroup(child, "SIGTERM");
-        killTimer = setTimeout(() => { if (!settled) terminateProcessGroup(child, "SIGKILL"); }, CANCEL_GRACE_MS);
-        killTimer.unref?.();
-      }, PROCESS_TIMEOUT_MS);
-      child.once("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        reject(error);
-      });
-      child.once("close", (code, signal) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        children.delete(job.id);
-        resolve({ code, signal, logTail });
-      });
-    });
-  }
-
   async function run(job) {
     let lease;
-    let releaseLock;
+    let releaseHostLock;
     let heartbeat;
     try {
       if (isSolH3TerminalState(job.status)) return;
@@ -677,30 +494,32 @@ export function createSolH3Controller({
       if (admission) admissions.set(job.id, admission);
       await transition(job, "waiting_gpu");
       lease = admission ? await admission.granted : null;
+      if (lease) leases.set(job.id, lease);
       if (lease?.heartbeat) heartbeat = setInterval(() => lease.heartbeat(), 60_000);
       heartbeat?.unref?.();
       if (job.cancelRequested) throw solH3Error("SOL_H3_CANCELLED", "Sol-H3 job was cancelled.", 499);
 
       const currentHealth = await preflight(job.request.mode);
-      job.gpu = currentHealth.gpu;
-      releaseLock = await acquireHostLock(job);
-      await transition(job, "preparing", { startedAt: job.startedAt || clock(), gpu: currentHealth.gpu });
+      releaseHostLock = await acquireHostLock(job);
+      await transition(job, "preparing", {
+        startedAt: job.startedAt || clock(),
+        gpu: currentHealth.gpu,
+      });
 
-      const staged = await stageRequest(job, job.request);
-      const pathsFile = await runnerPathsFile(job.request.mode);
-      const pipelineFingerprint = await writePipelineFingerprint(job, pathsFile, currentHealth);
+      const caseFile = await stageRequest(job);
+      const pathsFilePath = await runner.pathsFile(job.request.mode);
+      const pipelineFingerprint = await writePipelineFingerprint(job, pathsFilePath, currentHealth);
       const outputRoot = path.join(store.directory(job.id), "outputs");
-      await fsApi.mkdir(outputRoot, { recursive: true });
       await transition(job, "qwen_running");
 
-      const args = [
-        config.inferPath,
-        "--paths", pathsFile,
-        "--prompts", staged.caseFile,
-        "--task", job.request.mode,
-        "--output-dir", outputRoot,
-      ];
-      const exit = await waitForOfficialRunner(job, await runnerPython(pathsFile), args);
+      const exit = await runner.run({
+        jobId: job.id,
+        mode: job.request.mode,
+        caseFile,
+        outputRoot,
+        logFile: path.join(store.directory(job.id), "logs", "runner.log"),
+        pathsFilePath,
+      });
       if (job.cancelRequested) throw solH3Error("SOL_H3_CANCELLED", "Sol-H3 job was cancelled.", 499);
       if (exit.code !== 0) {
         throw solH3Error("SOL_H3_RUNNER_FAILED", "Official Sol-H3 runner failed.", 502, {
@@ -711,28 +530,28 @@ export function createSolH3Controller({
       }
 
       await advanceTo(job, "validating");
-      const sourceOutput = await findFormalMp4(outputRoot);
+      const sourceOutput = await findFormalOutput(outputRoot);
       const finalOutput = path.join(outputRoot, "final.mp4");
       if (sourceOutput !== finalOutput) await fsApi.rename(sourceOutput, finalOutput);
-      const metadata = await outputValidator.validate(finalOutput, { pipelineFingerprint });
+      const outputMetadata = await outputValidator.validate(finalOutput, { pipelineFingerprint });
       await fsApi.writeFile(
         path.join(outputRoot, "manifest.json"),
-        JSON.stringify({ schemaVersion: 1, outputId: "final", ...metadata }, null, 2) + "\n",
+        JSON.stringify({ schemaVersion: 1, outputId: "final", ...outputMetadata }, null, 2) + "\n",
         "utf8",
       );
       await transition(job, "succeeded", {
         finishedAt: clock(),
-        outputMetadata: metadata,
+        outputMetadata,
         error: "",
         errorCode: null,
       });
     } catch (error) {
       const cancelled = error?.code === "SOL_H3_CANCELLED" || error?.code === "GPU_LEASE_CANCELLED" || job.cancelRequested;
-      const target = cancelled ? "cancelled" : "failed";
       if (!isSolH3TerminalState(job.status)) {
-        if (job.status !== "cancel_requested" && cancelled) {
+        if (cancelled && job.status !== "cancel_requested") {
           await transition(job, "cancel_requested", { cancelRequested: true, stage: "正在取消 Sol-H3 worker" }).catch(() => {});
         }
+        const target = cancelled ? "cancelled" : "failed";
         await transition(job, target, {
           stage: cancelled ? "已取消" : "失敗",
           progress: cancelled ? job.progress : null,
@@ -750,9 +569,9 @@ export function createSolH3Controller({
       }
     } finally {
       if (heartbeat) clearInterval(heartbeat);
-      children.delete(job.id);
       admissions.delete(job.id);
-      await releaseLock?.().catch(() => {});
+      leases.delete(job.id);
+      await releaseHostLock?.().catch(() => {});
       lease?.release?.();
     }
   }
@@ -808,7 +627,7 @@ export function createSolH3Controller({
   async function list() {
     await ensureInitialized();
     return [...jobs.values()]
-      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
       .slice(0, 100)
       .map(publicJob);
   }
@@ -828,15 +647,8 @@ export function createSolH3Controller({
       await transition(job, "cancel_requested", { cancelRequested: true, stage: "正在取消 Sol-H3 worker" });
     }
     admissions.get(cleanId)?.cancel?.("Sol-H3 cancellation requested.");
-    const child = children.get(cleanId);
-    if (child) {
-      terminateProcessGroup(child, "SIGTERM");
-      const pid = child.pid;
-      setTimeout(() => {
-        const current = children.get(cleanId);
-        if (current?.pid === pid) terminateProcessGroup(current, "SIGKILL");
-      }, CANCEL_GRACE_MS).unref?.();
-    } else if (!admissions.has(cleanId)) {
+    runner.cancel(cleanId);
+    if (!admissions.has(cleanId) && !leases.has(cleanId)) {
       await transition(job, "cancelled", { stage: "已取消", finishedAt: clock(), error: "", errorCode: null });
     }
     return publicJob(job);
@@ -858,30 +670,30 @@ export function createSolH3Controller({
       "X-Content-Type-Options": "nosniff",
     };
     const range = String(req.headers.range || "").match(/^bytes=(\d*)-(\d*)$/u);
-    if (range) {
-      if (!range[1] && !range[2]) {
-        res.writeHead(416, { "Content-Range": "bytes */" + stat.size });
-        res.end();
-        return true;
-      }
-      const suffix = !range[1] ? Number(range[2]) : null;
-      const start = suffix !== null ? Math.max(0, stat.size - suffix) : Number(range[1]);
-      const end = suffix !== null ? stat.size - 1 : (range[2] ? Math.min(stat.size - 1, Number(range[2])) : stat.size - 1);
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
-        res.writeHead(416, { "Content-Range": "bytes */" + stat.size });
-        res.end();
-        return true;
-      }
-      res.writeHead(206, {
-        ...baseHeaders,
-        "Content-Length": end - start + 1,
-        "Content-Range": "bytes " + start + "-" + end + "/" + stat.size,
-      });
-      createReadStream(filePath, { start, end }).pipe(res);
+    if (!range) {
+      res.writeHead(200, { ...baseHeaders, "Content-Length": stat.size });
+      createReadStream(filePath).pipe(res);
       return true;
     }
-    res.writeHead(200, { ...baseHeaders, "Content-Length": stat.size });
-    createReadStream(filePath).pipe(res);
+    if (!range[1] && !range[2]) {
+      res.writeHead(416, { "Content-Range": "bytes */" + stat.size });
+      res.end();
+      return true;
+    }
+    const suffix = !range[1] ? Number(range[2]) : null;
+    const start = suffix !== null ? Math.max(0, stat.size - suffix) : Number(range[1]);
+    const end = suffix !== null ? stat.size - 1 : (range[2] ? Math.min(stat.size - 1, Number(range[2])) : stat.size - 1);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
+      res.writeHead(416, { "Content-Range": "bytes */" + stat.size });
+      res.end();
+      return true;
+    }
+    res.writeHead(206, {
+      ...baseHeaders,
+      "Content-Length": end - start + 1,
+      "Content-Range": "bytes " + start + "-" + end + "/" + stat.size,
+    });
+    createReadStream(filePath, { start, end }).pipe(res);
     return true;
   }
 
@@ -901,7 +713,18 @@ export function createSolH3Controller({
       res.end();
       return true;
     }
-    const unsubscribe = subscribe(cleanId, (event, snapshot) => {
+
+    let cleaned = false;
+    let unsubscribe = () => {};
+    const keepalive = setInterval(() => writeSolH3SseComment(res), SSE_KEEPALIVE_MS);
+    keepalive.unref?.();
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      clearInterval(keepalive);
+      unsubscribe();
+    }
+    unsubscribe = subscribe(cleanId, (event, snapshot) => {
       writeSolH3SseEvent(res, { event, job: snapshot }, { eventName: "job", id: event.seq });
       if (isSolH3TerminalState(snapshot.status)) {
         writeSolH3SseEvent(res, snapshot, { eventName: "done", id: event.seq });
@@ -909,34 +732,26 @@ export function createSolH3Controller({
         res.end();
       }
     });
-    const keepalive = setInterval(() => writeSolH3SseComment(res), SSE_KEEPALIVE_MS);
-    keepalive.unref?.();
-    let cleaned = false;
-    function cleanup() {
-      if (cleaned) return;
-      cleaned = true;
-      clearInterval(keepalive);
-      unsubscribe();
-    }
     req.once("close", cleanup);
     res.once?.("close", cleanup);
     return true;
   }
 
   async function close() {
-    for (const [id, child] of children) {
-      const job = jobs.get(id);
-      if (job && !isSolH3TerminalState(job.status)) {
-        job.cancelRequested = true;
-        terminateProcessGroup(child, "SIGTERM");
-      }
-    }
+    for (const admission of admissions.values()) admission.cancel?.("Sol-H3 controller shutdown.");
+    await runner.close();
+    for (const lease of leases.values()) lease.release?.();
+    leases.clear();
+    admissions.clear();
     await Promise.allSettled([...mutationTails.values()]);
+    const hostLock = await readLock(config.hostLockFile);
+    if (Number(hostLock?.pid) === process.pid) await fsApi.unlink(config.hostLockFile).catch(() => {});
     if (managerLockOwned) {
-      const lock = await readLock(managerLockFile);
-      if (Number(lock?.pid) === process.pid) await fsApi.unlink(managerLockFile).catch(() => {});
+      const managerLock = await readLock(managerLockFile);
+      if (Number(managerLock?.pid) === process.pid) await fsApi.unlink(managerLockFile).catch(() => {});
       managerLockOwned = false;
     }
+    unregisterLifecycle();
   }
 
   function capabilities() {
@@ -1015,14 +830,6 @@ export function createSolH3Controller({
     }
   }
 
-  return Object.freeze({
-    handleRoute,
-    capabilities,
-    health,
-    create,
-    get,
-    list,
-    cancel,
-    close,
-  });
+  unregisterLifecycle = registerSolH3Lifecycle(close);
+  return Object.freeze({ handleRoute, capabilities, health, create, get, list, cancel, close });
 }
