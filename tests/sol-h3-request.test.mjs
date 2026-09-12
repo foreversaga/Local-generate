@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   inferSolH3MediaKind,
   normalizeSolH3Request,
+  toInternalSolH3MediaRoot,
 } from "../server/sol-h3/request.mjs";
 
 test("normalizes the t2va contract and forces native audio", () => {
@@ -31,7 +32,7 @@ test("rejects media attached to t2va and incomplete fl2va", () => {
   );
 });
 
-test("accepts documented ComfyUI roots and normalizes them for the local media resolver", () => {
+test("keeps documented ComfyUI roots in the normalized durable request", () => {
   const request = normalizeSolH3Request({
     mode: "fl2va",
     prompt: "自然過渡",
@@ -40,17 +41,19 @@ test("accepts documented ComfyUI roots and normalizes them for the local media r
       lastFrame: { root: "comfyui-output", relativePath: "renders/end.png" },
     },
   });
-  assert.equal(request.inputs.firstFrame.root, "input");
-  assert.equal(request.inputs.lastFrame.root, "output");
+  assert.equal(request.inputs.firstFrame.root, "comfyui-input");
+  assert.equal(request.inputs.lastFrame.root, "comfyui-output");
+  assert.equal(toInternalSolH3MediaRoot(request.inputs.firstFrame.root), "input");
+  assert.equal(toInternalSolH3MediaRoot(request.inputs.lastFrame.root), "output");
 });
 
-test("keeps compatibility with jobs from the first adapter revision", () => {
+test("canonicalizes jobs from the first adapter revision to public roots", () => {
   const request = normalizeSolH3Request({
     mode: "ref2va",
     prompt: "保持人物特徵",
     inputs: { references: [{ root: "output", relativePath: "clips/source.mp4", kind: "video" }] },
   });
-  assert.equal(request.inputs.references[0].root, "output");
+  assert.equal(request.inputs.references[0].root, "comfyui-output");
 });
 
 test("limits ref2va MVP to one safe media locator", () => {
