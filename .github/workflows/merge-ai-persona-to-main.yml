@@ -1,0 +1,150 @@
+name: Merge ai-persona-video to main
+
+on:
+  push:
+    branches:
+      - ai-persona-video
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Merge ai-persona-video into main'
+    name: Merge and validate main
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge feature branch and resolve known conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Barry Chiu"
+          git config user.email "53308160+foreversaga@users.noreply.github.com"
+          git fetch origin ai-persona-video
+
+          set +e
+          git merge --no-ff --no-commit origin/ai-persona-video
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            unresolved="$(git diff --name-only --diff-filter=U)"
+            unexpected="$(printf '%s\n' "$unresolved" | grep -v -E '^(\.env\.example|local-bridge\.mjs)$' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "Unexpected merge conflicts:"
+              printf '%s\n' "$unexpected"
+              exit 1
+            fi
+
+            git checkout --ours .env.example local-bridge.mjs
+
+            python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          def branch_text(path: str) -> str:
+              return subprocess.check_output(
+                  ["git", "show", f"origin/ai-persona-video:{path}"],
+                  text=True,
+              )
+
+          # Preserve main's current environment settings and add only the Sol-H3 block.
+          env_path = Path(".env.example")
+          env_text = env_path.read_text()
+          branch_env = branch_text(".env.example")
+          sol_marker = "# NVIDIA Sana Sol-H3-Spark. Keep this runtime separate from ComfyUI profiles."
+          next_marker = "# Local and tunneled service endpoints."
+          if sol_marker not in env_text:
+              start = branch_env.index(sol_marker)
+              end = branch_env.index(next_marker, start)
+              sol_block = branch_env[start:end]
+              env_text = env_text.replace(next_marker, sol_block + next_marker, 1)
+          env_path.write_text(env_text)
+
+          # Preserve main's newer bridge work, inserting the four isolated Sol-H3 integration hooks.
+          bridge_path = Path("local-bridge.mjs")
+          bridge = bridge_path.read_text()
+
+          import_anchor = 'import { createVideoCharacterController } from "./server/video-character/controller.mjs";\n'
+          imports = (
+              'import { createSolH3Controller } from "./server/sol-h3/controller.mjs";\n'
+              'import { createSolH3RuntimeConfig } from "./server/sol-h3/runtime-config.mjs";\n'
+          )
+          if 'createSolH3Controller' not in bridge:
+              if import_anchor not in bridge:
+                  raise SystemExit("Sol-H3 merge anchor missing: video-character import")
+              bridge = bridge.replace(import_anchor, import_anchor + imports, 1)
+
+          owner_anchor = 'const SINGLE_VIDEO_OWNER_ID = String(process.env.MINIMAX_H3_SINGLE_VIDEO_OWNER_ID || `bridge-${process.pid}`);\n'
+          config_line = 'const SOL_H3_RUNTIME_CONFIG = createSolH3RuntimeConfig({ projectRoot: PROJECT_ROOT });\n'
+          if config_line not in bridge:
+              if owner_anchor not in bridge:
+                  raise SystemExit("Sol-H3 merge anchor missing: single-video owner")
+              bridge = bridge.replace(owner_anchor, config_line + owner_anchor, 1)
+
+          child_anchor = 'function longVideoChildOutputPath(child) {\n'
+          controller_block = (
+              'const solH3Controller = createSolH3Controller({\n'
+              '  config: SOL_H3_RUNTIME_CONFIG,\n'
+              '  resolveMediaPath,\n'
+              '  gpuCoordinator: gpuResourceCoordinator,\n'
+              '});\n\n'
+          )
+          if 'const solH3Controller = createSolH3Controller({' not in bridge:
+              if child_anchor not in bridge:
+                  raise SystemExit("Sol-H3 merge anchor missing: long-video child")
+              bridge = bridge.replace(child_anchor, controller_block + child_anchor, 1)
+
+          router_anchor = '  videoCharacterController,\n});\n\nasync function route(req, res) {'
+          router_replacement = '  videoCharacterController,\n  solH3Controller,\n});\n\nasync function route(req, res) {'
+          if '  solH3Controller,\n});\n\nasync function route(req, res) {' not in bridge:
+              if router_anchor not in bridge:
+                  raise SystemExit("Sol-H3 merge anchor missing: domain router")
+              bridge = bridge.replace(router_anchor, router_replacement, 1)
+
+          bridge_path.write_text(bridge)
+          PY
+
+            git add .env.example local-bridge.mjs
+          fi
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [ -n "$unresolved" ]; then
+            echo "Unresolved conflicts remain:"
+            printf '%s\n' "$unresolved"
+            exit 1
+          fi
+
+          # This workflow is one-shot and must not be merged into main.
+          git rm -f .github/workflows/merge-ai-persona-to-main.yml
+          git commit -m "Merge Sol-H3 integration into main"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sol-H3 contract tests
+        run: node --import ./tests/test-isolation.mjs --test --test-concurrency=1 tests/sol-h3-*.test.mjs
+
+      - name: Sol-H3 targeted lint
+        run: npx eslint server/sol-h3 app/components/create/SolH3Workspace.tsx app/components/create/sol-h3-client.ts tests/sol-h3-*.test.mjs
+
+      - name: Build WebUI
+        run: npm run build
+
+      - name: Push validated merge to main
+        run: git push origin HEAD:main
