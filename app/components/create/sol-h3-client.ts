@@ -7,6 +7,20 @@ export type SolH3Locator = {
   fingerprint?: { size?: number; mtimeMs?: number };
 };
 
+export type SolH3OutputMetadata = {
+  container: string;
+  video: { width: number; height: number; frames: number; fps: number };
+  audio: { codec: string; streams: number };
+  duration: number | null;
+  artifact: {
+    name: string;
+    size: number;
+    sha256: string;
+    producer: string;
+    pipelineFingerprint: string | null;
+  };
+};
+
 export type SolH3Job = {
   id: string;
   mode: SolH3Mode;
@@ -22,8 +36,10 @@ export type SolH3Job = {
   cancelRequested?: boolean;
   output: { id: string; name: string; url: string; kind: "video" } | null;
   outputSpec: { width: number; height: number; frames: number; fps: number; container: string; audioCodec: string };
+  outputMetadata?: SolH3OutputMetadata | null;
   error: string;
-  events: Array<{ at: string; status?: string; stage?: string; progress?: number | null }>;
+  errorCode?: string | null;
+  events: Array<{ seq?: number; at: string; status?: string; stage?: string; progress?: number | null }>;
 };
 
 export type SolH3Readiness = {
@@ -37,6 +53,7 @@ export type SolH3Readiness = {
   gpu?: { active: unknown; queue: unknown[]; activeCount: number; queuedCount: number; totalCount: number };
   conflicts?: string[];
   hostLock?: { held: boolean; owner?: string };
+  managerLock?: { held: boolean };
   conflictPolicy?: string;
   output?: SolH3Job["outputSpec"];
 };
@@ -84,6 +101,41 @@ export async function fetchSolH3Jobs() {
 export async function fetchSolH3Job(id: string) {
   const payload = await json<{ job: SolH3Job }>("/api/sol-h3/jobs/" + encodeURIComponent(id));
   return payload.job;
+}
+
+export async function pollSolH3JobEvents(id: string) {
+  return await json<{ events: SolH3Job["events"]; job: SolH3Job }>(
+    "/api/sol-h3/jobs/" + encodeURIComponent(id) + "/events?poll=1",
+  );
+}
+
+export function subscribeSolH3JobEvents(
+  id: string,
+  handlers: {
+    onJob: (job: SolH3Job) => void;
+    onOpen?: () => void;
+    onError?: () => void;
+  },
+) {
+  const source = new EventSource(BRIDGE_URL + "/api/sol-h3/jobs/" + encodeURIComponent(id) + "/events");
+  const parseJob = (event: MessageEvent<string>, wrapped: boolean) => {
+    try {
+      const payload = JSON.parse(event.data) as SolH3Job | { job?: SolH3Job };
+      const job = wrapped && "job" in payload ? payload.job : payload as SolH3Job;
+      if (job) handlers.onJob(job);
+    } catch {
+      handlers.onError?.();
+    }
+  };
+  source.addEventListener("snapshot", (event) => parseJob(event as MessageEvent<string>, false));
+  source.addEventListener("job", (event) => parseJob(event as MessageEvent<string>, true));
+  source.addEventListener("done", (event) => {
+    parseJob(event as MessageEvent<string>, false);
+    source.close();
+  });
+  source.onopen = () => handlers.onOpen?.();
+  source.onerror = () => handlers.onError?.();
+  return () => source.close();
 }
 
 export async function createSolH3Job(request: {
