@@ -1,5 +1,5 @@
 export const SOL_H3_MODES = Object.freeze(["t2va", "fl2va", "ref2va"]);
-export const SOL_H3_MEDIA_ROOTS = Object.freeze(["input", "output"]);
+export const SOL_H3_MEDIA_ROOTS = Object.freeze(["comfyui-input", "comfyui-output"]);
 export const SOL_H3_OUTPUT_SPEC = Object.freeze({
   width: 1344,
   height: 768,
@@ -9,6 +9,13 @@ export const SOL_H3_OUTPUT_SPEC = Object.freeze({
   audioCodec: "aac",
 });
 
+const INTERNAL_MEDIA_ROOT_BY_PUBLIC_ROOT = Object.freeze({
+  "comfyui-input": "input",
+  "comfyui-output": "output",
+  // Temporary compatibility for jobs created by the first adapter revision.
+  input: "input",
+  output: "output",
+});
 const SAFE_SEGMENT_RE = /[<>:"|?*]/u;
 
 function hasUnsafeControl(value) {
@@ -48,13 +55,20 @@ export function normalizeSolH3RelativePath(value, field = "relativePath") {
 }
 
 function normalizeRoot(value, field) {
-  if (!SOL_H3_MEDIA_ROOTS.includes(value)) fail("SOL_H3_MEDIA_ROOT_INVALID", field + ".root must be input or output.");
-  return value;
+  const internalRoot = INTERNAL_MEDIA_ROOT_BY_PUBLIC_ROOT[value];
+  if (!internalRoot) {
+    fail("SOL_H3_MEDIA_ROOT_INVALID", field + ".root must be comfyui-input or comfyui-output.");
+  }
+  return internalRoot;
 }
 
 export function normalizeSolH3MediaLocator(value, field = "media") {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     fail("SOL_H3_MEDIA_INVALID", field + " must include root and relativePath.");
+  }
+  const allowedKeys = new Set(["root", "relativePath", "name", "kind", "fingerprint"]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) fail("SOL_H3_FIELD_UNSUPPORTED", field + "." + key + " is not supported in this schema.");
   }
   const root = normalizeRoot(value.root, field);
   const relativePath = normalizeSolH3RelativePath(value.relativePath ?? value.name, field + ".relativePath");
@@ -62,16 +76,26 @@ export function normalizeSolH3MediaLocator(value, field = "media") {
   if (kind !== undefined && !["image", "video", "audio"].includes(kind)) {
     fail("SOL_H3_MEDIA_KIND_INVALID", field + ".kind is not supported.");
   }
-  const fingerprint = value.fingerprint && typeof value.fingerprint === "object"
-    ? {
-      ...(Number.isSafeInteger(Number(value.fingerprint.size)) && Number(value.fingerprint.size) >= 0
-        ? { size: Number(value.fingerprint.size) }
-        : {}),
-      ...(Number.isFinite(Number(value.fingerprint.mtimeMs)) && Number(value.fingerprint.mtimeMs) >= 0
-        ? { mtimeMs: Number(value.fingerprint.mtimeMs) }
-        : {}),
+  let fingerprint;
+  if (value.fingerprint !== undefined) {
+    if (!value.fingerprint || typeof value.fingerprint !== "object" || Array.isArray(value.fingerprint)) {
+      fail("SOL_H3_MEDIA_FINGERPRINT_INVALID", field + ".fingerprint must be an object.");
     }
-    : undefined;
+    for (const key of Object.keys(value.fingerprint)) {
+      if (!["size", "mtimeMs"].includes(key)) fail("SOL_H3_FIELD_UNSUPPORTED", field + ".fingerprint." + key + " is not supported in this schema.");
+    }
+    fingerprint = {};
+    if (value.fingerprint.size !== undefined) {
+      const size = Number(value.fingerprint.size);
+      if (!Number.isSafeInteger(size) || size < 0) fail("SOL_H3_MEDIA_FINGERPRINT_INVALID", field + ".fingerprint.size is invalid.");
+      fingerprint.size = size;
+    }
+    if (value.fingerprint.mtimeMs !== undefined) {
+      const mtimeMs = Number(value.fingerprint.mtimeMs);
+      if (!Number.isFinite(mtimeMs) || mtimeMs < 0) fail("SOL_H3_MEDIA_FINGERPRINT_INVALID", field + ".fingerprint.mtimeMs is invalid.");
+      fingerprint.mtimeMs = mtimeMs;
+    }
+  }
   return {
     root,
     relativePath,
@@ -82,15 +106,15 @@ export function normalizeSolH3MediaLocator(value, field = "media") {
 
 function ensurePrompt(value) {
   if (typeof value !== "string" || !value.trim()) fail("SOL_H3_PROMPT_REQUIRED", "prompt is required.");
-  if (value.length > 4000) fail("SOL_H3_PROMPT_TOO_LONG", "prompt must be at most 4,000 characters.");
+  if ([...value].length > 4000) fail("SOL_H3_PROMPT_TOO_LONG", "prompt must be at most 4,000 Unicode code points.");
   if (hasUnsafeControl(value)) fail("SOL_H3_PROMPT_INVALID", "prompt contains an unsafe control character.");
   return value;
 }
 
 function ensureSeed(value) {
   if (value === undefined || value === null || value === "") return 42;
-  if (!Number.isSafeInteger(value) || value < 0 || value >= 2 ** 63) {
-    fail("SOL_H3_SEED_INVALID", "seed must be a non-negative integer accepted by Sol-H3.");
+  if (!Number.isSafeInteger(value) || value < 0) {
+    fail("SOL_H3_SEED_INVALID", "seed must be a non-negative safe integer accepted by Sol-H3.");
   }
   return value;
 }
