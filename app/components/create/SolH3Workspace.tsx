@@ -1,9 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AssetPickerButton } from "../library/AssetPickerButton";
 import { assetKey, type StudioAsset } from "../library/asset-client";
-import { assetLocator, cancelSolH3Job, createSolH3Job, fetchSolH3Job, fetchSolH3Jobs, fetchSolH3Readiness, type SolH3Job, type SolH3Mode, type SolH3Readiness } from "./sol-h3-client";
+import {
+  assetLocator,
+  cancelSolH3Job,
+  createSolH3Job,
+  fetchSolH3Jobs,
+  fetchSolH3Readiness,
+  pollSolH3JobEvents,
+  subscribeSolH3JobEvents,
+  type SolH3Job,
+  type SolH3Mode,
+  type SolH3Readiness,
+} from "./sol-h3-client";
 import styles from "./SolH3Workspace.module.css";
 
 const ACTIVE = new Set(["queued", "waiting_gpu", "preparing", "qwen_running", "stage1_running", "upscaling", "adapting", "stage2_running", "validating", "cancel_requested"]);
@@ -37,6 +48,11 @@ function displayAsset(asset: StudioAsset | null) {
   return asset ? asset.root.toUpperCase() + " / " + asset.name : "尚未選擇";
 }
 
+function createIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `sol-ui-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function SolH3Workspace() {
   const [mode, setMode] = useState<SolH3Mode>("t2va");
   const [prompt, setPrompt] = useState("傍晚海邊，一名成年人沿岸慢跑；鏡頭自然跟拍，遠處有海浪與海鳥聲。");
@@ -48,6 +64,13 @@ export function SolH3Workspace() {
   const [job, setJob] = useState<SolH3Job | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const pendingIdempotencyKey = useRef<string | null>(null);
+
+  const promptLength = useMemo(() => [...prompt].length, [prompt]);
+
+  const resetPendingSubmit = useCallback(() => {
+    pendingIdempotencyKey.current = null;
+  }, []);
 
   const refreshReadiness = useCallback(async () => {
     try {
@@ -76,17 +99,28 @@ export function SolH3Workspace() {
   useEffect(() => {
     if (!job?.id || !active) return;
     let disposed = false;
+    let streamHealthy = false;
+    const unsubscribe = subscribeSolH3JobEvents(job.id, {
+      onJob: (next) => { if (!disposed) setJob(next); },
+      onOpen: () => { streamHealthy = true; },
+      onError: () => { streamHealthy = false; },
+    });
     const poll = async () => {
+      if (disposed || streamHealthy) return;
       try {
-        const next = await fetchSolH3Job(job.id);
-        if (!disposed) setJob(next);
+        const payload = await pollSolH3JobEvents(job.id);
+        if (!disposed) setJob(payload.job);
       } catch {
         // Keep the last durable state visible while the server is restarting.
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 1500);
-    return () => { disposed = true; window.clearInterval(timer); };
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      unsubscribe();
+    };
   }, [active, job?.id]);
 
   const selectedKeys = useMemo(() => (asset: StudioAsset | null) => asset ? [assetKey(asset)] : [], []);
@@ -99,6 +133,7 @@ export function SolH3Workspace() {
       return;
     }
     setter(selected);
+    resetPendingSubmit();
     setJob(null);
     setError("");
   }
@@ -111,6 +146,10 @@ export function SolH3Workspace() {
     }
     if (!prompt.trim()) {
       setError("請輸入提示詞。");
+      return;
+    }
+    if (promptLength > 4000) {
+      setError("Prompt 不可超過 4,000 Unicode code points。");
       return;
     }
     if (mode === "fl2va" && (!firstFrame || !lastFrame)) {
@@ -135,14 +174,18 @@ export function SolH3Workspace() {
         inputs.lastFrame = assetLocator(lastFrame);
       }
       if (mode === "ref2va" && reference) inputs.references = [assetLocator(reference)];
-      setJob(await createSolH3Job({
+      const key = pendingIdempotencyKey.current || createIdempotencyKey();
+      pendingIdempotencyKey.current = key;
+      const created = await createSolH3Job({
         schemaVersion: 1,
         mode,
         prompt: prompt.trim(),
         ...(parsedSeed === undefined ? {} : { seed: parsedSeed }),
         audio: { generate: true },
         inputs,
-      }));
+      }, { idempotencyKey: key });
+      pendingIdempotencyKey.current = null;
+      setJob(created);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "無法建立 Sol-H3 工作。");
     } finally {
@@ -171,15 +214,15 @@ export function SolH3Workspace() {
           {Object.entries(MODE_COPY).map(([value, copy]) => {
             const item = value as SolH3Mode;
             const ready = Boolean(readiness?.modes?.[item]?.ready);
-            return <button key={item} className={styles.mode + " " + (mode === item ? styles.modeActive : "")} type="button" onClick={() => { if (!active) { setMode(item); setError(""); } }} aria-pressed={mode === item} disabled={busy || active}>
+            return <button key={item} className={styles.mode + " " + (mode === item ? styles.modeActive : "")} type="button" onClick={() => { if (!active) { setMode(item); resetPendingSubmit(); setError(""); } }} aria-pressed={mode === item} disabled={busy || active}>
               <strong>{copy.label}</strong><span>{copy.help}</span><small>{ready ? "READY" : (readiness?.modes?.[item]?.missing?.slice(0, 2).join(" · ") || "尚未檢查")}</small>
             </button>;
           })}
         </div>
 
         <div className={styles.fields}>
-          <label className={styles.field + " " + styles.wide}><span>Prompt（同時描述畫面、動作與聲音）</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} disabled={busy || active} maxLength={4000} /><small>{prompt.length} / 4000</small></label>
-          <label className={styles.field}><span>Seed（可選）</span><input value={seed} onChange={(event) => setSeed(event.target.value)} inputMode="numeric" placeholder="42" disabled={busy || active} /></label>
+          <label className={styles.field + " " + styles.wide}><span>Prompt（同時描述畫面、動作與聲音）</span><textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); resetPendingSubmit(); }} disabled={busy || active} aria-invalid={promptLength > 4000} /><small className={promptLength > 4000 ? styles.overLimit : undefined}>{promptLength} / 4000 Unicode code points</small></label>
+          <label className={styles.field}><span>Seed（可選）</span><input value={seed} onChange={(event) => { setSeed(event.target.value); resetPendingSubmit(); }} inputMode="numeric" placeholder="42" disabled={busy || active} /></label>
           <div className={styles.spec}><span>固定輸出</span><strong>1344 × 768 · 121 frames · 24 FPS</strong><small>MP4 · AAC · 原生 H3 音訊</small></div>
 
           {mode === "fl2va" && <><div className={styles.assetField}><strong>首幀</strong><span>{displayAsset(firstFrame)}</span><AssetPickerButton triggerId="sol-h3-first-frame-picker" allowedRoots={["input", "output"]} kind="image" selectedKeys={selectedKeys(firstFrame)} onSelect={(assets) => selectSingle(setFirstFrame, ["image"], assets)} label="選擇首幀" /></div><div className={styles.assetField}><strong>尾幀</strong><span>{displayAsset(lastFrame)}</span><AssetPickerButton triggerId="sol-h3-last-frame-picker" allowedRoots={["input", "output"]} kind="image" selectedKeys={selectedKeys(lastFrame)} onSelect={(assets) => selectSingle(setLastFrame, ["image"], assets)} label="選擇尾幀" /></div></>}
@@ -193,12 +236,12 @@ export function SolH3Workspace() {
         </div>}
 
         {error && <p className={styles.error}>{error}</p>}
-        <div className={styles.actions}><button className={styles.primary} type="button" onClick={() => void start()} disabled={busy || active || !currentModeReady}>{busy ? "處理中…" : "開始 Sol-H3 生成"}</button>{active && <button className={styles.secondary} type="button" onClick={() => void cancel()} disabled={busy}>取消工作</button>}</div>
+        <div className={styles.actions}><button className={styles.primary} type="button" onClick={() => void start()} disabled={busy || active || !currentModeReady || promptLength > 4000}>{busy ? "處理中…" : "開始 Sol-H3 生成"}</button>{active && <button className={styles.secondary} type="button" onClick={() => void cancel()} disabled={busy}>取消工作</button>}</div>
       </section>
 
       <section className={styles.output}>
         <div className={styles.header}><div><p className={styles.eyebrow}>JOB STATUS</p><h2>Sol-H3 工作狀態</h2></div>{job && <span className={styles.badge}>{statusLabel(job.status)}</span>}</div>
-        {job ? <><div className={styles.jobMeta}><strong>{job.stage}</strong><span>{job.id}</span></div><div className={styles.progress} role="progressbar" aria-label="Sol-H3 工作進度" aria-valuemin={0} aria-valuemax={100} {...(job.progress === null ? {} : { "aria-valuenow": job.progress })}>{job.progress === null ? <i /> : <span style={{ width: Math.max(0, Math.min(100, job.progress)) + "%" }} />}</div><div className={styles.timeline}>{job.events.slice(-8).map((event, index) => <div key={event.at + "-" + index}><time>{new Date(event.at).toLocaleTimeString()}</time><span>{event.stage || event.status || "狀態更新"}</span></div>)}</div>{job.output ? <><video className={styles.video} controls playsInline src={"/app" + job.output.url}><track kind="captions" /></video><p className={styles.success}>MP4＋AAC、{job.outputSpec.width}×{job.outputSpec.height}、{job.outputSpec.frames} frames、{job.outputSpec.fps} FPS 已通過 server 驗證。</p></> : <div className={styles.empty}>完成後影片會顯示在這裡</div>}{job.error && <p className={styles.error}>{job.error}</p>}</> : <div className={styles.empty}>尚未建立工作<br /><small>先完成 runtime readiness，再選擇模式與素材。</small></div>}
+        {job ? <><div className={styles.jobMeta}><strong>{job.stage}</strong><span>{job.id}</span></div><div className={styles.progress} role="progressbar" aria-label="Sol-H3 工作進度" aria-valuemin={0} aria-valuemax={100} {...(job.progress === null ? {} : { "aria-valuenow": job.progress })}>{job.progress === null ? <i /> : <span style={{ width: Math.max(0, Math.min(100, job.progress)) + "%" }} />}</div><div className={styles.timeline}>{job.events.slice(-8).map((event, index) => <div key={(event.seq ?? event.at) + "-" + index}><time>{new Date(event.at).toLocaleTimeString()}</time><span>{event.stage || event.status || "狀態更新"}</span></div>)}</div>{job.output ? <><video className={styles.video} controls playsInline src={"/app" + job.output.url}><track kind="captions" /></video><p className={styles.success}>MP4＋AAC、{job.outputSpec.width}×{job.outputSpec.height}、{job.outputSpec.frames} frames、{job.outputSpec.fps} FPS 已通過 server 驗證。{job.outputMetadata?.artifact?.sha256 ? ` SHA-256 ${job.outputMetadata.artifact.sha256.slice(0, 16)}…` : ""}</p><div className={styles.actions}><a className={styles.secondary} href={"/app" + job.output.url} download={job.output.name}>下載影片</a></div></> : <div className={styles.empty}>完成後影片會顯示在這裡</div>}{job.error && <p className={styles.error}>{job.errorCode ? job.errorCode + ": " : ""}{job.error}</p>}</> : <div className={styles.empty}>尚未建立工作<br /><small>先完成 runtime readiness，再選擇模式與素材。</small></div>}
       </section>
     </div>
   );
