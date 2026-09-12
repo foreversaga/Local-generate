@@ -1,7 +1,7 @@
 export type SolH3Mode = "t2va" | "fl2va" | "ref2va";
 export type SolH3MediaKind = "image" | "video" | "audio";
 export type SolH3Locator = {
-  root: "input" | "output";
+  root: "comfyui-input" | "comfyui-output";
   relativePath: string;
   kind?: SolH3MediaKind;
   fingerprint?: { size?: number; mtimeMs?: number };
@@ -54,11 +54,15 @@ async function json<T>(endpoint: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function toSolH3Root(root: "input" | "output" | "training"): SolH3Locator["root"] {
+  if (root === "training") throw new Error("Sol-H3 does not accept training assets.");
+  return root === "input" ? "comfyui-input" : "comfyui-output";
+}
+
 export function assetLocator(asset: { root: "input" | "output" | "training"; name: string; kind?: SolH3MediaKind; size?: number; modified?: string }): SolH3Locator {
-  if (asset.root === "training") throw new Error("Sol-H3 does not accept training assets.");
   const mtimeMs = asset.modified ? Date.parse(asset.modified) : NaN;
   return {
-    root: asset.root,
+    root: toSolH3Root(asset.root),
     relativePath: asset.name,
     ...(asset.kind ? { kind: asset.kind } : {}),
     fingerprint: {
@@ -89,10 +93,12 @@ export async function createSolH3Job(request: {
   seed?: number;
   audio: { generate: true };
   inputs: Record<string, SolH3Locator | SolH3Locator[]>;
-}) {
+}, options: { idempotencyKey?: string } = {}) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
   const payload = await json<{ job: SolH3Job }>("/api/sol-h3/jobs", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(request),
   });
   return payload.job;
