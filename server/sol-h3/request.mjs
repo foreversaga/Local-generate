@@ -9,12 +9,16 @@ export const SOL_H3_OUTPUT_SPEC = Object.freeze({
   audioCodec: "aac",
 });
 
+const PUBLIC_MEDIA_ROOT_BY_INPUT = Object.freeze({
+  "comfyui-input": "comfyui-input",
+  "comfyui-output": "comfyui-output",
+  // Compatibility for durable jobs created by the first adapter revision.
+  input: "comfyui-input",
+  output: "comfyui-output",
+});
 const INTERNAL_MEDIA_ROOT_BY_PUBLIC_ROOT = Object.freeze({
   "comfyui-input": "input",
   "comfyui-output": "output",
-  // Temporary compatibility for jobs created by the first adapter revision.
-  input: "input",
-  output: "output",
 });
 const SAFE_SEGMENT_RE = /[<>:"|?*]/u;
 
@@ -55,10 +59,17 @@ export function normalizeSolH3RelativePath(value, field = "relativePath") {
 }
 
 function normalizeRoot(value, field) {
-  const internalRoot = INTERNAL_MEDIA_ROOT_BY_PUBLIC_ROOT[value];
-  if (!internalRoot) {
+  const publicRoot = PUBLIC_MEDIA_ROOT_BY_INPUT[value];
+  if (!publicRoot) {
     fail("SOL_H3_MEDIA_ROOT_INVALID", field + ".root must be comfyui-input or comfyui-output.");
   }
+  return publicRoot;
+}
+
+export function toInternalSolH3MediaRoot(value) {
+  const publicRoot = PUBLIC_MEDIA_ROOT_BY_INPUT[value];
+  const internalRoot = INTERNAL_MEDIA_ROOT_BY_PUBLIC_ROOT[publicRoot];
+  if (!internalRoot) fail("SOL_H3_MEDIA_ROOT_INVALID", "media.root must be comfyui-input or comfyui-output.");
   return internalRoot;
 }
 
